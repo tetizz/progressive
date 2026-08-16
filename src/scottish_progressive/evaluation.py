@@ -1,0 +1,347 @@
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from functools import lru_cache
+
+import chess
+
+from .model import ProgressiveState, boundary_fen
+from .rules import _legal_move_variants
+
+
+PIECE_VALUES = {
+    chess.PAWN: 100,
+    chess.KNIGHT: 325,
+    chess.BISHOP: 340,
+    chess.ROOK: 525,
+    chess.QUEEN: 975,
+    chess.KING: 0,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ReachProbe:
+    distance: int | None
+    nodes: int
+    complete: bool
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationBreakdown:
+    total: int
+    material: int
+    king_space: int
+    series_reach: int
+    promotion_corridors: int
+    immediate_vulnerability: int
+    useful_mobility: int
+    boundary_check: int
+    white_check_distance: int | None
+    black_check_distance: int | None
+    reach_complete: bool
+
+    def as_dict(self) -> dict[str, int | bool | None]:
+        return asdict(self)
+
+
+def _board_from_key(key: str) -> chess.Board:
+    placement, turn, castling, ep = key.split()
+    orthodox_ep = ep if "," not in ep else "-"
+    return chess.Board(f"{placement} {turn} {castling} {orthodox_ep} 0 1")
+
+
+def _ordered_variants(
+    board: chess.Board, ep_targets: tuple[int, ...]
+) -> list[tuple[chess.Move, int | None]]:
+    variants = _legal_move_variants(board, ep_targets)
+
+    def rank(item: tuple[chess.Move, int | None]) -> tuple[int, int, int, str]:
+        move, required_ep = item
+        board.ep_square = required_ep
+        gives_check = board.gives_check(move)
+        capture = board.is_capture(move)
+        board.ep_square = None
+        return (
+            0 if gives_check else 1,
+            0 if move.promotion else 1,
+            0 if capture else 1,
+            move.uci(),
+        )
+
+    return sorted(variants, key=rank)
+
+
+@lru_cache(maxsize=100_000)
+def _probe_shortest_check_cached(
+    key: str,
+    ep_targets: tuple[int, ...],
+    color: chess.Color,
+    max_moves: int,
+    node_limit: int,
+) -> ReachProbe:
+    board = _board_from_key(key)
+    enemy_king = board.king(not color)
+    if enemy_king is None:
+        return ReachProbe(0, 0, True)
+    if board.is_attacked_by(color, enemy_king):
+        return ReachProbe(0, 0, True)
+
+    board.turn = color
+    frontier = [board]
+    seen = {boundary_fen(board, ep_targets)}
+    nodes = 0
+    for distance in range(1, max_moves + 1):
+        following: list[chess.Board] = []
+        for position in frontier:
+            first = distance == 1
+            for move, required_ep in _ordered_variants(
+                position, ep_targets if first else ()
+            ):
+                nodes += 1
+                if nodes > node_limit:
+                    return ReachProbe(None, nodes - 1, False)
+                child = position.copy(stack=False)
+                child.ep_square = required_ep
+                child.push(move)
+                if child.is_check():
+                    return ReachProbe(distance, nodes, True)
+                child.turn = color
+                child.ep_square = None
+                child_key = boundary_fen(child, ())
+                if child_key not in seen:
+                    seen.add(child_key)
+                    following.append(child)
+        frontier = following
+        if not frontier:
+            break
+    return ReachProbe(None, nodes, True)
+
+
+def probe_series_reach(
+    state: ProgressiveState,
+    color: chess.Color,
+    *,
+    max_moves: int | None = None,
+    node_limit: int = 128,
+) -> ReachProbe:
+    """Finds a bounded shortest same-side sequence that gives check.
+
+    This is an explicit tactical-reach feature, not a proof of a forced check:
+    the opponent does not reply inside a Scottish series. ``complete=False``
+    says the deterministic node budget was exhausted before the bounded search
+    finished.
+    """
+
+    if max_moves is None:
+        max_moves = state.series_number if state.board.turn == color else state.series_number + 1
+    max_moves = max(0, min(max_moves, 3))
+    return _probe_shortest_check_cached(
+        state.boundary_key,
+        state.ep_targets if state.board.turn == color else (),
+        color,
+        max_moves,
+        node_limit,
+    )
+
+
+def _material(board: chess.Board) -> int:
+    score = 0
+    for piece_type, value in PIECE_VALUES.items():
+        score += len(board.pieces(piece_type, chess.WHITE)) * value
+        score -= len(board.pieces(piece_type, chess.BLACK)) * value
+    return score
+
+
+def _king_flight_squares(board: chess.Board, color: chess.Color) -> int:
+    king = board.king(color)
+    if king is None:
+        return 0
+    friendly = board.occupied_co[color]
+    count = 0
+    for target in chess.SquareSet(chess.BB_KING_ATTACKS[king]):
+        if friendly & chess.BB_SQUARES[target]:
+            continue
+        trial = board.copy(stack=False)
+        trial.turn = color
+        trial.ep_square = None
+        move = chess.Move(king, target)
+        if move in trial.legal_moves:
+            count += 1
+    return count
+
+
+def _promotion_distance(
+    board: chess.Board, square: int, color: chess.Color
+) -> int | None:
+    rank = chess.square_rank(square)
+    file_index = chess.square_file(square)
+    direction = 1 if color == chess.WHITE else -1
+    target_rank = 7 if color == chess.WHITE else 0
+    distance = abs(target_rank - rank)
+    if distance == 0:
+        return 0
+    for next_rank in range(rank + direction, target_rank + direction, direction):
+        if board.piece_at(chess.square(file_index, next_rank)) is not None:
+            return None
+    start_rank = 1 if color == chess.WHITE else 6
+    if rank == start_rank and distance >= 2:
+        distance -= 1
+    return distance
+
+
+def _promotion_score(state: ProgressiveState, color: chess.Color) -> int:
+    budget = state.series_number if state.board.turn == color else state.series_number + 1
+    best: int | None = None
+    for square in state.board.pieces(chess.PAWN, color):
+        distance = _promotion_distance(state.board, square, color)
+        if distance is not None and (best is None or distance < best):
+            best = distance
+    if best is None:
+        return 0
+    if best <= budget:
+        return 650 + (budget - best) * 55
+    return max(0, 180 - (best - budget) * 45)
+
+
+def _attacked_material(board: chess.Board, victim: chess.Color) -> int:
+    attacker = not victim
+    value = 0
+    for square in chess.scan_forward(board.occupied_co[victim]):
+        piece = board.piece_at(square)
+        if piece is not None and board.is_attacked_by(attacker, square):
+            value += PIECE_VALUES[piece.piece_type]
+    return value
+
+
+def _first_move_mobility(state: ProgressiveState, color: chess.Color) -> int:
+    board = state.board.copy(stack=False)
+    board.turn = color
+    board.ep_square = None
+    ep = state.ep_targets if color == state.board.turn else ()
+    useful = 0
+    for move, required_ep in _legal_move_variants(board, ep):
+        board.ep_square = required_ep
+        if board.gives_check(move) or board.is_capture(move) or move.promotion:
+            useful += 3
+        else:
+            useful += 1
+    return useful
+
+
+def _reach_value(probe: ReachProbe, budget: int) -> int:
+    if probe.distance is None:
+        return 0
+    if probe.distance == 0:
+        return 260
+    if probe.distance <= budget:
+        return max(60, 230 - (probe.distance - 1) * 80)
+    return 0
+
+
+def evaluate(state: ProgressiveState) -> EvaluationBreakdown:
+    """Returns a White-centric progressive-specific heuristic score."""
+
+    board = state.board
+    material = _material(board)
+    king_space = (
+        _king_flight_squares(board, chess.WHITE)
+        - _king_flight_squares(board, chess.BLACK)
+    ) * 28
+
+    white_budget = state.series_number if board.turn == chess.WHITE else state.series_number + 1
+    black_budget = state.series_number if board.turn == chess.BLACK else state.series_number + 1
+    white_reach = probe_series_reach(
+        state, chess.WHITE, max_moves=min(2, white_budget), node_limit=128
+    )
+    black_reach = probe_series_reach(
+        state, chess.BLACK, max_moves=min(2, black_budget), node_limit=128
+    )
+    series_reach = _reach_value(white_reach, white_budget) - _reach_value(
+        black_reach, black_budget
+    )
+
+    promotion_corridors = _promotion_score(
+        state, chess.WHITE
+    ) - _promotion_score(state, chess.BLACK)
+    immediate_vulnerability = (
+        _attacked_material(board, chess.BLACK)
+        - _attacked_material(board, chess.WHITE)
+    ) // 5
+    useful_mobility = (
+        _first_move_mobility(state, chess.WHITE)
+        - _first_move_mobility(state, chess.BLACK)
+    ) * 2
+
+    boundary_check = 0
+    if board.is_check():
+        boundary_check = 170 if board.turn == chess.BLACK else -170
+
+    total = (
+        material
+        + king_space
+        + series_reach
+        + promotion_corridors
+        + immediate_vulnerability
+        + useful_mobility
+        + boundary_check
+    )
+    return EvaluationBreakdown(
+        total=total,
+        material=material,
+        king_space=king_space,
+        series_reach=series_reach,
+        promotion_corridors=promotion_corridors,
+        immediate_vulnerability=immediate_vulnerability,
+        useful_mobility=useful_mobility,
+        boundary_check=boundary_check,
+        white_check_distance=white_reach.distance,
+        black_check_distance=black_reach.distance,
+        reach_complete=white_reach.complete and black_reach.complete,
+    )
+
+
+def fast_evaluate(state: ProgressiveState) -> int:
+    """Cheap White-centric score used only for deterministic move ordering.
+
+    It deliberately omits the bounded reach search and first-move mobility.
+    Full leaf values always use :func:`evaluate`.
+    """
+
+    board = state.board
+    score = _material(board)
+    score += (
+        _king_flight_squares(board, chess.WHITE)
+        - _king_flight_squares(board, chess.BLACK)
+    ) * 20
+    score += _promotion_score(state, chess.WHITE) - _promotion_score(
+        state, chess.BLACK
+    )
+    score += (
+        _attacked_material(board, chess.BLACK)
+        - _attacked_material(board, chess.WHITE)
+    ) // 6
+    if board.is_check():
+        score += 140 if board.turn == chess.BLACK else -140
+    return score
+
+
+def classify_score(score: int, *, forced: str | None = None) -> str:
+    if forced == "white":
+        return "Forced Win"
+    if forced == "black":
+        return "Forced Loss"
+    if forced == "draw":
+        return "Drawn"
+    if score >= 700:
+        return "Likely Win"
+    if score >= 250:
+        return "Advantage"
+    if score > 80:
+        return "Slight Advantage"
+    if score >= -80:
+        return "Unclear"
+    if score > -250:
+        return "Slight Disadvantage"
+    if score > -700:
+        return "Disadvantage"
+    return "Likely Loss"

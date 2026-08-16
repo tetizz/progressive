@@ -1,0 +1,165 @@
+{
+  "generated_at": "2026-08-16T21:45:41+00:00",
+  "engine_version": "spc-0.2.0-m1",
+  "source_fingerprint": "9d2e0e58eeff4cae",
+  "ruleset_version": "scottish-modern-common-v1",
+  "moves": [
+    "e2e4",
+    "d2d4"
+  ],
+  "reply_depth": 2,
+  "total_series_horizon": 3,
+  "max_series_per_node": 16,
+  "time_limit_per_move": null,
+  "all_searches_completed": true,
+  "selection_policy": "Every legal series is generated and transposition-merged first. At each searched node, a deterministic cheap ordering retains at most max_series_per_node series for deeper evaluation.",
+  "warning": "Selective results are hypotheses, not proof and not a complete ranking. A pruned reply may change the result.",
+  "results": [
+    {
+      "move_uci": "e2e4",
+      "move_san": "e4",
+      "score": 1137,
+      "classification": "Likely Win",
+      "proven_result": null,
+      "confidence": "selective depth-limited heuristic",
+      "best_black_series": "e7e6/e8e7",
+      "best_black_notation": "e6 / Ke7",
+      "principal_variation": "S1 White[1]: e4 | S2 Black[2]: e6 / Ke7 | S3 White[3]: Qg4 / Qxg7 / Qxf8+",
+      "requested_reply_depth": 2,
+      "completed_reply_depth": 2,
+      "exact_width": false,
+      "timed_out": false,
+      "nodes": 240,
+      "raw_generated_series": 417566,
+      "unique_generated_series": 97971,
+      "intra_series_transpositions": 319595,
+      "branch_caps": 18,
+      "elapsed_seconds": 43.36184420000063,
+      "alternatives": [
+        {
+          "black_series": "e7e6/e8e7",
+          "notation": "e6 / Ke7",
+          "score": 1137
+        },
+        {
+          "black_series": "d7d5/e8d7",
+          "notation": "d5 / Kd7",
+          "score": 1273
+        },
+        {
+          "black_series": "d7d6/e8d7",
+          "notation": "d6 / Kd7",
+          "score": 1273
+        },
+        {
+          "black_series": "f7f5/e8f7",
+          "notation": "f5 / Kf7",
+          "score": 1277
+        },
+        {
+          "black_series": "f7f6/e8f7",
+          "notation": "f6 / Kf7",
+          "score": 1535
+        },
+        {
+          "black_series": "e7e5/d8h4",
+          "notation": "e5 / Qh4",
+          "score": 1560
+        },
+        {
+          "black_series": "e7e6/d8g5",
+          "notation": "e6 / Qg5",
+          "score": 1560
+        },
+        {
+          "black_series": "e7e6/d8h4",
+          "notation": "e6 / Qh4",
+          "score": 1560
+        },
+        {
+          "black_series": "e7e6/d8f6",
+          "notation": "e6 / Qf6",
+          "score": 1719
+        },
+        {
+          "black_series": "d7d5/d5e4",
+          "notation": "d5 / dxe4",
+          "score": 1777
+        }
+      ]
+    },
+    {
+      "move_uci": "d2d4",
+      "move_san": "d4",
+      "score": 902,
+      "classification": "Likely Win",
+      "proven_result": null,
+      "confidence": "selective depth-limited heuristic",
+      "best_black_series": "e7e6/f8b4",
+      "best_black_notation": "e6 / Bb4+",
+      "principal_variation": "S1 White[1]: d4 | S2 Black[2]: e6 / Bb4+ | S3 White[3]: Qd2 / Qxb4 / Qe7+",
+      "requested_reply_depth": 2,
+      "completed_reply_depth": 2,
+      "exact_width": false,
+      "timed_out": false,
+      "nodes": 272,
+      "raw_generated_series": 308973,
+      "unique_generated_series": 78552,
+      "intra_series_transpositions": 230421,
+      "branch_caps": 18,
+      "elapsed_seconds": 30.84513499995228,
+      "alternatives": [
+        {
+          "black_series": "e7e6/f8b4",
+          "notation": "e6 / Bb4+",
+          "score": 902
+        },
+        {
+          "black_series": "e7e5/f8b4",
+          "notation": "e5 / Bb4+",
+          "score": 908
+        },
+        {
+          "black_series": "b8c6/c6d4",
+          "notation": "Nc6 / Nxd4",
+          "score": 1076
+        },
+        {
+          "black_series": "e7e5/e5d4",
+          "notation": "e5 / exd4",
+          "score": 1247
+        },
+        {
+          "black_series": "f7f6/e8f7",
+          "notation": "f6 / Kf7",
+          "score": 1307
+        },
+        {
+          "black_series": "d7d5/e8d7",
+          "notation": "d5 / Kd7",
+          "score": 1333
+        },
+        {
+          "black_series": "e7e6/e8e7",
+          "notation": "e6 / Ke7",
+          "score": 1377
+        },
+        {
+          "black_series": "c7c5/c5d4",
+          "notation": "c5 / cxd4",
+          "score": 1391
+        },
+        {
+          "black_series": "f7f5/e8f7",
+          "notation": "f5 / Kf7",
+          "score": 1465
+        },
+        {
+          "black_series": "c7c6/d8a5",
+          "notation": "c6 / Qa5+",
+          "score": 1532
+        }
+      ]
+    }
+  ]
+}
