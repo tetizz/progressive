@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: progressive
+    runtime: python
+    plan: free
+    region: ohio
+    buildCommand: python -m pip install .
+    startCommand: >-
+      python -m scottish_progressive.cli web
+      --host 0.0.0.0
+      --port $PORT
+      --no-browser
+      --public-origin $RENDER_EXTERNAL_URL
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.14.3

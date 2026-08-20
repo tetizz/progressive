@@ -5,9 +5,9 @@ from functools import lru_cache
 
 import chess
 
-from .model import ProgressiveState, boundary_fen
+from .model import ProgressiveState
 from .profiles import EngineProfile, EvaluationWeights
-from .rules import _legal_move_variants
+from .rules import _board_position_key, _legal_move_variants
 
 
 PIECE_VALUES = {
@@ -40,6 +40,8 @@ class EvaluationBreakdown:
     white_check_distance: int | None
     black_check_distance: int | None
     reach_complete: bool
+    white_reach_nodes: int = 0
+    black_reach_nodes: int = 0
 
     def as_dict(self) -> dict[str, int | bool | None]:
         return asdict(self)
@@ -89,7 +91,7 @@ def _probe_shortest_check_cached(
 
     board.turn = color
     frontier = [board]
-    seen = {boundary_fen(board, ep_targets)}
+    seen = {_board_position_key(board, ep_targets)}
     nodes = 0
     for distance in range(1, max_moves + 1):
         following: list[chess.Board] = []
@@ -108,7 +110,7 @@ def _probe_shortest_check_cached(
                     return ReachProbe(distance, nodes, True)
                 child.turn = color
                 child.ep_square = None
-                child_key = boundary_fen(child, ())
+                child_key = _board_position_key(child)
                 if child_key not in seen:
                     seen.add(child_key)
                     following.append(child)
@@ -248,6 +250,8 @@ def _weights(profile: EngineProfile | EvaluationWeights | None) -> EvaluationWei
 def evaluate(
     state: ProgressiveState,
     profile: EngineProfile | EvaluationWeights | None = None,
+    *,
+    max_reach_positions: int | None = None,
 ) -> EvaluationBreakdown:
     """Returns a White-centric progressive-specific heuristic score."""
 
@@ -261,11 +265,21 @@ def evaluate(
 
     white_budget = state.series_number if board.turn == chess.WHITE else state.series_number + 1
     black_budget = state.series_number if board.turn == chess.BLACK else state.series_number + 1
-    white_reach = probe_series_reach(
-        state, chess.WHITE, max_moves=min(2, white_budget), node_limit=128
+    reach_remaining = (
+        256 if max_reach_positions is None else max(0, max_reach_positions)
     )
+    white_reach = probe_series_reach(
+        state,
+        chess.WHITE,
+        max_moves=min(2, white_budget),
+        node_limit=min(128, reach_remaining),
+    )
+    reach_remaining -= white_reach.nodes
     black_reach = probe_series_reach(
-        state, chess.BLACK, max_moves=min(2, black_budget), node_limit=128
+        state,
+        chess.BLACK,
+        max_moves=min(2, black_budget),
+        node_limit=min(128, reach_remaining),
     )
     # A failed bounded probe is unknown, not proof that a checking route does
     # not exist. Scoring one side's found route against the other side's
@@ -330,6 +344,8 @@ def evaluate(
         white_check_distance=white_reach.distance,
         black_check_distance=black_reach.distance,
         reach_complete=white_reach.complete and black_reach.complete,
+        white_reach_nodes=white_reach.nodes,
+        black_reach_nodes=black_reach.nodes,
     )
 
 

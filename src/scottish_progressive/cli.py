@@ -8,7 +8,12 @@ import sys
 import chess
 
 from .database import TheoryDatabase
-from .model import ENGINE_VERSION, RULESET_VERSION, ProgressiveState
+from .model import (
+    ENGINE_SOURCE_FINGERPRINT,
+    ENGINE_VERSION,
+    RULESET_VERSION,
+    ProgressiveState,
+)
 from .notation import format_principal_variation, format_series_turn
 from .profiles import load_profile
 from .rules import GenerationStats, generate_series
@@ -258,6 +263,7 @@ def _serve_web(args: argparse.Namespace) -> int:
         port=args.port,
         open_browser=not args.no_browser,
         database=args.database,
+        public_origin=args.public_origin,
     )
     if args.engine_profile:
         options["engine_profile"] = args.engine_profile
@@ -265,17 +271,31 @@ def _serve_web(args: argparse.Namespace) -> int:
 
 
 def _league_run(args: argparse.Namespace) -> int:
-    from .league import LeagueConfig, LeagueStore, run_league
+    from .league import LeagueConfig, LeagueStore, run_league, runtime_provenance
 
     resume_run_id = args.resume
     if args.continue_latest:
         with LeagueStore(args.database) as store:
             latest = store.latest_run_id()
-            if latest is not None and store.run_row(latest)["status"] in {
-                "running",
-                "needs-resume",
-            }:
-                resume_run_id = latest
+            if latest is not None:
+                latest_row = store.run_row(latest)
+                unfinished = latest_row["status"] in {"running", "needs-resume"}
+                try:
+                    persisted_runtime = json.loads(latest_row["runtime_json"])
+                except (TypeError, json.JSONDecodeError):
+                    persisted_runtime = None
+                compatible = (
+                    latest_row["source_fingerprint"] == ENGINE_SOURCE_FINGERPRINT
+                    and persisted_runtime == runtime_provenance()
+                )
+                if unfinished and compatible:
+                    resume_run_id = latest
+                elif unfinished:
+                    print(
+                        f"latest unfinished run {latest} uses incompatible engine "
+                        "source/runtime; starting a new run",
+                        flush=True,
+                    )
 
     if resume_run_id:
         config = None
@@ -287,13 +307,18 @@ def _league_run(args: argparse.Namespace) -> int:
             generations=args.generations,
             seed=args.seed if args.seed is not None else 20260820,
             preliminary_games_per_pair=args.preliminary_games,
+            fast_preselection_finalists=args.preselection_finalists,
+            fast_preselection_positions=args.preselection_positions,
+            fast_preselection_rollout_steps=args.preselection_rollout_steps,
+            fast_preselection_smoke=False,
             promotion_games=args.promotion_games,
             max_replacement_games=args.max_replacement_games,
             minimum_promotion_games=args.minimum_promotion_games,
             search_depth=args.depth,
-            max_series_per_node=args.max_series,
+            max_series_per_node=args.branch_cap,
             max_generation_positions=args.max_generation_positions,
-            max_game_series=args.max_game_series,
+            max_game_work_positions=args.max_game_work_positions,
+            emergency_max_series=args.emergency_max_series,
             requested_workers=args.workers,
             memory_per_worker_mb=args.memory_per_worker_mb,
             reserve_memory_mb=args.reserve_memory_mb,
@@ -331,6 +356,201 @@ def _league_resources(args: argparse.Namespace) -> int:
         reserve_memory_mb=args.reserve_memory_mb,
     )
     print(json.dumps(budget.as_dict(), indent=2, sort_keys=True))
+    return 0
+
+
+def _train_fast(args: argparse.Namespace) -> int:
+    from .fast_training import FastTrainingConfig, run_fast_preselection
+    from .profiles import baseline_profile, create_population
+
+    champion = (
+        load_profile(args.champion_profile)
+        if args.champion_profile
+        else baseline_profile()
+    )
+    config = (
+        FastTrainingConfig.smoke_config(seed=args.seed)
+        if args.smoke
+        else FastTrainingConfig(
+            position_limit=args.positions,
+            rollout_steps=args.rollout_steps,
+            label_depth_series=2,
+            label_branch_cap=args.branch_cap,
+            label_max_work_positions=args.max_work_positions,
+            finalist_count=args.finalists,
+            seed=args.seed,
+            smoke=False,
+        )
+    )
+    population = create_population(
+        champion,
+        size=args.population,
+        seed=args.seed,
+    )
+    output_dir = Path(args.output_dir).expanduser().resolve()
+    cache_path = output_dir / "training-cache.json"
+    report_path = output_dir / "preselection-report.json"
+    report, resumed = run_fast_preselection(
+        population,
+        champion,
+        cache_path=cache_path,
+        report_path=report_path,
+        config=config,
+        preliminary_games_per_pair=args.preliminary_games,
+        promotion_games=args.promotion_games,
+    )
+    payload = {
+        "mode": "smoke-wiring-only" if config.smoke else "full-corpus",
+        "resumed": resumed,
+        "cache_path": str(cache_path),
+        "report_path": str(report_path),
+        "report": report,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        performance = report["performance"]
+        schedule = report["full_game_schedule"]
+        print(f"Mode: {payload['mode']}")
+        print(
+            "Cached screening: "
+            f"{performance['candidate_iterations_per_second']:.0f} profiles/s "
+            "(position/short-rollout proxy; not WDL or strength evidence)"
+        )
+        print(
+            f"Scheduled full games avoided: {schedule['games_avoided']}; "
+            "full-game promotion gate changed: no"
+        )
+        finalists = report["finalist_profile_ids"]
+        print(
+            "Full-game test shortlist: "
+            f"{', '.join(finalists) if finalists else 'none'}"
+        )
+        print(f"Report: {report_path}")
+    return 0
+
+
+def _strength_match(args: argparse.Namespace) -> int:
+    from .strength import (
+        StrengthMatchConfig,
+        resolve_match_profile,
+        run_strength_match,
+        write_strength_report,
+    )
+
+    candidate = resolve_match_profile(args.candidate)
+    reference = resolve_match_profile(args.reference)
+    config = StrengthMatchConfig(
+        pairs=args.pairs,
+        seed=args.seed,
+        search_depth=args.depth,
+        max_series_per_node=args.branch_cap,
+        max_generation_positions=args.max_generation_positions,
+        max_game_work_positions=args.max_game_work_positions,
+        emergency_max_series=args.emergency_max_series,
+    )
+    progress = None if args.json else (lambda message: print(message, flush=True))
+    report = run_strength_match(
+        candidate,
+        reference,
+        config=config,
+        requested_workers=args.workers,
+        memory_per_worker_mb=args.memory_per_worker_mb,
+        reserve_memory_mb=args.reserve_memory_mb,
+        progress=progress,
+    )
+    output = write_strength_report(report, args.output) if args.output else None
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        summary = report["summary"]
+        game_wdl = summary["candidate_game_wdl"]
+        pair_wdl = summary["candidate_pair_wdl"]
+        failures = summary["technical_failures"]
+        estimate = summary["fixed_suite_performance_difference"]
+        estimate_text = (
+            f"{estimate['value']:+d} descriptive Elo-like points"
+            if estimate["value"] is not None
+            else estimate["status"]
+        )
+        print(f"Candidate: {candidate.name} ({candidate.profile_id})")
+        print(f"Reference: {reference.name} ({reference.profile_id})")
+        print(
+            "Games W/D/L: "
+            f"{game_wdl['wins']}/{game_wdl['draws']}/{game_wdl['losses']} "
+            f"({summary['incomplete_games']} incomplete)"
+        )
+        print(
+            "Pairs W/D/L: "
+            f"{pair_wdl['wins']}/{pair_wdl['draws']}/{pair_wdl['losses']} "
+            f"({summary['incomplete_pairs']} incomplete)"
+        )
+        print(
+            "Technical failures: "
+            f"candidate {failures['candidate']}, reference {failures['reference']}, "
+            f"worker {failures['unattributed_worker_failures']}, "
+            f"match-limit {failures.get('unattributed_match_limit_failures', 0)}"
+        )
+        print(f"Fixed-suite estimate: {estimate_text}")
+        print(report["claim_scope"]["stockfish_comparison"])
+    if output is not None and not args.json:
+        print(f"Report: {output}")
+    return 0
+
+
+def _external_match(args: argparse.Namespace) -> int:
+    from .external import BucephalusSpec
+    from .external_match import (
+        ExternalMatchConfig,
+        run_external_match,
+        write_external_match_report,
+    )
+    from .strength import resolve_match_profile
+
+    local_profile = resolve_match_profile(args.local_profile)
+    spec = BucephalusSpec(
+        Path(args.executable),
+        args.sha256,
+        upstream_commit=args.upstream_commit,
+    )
+    config = ExternalMatchConfig(
+        pairs=args.pairs,
+        seed=args.seed,
+        local_depth_series=args.depth,
+        local_max_series_per_node=args.branch_cap,
+        local_max_generation_positions=args.max_generation_positions,
+        local_max_game_work_positions=args.max_game_work_positions,
+        external_lookahead_micro_plies=args.external_lookahead,
+        external_wall_timeout_seconds=args.external_timeout,
+        emergency_max_series=args.emergency_max_series,
+    )
+    progress = None if args.json else (lambda message: print(message, flush=True))
+    report = run_external_match(
+        local_profile,
+        spec,
+        config=config,
+        requested_workers=args.workers,
+        memory_per_worker_mb=args.memory_per_worker_mb,
+        reserve_memory_mb=args.reserve_memory_mb,
+        progress=progress,
+    )
+    output = (
+        write_external_match_report(report, args.output) if args.output else None
+    )
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        summary = report["summary"]
+        print(f"Local profile: {local_profile.name} ({local_profile.profile_id})")
+        print(
+            "Local games W/D/L: "
+            f"{summary['local_game_wdl']['wins']}/"
+            f"{summary['local_game_wdl']['draws']}/"
+            f"{summary['local_game_wdl']['losses']}"
+        )
+        print(report["claim_scope"]["warning"])
+        if output is not None:
+            print(f"Report: {output}")
     return 0
 
 
@@ -417,8 +637,8 @@ def build_parser() -> argparse.ArgumentParser:
     web.add_argument(
         "--host",
         default="127.0.0.1",
-        choices=("127.0.0.1",),
-        help="loopback interface (remote binding is intentionally disabled)",
+        choices=("127.0.0.1", "0.0.0.0"),
+        help="bind interface; 0.0.0.0 requires --public-origin",
     )
     web.add_argument("--port", type=int, default=8765)
     web.add_argument(
@@ -430,6 +650,13 @@ def build_parser() -> argparse.ArgumentParser:
     web.add_argument(
         "--engine-profile",
         help="promoted champion JSON used as the board's single analysis engine",
+    )
+    web.add_argument(
+        "--public-origin",
+        help=(
+            "explicit https:// host for a bounded public deployment; disables database "
+            "access and lowers compute limits"
+        ),
     )
     web.set_defaults(handler=_serve_web)
 
@@ -458,13 +685,56 @@ def build_parser() -> argparse.ArgumentParser:
     league_run.add_argument("--generations", type=int, default=2)
     league_run.add_argument("--seed", type=int)
     league_run.add_argument("--preliminary-games", type=int, default=10)
+    league_run.add_argument(
+        "--preselection-finalists",
+        type=int,
+        default=3,
+        help="cached-proxy finalists eligible for the unchanged full-game gate",
+    )
+    league_run.add_argument(
+        "--preselection-positions",
+        type=int,
+        default=32,
+        help="versioned Scottish boundary traces cached for fast profile screening",
+    )
+    league_run.add_argument(
+        "--preselection-rollout-steps",
+        type=int,
+        default=2,
+        help="bounded cached positions per trace; proxy points are not WDL",
+    )
     league_run.add_argument("--promotion-games", type=int, default=20)
     league_run.add_argument("--max-replacement-games", type=int, default=40)
     league_run.add_argument("--minimum-promotion-games", type=int, default=20)
     league_run.add_argument("--depth", type=int, default=2)
-    league_run.add_argument("--max-series", type=int, default=32)
-    league_run.add_argument("--max-generation-positions", type=int, default=250000)
-    league_run.add_argument("--max-game-series", type=int, default=12)
+    league_run.add_argument(
+        "--branch-cap",
+        "--max-series",
+        dest="branch_cap",
+        type=int,
+        default=32,
+        help="complete-series candidates retained per search node",
+    )
+    league_run.add_argument(
+        "--max-work-positions-per-search",
+        "--max-generation-positions",
+        dest="max_generation_positions",
+        type=int,
+        default=250000,
+        help="logical work per search across generation, reach, and adjudication",
+    )
+    league_run.add_argument(
+        "--max-game-work-positions",
+        type=int,
+        default=None,
+        help="optional whole-game technical budget; default plays without one",
+    )
+    league_run.add_argument(
+        "--emergency-max-series",
+        type=int,
+        default=None,
+        help="optional technical watchdog; default is unbounded by series number",
+    )
     league_run.add_argument(
         "--workers",
         type=int,
@@ -493,6 +763,129 @@ def build_parser() -> argparse.ArgumentParser:
     league_resources.add_argument("--memory-per-worker-mb", type=int, default=512)
     league_resources.add_argument("--reserve-memory-mb", type=int, default=512)
     league_resources.set_defaults(handler=_league_resources)
+
+    train_fast = subparsers.add_parser(
+        "train-fast",
+        help=(
+            "rank profile mutations through cached Scottish position proxies; "
+            "does not replace full-game promotion"
+        ),
+    )
+    train_fast.add_argument(
+        "output_dir", help="directory for resumable cache and preselection report"
+    )
+    train_fast.add_argument("--champion-profile")
+    train_fast.add_argument("--population", type=int, default=10)
+    train_fast.add_argument("--seed", type=int, default=20260820)
+    train_fast.add_argument("--finalists", type=int, default=3)
+    train_fast.add_argument(
+        "--positions",
+        type=int,
+        default=32,
+        help="full mode requires 30 v4 boundaries plus two tactical anchors",
+    )
+    train_fast.add_argument("--rollout-steps", type=int, default=2)
+    train_fast.add_argument("--branch-cap", type=int, default=8)
+    train_fast.add_argument("--max-work-positions", type=int, default=200000)
+    train_fast.add_argument("--preliminary-games", type=int, default=10)
+    train_fast.add_argument("--promotion-games", type=int, default=20)
+    train_fast.add_argument(
+        "--smoke",
+        action="store_true",
+        help="explicit four-position wiring preset; never strength evidence",
+    )
+    train_fast.add_argument("--json", action="store_true")
+    train_fast.set_defaults(handler=_train_fast)
+
+    strength = subparsers.add_parser(
+        "strength-match",
+        help="compare two profiles on isolated color-swapped fixed-suite pairs",
+    )
+    strength.add_argument(
+        "candidate", help="candidate EngineProfile JSON/envelope, or 'baseline'"
+    )
+    strength.add_argument(
+        "reference", help="reference EngineProfile JSON/envelope, or 'baseline'"
+    )
+    strength.add_argument("--pairs", type=int, default=10)
+    strength.add_argument("--seed", type=int, default=20260820)
+    strength.add_argument("--depth", type=int, default=2)
+    strength.add_argument(
+        "--branch-cap",
+        "--max-series",
+        dest="branch_cap",
+        type=int,
+        default=32,
+        help="complete-series candidates retained per search node",
+    )
+    strength.add_argument(
+        "--max-work-positions-per-search",
+        "--max-generation-positions",
+        dest="max_generation_positions",
+        type=int,
+        default=250000,
+        help="logical work per search across generation, reach, and adjudication",
+    )
+    strength.add_argument(
+        "--max-game-work-positions",
+        type=int,
+        default=5000000,
+        help="whole-match logical work; exhaustion is incomplete '*', never a result",
+    )
+    strength.add_argument(
+        "--emergency-max-series",
+        type=int,
+        default=None,
+        help="optional technical watchdog; default is unbounded by series number",
+    )
+    strength.add_argument(
+        "--workers",
+        type=int,
+        help="requested workers; clamped to detected CPU/RAM envelope and game count",
+    )
+    strength.add_argument("--memory-per-worker-mb", type=int, default=512)
+    strength.add_argument("--reserve-memory-mb", type=int, default=512)
+    strength.add_argument("--output", help="write the complete JSON report atomically")
+    strength.add_argument("--json", action="store_true", help="print complete JSON")
+    strength.set_defaults(handler=_strength_match)
+
+    external_match = subparsers.add_parser(
+        "external-match",
+        help="run an isolated color-swapped match against a pinned Bucephalus binary",
+    )
+    external_match.add_argument(
+        "local_profile", help="local EngineProfile JSON/envelope, or 'baseline'"
+    )
+    external_match.add_argument("executable", help="user-supplied Bucephalus executable")
+    external_match.add_argument(
+        "--sha256", required=True, help="required 64-hex executable fingerprint"
+    )
+    external_match.add_argument("--upstream-commit")
+    external_match.add_argument("--pairs", type=int, default=10)
+    external_match.add_argument("--seed", type=int, default=20260820)
+    external_match.add_argument("--depth", type=int, default=2)
+    external_match.add_argument("--branch-cap", type=int, default=32)
+    external_match.add_argument(
+        "--max-generation-positions", type=int, default=250000
+    )
+    external_match.add_argument(
+        "--max-game-work-positions", type=int, default=5000000
+    )
+    external_match.add_argument(
+        "--external-lookahead", type=int, default=0,
+        help="fixed extra Bucephalus micro-ply depth beyond the series number",
+    )
+    external_match.add_argument(
+        "--external-timeout", type=float, default=10.0,
+        help="wall watchdog per external call; timeout is incomplete, never a result",
+    )
+    external_match.add_argument("--emergency-max-series", type=int, default=18)
+    external_match.add_argument("--workers", type=int)
+    external_match.add_argument("--memory-per-worker-mb", type=int, default=768)
+    external_match.add_argument("--reserve-memory-mb", type=int, default=512)
+    external_match.add_argument("--output")
+    external_match.add_argument("--json", action="store_true")
+    external_match.set_defaults(handler=_external_match)
     return parser
 
 

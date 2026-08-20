@@ -32,6 +32,8 @@ from scottish_progressive.profiles import (
     mutate_profile,
     save_profile,
 )
+from scottish_progressive.model import ProgressiveState
+from scottish_progressive.rules import play_series
 
 
 def _profiles():
@@ -77,7 +79,7 @@ def _pair_rows(
 
 
 def test_opening_suite_has_thirty_unique_legal_recorded_boundaries() -> None:
-    assert OPENING_SUITE_VERSION == "spc-league-boundaries-v3"
+    assert OPENING_SUITE_VERSION == "spc-league-boundaries-v4"
     assert len(OPENING_SUITE) == 30
     assert len({case.case_id for case in OPENING_SUITE}) == 30
     assert len({case.state().position_hash for case in OPENING_SUITE}) == 30
@@ -91,6 +93,18 @@ def test_opening_suite_has_thirty_unique_legal_recorded_boundaries() -> None:
         payload = case.as_dict()
         assert payload["pfen"] == case.state().pfen
         assert payload["position_hash"] == case.state().position_hash
+
+
+def test_published_central_pressure_metadata_matches_canonical_replay() -> None:
+    state = ProgressiveState.initial()
+    state = play_series(state, ("d2d4",)).final_state
+    state = play_series(state, ("d7d5", "g8f6")).final_state
+    state = play_series(state, ("b1c3", "g1f3", "c1g5")).final_state
+    case = next(
+        item for item in OPENING_SUITE if item.case_id == "published-central-pressure"
+    )
+    assert state.pfen == case.state().pfen
+    assert state.quiet_series == case.quiet_series == 1
 
 
 def test_seeded_pair_order_is_reproducible_diverse_and_never_replaced() -> None:
@@ -144,12 +158,23 @@ def test_serious_defaults_share_fixed_limits_and_run_two_generations() -> None:
     assert config.generations == 2
     assert config.promotion_games == 20
     assert config.max_replacement_games == 40
+    assert config.max_game_work_positions is None
+    assert config.emergency_max_series is None
     assert payload["deterministic_match_limits"] == {
         "depth_series": 2,
-        "max_series_per_node": 32,
-        "max_generation_positions": 250000,
+        "branch_cap_complete_series_per_node": 32,
+        "max_work_positions_per_search": 250000,
+        "max_game_work_positions": None,
+        "game_work_definition": (
+            "deterministic logical positions across complete-series generation, "
+            "evaluation reach, and quiet adjudication over the whole game"
+        ),
+        "emergency_max_series": None,
+        "series_number_limit": "unbounded",
         "time_limit_seconds": None,
         "fresh_searcher_each_series": True,
+        "collect_all_root_scores": False,
+        "root_score_mode": "best-only-play-optimized",
         "same_for_every_profile": True,
     }
     assert LeagueConfig.smoke().generations == 1
@@ -212,21 +237,44 @@ def test_pair_evidence_groups_swapped_games_and_tracks_candidate_only() -> None:
     assert evidence.completed_pairs == 10
     assert evidence.candidate_failures == 0
 
-    forfeit = _pair_rows(
+    failure = _pair_rows(
         candidate.profile_id,
         champion.profile_id,
         case_id=OPENING_SUITE[10].case_id,
         pair_index=10,
-        results=("1-0", "0-1"),
+        results=("1-0", "*"),
         reasons=("checkmate", "engine-work-limit"),
         failure_ids=(None, champion.profile_id),
     )
-    candidate_evidence = _pair_evidence(forfeit, candidate.profile_id)
-    assert candidate_evidence.wins == 1
+    candidate_evidence = _pair_evidence(failure, candidate.profile_id)
+    assert candidate_evidence.completed_pairs == 0
+    assert candidate_evidence.wins == 0
     assert candidate_evidence.candidate_failures == 0
 
 
-def test_profile_engine_failure_is_forfeit(monkeypatch) -> None:
+def test_pair_evidence_rejects_case_reuse_within_one_promotion_match() -> None:
+    candidate, champion = _profiles()
+    case_id = OPENING_SUITE[0].case_id
+    rows = _pair_rows(
+        candidate.profile_id,
+        champion.profile_id,
+        case_id=case_id,
+        pair_index=0,
+        results=("1-0", "0-1"),
+    )
+    rows += _pair_rows(
+        candidate.profile_id,
+        champion.profile_id,
+        case_id=case_id,
+        pair_index=1,
+        results=("1-0", "0-1"),
+    )
+
+    with pytest.raises(ValueError, match="duplicate opening case"):
+        _pair_evidence(rows, candidate.profile_id)
+
+
+def test_profile_engine_failure_is_incomplete_not_a_win(monkeypatch) -> None:
     first, second = _profiles()
     job = _paired_jobs(
         run_id="fixture",
@@ -244,12 +292,9 @@ def test_profile_engine_failure_is_forfeit(monkeypatch) -> None:
     monkeypatch.setattr(league_module, "analyze", explode)
     record = league_module._play_game(job)
     failing = first if job.opening.state().board.turn else second
-    winner = second if failing.profile_id == first.profile_id else first
-    assert record.result == (
-        "0-1" if failing.profile_id == job.white_profile.profile_id else "1-0"
-    )
+    assert record.result == "*"
     assert record.engine_failure_profile_id == failing.profile_id
-    assert record.decisive_profile_id == winner.profile_id
+    assert record.decisive_profile_id is None
     assert record.terminal_reason == "engine-exception"
 
 
@@ -261,7 +306,7 @@ def test_profile_engine_failure_is_forfeit(monkeypatch) -> None:
         (False, False, "engine-no-move"),
     ),
 )
-def test_timeout_work_limit_and_no_move_are_profile_forfeits(
+def test_timeout_work_limit_and_no_move_without_a_legal_best_are_incomplete(
     monkeypatch, timed_out: bool, work_limited: bool, reason: str
 ) -> None:
     first, second = _profiles()
@@ -283,7 +328,8 @@ def test_timeout_work_limit_and_no_move_are_profile_forfeits(
     )
     monkeypatch.setattr(league_module, "analyze", lambda *args, **kwargs: incomplete)
     record = league_module._play_game(job)
-    assert record.result in {"1-0", "0-1"}
+    assert record.result == "*"
+    assert record.decisive_profile_id is None
     assert record.terminal_reason == reason
     assert record.engine_failure_profile_id in {
         first.profile_id,
@@ -340,14 +386,72 @@ def test_fitness_ranks_valid_pair_score_not_inconclusive_flag() -> None:
         pair_index=1,
         results=("*", "*"),
         reasons=(
-            "max-series-adjudication-not-proven-draw",
-            "max-series-adjudication-not-proven-draw",
+            "technical-game-work-budget-exhausted",
+            "technical-game-work-budget-exhausted",
         ),
     )
     ranking = _fitness(rows, (first, second))
     assert ranking[0]["profile_id"] == first.profile_id
     assert ranking[0]["score_rate"] == 1.0
     assert ranking[1]["score_rate"] == 0.0
+
+
+def test_fitness_allows_case_reuse_across_different_opponents() -> None:
+    first, second, third = create_population(size=3, seed=505)
+    case_id = OPENING_SUITE[0].case_id
+    rows = _pair_rows(
+        first.profile_id,
+        second.profile_id,
+        case_id=case_id,
+        pair_index=0,
+        results=("1-0", "0-1"),
+    )
+    rows += _pair_rows(
+        first.profile_id,
+        third.profile_id,
+        case_id=case_id,
+        pair_index=0,
+        results=("1-0", "0-1"),
+    )
+    for row in rows:
+        row["stage"] = "preliminary-g1"
+
+    ranking = _fitness(rows, (first, second, third))
+    by_id = {item["profile_id"]: item for item in ranking}
+
+    assert by_id[first.profile_id]["pairs"] == 2
+    assert by_id[first.profile_id]["wins"] == 2
+    assert by_id[first.profile_id]["games"] == 4
+    assert by_id[first.profile_id]["mate_efficiency"]["balanced_pair_games"] == 4
+    assert by_id[second.profile_id]["losses"] == 1
+    assert by_id[second.profile_id]["mate_efficiency"]["balanced_pair_games"] == 2
+    assert by_id[third.profile_id]["losses"] == 1
+    assert by_id[third.profile_id]["mate_efficiency"]["balanced_pair_games"] == 2
+
+
+def test_equal_pair_score_uses_balanced_checkmate_efficiency_only_as_tiebreak() -> None:
+    first, second = _profiles()
+    rows = _pair_rows(
+        first.profile_id,
+        second.profile_id,
+        case_id=OPENING_SUITE[0].case_id,
+        pair_index=0,
+        results=("1-0", "1-0"),
+    )
+    rows[0]["decisive_profile_id"] = first.profile_id
+    rows[0]["series_played"] = 2
+    rows[1]["decisive_profile_id"] = second.profile_id
+    rows[1]["series_played"] = 5
+    ranking = _fitness(rows, (first, second))
+    assert ranking[0]["profile_id"] == first.profile_id
+    assert ranking[0]["score_rate"] == ranking[1]["score_rate"] == 0.5
+    assert ranking[0]["mate_efficiency"] == {
+        "balanced_pair_games": 2,
+        "checkmate_wins": 1,
+        "average_winning_mate_series": 2.0,
+        "checkmate_losses": 1,
+        "average_losing_resistance_series": 5.0,
+    }
 
 
 def test_next_population_contains_champion_partner_crossover() -> None:

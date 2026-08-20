@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from enum import StrEnum
 import time
@@ -27,6 +28,17 @@ from .rules import (
 
 MATE_SCORE = 1_000_000
 UNKNOWN_PROOF_BOUNDS = (-1, 1)
+# The ten-quiet-series mate exception is a proof search inside the ordinary
+# series search.  It must have a search-wide ceiling of its own: otherwise a
+# wide node can start one 100k-node probe per child without any of that work
+# appearing in ``max_generation_positions``.  Exhaustion is conservative --
+# it yields manual-proof-required, never a fabricated draw.
+QUIET_ADJUDICATION_POSITION_LIMIT = 4_096
+# Complete progressive series are far costlier to generate than orthodox
+# single moves. Iterative deepening revisits the same boundary frontiers, but
+# retaining every frontier would multiply memory across league workers. Bound
+# reuse by the number of retained SeriesResult objects, not by node count.
+SERIES_GENERATION_CACHE_CAPACITY = 4_096
 
 
 def _proof_from_bounds(bounds: tuple[int, int]) -> str | None:
@@ -47,6 +59,7 @@ class SearchLimits:
     max_series_per_node: int | None = None
     time_limit_seconds: float | None = None
     max_generation_positions: int | None = None
+    collect_all_root_scores: bool = True
 
     def __post_init__(self) -> None:
         if self.depth_series < 1:
@@ -71,13 +84,37 @@ class SearchStats:
     intra_series_transpositions: int = 0
     tt_hits: int = 0
     alpha_beta_cutoffs: int = 0
+    root_bound_candidates: int = 0
     branch_caps: int = 0
+    series_generation_positions: int = 0
+    frontier_score_positions: int = 0
+    static_evaluation_positions: int = 0
+    evaluation_reach_positions: int = 0
+    incomplete_reach_evaluations: int = 0
     generation_positions: int = 0
     frontier_prunes: int = 0
     frontier_states_pruned: int = 0
     frontier_paths_pruned: int = 0
     peak_frontier_states: int = 0
     generation_work_limit_hits: int = 0
+    quiet_adjudication_positions: int = 0
+    quiet_adjudication_cache_hits: int = 0
+    quiet_adjudication_limit_hits: int = 0
+    series_generation_cache_hits: int = 0
+    series_generation_cache_evictions: int = 0
+    series_generation_cache_peak: int = 0
+
+    @property
+    def work_positions(self) -> int:
+        """Unified deterministic work counter.
+
+        ``generation_positions`` remains the stored compatibility name used
+        by existing API/database consumers. New code should prefer this alias;
+        both include series generation, frontier scoring, static evaluation,
+        evaluation reach, and quiet-proof work.
+        """
+
+        return self.generation_positions
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +153,7 @@ class SearchResult:
     required_prefix: tuple[str, ...] = ()
     work_limit_reached: bool = False
     max_generation_positions: int | None = None
+    root_scores_complete: bool = True
 
     @property
     def forced(self) -> str | None:
@@ -201,31 +239,120 @@ class SeriesSearcher:
         self.stats = SearchStats()
         self._tt: dict[tuple[tuple[int, str, int, int], int], _TTEntry] = {}
         self._eval_cache: dict[tuple[int, str, int, int], EvaluationBreakdown] = {}
+        self._quiet_adjudication_cache: dict[
+            tuple[int, str, int, int], str | None
+        ] = {}
+        self._series_generation_cache: OrderedDict[
+            tuple[tuple[int, str, int, int], tuple[str, ...], int],
+            tuple[SeriesResult, ...],
+        ] = OrderedDict()
+        self._series_generation_cache_weight = 0
         self._deadline: float | None = None
         self._selective = False
+        self._quiet_work_limit_reached = False
+        self._evaluation_work_limit_reached = False
+        self._root_scores_complete = True
 
     def _check_deadline(self) -> None:
         if self._deadline is not None and time.perf_counter() >= self._deadline:
             raise _Timeout
 
     def _quiet_adjudication(self, state: ProgressiveState) -> str | None:
+        if not state.quiet_draw_pending:
+            return None
+        self._check_deadline()
+        key = state.transposition_key
+        if key in self._quiet_adjudication_cache:
+            self.stats.quiet_adjudication_cache_hits += 1
+            return self._quiet_adjudication_cache[key]
+
+        cancellation: str | None = None
+
+        def should_stop() -> bool:
+            nonlocal cancellation
+            if self._deadline is not None and time.perf_counter() >= self._deadline:
+                cancellation = "time"
+                return True
+            if (
+                self.limits.max_generation_positions is not None
+                and self.stats.generation_positions
+                >= self.limits.max_generation_positions
+            ):
+                cancellation = "work"
+                return True
+            if (
+                self.stats.quiet_adjudication_positions
+                >= QUIET_ADJUDICATION_POSITION_LIMIT
+            ):
+                cancellation = "quiet-proof"
+                return True
+            # has_mating_series invokes this immediately before visiting one
+            # candidate. Charge that candidate to the same deterministic work
+            # counter used by complete-series generation.
+            self.stats.quiet_adjudication_positions += 1
+            self.stats.generation_positions += 1
+            return False
+
         try:
-            return quiet_adjudication_status(
-                state,
-                should_stop=(
-                    (lambda: time.perf_counter() >= self._deadline)
-                    if self._deadline is not None
-                    else None
-                ),
-            )
+            status = quiet_adjudication_status(state, should_stop=should_stop)
         except GenerationCancelled as error:
-            raise _Timeout from error
+            if cancellation == "time":
+                raise _Timeout from error
+            self.stats.quiet_adjudication_limit_hits += 1
+            if cancellation == "work":
+                self.stats.generation_work_limit_hits += 1
+                self._quiet_work_limit_reached = True
+            # An incomplete mating-series probe is unknown. The rules require
+            # human/proof adjudication here, so abort ordinary minimax without
+            # assigning a heuristic draw score.
+            status = "manual-proof-required"
+        self._quiet_adjudication_cache[key] = status
+        return status
 
     def _evaluate(self, state: ProgressiveState) -> EvaluationBreakdown:
         key = state.transposition_key
         cached = self._eval_cache.get(key)
         if cached is None:
-            cached = evaluate(state, self.profile)
+            if (
+                self.limits.max_generation_positions is not None
+                and self.stats.generation_positions
+                >= self.limits.max_generation_positions
+            ):
+                if not self._evaluation_work_limit_reached:
+                    self.stats.generation_work_limit_hits += 1
+                self._evaluation_work_limit_reached = True
+                self._selective = True
+                raise _WorkLimit
+            self.stats.static_evaluation_positions += 1
+            self.stats.generation_positions += 1
+            remaining: int | None = None
+            if self.limits.max_generation_positions is not None:
+                remaining = max(
+                    0,
+                    self.limits.max_generation_positions
+                    - self.stats.generation_positions,
+                )
+            cached = evaluate(
+                state,
+                self.profile,
+                max_reach_positions=remaining,
+            )
+            reach_positions = (
+                cached.white_reach_nodes + cached.black_reach_nodes
+            )
+            self.stats.evaluation_reach_positions += reach_positions
+            self.stats.generation_positions += reach_positions
+            if not cached.reach_complete:
+                self.stats.incomplete_reach_evaluations += 1
+                if (
+                    remaining is not None
+                    and remaining < 256
+                    and reach_positions >= remaining
+                ):
+                    if not self._evaluation_work_limit_reached:
+                        self.stats.generation_work_limit_hits += 1
+                    self._evaluation_work_limit_reached = True
+                    self._selective = True
             self._eval_cache[key] = cached
             self.stats.leaf_evaluations += 1
         return cached
@@ -244,16 +371,14 @@ class SeriesSearcher:
                 - self.stats.generation_positions
             )
             if remaining_positions <= 0:
-                self.stats.generation_work_limit_hits += 1
+                if not (
+                    self._quiet_work_limit_reached
+                    or self._evaluation_work_limit_reached
+                ):
+                    self.stats.generation_work_limit_hits += 1
                 raise _WorkLimit
 
-        score_cache: dict[str, int] = {}
-
         def frontier_score(board: chess.Board) -> int:
-            key = board.fen(en_passant="fen")
-            cached = score_cache.get(key)
-            if cached is not None:
-                return cached
             partial = ProgressiveState(
                 board,
                 state.series_number,
@@ -282,7 +407,6 @@ class SeriesSearcher:
                 + captures * 100
             )
             score += tactical if board.turn == chess.WHITE else -tactical
-            score_cache[key] = score
             return score
 
         try:
@@ -311,7 +435,14 @@ class SeriesSearcher:
             self.stats.generated_raw_series += generation.raw_series
             self.stats.generated_unique_series += generation.unique_series
             self.stats.intra_series_transpositions += generation.transpositions_merged
-            self.stats.generation_positions += generation.positions_visited
+            self.stats.series_generation_positions += generation.positions_visited
+            self.stats.frontier_score_positions += (
+                generation.frontier_score_positions
+            )
+            self.stats.generation_positions += (
+                generation.positions_visited
+                + generation.frontier_score_positions
+            )
             self.stats.frontier_prunes += generation.frontier_prunes
             self.stats.frontier_states_pruned += generation.frontier_states_pruned
             self.stats.frontier_paths_pruned += generation.frontier_paths_pruned
@@ -416,6 +547,53 @@ class SeriesSearcher:
             return ordered[:cap]
         return ordered
 
+    def _ordered_generated(
+        self,
+        state: ProgressiveState,
+        *,
+        ply_from_root: int,
+        required_prefix: tuple[str, ...] = (),
+    ) -> list[SeriesResult]:
+        """Returns one deterministic capped frontier with bounded reuse.
+
+        The ply is part of the key because terminal mate-distance ordering is
+        expressed relative to the root. The state itself fixes the mover and
+        every other generation input; a root prefix is included verbatim so
+        fixed-prefix analysis cannot alias an unconstrained frontier.
+        """
+
+        self._check_deadline()
+        key = (state.transposition_key, required_prefix, ply_from_root)
+        cached = self._series_generation_cache.get(key)
+        if cached is not None:
+            self._series_generation_cache.move_to_end(key)
+            self.stats.series_generation_cache_hits += 1
+            return list(cached)
+
+        ordered = self._ordered(
+            self._generate(state, required_prefix=required_prefix),
+            state.board.turn,
+            ply_from_root,
+        )
+        weight = max(1, len(ordered))
+        if weight > SERIES_GENERATION_CACHE_CAPACITY:
+            return ordered
+        while (
+            self._series_generation_cache
+            and self._series_generation_cache_weight + weight
+            > SERIES_GENERATION_CACHE_CAPACITY
+        ):
+            _, evicted = self._series_generation_cache.popitem(last=False)
+            self._series_generation_cache_weight -= max(1, len(evicted))
+            self.stats.series_generation_cache_evictions += 1
+        self._series_generation_cache[key] = tuple(ordered)
+        self._series_generation_cache_weight += weight
+        self.stats.series_generation_cache_peak = max(
+            self.stats.series_generation_cache_peak,
+            self._series_generation_cache_weight,
+        )
+        return ordered
+
     def _minimax(
         self,
         state: ProgressiveState,
@@ -449,7 +627,10 @@ class SeriesSearcher:
                 return entry.score, entry.pv, entry.proof_bounds
 
         mover = state.board.turn
-        series = self._ordered(self._generate(state), mover, ply_from_root + 1)
+        series = self._ordered_generated(
+            state,
+            ply_from_root=ply_from_root + 1,
+        )
         if not series:
             return 0, (), UNKNOWN_PROOF_BOUNDS
 
@@ -527,32 +708,58 @@ class SeriesSearcher:
         str | None,
     ]:
         mover = state.board.turn
-        series = self._ordered(
-            self._generate(state, required_prefix=required_prefix),
-            mover,
-            1,
+        series = self._ordered_generated(
+            state,
+            ply_from_root=1,
+            required_prefix=required_prefix,
         )
         scored: list[ScoredSeries] = []
+        root_alpha = -MATE_SCORE * 2
+        root_beta = MATE_SCORE * 2
         for result in series:
             try:
                 self._check_deadline()
                 terminal = self._terminal_score(result, mover, 1)
                 if terminal is None:
+                    child_alpha = (
+                        -MATE_SCORE * 2
+                        if self.limits.collect_all_root_scores
+                        else root_alpha
+                    )
+                    child_beta = (
+                        MATE_SCORE * 2
+                        if self.limits.collect_all_root_scores
+                        else root_beta
+                    )
                     score, child_pv, proof_bounds = self._minimax(
                         result.final_state,
                         depth - 1,
-                        -MATE_SCORE * 2,
-                        MATE_SCORE * 2,
+                        child_alpha,
+                        child_beta,
                         1,
+                    )
+                    score_is_exact = (
+                        self.limits.collect_all_root_scores
+                        or child_alpha < score < child_beta
                     )
                 else:
                     score, child_pv = terminal, ()
                     proof_bounds = self._terminal_proof_bounds(result, mover)
+                    score_is_exact = True
             except (_Timeout, _WorkLimit) as error:
                 if scored:
                     raise _RootInterrupted(tuple(scored), error) from error
                 raise
-            scored.append(ScoredSeries(result, score, child_pv, proof_bounds))
+            if score_is_exact:
+                scored.append(ScoredSeries(result, score, child_pv, proof_bounds))
+            else:
+                self.stats.root_bound_candidates += 1
+
+            if not self.limits.collect_all_root_scores:
+                if mover == chess.WHITE:
+                    root_alpha = max(root_alpha, score)
+                else:
+                    root_beta = min(root_beta, score)
             if (
                 mover == chess.WHITE
                 and score == MATE_SCORE - 1
@@ -560,6 +767,7 @@ class SeriesSearcher:
                 and score == -MATE_SCORE + 1
             ):
                 break
+        self._root_scores_complete = len(scored) == len(series)
         scored.sort(
             key=lambda item: (
                 -item.score if mover == chess.WHITE else item.score,
@@ -614,6 +822,10 @@ class SeriesSearcher:
                 engine_profile_id=self.profile.profile_id,
                 engine_profile_name=self.profile.name,
                 required_prefix=required_prefix,
+                work_limit_reached=(
+                    self._quiet_work_limit_reached
+                    or self._evaluation_work_limit_reached
+                ),
                 max_generation_positions=self.limits.max_generation_positions,
             )
         if adjudication in {
@@ -643,6 +855,10 @@ class SeriesSearcher:
                 engine_profile_id=self.profile.profile_id,
                 engine_profile_name=self.profile.name,
                 required_prefix=required_prefix,
+                work_limit_reached=(
+                    self._quiet_work_limit_reached
+                    or self._evaluation_work_limit_reached
+                ),
                 max_generation_positions=self.limits.max_generation_positions,
             )
 
@@ -665,6 +881,7 @@ class SeriesSearcher:
                 work_limit_reached = isinstance(interrupted.cause, _WorkLimit)
                 self._selective = True
                 if completed_depth == 0:
+                    self._root_scores_complete = False
                     mover = state.board.turn
                     partial = tuple(
                         sorted(
@@ -684,10 +901,14 @@ class SeriesSearcher:
             except _Timeout:
                 timed_out = True
                 self._selective = True
+                if completed_depth == 0:
+                    self._root_scores_complete = False
                 break
             except _WorkLimit:
                 work_limit_reached = True
                 self._selective = True
+                if completed_depth == 0:
+                    self._root_scores_complete = False
                 break
             except _AdjudicationPending:
                 return SearchResult(
@@ -709,6 +930,10 @@ class SeriesSearcher:
                     engine_profile_id=self.profile.profile_id,
                     engine_profile_name=self.profile.name,
                     required_prefix=required_prefix,
+                    work_limit_reached=(
+                        self._quiet_work_limit_reached
+                        or self._evaluation_work_limit_reached
+                    ),
                     max_generation_positions=self.limits.max_generation_positions,
                 )
             best_score = score
@@ -718,6 +943,11 @@ class SeriesSearcher:
             completed_depth = depth
 
         elapsed = time.perf_counter() - started
+        work_limit_reached = (
+            work_limit_reached
+            or self._quiet_work_limit_reached
+            or self._evaluation_work_limit_reached
+        )
         return SearchResult(
             score=best_score,
             best_series=best_pv[0] if best_pv else None,
@@ -739,6 +969,7 @@ class SeriesSearcher:
             required_prefix=required_prefix,
             work_limit_reached=work_limit_reached,
             max_generation_positions=self.limits.max_generation_positions,
+            root_scores_complete=self._root_scores_complete,
         )
 
 

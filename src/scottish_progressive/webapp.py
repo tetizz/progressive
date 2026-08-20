@@ -46,6 +46,11 @@ MAX_SERIES_NUMBER = 512
 DEFAULT_GENERATION_POSITIONS = 500_000
 MAX_GENERATION_POSITIONS = 5_000_000
 
+PUBLIC_MAX_ANALYSIS_SECONDS = 5.0
+PUBLIC_MAX_SERIES_CAP = 96
+PUBLIC_MAX_ANALYSIS_DEPTH = 4
+PUBLIC_MAX_GENERATION_POSITIONS = 250_000
+
 REPORT_FILES = {
     "initial_ranking": "initial-opening-ranking.json",
     "selective_deepening": "selective-opening-deepening.json",
@@ -70,12 +75,41 @@ class APIError(Exception):
 
 
 @dataclass(frozen=True, slots=True)
+class AnalysisRequestLimits:
+    default_seconds: float = DEFAULT_ANALYSIS_SECONDS
+    maximum_seconds: float = MAX_ANALYSIS_SECONDS
+    default_max_series: int = DEFAULT_MAX_SERIES
+    maximum_max_series: int = MAX_SERIES_CAP
+    maximum_depth: int = MAX_ANALYSIS_DEPTH
+    default_generation_positions: int = DEFAULT_GENERATION_POSITIONS
+    maximum_generation_positions: int = MAX_GENERATION_POSITIONS
+    maximum_alternatives: int = MAX_ALTERNATIVES
+
+
+LOCAL_ANALYSIS_LIMITS = AnalysisRequestLimits()
+PUBLIC_ANALYSIS_LIMITS = AnalysisRequestLimits(
+    default_seconds=2.0,
+    maximum_seconds=PUBLIC_MAX_ANALYSIS_SECONDS,
+    default_max_series=32,
+    maximum_max_series=PUBLIC_MAX_SERIES_CAP,
+    maximum_depth=PUBLIC_MAX_ANALYSIS_DEPTH,
+    default_generation_positions=100_000,
+    maximum_generation_positions=PUBLIC_MAX_GENERATION_POSITIONS,
+    maximum_alternatives=4,
+)
+
+
+@dataclass(frozen=True, slots=True)
 class WebConfig:
     static_root: Path
     reports_dir: Path
     database_path: Path | None = None
     engine_profile: EngineProfile = field(default_factory=baseline_profile)
     request_limit: int = MAX_REQUEST_BYTES
+    public_origin: str | None = None
+    allowed_authority: str | None = None
+    analysis_limits: AnalysisRequestLimits = LOCAL_ANALYSIS_LIMITS
+    analysis_concurrency: int = 2
 
 
 class AnalysisBoardServer(ThreadingHTTPServer):
@@ -91,7 +125,7 @@ class AnalysisBoardServer(ThreadingHTTPServer):
         self.config = config
         # Keep a local analysis request from spawning an unbounded collection
         # of CPU-heavy searches through the threaded HTTP server.
-        self.analysis_gate = threading.BoundedSemaphore(2)
+        self.analysis_gate = threading.BoundedSemaphore(config.analysis_concurrency)
         super().__init__(server_address, handler)
 
 
@@ -100,10 +134,35 @@ def _default_static_root() -> Path:
 
 
 def _default_reports_dir() -> Path:
-    source_reports = Path(__file__).resolve().parents[2] / "reports"
-    if source_reports.is_dir():
+    module_path = Path(__file__).resolve()
+    source_root = module_path.parents[2]
+    source_reports = source_root / "reports"
+    source_module = source_root / "src" / "scottish_progressive" / "webapp.py"
+    if source_module.resolve() == module_path and source_reports.is_dir():
         return source_reports
+    packaged_reports = module_path.parent / "reports"
+    if packaged_reports.is_dir():
+        return packaged_reports
     return Path.cwd() / "reports"
+
+
+def _normalize_public_origin(value: str) -> tuple[str, str]:
+    """Return a canonical public origin and its HTTP authority."""
+    parsed = urlsplit(value.strip())
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "public_origin must be an https origin without credentials, path, query, or fragment"
+        )
+    authority = parsed.netloc.lower()
+    return f"{parsed.scheme.lower()}://{authority}", authority
 
 
 def ui_source_fingerprint(static_root: Path) -> str:
@@ -613,6 +672,7 @@ def analyze_payload(
     *,
     database_path: Path | None = None,
     engine_profile: EngineProfile | None = None,
+    request_limits: AnalysisRequestLimits = LOCAL_ANALYSIS_LIMITS,
 ) -> dict[str, object]:
     boundary = state_from_payload(payload)
     prefix = _prefix_from_payload(payload)
@@ -650,42 +710,42 @@ def analyze_payload(
         payload.get("depth", 2),
         "depth",
         minimum=1,
-        maximum=MAX_ANALYSIS_DEPTH,
+        maximum=request_limits.maximum_depth,
     )
-    max_series_value = payload.get("max_series", DEFAULT_MAX_SERIES)
+    max_series_value = payload.get("max_series", request_limits.default_max_series)
     if max_series_value is None:
-        max_series_value = DEFAULT_MAX_SERIES
+        max_series_value = request_limits.default_max_series
     max_series = _require_int(
         max_series_value,
         "max_series",
         minimum=1,
-        maximum=MAX_SERIES_CAP,
+        maximum=request_limits.maximum_max_series,
     )
-    time_value = payload.get("time_limit", DEFAULT_ANALYSIS_SECONDS)
+    time_value = payload.get("time_limit", request_limits.default_seconds)
     if time_value is None:
-        time_value = DEFAULT_ANALYSIS_SECONDS
+        time_value = request_limits.default_seconds
     time_limit = _require_number(
         time_value,
         "time_limit",
         minimum=0.01,
-        maximum=MAX_ANALYSIS_SECONDS,
+        maximum=request_limits.maximum_seconds,
     )
     alternatives = _require_int(
-        payload.get("alternatives", 8),
+        payload.get("alternatives", min(8, request_limits.maximum_alternatives)),
         "alternatives",
         minimum=0,
-        maximum=MAX_ALTERNATIVES,
+        maximum=request_limits.maximum_alternatives,
     )
     generation_value = payload.get(
-        "max_generation_positions", DEFAULT_GENERATION_POSITIONS
+        "max_generation_positions", request_limits.default_generation_positions
     )
     if generation_value is None:
-        generation_value = DEFAULT_GENERATION_POSITIONS
+        generation_value = request_limits.default_generation_positions
     max_generation_positions = _require_int(
         generation_value,
         "max_generation_positions",
         minimum=1_000,
-        maximum=MAX_GENERATION_POSITIONS,
+        maximum=request_limits.maximum_generation_positions,
     )
     rate_move = payload.get("rate_move", False)
     if not isinstance(rate_move, bool):
@@ -840,20 +900,22 @@ class AnalysisBoardHandler(BaseHTTPRequestHandler):
 
     def _validate_local_request(self, *, require_same_origin: bool = False) -> None:
         bound_host, bound_port = self.app_server.server_address[:2]
-        expected_authority = f"{bound_host}:{bound_port}"
-        if self.headers.get("Host", "").strip() != expected_authority:
+        config = self.app_server.config
+        expected_authority = config.allowed_authority or f"{bound_host}:{bound_port}"
+        if self.headers.get("Host", "").strip().lower() != expected_authority.lower():
             raise APIError(
                 403,
                 "invalid-host",
-                "request Host does not match this local analysis board",
+                "request Host does not match this analysis board",
             )
         if require_same_origin:
             origin = self.headers.get("Origin")
-            if origin is not None and origin.rstrip("/") != f"http://{expected_authority}":
+            expected_origin = config.public_origin or f"http://{expected_authority}"
+            if origin is not None and origin.rstrip("/").lower() != expected_origin.lower():
                 raise APIError(
                     403,
                     "invalid-origin",
-                    "request Origin does not match this local analysis board",
+                    "request Origin does not match this analysis board",
                 )
 
     def _read_json(self) -> dict[str, object]:
@@ -895,6 +957,7 @@ class AnalysisBoardHandler(BaseHTTPRequestHandler):
             self._validate_local_request()
             path = self._route_path()
             if path == "/api/health":
+                limits = self.app_server.config.analysis_limits
                 self._write_json(
                     {
                         "ok": True,
@@ -906,13 +969,20 @@ class AnalysisBoardHandler(BaseHTTPRequestHandler):
                         "ruleset_version": RULESET_VERSION,
                         "engine_profile_id": self.app_server.config.engine_profile.profile_id,
                         "engine_profile_name": self.app_server.config.engine_profile.name,
+                        "deployment_mode": (
+                            "public-bounded"
+                            if self.app_server.config.public_origin is not None
+                            else "local"
+                        ),
                         "analysis_limits": {
-                            "default_seconds": DEFAULT_ANALYSIS_SECONDS,
-                            "maximum_seconds": MAX_ANALYSIS_SECONDS,
-                            "default_max_series": DEFAULT_MAX_SERIES,
-                            "maximum_depth": MAX_ANALYSIS_DEPTH,
-                            "default_generation_positions": DEFAULT_GENERATION_POSITIONS,
-                            "maximum_generation_positions": MAX_GENERATION_POSITIONS,
+                            "default_seconds": limits.default_seconds,
+                            "maximum_seconds": limits.maximum_seconds,
+                            "default_max_series": limits.default_max_series,
+                            "maximum_max_series": limits.maximum_max_series,
+                            "maximum_depth": limits.maximum_depth,
+                            "default_generation_positions": limits.default_generation_positions,
+                            "maximum_generation_positions": limits.maximum_generation_positions,
+                            "maximum_alternatives": limits.maximum_alternatives,
                         },
                         "database_configured": self.app_server.config.database_path
                         is not None,
@@ -955,6 +1025,7 @@ class AnalysisBoardHandler(BaseHTTPRequestHandler):
                     payload,
                     database_path=self.app_server.config.database_path,
                     engine_profile=self.app_server.config.engine_profile,
+                    request_limits=self.app_server.config.analysis_limits,
                 )
             finally:
                 self.app_server.analysis_gate.release()
@@ -1023,9 +1094,19 @@ def create_server(
     static_root: str | Path | None = None,
     reports_dir: str | Path | None = None,
     request_limit: int = MAX_REQUEST_BYTES,
+    public_origin: str | None = None,
 ) -> AnalysisBoardServer:
-    if host != "127.0.0.1":
-        raise ValueError("analysis board is local-only; host must be 127.0.0.1")
+    normalized_origin: str | None = None
+    allowed_authority: str | None = None
+    if public_origin is None:
+        if host != "127.0.0.1":
+            raise ValueError("analysis board is local-only unless public_origin is configured")
+    else:
+        if host not in {"127.0.0.1", "0.0.0.0"}:
+            raise ValueError("public analysis board host must be 0.0.0.0 or 127.0.0.1")
+        if database is not None:
+            raise ValueError("public analysis board cannot expose a SQLite database")
+        normalized_origin, allowed_authority = _normalize_public_origin(public_origin)
     if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
         raise ValueError("port must be between 0 and 65535")
     if request_limit < 1024:
@@ -1044,7 +1125,17 @@ def create_server(
         reports_dir=(Path(reports_dir).resolve() if reports_dir else _default_reports_dir()),
         database_path=database_path,
         engine_profile=configured_profile,
-        request_limit=request_limit,
+        request_limit=(
+            min(request_limit, 64 * 1024)
+            if normalized_origin is not None
+            else request_limit
+        ),
+        public_origin=normalized_origin,
+        allowed_authority=allowed_authority,
+        analysis_limits=(
+            PUBLIC_ANALYSIS_LIMITS if normalized_origin is not None else LOCAL_ANALYSIS_LIMITS
+        ),
+        analysis_concurrency=1 if normalized_origin is not None else 2,
     )
     if database_path is not None:
         try:
@@ -1065,13 +1156,22 @@ def serve(
     open_browser: bool = True,
     database: str | Path | None = None,
     engine_profile: EngineProfile | str | Path | None = None,
+    public_origin: str | None = None,
 ) -> int:
     server = create_server(
-        host, port, database=database, engine_profile=engine_profile
+        host,
+        port,
+        database=database,
+        engine_profile=engine_profile,
+        public_origin=public_origin,
     )
     bound_host, bound_port = server.server_address[:2]
     display_host = f"[{bound_host}]" if ":" in bound_host else bound_host
-    url = f"http://{display_host}:{bound_port}/"
+    url = (
+        public_origin.rstrip("/") + "/"
+        if public_origin
+        else f"http://{display_host}:{bound_port}/"
+    )
     print(f"Scottish Progressive analysis board: {url}")
     print("Press Ctrl+C to stop.")
     if open_browser:

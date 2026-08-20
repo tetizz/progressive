@@ -16,6 +16,10 @@ from scottish_progressive.model import ProgressiveState
 from scottish_progressive.webapp import (
     APIError,
     MAX_ANALYSIS_SECONDS,
+    PUBLIC_ANALYSIS_LIMITS,
+    PUBLIC_MAX_ANALYSIS_DEPTH,
+    PUBLIC_MAX_ANALYSIS_SECONDS,
+    PUBLIC_MAX_GENERATION_POSITIONS,
     analyze_payload,
     create_server,
     inspect_prefix,
@@ -442,6 +446,7 @@ def test_web_cli_defaults_to_loopback_and_can_disable_browser(monkeypatch) -> No
         "port": 9012,
         "open_browser": False,
         "database": None,
+        "public_origin": None,
     }
 
 
@@ -451,6 +456,137 @@ def test_server_rejects_non_loopback_binding(tmp_path: Path) -> None:
     (static / "index.html").write_text("board", encoding="utf-8")
     with pytest.raises(ValueError, match="local-only"):
         create_server("0.0.0.0", 0, static_root=static)
+
+
+def test_public_server_requires_explicit_origin_and_enforces_bounded_mode(
+    tmp_path: Path,
+) -> None:
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "index.html").write_text("board", encoding="utf-8")
+    with pytest.raises(ValueError, match="https origin"):
+        create_server(
+            "127.0.0.1",
+            0,
+            static_root=static,
+            public_origin="http://progressive.example",
+        )
+    with pytest.raises(ValueError, match="cannot expose a SQLite"):
+        create_server(
+            "127.0.0.1",
+            0,
+            static_root=static,
+            public_origin="https://progressive.example",
+            database=tmp_path / "theory.sqlite3",
+        )
+
+    server = create_server(
+        "127.0.0.1",
+        0,
+        static_root=static,
+        reports_dir=tmp_path,
+        public_origin="https://progressive.example",
+    )
+    assert server.config.public_origin == "https://progressive.example"
+    assert server.config.allowed_authority == "progressive.example"
+    assert server.config.database_path is None
+    assert server.config.analysis_concurrency == 1
+    assert server.config.request_limit == 64 * 1024
+    assert server.config.analysis_limits.maximum_seconds == PUBLIC_MAX_ANALYSIS_SECONDS
+    assert server.config.analysis_limits.maximum_depth == PUBLIC_MAX_ANALYSIS_DEPTH
+    assert (
+        server.config.analysis_limits.maximum_generation_positions
+        == PUBLIC_MAX_GENERATION_POSITIONS
+    )
+    server.server_close()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("depth", PUBLIC_MAX_ANALYSIS_DEPTH + 1),
+        ("time_limit", PUBLIC_MAX_ANALYSIS_SECONDS + 0.01),
+        ("max_generation_positions", PUBLIC_MAX_GENERATION_POSITIONS + 1),
+    ],
+)
+def test_public_analysis_rejects_limits_above_the_hosted_envelope(
+    field: str, value: int | float
+) -> None:
+    payload: dict[str, object] = {
+        "fen": chess.STARTING_FEN,
+        "series": 1,
+        "depth": 1,
+        "time_limit": 0.1,
+        "max_generation_positions": 1_000,
+    }
+    payload[field] = value
+
+    with pytest.raises(APIError) as denied:
+        analyze_payload(payload, request_limits=PUBLIC_ANALYSIS_LIMITS)
+
+    assert denied.value.status == 422
+
+
+def test_public_server_validates_host_origin_and_reports_public_limits(
+    tmp_path: Path,
+) -> None:
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "index.html").write_text("board", encoding="utf-8")
+    server = create_server(
+        "127.0.0.1",
+        0,
+        static_root=static,
+        reports_dir=tmp_path,
+        public_origin="https://progressive.example",
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        health_request = Request(
+            f"{base}/api/health", headers={"Host": "progressive.example"}
+        )
+        with urlopen(health_request, timeout=3) as response:
+            health = json.loads(response.read())
+        assert health["deployment_mode"] == "public-bounded"
+        assert health["database_configured"] is False
+        assert health["analysis_limits"]["maximum_seconds"] == PUBLIC_MAX_ANALYSIS_SECONDS
+        assert health["analysis_limits"]["maximum_depth"] == PUBLIC_MAX_ANALYSIS_DEPTH
+
+        body = json.dumps(
+            {"fen": chess.STARTING_FEN, "series": 1, "prefix": []}
+        ).encode("utf-8")
+        accepted = Request(
+            f"{base}/api/prefix",
+            data=body,
+            method="POST",
+            headers={
+                "Host": "progressive.example",
+                "Origin": "https://progressive.example",
+                "Content-Type": "application/json",
+            },
+        )
+        with urlopen(accepted, timeout=3) as response:
+            assert response.status == 200
+
+        hostile = Request(
+            f"{base}/api/prefix",
+            data=body,
+            method="POST",
+            headers={
+                "Host": "progressive.example",
+                "Origin": "https://attacker.example",
+                "Content-Type": "application/json",
+            },
+        )
+        with pytest.raises(HTTPError) as denied:
+            urlopen(hostile, timeout=3)
+        assert denied.value.code == 403
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 def test_http_rejects_dns_rebinding_host_and_cross_origin_post(tmp_path: Path) -> None:

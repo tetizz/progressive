@@ -3,10 +3,11 @@ from __future__ import annotations
 import chess
 import pytest
 
-from scottish_progressive.model import Outcome, ProgressiveState
+from scottish_progressive.model import Outcome, ProgressiveState, boundary_fen
 from scottish_progressive.rules import (
     GenerationStats,
     SeriesLegalityError,
+    _board_position_key,
     generate_series,
     play_series,
 )
@@ -272,6 +273,60 @@ def test_dynamic_transposition_generation_matches_raw_enumeration() -> None:
     } == raw_counts
     assert stats.raw_series == len(raw) == 446
     assert stats.unique_series == len(merged)
+
+
+def test_in_memory_position_key_matches_boundary_fen_identity() -> None:
+    clock_only = chess.Board()
+    clock_only.halfmove_clock = 37
+    clock_only.fullmove_number = 19
+    black_to_move = chess.Board()
+    black_to_move.turn = chess.BLACK
+    no_castling = chess.Board()
+    no_castling.castling_rights = chess.BB_EMPTY
+    after_e4 = chess.Board()
+    after_e4.push_uci("e2e4")
+    progressive_ep = chess.Board("7k/8/8/pP6/8/8/8/K7 w - - 0 1")
+    samples = [
+        (chess.Board(), ()),
+        (clock_only, ()),
+        (black_to_move, ()),
+        (no_castling, ()),
+        (after_e4, ()),
+        (progressive_ep, (chess.A6,)),
+        (progressive_ep, ()),
+    ]
+
+    for left_board, left_ep in samples:
+        for right_board, right_ep in samples:
+            assert (
+                _board_position_key(left_board, left_ep)
+                == _board_position_key(right_board, right_ep)
+            ) == (
+                boundary_fen(left_board, left_ep)
+                == boundary_fen(right_board, right_ep)
+            )
+
+
+def test_frontier_scorer_charges_each_distinct_partial_state_once() -> None:
+    state = ProgressiveState.from_fen(chess.STARTING_FEN, 3)
+    stats = GenerationStats()
+    scored_keys: list[str] = []
+
+    def score(board: chess.Board) -> int:
+        scored_keys.append(board.fen(en_passant="fen"))
+        return 0
+
+    results = generate_series(
+        state,
+        stats=stats,
+        max_frontier_states=8,
+        frontier_score=score,
+    )
+
+    assert results
+    assert stats.frontier_score_positions == len(scored_keys)
+    assert stats.frontier_score_positions > 0
+    assert len(scored_keys) == len(set(scored_keys))
 
 
 @pytest.mark.parametrize("merge_transpositions", [True, False])

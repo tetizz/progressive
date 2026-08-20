@@ -29,8 +29,8 @@ from .rules import generate_series, play_series
 from .search import SearchLimits, analyze
 
 
-LEAGUE_SCHEMA_VERSION = 2
-OPENING_SUITE_VERSION = "spc-league-boundaries-v3"
+LEAGUE_SCHEMA_VERSION = 3
+OPENING_SUITE_VERSION = "spc-league-boundaries-v4"
 PROMOTION_METHOD = "deterministic-fixed-suite-pairs-v1"
 
 PUBLISHED_RULE_ANCHORS: tuple[tuple[str, int, tuple[str, ...]], ...] = (
@@ -160,6 +160,7 @@ def _build_opening_suite() -> tuple[OpeningCase, ...]:
                 "published-central-pressure",
                 "rnbqkb1r/ppp1pppp/5n2/3p2B1/3P4/2N2N2/PPP1PPPP/R2QKB1R b KQkq - 4 3",
                 4,
+                quiet_series=1,
                 source="published Scottish reply anchor",
             ),
         )
@@ -184,13 +185,18 @@ class LeagueConfig:
     generations: int = 2
     seed: int = 20260820
     preliminary_games_per_pair: int = 10
+    fast_preselection_finalists: int = 3
+    fast_preselection_positions: int = 32
+    fast_preselection_rollout_steps: int = 2
+    fast_preselection_smoke: bool = False
     promotion_games: int = 20
     max_replacement_games: int = 40
     minimum_promotion_games: int = 20
     search_depth: int = 2
     max_series_per_node: int = 32
     max_generation_positions: int = 250_000
-    max_game_series: int = 12
+    max_game_work_positions: int | None = None
+    emergency_max_series: int | None = None
     requested_workers: int | None = None
     memory_per_worker_mb: int = 512
     reserve_memory_mb: int = 512
@@ -210,6 +216,20 @@ class LeagueConfig:
         ):
             if value < 2 or value % 2:
                 raise ValueError(f"{name} must be a positive even number")
+        if not 1 <= self.fast_preselection_finalists <= 16:
+            raise ValueError("fast_preselection_finalists must be between 1 and 16")
+        if not 1 <= self.fast_preselection_positions <= 64:
+            raise ValueError("fast_preselection_positions must be between 1 and 64")
+        if (
+            not self.fast_preselection_smoke
+            and self.fast_preselection_positions < 32
+        ):
+            raise ValueError(
+                "non-smoke fast preselection requires 30 opening boundaries "
+                "plus two tactical anchors (32 corpus positions)"
+            )
+        if not 1 <= self.fast_preselection_rollout_steps <= 4:
+            raise ValueError("fast_preselection_rollout_steps must be between 1 and 4")
         if self.max_replacement_games < 0 or self.max_replacement_games % 2:
             raise ValueError("max_replacement_games must be a non-negative even number")
         if self.minimum_promotion_games < 20 or self.minimum_promotion_games % 2:
@@ -222,8 +242,13 @@ class LeagueConfig:
             raise ValueError("max_series_per_node must be between 1 and 512")
         if self.max_generation_positions < 1_000:
             raise ValueError("max_generation_positions must be at least 1000")
-        if self.max_game_series < 2:
-            raise ValueError("max_game_series must be at least 2")
+        if (
+            self.max_game_work_positions is not None
+            and self.max_game_work_positions < 1_000
+        ):
+            raise ValueError("max_game_work_positions must be at least 1000")
+        if self.emergency_max_series is not None and self.emergency_max_series < 18:
+            raise ValueError("emergency_max_series must be at least 18")
         if self.opening_suite_version != OPENING_SUITE_VERSION:
             raise ValueError(
                 f"unsupported opening suite {self.opening_suite_version}"
@@ -249,13 +274,18 @@ class LeagueConfig:
             generations=1,
             seed=seed,
             preliminary_games_per_pair=2,
+            fast_preselection_finalists=1,
+            fast_preselection_positions=4,
+            fast_preselection_rollout_steps=1,
+            fast_preselection_smoke=True,
             promotion_games=2,
             max_replacement_games=4,
             minimum_promotion_games=20,
             search_depth=1,
             max_series_per_node=2,
             max_generation_positions=5_000,
-            max_game_series=2,
+            max_game_work_positions=None,
+            emergency_max_series=None,
             requested_workers=1,
             memory_per_worker_mb=128,
             reserve_memory_mb=128,
@@ -267,10 +297,21 @@ class LeagueConfig:
         payload["opening_case_ids"] = list(self.opening_case_ids)
         payload["deterministic_match_limits"] = {
             "depth_series": self.search_depth,
-            "max_series_per_node": self.max_series_per_node,
-            "max_generation_positions": self.max_generation_positions,
+            "branch_cap_complete_series_per_node": self.max_series_per_node,
+            "max_work_positions_per_search": self.max_generation_positions,
+            "max_game_work_positions": self.max_game_work_positions,
+            "game_work_definition": (
+                "deterministic logical positions across complete-series generation, "
+                "evaluation reach, and quiet adjudication over the whole game"
+            ),
+            "emergency_max_series": self.emergency_max_series,
+            "series_number_limit": (
+                "unbounded" if self.emergency_max_series is None else "technical-watchdog"
+            ),
             "time_limit_seconds": None,
             "fresh_searcher_each_series": True,
+            "collect_all_root_scores": False,
+            "root_score_mode": "best-only-play-optimized",
             "same_for_every_profile": True,
         }
         return payload
@@ -301,7 +342,8 @@ class GameJob:
     search_depth: int
     max_series_per_node: int
     max_generation_positions: int
-    max_game_series: int
+    max_game_work_positions: int | None
+    emergency_max_series: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -415,7 +457,7 @@ def _winner_for_terminal(result: Any, mover: chess.Color) -> chess.Color | None:
     return mover if result.ended_by_check else not mover
 
 
-def _technical_forfeit(
+def _technical_failure(
     job: GameJob,
     state: ProgressiveState,
     trace: Sequence[dict[str, Any]],
@@ -424,10 +466,6 @@ def _technical_forfeit(
     *,
     error: str | None = None,
 ) -> GameRecord:
-    failing_white = failing_profile_id == job.white_profile.profile_id
-    winner_id = (
-        job.black_profile.profile_id if failing_white else job.white_profile.profile_id
-    )
     return GameRecord(
         job.job_key,
         job.run_id,
@@ -439,13 +477,13 @@ def _technical_forfeit(
         job.seed,
         job.white_profile.profile_id,
         job.black_profile.profile_id,
-        "0-1" if failing_white else "1-0",
+        "*",
         reason,
-        winner_id,
+        None,
         failing_profile_id,
         job.opening.state().pfen,
         state.pfen,
-        len(trace),
+        sum(bool(item.get("played", True)) for item in trace),
         tuple(trace),
         error,
     )
@@ -455,9 +493,52 @@ def _play_game(job: GameJob) -> GameRecord:
     state = job.opening.state()
     start_pfen = state.pfen
     trace: list[dict[str, Any]] = []
-    while state.series_number <= job.max_game_series:
+    game_work_positions = 0
+
+    def technical_incomplete(reason: str) -> GameRecord:
+        return GameRecord(
+            job.job_key,
+            job.run_id,
+            job.generation,
+            job.stage,
+            job.opening_index,
+            job.opening.case_id,
+            OPENING_SUITE_VERSION,
+            job.seed,
+            job.white_profile.profile_id,
+            job.black_profile.profile_id,
+            "*",
+            reason,
+            None,
+            None,
+            start_pfen,
+            state.pfen,
+            sum(bool(item.get("played", True)) for item in trace),
+            tuple(trace),
+        )
+
+    while (
+        job.emergency_max_series is None
+        or state.series_number <= job.emergency_max_series
+    ):
         mover = state.board.turn
         profile = job.white_profile if mover == chess.WHITE else job.black_profile
+        remaining_game_work = (
+            None
+            if job.max_game_work_positions is None
+            else job.max_game_work_positions - game_work_positions
+        )
+        if remaining_game_work is not None and remaining_game_work <= 0:
+            return technical_incomplete("technical-game-work-budget-exhausted")
+        search_work_limit = (
+            job.max_generation_positions
+            if remaining_game_work is None
+            else min(job.max_generation_positions, remaining_game_work)
+        )
+        reduced_for_game_budget = (
+            remaining_game_work is not None
+            and search_work_limit < job.max_generation_positions
+        )
         try:
             result = analyze(
                 state,
@@ -465,12 +546,13 @@ def _play_game(job: GameJob) -> GameRecord:
                     depth_series=job.search_depth,
                     max_series_per_node=job.max_series_per_node,
                     time_limit_seconds=None,
-                    max_generation_positions=job.max_generation_positions,
+                    max_generation_positions=search_work_limit,
+                    collect_all_root_scores=False,
                 ),
                 profile=profile,
             )
         except BaseException as error:
-            return _technical_forfeit(
+            return _technical_failure(
                 job,
                 state,
                 trace,
@@ -479,9 +561,53 @@ def _play_game(job: GameJob) -> GameRecord:
                 error=f"{type(error).__name__}: {error}",
             )
 
-        if result.timed_out or result.work_limit_reached or result.best_series is None:
+        stats = getattr(result, "stats", None)
+        search_work = int(
+            getattr(stats, "work_positions", getattr(stats, "generation_positions", 0))
+        )
+        game_work_positions += search_work
+        selected = result.best_series
+        attempted_trace = {
+            "series_number": state.series_number,
+            "profile_id": profile.profile_id,
+            "series": selected.machine_notation if selected else None,
+            "notation": selected.notation if selected else None,
+            "score_white_heuristic_points": getattr(result, "score", None),
+            "completed_depth": getattr(result, "completed_depth", 0),
+            "exact_width": getattr(result, "exact_width", False),
+            "nodes": int(getattr(stats, "nodes", 0)),
+            "root_scores_complete": getattr(result, "root_scores_complete", False),
+            "root_bound_candidates": int(
+                getattr(stats, "root_bound_candidates", 0)
+            ),
+            "work_positions": search_work,
+            "series_generation_positions": int(
+                getattr(stats, "series_generation_positions", 0)
+            ),
+            "evaluation_reach_positions": int(
+                getattr(stats, "evaluation_reach_positions", 0)
+            ),
+            "quiet_adjudication_positions": int(
+                getattr(stats, "quiet_adjudication_positions", 0)
+            ),
+            "game_work_positions": game_work_positions,
+            "search_work_limit": search_work_limit,
+            "reduced_for_game_budget": reduced_for_game_budget,
+            "work_limit_reached": result.work_limit_reached,
+            "outcome": (
+                selected.outcome.value if selected and selected.outcome else None
+            ),
+            "played": False,
+        }
+        if reduced_for_game_budget and result.work_limit_reached:
+            trace.append(attempted_trace)
+            return technical_incomplete("technical-game-work-budget-exhausted")
+
+        if result.best_series is None:
             proven_draw = result.proof == "draw" and result.adjudication_status == "proven-draw-no-mating-material"
             if not proven_draw:
+                if stats is not None:
+                    trace.append(attempted_trace)
                 reason = (
                     "engine-timeout"
                     if result.timed_out
@@ -489,7 +615,7 @@ def _play_game(job: GameJob) -> GameRecord:
                     if result.work_limit_reached
                     else "engine-no-move"
                 )
-                return _technical_forfeit(
+                return _technical_failure(
                     job, state, trace, profile.profile_id, reason
                 )
             return GameRecord(
@@ -500,22 +626,8 @@ def _play_game(job: GameJob) -> GameRecord:
                 start_pfen, state.pfen, len(trace), tuple(trace),
             )
 
-        selected = result.best_series
-        trace.append(
-            {
-                "series_number": state.series_number,
-                "profile_id": profile.profile_id,
-                "series": selected.machine_notation,
-                "notation": selected.notation,
-                "score_white_heuristic_points": result.score,
-                "completed_depth": result.completed_depth,
-                "exact_width": result.exact_width,
-                "nodes": result.stats.nodes,
-                "generation_positions": result.stats.generation_positions,
-                "work_limit_reached": result.work_limit_reached,
-                "outcome": selected.outcome.value if selected.outcome else None,
-            }
-        )
+        attempted_trace["played"] = True
+        trace.append(attempted_trace)
         winner = _winner_for_terminal(selected, mover)
         state = selected.final_state
         if winner is not None:
@@ -566,26 +678,13 @@ def _play_game(job: GameJob) -> GameRecord:
                 tuple(trace),
             )
 
-    return GameRecord(
-        job.job_key,
-        job.run_id,
-        job.generation,
-        job.stage,
-        job.opening_index,
-        job.opening.case_id,
-        OPENING_SUITE_VERSION,
-        job.seed,
-        job.white_profile.profile_id,
-        job.black_profile.profile_id,
-        "*",
-        "max-series-adjudication-not-proven-draw",
-        None,
-        None,
-        start_pfen,
-        state.pfen,
-        len(trace),
-        tuple(trace),
-    )
+        if (
+            job.max_game_work_positions is not None
+            and game_work_positions >= job.max_game_work_positions
+        ):
+            return technical_incomplete("technical-game-work-budget-exhausted")
+
+    return technical_incomplete("technical-emergency-series-watchdog-exhausted")
 
 
 def run_rules_tactical_gate(
@@ -805,6 +904,7 @@ class LeagueStore:
                 generation INTEGER NOT NULL,
                 profile_id TEXT NOT NULL REFERENCES profiles(profile_id),
                 role TEXT NOT NULL,
+                population_slot INTEGER,
                 preliminary_rank INTEGER,
                 fitness_points REAL,
                 fitness_games INTEGER,
@@ -877,6 +977,36 @@ class LeagueStore:
             self.connection.execute(
                 "ALTER TABLE runs ADD COLUMN runtime_json TEXT NOT NULL DEFAULT '{}'"
             )
+        population_columns = {
+            row[1]
+            for row in self.connection.execute("PRAGMA table_info(run_population)")
+        }
+        if "population_slot" not in population_columns:
+            self.connection.execute(
+                "ALTER TABLE run_population ADD COLUMN population_slot INTEGER"
+            )
+        # Old databases still retain insertion order through SQLite rowid.  Capture
+        # that order once so reopening a stopped run regenerates the exact same
+        # profile pair orientation, opening order, and deterministic job keys.
+        missing_slots = self.connection.execute(
+            """
+            SELECT rowid,run_id,generation FROM run_population
+            WHERE population_slot IS NULL
+            ORDER BY run_id,generation,rowid
+            """
+        ).fetchall()
+        group: tuple[str, int] | None = None
+        slot = 0
+        for row in missing_slots:
+            row_group = (str(row["run_id"]), int(row["generation"]))
+            if row_group != group:
+                group = row_group
+                slot = 0
+            self.connection.execute(
+                "UPDATE run_population SET population_slot=? WHERE rowid=?",
+                (slot, int(row["rowid"])),
+            )
+            slot += 1
         self.connection.execute(
             "INSERT OR REPLACE INTO league_metadata(key,value) VALUES('schema_version',?)",
             (str(LEAGUE_SCHEMA_VERSION),),
@@ -977,32 +1107,107 @@ class LeagueStore:
         profiles: Sequence[EngineProfile],
         champion_id: str,
     ) -> None:
-        for profile in profiles:
-            self.save_profile(profile)
+        profile_ids = [profile.profile_id for profile in profiles]
+        if not profiles:
+            raise ValueError("population cannot be empty")
+        if len(set(profile_ids)) != len(profile_ids):
+            raise ValueError("population profile_ids must be unique")
+        if champion_id not in profile_ids:
+            raise ValueError("population must contain its champion")
+        # One transaction replaces the whole generation. A crash can leave
+        # either the previous complete population or the new complete one,
+        # never a prefix that resume mistakes for a finished population.
+        with self.connection:
+            for profile in profiles:
+                self.connection.execute(
+                    """
+                    INSERT OR IGNORE INTO profiles(
+                        profile_id,name,generation,profile_json,created_at
+                    ) VALUES(?,?,?,?,?)
+                    """,
+                    (
+                        profile.profile_id,
+                        profile.name,
+                        profile.generation,
+                        json.dumps(
+                            profile.as_dict(),
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                        _now(),
+                    ),
+                )
             self.connection.execute(
-                """
-                INSERT OR IGNORE INTO run_population(run_id,generation,profile_id,role)
-                VALUES(?,?,?,?)
-                """,
-                (
-                    run_id,
-                    generation,
-                    profile.profile_id,
-                    "champion" if profile.profile_id == champion_id else "challenger",
-                ),
+                "DELETE FROM run_population WHERE run_id=? AND generation=?",
+                (run_id, generation),
             )
-        self.connection.commit()
+            self.connection.executemany(
+                """
+                INSERT INTO run_population(
+                    run_id,generation,profile_id,role,population_slot
+                ) VALUES(?,?,?,?,?)
+                """,
+                [
+                    (
+                        run_id,
+                        generation,
+                        profile.profile_id,
+                        (
+                            "champion"
+                            if profile.profile_id == champion_id
+                            else "challenger"
+                        ),
+                        population_slot,
+                    )
+                    for population_slot, profile in enumerate(profiles)
+                ],
+            )
 
-    def population(self, run_id: str, generation: int) -> tuple[EngineProfile, ...]:
+    def population(
+        self,
+        run_id: str,
+        generation: int,
+        *,
+        expected_size: int | None = None,
+        champion_id: str | None = None,
+    ) -> tuple[EngineProfile, ...]:
         rows = self.connection.execute(
             """
-            SELECT p.profile_json FROM run_population rp
+            SELECT rp.profile_id,rp.role,rp.population_slot,p.profile_json
+            FROM run_population rp
             JOIN profiles p ON p.profile_id=rp.profile_id
             WHERE rp.run_id=? AND rp.generation=?
-            ORDER BY CASE rp.role WHEN 'champion' THEN 0 ELSE 1 END, p.profile_id
+            ORDER BY rp.population_slot,rp.rowid
             """,
             (run_id, generation),
         ).fetchall()
+        if not rows:
+            return ()
+        slots = [int(row["population_slot"]) for row in rows]
+        profile_ids = [str(row["profile_id"]) for row in rows]
+        expected_slots = list(range(len(rows)))
+        if slots != expected_slots:
+            raise ValueError(
+                "persisted population slots are not contiguous; refusing unsafe resume"
+            )
+        if len(set(profile_ids)) != len(profile_ids):
+            raise ValueError(
+                "persisted population contains duplicate profile_ids; refusing resume"
+            )
+        if expected_size is not None and len(rows) != expected_size:
+            raise ValueError(
+                f"persisted population is incomplete ({len(rows)}/{expected_size}); "
+                "refusing unsafe resume"
+            )
+        if champion_id is not None:
+            champions = [
+                str(row["profile_id"]) for row in rows if row["role"] == "champion"
+            ]
+            if champions != [champion_id]:
+                raise ValueError(
+                    "persisted population champion role is inconsistent; "
+                    "refusing unsafe resume"
+                )
         return tuple(EngineProfile.from_dict(json.loads(row["profile_json"])) for row in rows)
 
     def completed_job_keys(self, run_id: str, generation: int, stage: str) -> set[str]:
@@ -1109,11 +1314,18 @@ class LeagueStore:
     ) -> int:
         limits = {
             "depth_series": config.search_depth,
-            "max_series_per_node": config.max_series_per_node,
-            "max_generation_positions": config.max_generation_positions,
+            "branch_cap_complete_series_per_node": config.max_series_per_node,
+            "max_work_positions_per_search": config.max_generation_positions,
+            "max_game_work_positions": config.max_game_work_positions,
+            "game_work_definition": (
+                "complete-series generation plus evaluation reach plus quiet adjudication"
+            ),
+            "emergency_max_series": config.emergency_max_series,
             "time_limit_seconds": None,
             "same_limits_for_both_profiles": True,
             "fresh_searcher_each_series": True,
+            "collect_all_root_scores": False,
+            "root_score_mode": "best-only-play-optimized",
         }
         self.connection.execute(
             """
@@ -1395,7 +1607,8 @@ def _paired_jobs(
                     config.search_depth,
                     config.max_series_per_node,
                     config.max_generation_positions,
-                    config.max_game_series,
+                    config.max_game_work_positions,
+                    config.emergency_max_series,
                 )
             )
     return jobs
@@ -1514,7 +1727,12 @@ def _pair_evidence(
     *,
     maximum_pairs: int | None = None,
 ) -> PairEvidence:
-    materialized = list(rows)
+    materialized = [
+        row
+        for row in rows
+        if profile_id
+        in (str(row["white_profile_id"]), str(row["black_profile_id"]))
+    ]
     candidate_failures = sum(
         row["engine_failure_profile_id"] == profile_id for row in materialized
     )
@@ -1535,7 +1753,7 @@ def _pair_evidence(
         )
         groups.setdefault(key, []).append(row)
 
-    completed: list[tuple[int, str, float]] = []
+    completed: list[tuple[str, tuple[str, ...], int, str, float]] = []
     for key, paired in groups.items():
         if len(paired) != 2 or any(
             row["result"] not in {"1-0", "0-1", "1/2-1/2"}
@@ -1549,17 +1767,27 @@ def _pair_evidence(
         ):
             continue
         pair_points = sum(_row_game_points(row, profile_id) for row in paired)
-        completed.append((int(first["opening_index"]) // 2, str(key[3]), pair_points))
-    completed.sort(key=lambda item: (item[0], item[1]))
+        completed.append(
+            (
+                str(key[0]),
+                key[1],
+                int(first["opening_index"]) // 2,
+                str(key[3]),
+                pair_points,
+            )
+        )
+    completed.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
     if maximum_pairs is not None:
         completed = completed[:maximum_pairs]
-    case_ids = tuple(item[1] for item in completed)
-    # A versioned fixed-suite boundary may contribute at most one pair.
-    if len(set(case_ids)) != len(case_ids):
+    case_ids = tuple(item[3] for item in completed)
+    # Within one head-to-head stage, a fixed-suite boundary contributes at most
+    # one swapped pair. Round-robin fitness may reuse it against another rival.
+    boundaries = tuple((item[0], item[1], item[3]) for item in completed)
+    if len(set(boundaries)) != len(boundaries):
         raise ValueError("fixed-suite evidence contains a duplicate opening case")
-    wins = sum(points > 1.0 for _, _, points in completed)
-    draws = sum(points == 1.0 for _, _, points in completed)
-    losses = sum(points < 1.0 for _, _, points in completed)
+    wins = sum(item[4] > 1.0 for item in completed)
+    draws = sum(item[4] == 1.0 for item in completed)
+    losses = sum(item[4] < 1.0 for item in completed)
     return PairEvidence(
         wins=wins,
         draws=draws,
@@ -1571,6 +1799,68 @@ def _pair_evidence(
     )
 
 
+def _mate_efficiency(
+    rows: Iterable[Mapping[str, Any]], profile_id: str
+) -> dict[str, Any]:
+    """Returns checkmate speed/resistance only from complete swapped pairs."""
+
+    groups: dict[tuple[object, ...], list[Mapping[str, Any]]] = {}
+    for row in rows:
+        opponents = tuple(
+            sorted((str(row["white_profile_id"]), str(row["black_profile_id"])))
+        )
+        if profile_id not in opponents:
+            continue
+        key = (
+            str(row["stage"]),
+            opponents,
+            int(row["opening_index"]) // 2,
+            str(row["opening_case_id"]),
+            int(row["seed"]),
+        )
+        groups.setdefault(key, []).append(row)
+
+    wins: list[int] = []
+    losses: list[int] = []
+    balanced_games = 0
+    for paired in groups.values():
+        if len(paired) != 2 or any(
+            row["result"] not in {"1-0", "0-1", "1/2-1/2"}
+            for row in paired
+        ):
+            continue
+        first, second = paired
+        if not (
+            first["white_profile_id"] == second["black_profile_id"]
+            and first["black_profile_id"] == second["white_profile_id"]
+        ):
+            continue
+        balanced_games += 2
+        for row in paired:
+            if row["terminal_reason"] != "checkmate":
+                continue
+            try:
+                length = int(row["series_played"])
+                decisive_profile_id = row["decisive_profile_id"]
+            except (KeyError, IndexError):
+                continue
+            if decisive_profile_id == profile_id:
+                wins.append(length)
+            elif decisive_profile_id is not None:
+                losses.append(length)
+    return {
+        "balanced_pair_games": balanced_games,
+        "checkmate_wins": len(wins),
+        "average_winning_mate_series": (
+            sum(wins) / len(wins) if wins else None
+        ),
+        "checkmate_losses": len(losses),
+        "average_losing_resistance_series": (
+            sum(losses) / len(losses) if losses else None
+        ),
+    }
+
+
 def _fitness(
     rows: Iterable[sqlite3.Row], profiles: Sequence[EngineProfile]
 ) -> list[dict[str, Any]]:
@@ -1578,6 +1868,7 @@ def _fitness(
     ranking: list[dict[str, Any]] = []
     for profile in profiles:
         evidence = _pair_evidence(materialized, profile.profile_id)
+        efficiency = _mate_efficiency(materialized, profile.profile_id)
         ranking.append(
             {
                 "profile_id": profile.profile_id,
@@ -1589,6 +1880,7 @@ def _fitness(
                 "losses": evidence.losses,
                 "technical_failures": evidence.candidate_failures,
                 "score_rate": evidence.score_rate,
+                "mate_efficiency": efficiency,
             }
         )
     ranking.sort(
@@ -1597,6 +1889,17 @@ def _fitness(
             -item["pairs"],
             -item["wins"],
             item["losses"],
+            item["technical_failures"],
+            (
+                item["mate_efficiency"]["average_winning_mate_series"]
+                if item["mate_efficiency"]["average_winning_mate_series"]
+                is not None
+                else float("inf")
+            ),
+            -(
+                item["mate_efficiency"]["average_losing_resistance_series"]
+                or 0.0
+            ),
             item["profile_id"],
         )
     )
@@ -1731,7 +2034,12 @@ def run_league(
         last_reason = "no generation completed"
         for generation in range(start_generation, config.generations + 1):
             emit(f"generation {generation}/{config.generations}: preparing population")
-            population = store.population(run_id, generation)
+            population = store.population(
+                run_id,
+                generation,
+                expected_size=config.population_size,
+                champion_id=champion.profile_id,
+            )
             if not population:
                 population = create_population(
                     champion, size=config.population_size, seed=config.seed + generation
@@ -1740,34 +2048,50 @@ def run_league(
                     run_id, generation, population, champion.profile_id
                 )
 
-            stage = f"preliminary-g{generation}"
-            jobs = _preliminary_jobs(run_id, generation, population, config)
-            completed = store.completed_job_keys(run_id, generation, stage)
-            _execute_jobs(
-                store,
-                [job for job in jobs if job.job_key not in completed],
-                resources,
-                progress,
+            # Cached feature scoring replaces the O(population^2) all-play-all
+            # preliminary games. Its proxy is never stored as WDL/fitness and
+            # never changes the strict full-game promotion decision below.
+            from .fast_training import FastTrainingConfig, run_fast_preselection
+
+            funnel_root = Path(f"{Path(database).expanduser().resolve()}.fast-training")
+            funnel_config = FastTrainingConfig(
+                position_limit=config.fast_preselection_positions,
+                rollout_steps=config.fast_preselection_rollout_steps,
+                label_depth_series=2,
+                label_branch_cap=max(4, min(8, config.max_series_per_node)),
+                label_max_work_positions=max(
+                    200_000, config.max_generation_positions
+                ),
+                finalist_count=min(
+                    config.fast_preselection_finalists,
+                    max(1, config.population_size - 1),
+                ),
+                seed=_stable_seed(config.seed, generation, "fast-preselection"),
+                smoke=config.fast_preselection_smoke,
             )
-            preliminary_rows = store.stage_rows(run_id, generation, stage)
-            if any(row["terminal_reason"] == "worker-exception" for row in preliminary_rows):
+            report, resumed_funnel = run_fast_preselection(
+                population,
+                champion,
+                cache_path=funnel_root / f"{run_id}-g{generation}-cache.json",
+                report_path=funnel_root / f"{run_id}-g{generation}-report.json",
+                config=funnel_config,
+                preliminary_games_per_pair=config.preliminary_games_per_pair,
+                promotion_games=config.promotion_games,
+            )
+            performance = report["performance"]
+            schedule = report["full_game_schedule"]
+            emit(
+                f"fast-preselection-g{generation}: "
+                f"{performance['candidate_iterations_per_second']:.0f} cached "
+                f"profiles/s; avoided {schedule['games_avoided']} scheduled full "
+                f"games; {'resumed' if resumed_funnel else 'fresh'} evidence"
+            )
+            finalist_ids = list(report["finalist_profile_ids"])
+            if not finalist_ids:
                 last_reason = (
-                    "unattributed worker exception in preliminary stage; "
-                    "resume will retry the affected job"
+                    "no challenger passed cached tactical preselection; proxy is "
+                    "not game-strength evidence"
                 )
-                store.update_run(
-                    run_id,
-                    status="needs-resume",
-                    generation=generation,
-                    champion_id=champion.profile_id,
-                    reason=last_reason,
-                )
-                break
-            ranking = _fitness(preliminary_rows, population)
-            store.save_fitness(run_id, generation, ranking)
-            candidates = [item for item in ranking if item["profile_id"] != champion.profile_id]
-            if not candidates:
-                last_reason = "no eligible challenger"
                 store.update_run(
                     run_id,
                     status="complete",
@@ -1776,9 +2100,9 @@ def run_league(
                     reason=last_reason,
                 )
                 break
-            candidate_row = candidates[0]
+            candidate_id = finalist_ids[0]
             candidate = next(
-                profile for profile in population if profile.profile_id == candidate_row["profile_id"]
+                profile for profile in population if profile.profile_id == candidate_id
             )
             promotion_stage = f"promotion-g{generation}"
             promotion_jobs = _paired_jobs(

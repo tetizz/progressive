@@ -2,13 +2,25 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import chess
 import pytest
 
 import scottish_progressive.search as search_module
 from scottish_progressive.evaluation import evaluate, probe_series_reach
 from scottish_progressive.model import Outcome, ProgressiveState
-from scottish_progressive.rules import play_series
-from scottish_progressive.search import MATE_SCORE, SearchLimits, analyze
+from scottish_progressive.rules import (
+    GenerationCancelled,
+    generate_series,
+    play_series,
+)
+from scottish_progressive.search import (
+    MATE_SCORE,
+    QUIET_ADJUDICATION_POSITION_LIMIT,
+    SERIES_GENERATION_CACHE_CAPACITY,
+    SearchLimits,
+    SeriesSearcher,
+    analyze,
+)
 
 
 def test_search_finds_immediate_seriesmate() -> None:
@@ -21,6 +33,50 @@ def test_search_finds_immediate_seriesmate() -> None:
     assert result.best_series.moves == ("g6g7",)
     assert result.best_series.outcome == Outcome.CHECKMATE
     assert result.forced == "white"
+
+
+def test_best_only_root_mode_keeps_legal_mate_dominant() -> None:
+    state = ProgressiveState.from_fen(
+        "7k/8/5KQ1/8/8/8/8/8 w - - 0 1", 1
+    )
+    result = analyze(
+        state,
+        SearchLimits(depth_series=2, collect_all_root_scores=False),
+    )
+
+    assert result.score == MATE_SCORE - 1
+    assert result.best_series is not None
+    assert result.best_series.moves == ("g6g7",)
+    assert result.best_series.outcome == Outcome.CHECKMATE
+    assert result.proof == "white"
+    assert result.forced == "white"
+    assert not result.root_scores_complete
+
+
+def test_terminal_mate_distance_prefers_faster_win_and_slower_loss() -> None:
+    white_state = ProgressiveState.from_fen(
+        "7k/8/5KQ1/8/8/8/8/8 w - - 0 1", 1
+    )
+    white_mate = next(
+        item
+        for item in generate_series(white_state)
+        if item.outcome == Outcome.CHECKMATE
+    )
+    black_state = ProgressiveState.from_fen(
+        "8/8/8/8/8/5kq1/8/7K b - - 0 1", 2
+    )
+    black_mate = next(
+        item
+        for item in generate_series(black_state)
+        if item.outcome == Outcome.CHECKMATE
+    )
+
+    white_fast = SeriesSearcher._terminal_score(white_mate, chess.WHITE, 1)
+    white_slow = SeriesSearcher._terminal_score(white_mate, chess.WHITE, 3)
+    black_fast = SeriesSearcher._terminal_score(black_mate, chess.BLACK, 1)
+    black_slow = SeriesSearcher._terminal_score(black_mate, chess.BLACK, 3)
+    assert white_fast == MATE_SCORE - 1 > white_slow == MATE_SCORE - 3
+    assert black_fast == -MATE_SCORE + 1 < black_slow == -MATE_SCORE + 3
 
 
 def test_search_scores_already_checkmated_side_as_loser() -> None:
@@ -74,6 +130,80 @@ def test_search_is_reproducible() -> None:
     assert first.best_series.moves == second.best_series.moves
 
 
+def test_best_only_root_returns_only_scores_exact_under_full_root_search() -> None:
+    state = ProgressiveState.initial()
+    full = analyze(
+        state,
+        SearchLimits(
+            depth_series=2,
+            max_series_per_node=8,
+            collect_all_root_scores=True,
+        ),
+    )
+    best_only = analyze(
+        state,
+        SearchLimits(
+            depth_series=2,
+            max_series_per_node=8,
+            collect_all_root_scores=False,
+        ),
+    )
+
+    assert full.root_scores_complete
+    assert full.stats.root_bound_candidates == 0
+    assert not best_only.root_scores_complete
+    assert best_only.stats.root_bound_candidates > 0
+    assert best_only.score == full.score
+    assert best_only.best_series is not None and full.best_series is not None
+    assert best_only.best_series.moves == full.best_series.moves
+    assert best_only.proof == full.proof
+    full_evidence = {
+        item.series.machine_notation: (item.score, item.proof_bounds)
+        for item in full.alternatives
+    }
+    assert len(best_only.alternatives) < len(full.alternatives)
+    for item in best_only.alternatives:
+        assert full_evidence[item.series.machine_notation] == (
+            item.score,
+            item.proof_bounds,
+        )
+
+
+def test_best_only_black_root_preserves_minimizing_result_and_exact_evidence() -> None:
+    state = play_series(ProgressiveState.initial(), ("e2e4",)).final_state
+    full = analyze(
+        state,
+        SearchLimits(
+            depth_series=2,
+            max_series_per_node=8,
+            collect_all_root_scores=True,
+        ),
+    )
+    best_only = analyze(
+        state,
+        SearchLimits(
+            depth_series=2,
+            max_series_per_node=8,
+            collect_all_root_scores=False,
+        ),
+    )
+
+    assert best_only.score == full.score
+    assert best_only.best_series is not None and full.best_series is not None
+    assert best_only.best_series.moves == full.best_series.moves
+    assert best_only.proof == full.proof
+    assert best_only.stats.root_bound_candidates > 0
+    full_evidence = {
+        item.series.machine_notation: (item.score, item.proof_bounds)
+        for item in full.alternatives
+    }
+    for item in best_only.alternatives:
+        assert full_evidence[item.series.machine_notation] == (
+            item.score,
+            item.proof_bounds,
+        )
+
+
 def test_incomplete_reach_probe_does_not_create_na3_scoring_artifact() -> None:
     initial = ProgressiveState.initial()
     na3 = play_series(initial, ("b1a3",)).final_state
@@ -87,6 +217,31 @@ def test_incomplete_reach_probe_does_not_create_na3_scoring_artifact() -> None:
     assert not e4_evaluation.reach_complete
     assert na3_evaluation.series_reach == e4_evaluation.series_reach == 0
     assert e4_evaluation.total > na3_evaluation.total
+
+
+def test_evaluation_reach_probe_respects_shared_deterministic_budget() -> None:
+    state = ProgressiveState.initial()
+    breakdown = evaluate(state, max_reach_positions=7)
+
+    assert breakdown.white_reach_nodes + breakdown.black_reach_nodes == 7
+    assert not breakdown.reach_complete
+    assert breakdown.series_reach == 0
+
+    result = analyze(
+        state,
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=8,
+            max_generation_positions=7,
+        ),
+    )
+    assert result.work_limit_reached
+    assert result.stats.static_evaluation_positions == 1
+    assert result.stats.evaluation_reach_positions == 6
+    assert result.stats.series_generation_positions == 0
+    assert result.stats.quiet_adjudication_positions == 0
+    assert result.stats.generation_positions == 7
+    assert result.stats.incomplete_reach_evaluations == 1
 
 
 def test_frontier_cap_finds_known_series_four_mate_before_full_materialization() -> None:
@@ -111,8 +266,108 @@ def test_frontier_cap_finds_known_series_four_mate_before_full_materialization()
     assert result.stats.frontier_prunes > 0
     assert result.stats.frontier_states_pruned > 0
     assert result.stats.peak_frontier_states > cap
-    assert result.stats.generation_positions <= 1 + cap * (state.moves_available - 1)
+    assert result.stats.series_generation_positions <= (
+        1 + cap * (state.moves_available - 1)
+    )
+    assert result.stats.generation_positions == (
+        result.stats.series_generation_positions
+        + result.stats.frontier_score_positions
+        + result.stats.static_evaluation_positions
+        + result.stats.evaluation_reach_positions
+        + result.stats.quiet_adjudication_positions
+    )
+    assert result.stats.work_positions == result.stats.generation_positions
     assert not result.exact_width
+
+
+def test_wide_frontier_scoring_cannot_overshoot_combined_work_cap() -> None:
+    state = ProgressiveState.from_fen(
+        "rnbqkb1r/ppp1pppp/5n2/1B1P4/8/5N2/PPPP1PPP/RNBQK2R b KQkq - 1 3",
+        4,
+    )
+    result = analyze(
+        state,
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=64,
+            max_generation_positions=1_736,
+        ),
+    )
+
+    assert result.work_limit_reached
+    assert not result.timed_out
+    assert result.completed_depth == 0
+    assert result.best_series is None
+    assert result.stats.frontier_prunes > 0
+    assert result.stats.peak_frontier_states > 64
+    assert result.stats.work_positions == 1_736
+    assert result.stats.series_generation_positions == 134
+    assert result.stats.frontier_score_positions == 1_473
+    assert result.stats.static_evaluation_positions == 1
+    assert result.stats.evaluation_reach_positions == 128
+    assert result.stats.quiet_adjudication_positions == 0
+    assert result.stats.work_positions == (
+        result.stats.series_generation_positions
+        + result.stats.frontier_score_positions
+        + result.stats.static_evaluation_positions
+        + result.stats.evaluation_reach_positions
+        + result.stats.quiet_adjudication_positions
+    )
+
+
+def test_iterative_deepening_reuses_bounded_complete_series_frontier() -> None:
+    state = ProgressiveState.from_fen(
+        "rnbqkb1r/ppp1pppp/5n2/1B1P4/8/5N2/PPPP1PPP/RNBQK2R b KQkq - 1 3",
+        4,
+    )
+    result = analyze(
+        state,
+        SearchLimits(
+            depth_series=3,
+            max_series_per_node=64,
+            max_generation_positions=500_000,
+        ),
+    )
+
+    assert result.completed_depth == 3
+    assert result.best_series is not None
+    assert result.best_series.moves == (
+        "c7c6",
+        "d8b6",
+        "f6e4",
+        "b6f2",
+    )
+    # The immediate root mate means every iteration asks for the identical
+    # expensive series-four frontier. Generate it once, then reuse it twice.
+    assert result.stats.series_generation_cache_hits == 2
+    assert result.stats.series_generation_positions == 135
+    assert result.stats.frontier_score_positions == 1_473
+    assert result.stats.static_evaluation_positions == 1
+    assert result.stats.evaluation_reach_positions == 128
+    assert result.stats.generation_positions == 1_737
+    assert result.stats.series_generation_cache_peak <= (
+        SERIES_GENERATION_CACHE_CAPACITY
+    )
+
+
+def test_complete_series_cache_enforces_weighted_lru_ceiling(monkeypatch) -> None:
+    monkeypatch.setattr(search_module, "SERIES_GENERATION_CACHE_CAPACITY", 2)
+    searcher = SeriesSearcher(
+        SearchLimits(depth_series=1, max_series_per_node=1)
+    )
+    states = (
+        ProgressiveState.initial(),
+        ProgressiveState.from_fen("7k/8/8/8/8/8/4Q3/K7 w - - 0 1", 1),
+        ProgressiveState.from_fen("7k/8/8/8/8/8/4R3/K7 w - - 0 1", 1),
+    )
+
+    for state in states:
+        assert searcher._ordered_generated(state, ply_from_root=1)
+
+    assert searcher._series_generation_cache_weight == 2
+    assert len(searcher._series_generation_cache) == 2
+    assert searcher.stats.series_generation_cache_peak == 2
+    assert searcher.stats.series_generation_cache_evictions == 1
 
 
 def test_analysis_can_constrain_root_to_nonempty_series_prefix() -> None:
@@ -135,6 +390,51 @@ def test_analysis_can_constrain_root_to_nonempty_series_prefix() -> None:
         for alternative in result.alternatives
     )
     assert result.best_series.outcome == Outcome.CHECKMATE
+
+
+def test_prefix_cache_reuse_cannot_bypass_generation_work_payment() -> None:
+    state = ProgressiveState.from_fen(
+        "rnbqkb1r/ppp1pppp/5n2/1B1P4/8/5N2/PPPP1PPP/RNBQK2R b KQkq - 1 3",
+        4,
+    )
+    prefix = ("c7c6", "d8b6")
+
+    unpaid = analyze(
+        state,
+        SearchLimits(
+            depth_series=3,
+            max_series_per_node=64,
+            max_generation_positions=195,
+        ),
+        required_prefix=prefix,
+    )
+    assert unpaid.work_limit_reached
+    assert unpaid.completed_depth == 0
+    assert unpaid.best_series is None
+    assert unpaid.proof is None
+    assert unpaid.stats.series_generation_cache_hits == 0
+
+    paid = analyze(
+        state,
+        SearchLimits(
+            depth_series=3,
+            max_series_per_node=64,
+            max_generation_positions=196,
+        ),
+        required_prefix=prefix,
+    )
+    assert not paid.work_limit_reached
+    assert paid.completed_depth == 3
+    assert paid.required_prefix == prefix
+    assert paid.best_series is not None
+    assert paid.best_series.moves == prefix + ("f6e4", "b6f2")
+    assert paid.proof == "black"
+    assert paid.stats.series_generation_positions == 35
+    assert paid.stats.frontier_score_positions == 32
+    assert paid.stats.static_evaluation_positions == 1
+    assert paid.stats.evaluation_reach_positions == 128
+    assert paid.stats.generation_positions == 196
+    assert paid.stats.series_generation_cache_hits == 2
 
 
 def test_timeout_keeps_best_fully_scored_root_candidate(monkeypatch) -> None:
@@ -207,6 +507,80 @@ def test_time_limit_covers_quiet_draw_mating_series_probe() -> None:
     assert result.timed_out
     assert result.completed_depth == 0
     assert result.elapsed_seconds < 0.5
+
+
+def test_high_series_quiet_transition_is_charged_to_global_work_budget() -> None:
+    # Black's only legal move is the quiet countercheck 20...Kb8+, producing a
+    # series-21 child at quiet=10. Historically its mating-series exception
+    # probe ignored max_generation_positions and could dominate a whole league
+    # batch. Static evaluation, one reach node, and generation cost three
+    # positions; the proof probe gets the remaining 29 and must conservatively
+    # stop as manual-proof-required.
+    state = ProgressiveState.from_fen(
+        "r7/k6R/8/K7/8/8/8/8 b - - 0 1", 20, quiet_series=9
+    )
+    result = analyze(
+        state,
+        SearchLimits(
+            depth_series=2,
+            max_series_per_node=8,
+            max_generation_positions=32,
+        ),
+    )
+
+    assert result.adjudication_status == "manual-proof-required"
+    assert result.work_limit_reached
+    assert not result.timed_out
+    assert result.best_series is None
+    assert result.stats.generation_positions == 32
+    assert result.stats.series_generation_positions == 1
+    assert result.stats.frontier_score_positions == 0
+    assert result.stats.static_evaluation_positions == 1
+    assert result.stats.evaluation_reach_positions == 1
+    assert result.stats.quiet_adjudication_positions == 29
+    assert result.stats.quiet_adjudication_limit_hits == 1
+    assert result.stats.generation_work_limit_hits == 1
+    assert result.elapsed_seconds < 0.5
+
+
+def test_quiet_adjudication_has_search_wide_hard_ceiling_without_work_limit(
+    monkeypatch,
+) -> None:
+    calls = 0
+
+    def unbounded_probe(state, *, should_stop=None):
+        nonlocal calls
+        assert should_stop is not None
+        while True:
+            calls += 1
+            if should_stop():
+                raise GenerationCancelled
+
+    monkeypatch.setattr(
+        search_module, "quiet_adjudication_status", unbounded_probe
+    )
+    state = ProgressiveState.from_fen(
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1",
+        20,
+        quiet_series=10,
+    )
+    searcher = SeriesSearcher(SearchLimits(depth_series=1))
+
+    assert searcher._quiet_adjudication(state) == "manual-proof-required"
+    assert calls == QUIET_ADJUDICATION_POSITION_LIMIT + 1
+    assert (
+        searcher.stats.quiet_adjudication_positions
+        == QUIET_ADJUDICATION_POSITION_LIMIT
+    )
+    assert searcher.stats.generation_positions == QUIET_ADJUDICATION_POSITION_LIMIT
+    assert searcher.stats.quiet_adjudication_limit_hits == 1
+    assert not searcher._quiet_work_limit_reached
+
+    # A transposition must reuse the conservative adjudication instead of
+    # restarting another bounded proof search.
+    assert searcher._quiet_adjudication(state.copy()) == "manual-proof-required"
+    assert calls == QUIET_ADJUDICATION_POSITION_LIMIT + 1
+    assert searcher.stats.quiet_adjudication_cache_hits == 1
 
 
 def test_quiet_draw_with_bare_kings_is_proven_not_heuristically_scored() -> None:

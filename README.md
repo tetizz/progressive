@@ -20,11 +20,20 @@ launch is available from PowerShell:
 The board supports click-to-move and dragging, legal-target highlighting,
 promotion choice, castling, progressive en passant, board flipping, series
 undo/reset, arbitrary boundary positions, opening-report browsing, and real
-engine analysis. Every micro-move appears separately inside its progressive
-series. The local analysis tree can branch from any checked prefix, survives a
-reload, and replays every saved path through the server instead of trusting an
-intermediate client FEN. Mid-series analysis preserves the played prefix and
-searches only its legal completions.
+engine analysis. A completed series hands off automatically, so the board is
+immediately playable for the next side. Every micro-move appears separately
+inside its progressive series. The local analysis tree can branch from any
+checked prefix, survives a reload, and replays every saved path through the
+server instead of trusting an intermediate client FEN. Named positions can be
+saved and loaded on the device; the server rechecks their boundary and full
+move prefix before accepting them.
+
+Analysis begins automatically, cancels when the board changes, and deepens one
+complete-series ply at a time up to the selected Quick or Strong ceiling. The
+latest completed result remains visible while the next pass is running. The
+pause control stops analysis without making the board unplayable, and the
+principal variation can be stepped one micro-move at a time without altering
+the played study.
 
 Search results expose depth, timeout, deterministic work limits, width
 selectivity, proof/adjudication status, principal variations, alternatives,
@@ -34,9 +43,25 @@ evidence is deep and complete enough; otherwise the honest label is `Not
 rated`. Scores are explicitly White-centric heuristic points, not pawns or
 centipawns.
 
-The web service binds only to `127.0.0.1`. Analysis is time-, depth-, body-,
-branch-, and concurrency-bounded; database writes are disabled unless a fixed
-database path is supplied when launching the server.
+The normal web service binds only to `127.0.0.1`. Analysis is time-, depth-,
+body-, branch-, deterministic-work-, and concurrency-bounded; database writes
+are disabled unless a fixed database path is supplied when launching the
+server.
+
+## Hosted board
+
+[`render.yaml`](render.yaml) defines the real Python web service rather than a
+static imitation of the board. Hosted mode requires an exact HTTPS origin,
+disables all SQLite access, reduces request and search ceilings, and permits
+only one CPU-heavy analysis at a time. Deploy from the public repository:
+
+[Deploy to Render](https://render.com/deploy?repo=https://github.com/tetizz/progressive)
+
+The free service can sleep between visits and take time to wake. Cloudflare can
+provide a custom domain and edge protection in front of this origin. A free
+Cloudflare Worker is not used as the chess engine because it cannot provide the
+Python runtime and sustained CPU search this project requires; Cloudflare
+Containers are a compatible paid alternative.
 
 ## Engine training league
 
@@ -50,10 +75,12 @@ processors while the league is running.
 
 The ten engines share one rules/search implementation and vary a bounded,
 versioned progressive-evaluation genome. Matches use the same deterministic
-depth, branch, and generation-work limits for both engines. Each default
+depth, complete-series branch cap, and per-search work limits for both engines.
+The normal league has no series-number or whole-game cutoff: budgets keep
+increasing 1, 2, 3, ... until checkmate or a rules-proven draw. Each default
 promotion match uses ten unique opening boundaries in color-swapped pairs.
-Unfinished max-series games are recorded as inconclusive, not silently called
-draws. A challenger becomes the one board champion only after the tactical
+Technical failures are recorded as `*`, excluded from W/D/L and pair fitness,
+and never awarded as wins. A challenger becomes the one board champion only after the tactical
 gate passes, at least ten unique pairs finish, it wins at least nine pairs,
 loses no pair, and its pair score is above 50%. This is deliberately labeled
 fixed-suite evidence, not a general-strength confidence claim.

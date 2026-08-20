@@ -36,7 +36,7 @@ profile limits are metadata only during a league: both sides receive the exact
 same match limits, so a challenger cannot win by buying a larger tree. Profile
 IDs are hashes of the behavior-affecting parameter vector.
 
-## Ten-engine league
+## Fast training funnel and ten-engine league
 
 The default population is the current champion plus nine deterministic bounded
 mutations. Later generations retain the champion, can include prior champions,
@@ -44,8 +44,63 @@ cross the champion with the strongest challenger, and fill the remaining slots
 with new mutations. Engines never vote on moves or splice principal variations;
 only evaluation parameters cross over.
 
-The preliminary stage is a color-balanced round robin. The promotion stage is
-a separate match against the champion. Its first 20 games are ten unique,
+The old all-play-all preliminary stage has been replaced by a cached
+preselection funnel. Normal runs require all 30 unique boundaries in opening
+suite v4 plus separate tactical positions; a smaller corpus is accepted only
+when explicitly marked as a smoke/wiring run. Exact Scottish boundary
+positions are searched once with the champion under versioned, deterministic
+shallow/wide limits. The cache
+stores the seven unscaled evaluation terms, bounded opponent-mate evidence,
+canonical position hashes, trace-level train/holdout assignments, and optional
+prior-engine suggestion provenance. Thousands of mutations can then be
+dot-scored without rerunning legality or search. Only top-K profiles receive
+the cached short-trace and tactical proxy screen, and only the best challenger
+marked `eligible_for_full_game_testing` continues to full games. That field is
+permission to test, not a safety pass or promotion.
+
+Every funnel result says that it is a cached position/short-rollout proxy, not
+WDL, Elo, or independent strength evidence. A prior engine's suggested move is
+stored separately from the deeper internal re-search label, along with explicit
+agreement or disagreement; teacher moves are never treated as truth and no
+external engine code is copied. Opening boundaries are grouped by deterministic
+line family before splitting: an ancestor and descendant with the same first
+complete series always stay together, while the empty root and arbitrary
+anchors have explicit families. Derived rows inherit that family, so a line
+cannot leak across train and holdout. Cache and report IDs cover the
+deterministic evidence, and atomic JSON writes let an interrupted generation
+resume without changing its ranking.
+
+Opponent-reply safety has three explicit states: `proven-unsafe`,
+`complete-no-mate`, and `unknown-selective`. Only `complete-no-mate` sets the
+safety-pass or tactical-non-regression booleans. A selectively searched row can
+still be shortlisted for controlled full-game testing when it found no known
+mate and passed the tactical proxy, but it remains `unknown-selective` and
+makes no safety claim. Later, combinatorially larger depth-one rows remain
+position proxies rather than opponent-reply evidence. The actual top challenger
+must still pass the existing searched tactical gate and the full-game promotion
+match.
+
+Run the standalone, resumable screen with:
+
+```powershell
+spc train-fast .\fast-training-evidence
+```
+
+That command uses the full 32-position root corpus by default and writes an
+atomic cache and report. `--smoke` is an explicitly labeled four-position
+wiring preset; it is not a smaller strength test. The normal `spc league run`
+path calls the same funnel before its unchanged full-game promotion stage.
+
+This shallow/wide design is informed by Janko and Guid's 2016 Progressive Chess
+experiments: they tested search depths through self-play, reported their
+depth-one configuration outperforming deeper/narrower configurations under the
+tested time limits, tested heuristic ablations, and assembled a 900-position
+mate corpus. See [A program for Progressive chess](https://chesslife.io/matej/doc/A_Program_for_Progressive_Chess.pdf),
+sections 7.1, 7.2, 8.4, and 8.5. Their program used Italian rules and different
+depth terminology, so those results motivate our funnel but do not validate
+our Scottish engine or count as strength evidence.
+
+The promotion stage remains a separate match against the champion. Its first 20 games are ten unique,
 versioned boundaries with the profile colors swapped once at each boundary.
 Replacement pairs are added when a game is inconclusive, up to the configured
 cap. Seeds, boundaries, profile IDs, limits, traces, outcomes, and failures are
@@ -55,8 +110,7 @@ Promotion requires all of the following:
 
 1. The rules/tactical gate passes, including published long-series legality
    anchors and a searched series-four mate construction.
-2. There are no timeout, work-limit, missing-move, or worker failures in the
-   evidence.
+2. There are no exception, missing-move, or worker failures in the evidence.
 3. At least 20 controlled games finish as ten unique color-swapped pairs.
 4. The candidate wins at least nine of those pairs and loses no pair.
 5. The candidate's normalized pair score is above 50%.
@@ -66,9 +120,13 @@ described as a 95% confidence interval or proof of general superiority; that
 would require independently sampled openings from a declared population and a
 separate external-engine test set.
 
-Reaching the configured maximum series is stored as `*` inconclusive. It is
-excluded from wins, draws, losses, and the confidence denominator. A technical
-failure invalidates promotion evidence; it is never converted into a draw.
+There is no normal maximum series: the progressive move allowance continues
+1, 2, 3, ... until checkmate or a rules-proven draw. An optional whole-game
+logical-work budget or emergency series watchdog is operational only. If used
+and exhausted, it is stored as `*` incomplete and excluded from wins, draws,
+losses, and pair fitness. Exceptions and searches that produce no legal best
+series are also `*`, never opponent wins. A per-search work limit may still
+play its best fully legal root series found so far.
 
 ## Resource boundary
 
@@ -80,10 +138,11 @@ planning estimate rather than an operating-system RSS limit. The detected CPU
 count, available memory, per-worker estimate, reserve, and final worker count
 are persisted with every run and refreshed on resume.
 
-League fairness uses deterministic depth, branch, and generation-position
-budgets. Wall time is not used to give one profile more search than another.
-Each game uses fresh search state so process order and warm caches do not become
-fitness.
+League fairness uses deterministic depth, complete-series candidates per node,
+and logical-work budgets covering series expansion, distinct frontier scoring,
+uncached static evaluations, evaluation reach, and quiet adjudication. Wall
+time is not used to give one profile more search than another. Each game uses
+fresh search state so process order and warm caches do not become fitness.
 
 ## Move quality
 

@@ -4,11 +4,16 @@
   const START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
   const FILES = "abcdefgh";
   const STUDY_STORAGE_KEY = "scottish-progressive-analysis-study-v1";
+  const POSITION_STORAGE_KEY = "scottish-progressive-saved-positions-v1";
   const STUDY_SCHEMA_VERSION = 1;
+  const POSITION_SCHEMA_VERSION = 1;
   const MAX_STORED_NODES = 800;
+  const MAX_SAVED_POSITIONS = 50;
+  const AUTO_ANALYSIS_DEBOUNCE_MS = 260;
+  const AUTO_ANALYSIS_RETRY_MS = 700;
   const ANALYSIS_PRESETS = {
-    quick: { depth: 2, cap: 24, seconds: 5, alternatives: 4, generationPositions: 100_000 },
-    strong: { depth: 4, cap: 256, seconds: 30, alternatives: 8, generationPositions: 5_000_000 },
+    quick: { depth: 4, cap: 48, seconds: 1.25, alternatives: 2, generationPositions: 150_000 },
+    strong: { depth: 8, cap: 256, seconds: 5, alternatives: 3, generationPositions: 5_000_000 },
   };
   const PIECE_NAMES = {
     p: "pawn", n: "knight", b: "bishop", r: "rook", q: "queen", k: "king",
@@ -32,6 +37,10 @@
     "warnings-section", "warnings-list", "search-stats", "theory-meta", "theory-loading",
     "theory-error", "opening-list", "refresh-openings", "setup-form", "fen-input",
     "series-input", "quiet-input", "ep-input", "load-start", "setup-error",
+    "analysis-progress", "analysis-progress-fill", "analysis-progress-text",
+    "save-position", "load-position", "saved-dialog", "saved-dialog-close",
+    "save-position-form", "saved-name", "save-current-position",
+    "saved-position-status", "saved-positions-list",
     "promotion-dialog", "promotion-options", "toast",
   ].map((id) => [id.replaceAll("-", "_"), document.getElementById(id)]));
 
@@ -63,16 +72,34 @@
     drag: null,
     suppressClick: false,
     analysis: null,
+    arrowSelection: null,
     prefixAbort: null,
     analysisAbort: null,
+    pvAbort: null,
     prefixSequence: 0,
+    analysisSequence: 0,
+    analysisTimer: null,
+    analysisPaused: false,
+    analysisRunning: false,
+    analysisPassDepth: 0,
+    analysisCompletedDepth: 0,
+    analysisRequestedDepth: 0,
+    positionReady: false,
+    positionBusy: false,
+    maximumAnalysisDepth: 8,
+    maximumAnalysisSeconds: 30,
+    maximumBranchCap: 512,
+    maximumAlternatives: 32,
     toastTimer: null,
     study: null,
     currentTreeNodeId: null,
     seriesParentNodeId: null,
     branching: false,
+    viewingHistorical: false,
+    handoffNotice: null,
     analysisPreset: "strong",
     maximumGenerationPositions: 5_000_000,
+    savedPositions: [],
   };
 
   function first(...values) {
@@ -134,7 +161,10 @@
         payload.message,
         `${response.status} ${response.statusText}`,
       );
-      throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+      const error = new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+      error.status = response.status;
+      error.code = first(payload.error?.code, payload.code, null);
+      throw error;
     }
     return payload;
   }
@@ -250,7 +280,7 @@
     const quiet = Math.floor(asNumber(value.quiet_series, -1));
     const epTargets = normalizeEpTargets(value.ep_targets).map((square) => square.toLowerCase());
     if (!fen || fen.length > 180 || fen.split("/").length !== 8) return null;
-    if (series < 1 || series > 512 || quiet < 0 || quiet > 1000000) return null;
+    if (series < 1 || series > 1000000 || quiet < 0 || quiet > 1000000) return null;
     if (epTargets.length > 8 || epTargets.some((square) => !/^[a-h][1-8]$/.test(square))) return null;
     return { fen, series, quiet_series: quiet, ep_targets: epTargets };
   }
@@ -258,6 +288,148 @@
   function boundaryKey(boundary) {
     const safe = cloneBoundary(boundary);
     return [safe.fen, safe.series, safe.quiet_series, [...safe.ep_targets].sort().join(",")].join("|");
+  }
+
+  function safeMovePrefix(value, boundary) {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map(String)
+      .map((move) => move.toLowerCase())
+      .filter((move) => /^[a-h][1-8][a-h][1-8][qrbn]?$/.test(move))
+      .slice(0, Math.min(boundary.series, MAX_STORED_NODES));
+  }
+
+  function sanitizeSavedPosition(value) {
+    if (!value || typeof value !== "object") return null;
+    const boundary = safeBoundary(value.boundary);
+    if (!boundary) return null;
+    const prefix = safeMovePrefix(value.prefix, boundary);
+    if (Array.isArray(value.prefix) && prefix.length !== value.prefix.length) return null;
+    const name = typeof value.name === "string" ? value.name.trim().slice(0, 60) : "";
+    const id = typeof value.id === "string" && value.id.length <= 100 ? value.id : createId("position");
+    return {
+      id,
+      name: name || `Series ${boundary.series} position`,
+      boundary,
+      prefix,
+      createdAt: typeof value.createdAt === "string" ? value.createdAt : new Date().toISOString(),
+    };
+  }
+
+  function restoreSavedPositions() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(POSITION_STORAGE_KEY) || "null");
+      if (!raw || raw.version !== POSITION_SCHEMA_VERSION || !Array.isArray(raw.positions)) {
+        state.savedPositions = [];
+        return;
+      }
+      state.savedPositions = raw.positions
+        .slice(0, MAX_SAVED_POSITIONS)
+        .map(sanitizeSavedPosition)
+        .filter(Boolean);
+    } catch {
+      state.savedPositions = [];
+    }
+  }
+
+  function persistSavedPositions() {
+    try {
+      localStorage.setItem(POSITION_STORAGE_KEY, JSON.stringify({
+        version: POSITION_SCHEMA_VERSION,
+        positions: state.savedPositions.slice(0, MAX_SAVED_POSITIONS),
+      }));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function savedPositionLabel() {
+    const played = state.prefix.length;
+    return played
+      ? `Series ${state.boundary.series} after move ${played}`
+      : `Series ${state.boundary.series} boundary`;
+  }
+
+  function renderSavedPositions() {
+    if (!dom.saved_positions_list) return;
+    if (!state.savedPositions.length) {
+      const empty = document.createElement("p");
+      empty.className = "saved-empty";
+      empty.textContent = "No saved positions yet.";
+      dom.saved_positions_list.replaceChildren(empty);
+      return;
+    }
+    const rows = state.savedPositions.map((saved) => {
+      const row = document.createElement("div");
+      row.className = "saved-position-row";
+      const copy = document.createElement("div");
+      copy.className = "saved-position-copy";
+      const title = document.createElement("strong");
+      title.textContent = saved.name;
+      const detail = document.createElement("small");
+      detail.textContent = `Series ${saved.boundary.series} · ${saved.prefix.length} played move${saved.prefix.length === 1 ? "" : "s"}`;
+      copy.append(title, detail);
+      const load = document.createElement("button");
+      load.type = "button";
+      load.className = "saved-load";
+      load.textContent = "Load";
+      load.setAttribute("aria-label", `Load ${saved.name}`);
+      load.addEventListener("click", () => loadSavedPosition(saved.id));
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "saved-delete";
+      remove.textContent = "Delete";
+      remove.setAttribute("aria-label", `Delete ${saved.name}`);
+      remove.addEventListener("click", () => {
+        state.savedPositions = state.savedPositions.filter((candidate) => candidate.id !== saved.id);
+        const stored = persistSavedPositions();
+        dom.saved_position_status.textContent = stored ? `Deleted ${saved.name}` : "The position was removed for this session, but local storage could not be updated.";
+        renderSavedPositions();
+      });
+      row.append(copy, load, remove);
+      return row;
+    });
+    dom.saved_positions_list.replaceChildren(...rows);
+  }
+
+  function openSavedPositions(focusName = false) {
+    renderSavedPositions();
+    dom.saved_position_status.textContent = `${state.savedPositions.length} saved position${state.savedPositions.length === 1 ? "" : "s"}`;
+    dom.saved_name.value = focusName ? savedPositionLabel() : "";
+    if (!dom.saved_dialog.open) dom.saved_dialog.showModal();
+    window.setTimeout(() => {
+      if (focusName) {
+        dom.saved_name.focus();
+        dom.saved_name.select();
+      } else {
+        dom.saved_positions_list.querySelector("button")?.focus();
+      }
+    }, 0);
+  }
+
+  function saveCurrentPosition(event) {
+    event?.preventDefault();
+    if (!state.positionReady || state.positionBusy) {
+      dom.saved_position_status.textContent = "Wait for the server to finish checking the position.";
+      return;
+    }
+    const name = dom.saved_name.value.trim().slice(0, 60) || savedPositionLabel();
+    const saved = {
+      id: createId("position"),
+      name,
+      boundary: cloneBoundary(state.boundary),
+      prefix: [...state.prefix],
+      createdAt: new Date().toISOString(),
+    };
+    state.savedPositions.unshift(saved);
+    state.savedPositions = state.savedPositions.slice(0, MAX_SAVED_POSITIONS);
+    const stored = persistSavedPositions();
+    dom.saved_position_status.textContent = stored
+      ? `Saved ${name} on this device.`
+      : "This browser could not store the position.";
+    dom.saved_name.value = "";
+    renderSavedPositions();
   }
 
   function createId(prefix = "move") {
@@ -399,8 +571,235 @@
   }
 
   function setBoardBusy(busy) {
+    state.positionBusy = busy;
     dom.board.setAttribute("aria-busy", String(busy));
     dom.board_loading.classList.toggle("is-hidden", !busy);
+    dom.board_shell.classList.toggle("is-checking", busy);
+    if (busy) state.selected = null;
+  }
+
+  function analysisPositionKey() {
+    return `${boundaryKey(state.boundary)}|${state.prefix.join(",")}`;
+  }
+
+  function autoDepthLimit() {
+    return Math.max(1, Math.min(
+      state.maximumAnalysisDepth,
+      Math.floor(asNumber(dom.depth_control.value, state.maximumAnalysisDepth)),
+    ));
+  }
+
+  function updateAnalysisProgress(message = null) {
+    const maximum = autoDepthLimit();
+    const completed = Math.max(0, Math.min(maximum, state.analysisCompletedDepth));
+    const visual = state.analysisRunning
+      ? Math.max(completed, Math.min(maximum, state.analysisRequestedDepth - 0.35))
+      : completed;
+    dom.analysis_progress.setAttribute("aria-valuemax", String(maximum));
+    dom.analysis_progress.setAttribute("aria-valuenow", String(completed));
+    dom.analysis_progress_fill.style.width = `${maximum ? visual / maximum * 100 : 0}%`;
+    const inspector = document.querySelector(".inspector");
+    inspector?.classList.toggle("is-analyzing", state.analysisRunning);
+    dom.analyze_button.classList.toggle("is-paused", state.analysisPaused);
+    dom.analyze_button.setAttribute("aria-pressed", String(state.analysisPaused));
+    dom.analyze_button.disabled = Boolean(state.outcome);
+    const label = dom.analyze_button.querySelector("span");
+    if (label) label.textContent = state.analysisPaused ? "Resume" : "Pause";
+    const icon = dom.analyze_button.querySelector("path");
+    if (icon) icon.setAttribute("d", state.analysisPaused ? "M8 5v14l11-7L8 5Z" : "M7 5h4v14H7V5Zm6 0h4v14h-4V5Z");
+    if (message !== null) {
+      dom.analysis_progress_text.textContent = message;
+    } else if (state.outcome) {
+      dom.analysis_progress_text.textContent = `Game over · ${humanize(state.outcome)}`;
+    } else if (state.analysisPaused) {
+      dom.analysis_progress_text.textContent = completed ? `Paused at depth ${completed}` : "Paused";
+    } else if (state.analysisRunning) {
+      dom.analysis_progress_text.textContent = `Searching depth ${state.analysisRequestedDepth} · depth ${completed} complete`;
+    } else if (completed >= maximum) {
+      dom.analysis_progress_text.textContent = `Depth ${completed} complete`;
+    } else {
+      dom.analysis_progress_text.textContent = "Waiting for the position…";
+    }
+  }
+
+  function cancelAutoAnalysis(resetDepth = true) {
+    window.clearTimeout(state.analysisTimer);
+    state.analysisTimer = null;
+    state.analysisAbort?.abort();
+    state.analysisAbort = null;
+    state.analysisRunning = false;
+    state.analysisSequence += 1;
+    if (resetDepth) {
+      state.analysisPassDepth = 0;
+      state.analysisCompletedDepth = 0;
+      state.analysisRequestedDepth = 0;
+    }
+    updateAnalysisProgress();
+  }
+
+  function queueAutoAnalysis(delay = AUTO_ANALYSIS_DEBOUNCE_MS) {
+    window.clearTimeout(state.analysisTimer);
+    state.analysisTimer = null;
+    if (state.analysisPaused || state.outcome || !state.positionReady || state.positionBusy) {
+      updateAnalysisProgress();
+      return;
+    }
+    const maximum = autoDepthLimit();
+    if (state.analysisPassDepth >= maximum) {
+      updateAnalysisProgress(state.analysisCompletedDepth < state.analysisPassDepth
+        ? `Requested depth ${state.analysisPassDepth} · completed depth ${state.analysisCompletedDepth}`
+        : `Depth ${state.analysisCompletedDepth || maximum} complete`);
+      return;
+    }
+    const sequence = state.analysisSequence;
+    const key = analysisPositionKey();
+    const next = state.analysisPassDepth + 1;
+    updateAnalysisProgress(`Queued depth ${next} · depth ${state.analysisCompletedDepth} complete`);
+    state.analysisTimer = window.setTimeout(() => {
+      state.analysisTimer = null;
+      void runAutoAnalysisPass(sequence, key);
+    }, delay);
+  }
+
+  function restartAutoAnalysis(delay = AUTO_ANALYSIS_DEBOUNCE_MS) {
+    cancelAutoAnalysis(true);
+    dom.analysis_error.hidden = true;
+    queueAutoAnalysis(delay);
+  }
+
+  function analysisProofLabel(result) {
+    const meta = proofMetadata(result);
+    if (asBoolean(result.work_limit_reached) === true) return "work limit reached";
+    if (meta.timedOut === true) return "timed out";
+    if (meta.exact === true) return "exact width";
+    if (meta.exact === false) return "selective width";
+    return "width unreported";
+  }
+
+  function hasCertifiedProof(result) {
+    const meta = proofMetadata(result);
+    return Boolean(result.proven_result)
+      && meta.exact === true
+      && meta.timedOut === false
+      && asBoolean(result.work_limit_reached) !== true
+      && Number(meta.completed) >= Number(meta.requested);
+  }
+
+  async function runAutoAnalysisPass(sequence, key) {
+    if (
+      sequence !== state.analysisSequence
+      || key !== analysisPositionKey()
+      || state.analysisPaused
+      || state.outcome
+      || !state.positionReady
+      || state.positionBusy
+    ) return;
+    state.pvAbort?.abort();
+    const maximum = autoDepthLimit();
+    if (state.analysisPassDepth >= maximum) return;
+    exitPvPreview(false);
+    const requestedDepth = Math.min(maximum, state.analysisPassDepth + 1);
+    const controller = new AbortController();
+    state.analysisAbort = controller;
+    state.analysisRunning = true;
+    state.analysisRequestedDepth = requestedDepth;
+    const hasResult = Boolean(state.analysis);
+    dom.analysis_empty.hidden = true;
+    dom.analysis_error.hidden = true;
+    dom.analysis_loading.hidden = hasResult;
+    updateAnalysisProgress();
+    try {
+      const maxSeries = Math.max(1, Math.min(
+        state.maximumBranchCap,
+        Math.floor(asNumber(dom.cap_control.value, 256)),
+      ));
+      const timeLimit = Math.max(0.1, Math.min(
+        state.maximumAnalysisSeconds,
+        asNumber(dom.time_control.value, 5),
+      ));
+      const alternatives = Math.max(0, Math.min(
+        3,
+        state.maximumAlternatives,
+        Math.floor(asNumber(dom.alternatives_control.value, 3)),
+      ));
+      const preset = ANALYSIS_PRESETS[state.analysisPreset] || ANALYSIS_PRESETS.strong;
+      const generationPositions = Math.min(
+        state.maximumGenerationPositions,
+        Math.max(1_000, Math.floor(asNumber(preset.generationPositions, state.maximumGenerationPositions))),
+      );
+      const payload = await requestJson("/api/analyze", {
+        method: "POST",
+        signal: controller.signal,
+        body: JSON.stringify({
+          ...boundaryPayload(),
+          prefix: [...state.prefix],
+          depth: requestedDepth,
+          max_series: maxSeries,
+          time_limit: timeLimit,
+          max_generation_positions: generationPositions,
+          alternatives,
+          rate_move: state.prefix.length > 0,
+          save: false,
+        }),
+      });
+      if (sequence !== state.analysisSequence || key !== analysisPositionKey()) return;
+      const result = first(payload.analysis, payload.result, payload);
+      state.analysisPassDepth = requestedDepth;
+      const meta = proofMetadata(result);
+      state.analysisCompletedDepth = Math.max(
+        state.analysisCompletedDepth,
+        Math.max(0, Math.floor(asNumber(meta.completed, requestedDepth))),
+      );
+      state.arrowSelection = null;
+      renderAnalysis(result);
+      recordAnalysis(result);
+      const proof = analysisProofLabel(result);
+      if (hasCertifiedProof(result)) {
+        updateAnalysisProgress(`Depth ${state.analysisCompletedDepth} · certified ${humanize(result.proven_result)}`);
+        return;
+      }
+      if (requestedDepth < maximum) {
+        updateAnalysisProgress(`Depth ${state.analysisCompletedDepth} complete · ${proof} · deepening`);
+        queueAutoAnalysis(150);
+      } else {
+        updateAnalysisProgress(state.analysisCompletedDepth < requestedDepth
+          ? `Requested depth ${requestedDepth} · completed depth ${state.analysisCompletedDepth} · ${proof}`
+          : `Depth ${state.analysisCompletedDepth} complete · ${proof}`);
+      }
+    } catch (error) {
+      if (error.name === "AbortError" || sequence !== state.analysisSequence) return;
+      if (error.status === 429) {
+        dom.analysis_loading.hidden = Boolean(state.analysis);
+        updateAnalysisProgress("Engine busy · retrying this depth");
+        queueAutoAnalysis(AUTO_ANALYSIS_RETRY_MS);
+        return;
+      }
+      dom.analysis_loading.hidden = true;
+      dom.analysis_error.hidden = false;
+      dom.analysis_error_text.textContent = displayError(error);
+      dom.analysis_empty.hidden = true;
+      updateAnalysisProgress(`Analysis stopped · ${displayError(error)}`);
+    } finally {
+      if (state.analysisAbort === controller) state.analysisAbort = null;
+      if (sequence === state.analysisSequence) {
+        state.analysisRunning = false;
+        document.querySelector(".inspector")?.classList.remove("is-analyzing");
+      }
+    }
+  }
+
+  function toggleAutoAnalysis() {
+    state.analysisPaused = !state.analysisPaused;
+    if (state.analysisPaused) {
+      cancelAutoAnalysis(false);
+      dom.analysis_loading.hidden = Boolean(state.analysis);
+      dom.analysis_empty.hidden = Boolean(state.analysis);
+      updateAnalysisProgress();
+      return;
+    }
+    state.analysisSequence += 1;
+    updateAnalysisProgress();
+    queueAutoAnalysis(80);
   }
 
   function applyPrefixPayload(payload, requestedPrefix, requestedSan) {
@@ -429,12 +828,18 @@
     state.lastMove = state.prefix.at(-1) || null;
     state.selected = null;
     state.analysis = null;
+    state.arrowSelection = null;
+    state.positionReady = true;
     clearAnalysisDisplay();
     renderAll();
+    queueAutoAnalysis();
   }
 
   async function refreshPrefix(requestedPrefix = state.prefix, requestedSan = state.prefixSan) {
     state.prefixAbort?.abort();
+    state.positionReady = false;
+    cancelAutoAnalysis(true);
+    state.pvAbort?.abort();
     const controller = new AbortController();
     state.prefixAbort = controller;
     const sequence = ++state.prefixSequence;
@@ -450,15 +855,21 @@
       return payload;
     } catch (error) {
       if (error.name === "AbortError") return null;
-      showToast(`Position error: ${displayError(error)}`);
+      const message = `Position error: ${displayError(error)}`;
+      showToast(message);
       if (!state.prefix.length) {
         state.boardFen = state.boundary.fen;
         state.legalMoves = [];
         renderAll();
       }
+      dom.boundary_notice.className = "boundary-notice is-game-over";
+      dom.boundary_notice_text.textContent = message;
       return null;
     } finally {
-      if (sequence === state.prefixSequence) setBoardBusy(false);
+      if (sequence === state.prefixSequence) {
+        setBoardBusy(false);
+        queueAutoAnalysis();
+      }
     }
   }
 
@@ -587,28 +998,32 @@
     const dx = to.x - from.x;
     const dy = to.y - from.y;
     const length = Math.hypot(dx, dy) || 1;
-    const shorten = 3.2;
-    line.setAttribute("x1", String(from.x + (dx / length) * 1.2));
-    line.setAttribute("y1", String(from.y + (dy / length) * 1.2));
+    const shorten = marker === "arrow-best" ? 4.1 : 3.8;
+    line.setAttribute("x1", String(from.x + (dx / length) * 1.65));
+    line.setAttribute("y1", String(from.y + (dy / length) * 1.65));
     line.setAttribute("x2", String(to.x - (dx / length) * shorten));
     line.setAttribute("y2", String(to.y - (dy / length) * shorten));
     line.setAttribute("stroke", color);
     line.setAttribute("stroke-width", String(width));
     line.setAttribute("stroke-opacity", String(opacity));
     line.setAttribute("marker-end", `url(#${marker})`);
+    line.classList.add(marker === "arrow-best" ? "is-best" : "is-alternative");
     dom.board_arrows.append(line);
   }
 
   function renderArrows() {
     [...dom.board_arrows.querySelectorAll("line")].forEach((line) => line.remove());
     if (!state.analysis || state.previewIndex !== null) return;
-    const best = extractUci(first(state.analysis.best_completion, state.analysis.best_series));
-    const alternatives = analysisAlternatives().slice(0, 3);
-    alternatives.reverse().forEach((alternative, index) => {
-      const uci = extractUci(first(alternative.next_move_uci, alternative.completion, alternative));
-      if (uci && uci !== best) addArrow(uci, index === 0 ? "#7faac9" : "#e6b85c", "arrow-alt", 1.8, 0.58);
-    });
-    if (best) addArrow(best, "#a9d279", "arrow-best", 2.65, 0.88);
+    const engineBest = extractUci(first(state.analysis.best_completion, state.analysis.best_series));
+    const best = state.arrowSelection || engineBest;
+    const candidates = [engineBest, ...analysisAlternatives().map((alternative) => (
+      extractUci(first(alternative.next_move_uci, alternative.completion, alternative))
+    ))]
+      .filter(Boolean)
+      .filter((uci, index, values) => uci !== best && values.indexOf(uci) === index)
+      .slice(0, 2);
+    [...candidates].reverse().forEach((uci) => addArrow(uci, "#637179", "arrow-alt", 1.15, 0.5));
+    if (best) addArrow(best, "#81b64c", "arrow-best", 1.8, 0.88);
   }
 
   function renderSeriesLedger() {
@@ -860,12 +1275,13 @@
     let prefixSan = [];
     let seriesParentId = null;
     let lastPayload = null;
+    const history = [];
     if (!path.length) {
       lastPayload = await requestJson("/api/prefix", {
         method: "POST",
         body: JSON.stringify({ ...rootBoundary, progressive_ep: [...rootBoundary.ep_targets], prefix: [] }),
       });
-      return { boundary: rootBoundary, prefix, prefixSan, seriesParentId, payload: lastPayload };
+      return { boundary: rootBoundary, prefix, prefixSan, seriesParentId, history, payload: lastPayload };
     }
     for (let index = 0; index < path.length; index += 1) {
       const node = path[index];
@@ -873,6 +1289,13 @@
       if (lastPayload?.complete) {
         const next = normalizeNextState(lastPayload.next_state);
         if (!next) throw new Error("Saved line has no trusted next-series boundary");
+        history.push({
+          boundary: cloneBoundary(boundary),
+          prefix: [...prefix],
+          prefixSan: [...prefixSan],
+          treeNodeId: path[index - 1]?.id || null,
+          seriesParentNodeId: seriesParentId,
+        });
         boundary = next;
         prefix = [];
         prefixSan = [];
@@ -895,12 +1318,15 @@
       node.validated = true;
       if (node.complete && !node.quality) node.quality = qualityForCompletedNode(node);
     }
-    return { boundary, prefix, prefixSan, seriesParentId, payload: lastPayload };
+    return { boundary, prefix, prefixSan, seriesParentId, history, payload: lastPayload };
   }
 
   async function navigateToTreeNode(nodeId) {
     exitPvPreview(false);
     state.prefixAbort?.abort();
+    state.positionReady = false;
+    cancelAutoAnalysis(true);
+    state.pvAbort?.abort();
     const sequence = ++state.prefixSequence;
     setBoardBusy(true);
     try {
@@ -909,8 +1335,10 @@
       state.boundary = cloneBoundary(replayed.boundary);
       state.currentTreeNodeId = nodeId;
       state.seriesParentNodeId = replayed.seriesParentId;
-      state.history = [];
+      state.history = [...replayed.history];
       state.branching = false;
+      state.viewingHistorical = true;
+      state.handoffNotice = null;
       applyPrefixPayload(replayed.payload, replayed.prefix, replayed.prefixSan);
       persistStudy();
       renderStudyTree();
@@ -920,7 +1348,10 @@
       showToast(`Saved line rejected: ${displayError(error)}`);
       return false;
     } finally {
-      if (sequence === state.prefixSequence) setBoardBusy(false);
+      if (sequence === state.prefixSequence) {
+        setBoardBusy(false);
+        queueAutoAnalysis();
+      }
     }
   }
 
@@ -976,7 +1407,7 @@
     const gameOver = Boolean(state.outcome);
     dom.undo_move.disabled = state.prefix.length === 0 && state.history.length === 0;
     dom.reset_series.disabled = state.prefix.length === 0;
-    dom.advance_series.hidden = !(state.complete && state.nextState && !gameOver);
+    dom.advance_series.hidden = !(state.complete && state.nextState && !gameOver && state.viewingHistorical);
 
     dom.boundary_pill.className = "boundary-pill";
     dom.boundary_notice.className = "boundary-notice";
@@ -984,14 +1415,16 @@
       dom.boundary_pill.classList.add("is-mid-series");
       dom.boundary_pill.textContent = "Game over";
       dom.boundary_notice.classList.add("is-game-over");
-      dom.boundary_notice_text.textContent = `${humanize(state.outcome)} ends the game. Undo or restart to review the line; analysis and advancing are disabled.`;
+      dom.boundary_notice_text.textContent = `${humanize(state.outcome)} ends the game. Undo or select an earlier tree move to continue studying.`;
       dom.moves_heading.textContent = humanize(state.outcome);
       dom.series_status.textContent = `Final series: ${state.prefixSan.join(" / ") || "no legal move"}.`;
     } else if (state.complete) {
       dom.boundary_pill.classList.add("is-complete");
-      dom.boundary_pill.textContent = "Exact boundary";
+      dom.boundary_pill.textContent = "Completed series";
       dom.boundary_notice.classList.add("is-complete");
-      dom.boundary_notice_text.textContent = "The full series prefix is complete and retained. Analyze it here or advance to the trusted next boundary.";
+      dom.boundary_notice_text.textContent = state.viewingHistorical
+        ? "Historical completed series. Continue from here to open its trusted next boundary."
+        : "The series is complete and will advance automatically.";
       dom.series_status.textContent = state.outcome
         ? `Series ended: ${humanize(state.outcome)}.`
         : state.check ? "The series ended immediately by check." : "The complete series is ready.";
@@ -1002,18 +1435,16 @@
       dom.boundary_pill.classList.add("is-mid-series");
       dom.boundary_pill.textContent = "Mid-series";
       dom.boundary_notice.classList.add("is-warning");
-      dom.boundary_notice_text.textContent = "Analyze this exact prefix to compare legal completions, or keep playing the same-side series.";
-      dom.series_status.textContent = "The engine will preserve every played micro-move and search only legal completions.";
+      dom.boundary_notice_text.textContent = "Keep playing the same side. Automatic analysis is searching only legal completions of this prefix.";
+      dom.series_status.textContent = "Every micro-move is retained in the local move tree.";
     } else {
       dom.boundary_pill.classList.add("is-boundary");
       dom.boundary_pill.textContent = "Exact boundary";
       dom.boundary_notice.classList.add("is-ready");
-      dom.boundary_notice_text.textContent = "This is an exact series boundary. Engine analysis is available.";
-      dom.series_status.textContent = "Build the complete series one legal move at a time.";
+      dom.boundary_notice_text.textContent = state.handoffNotice || "Play on the board; automatic analysis is already running.";
+      dom.series_status.textContent = state.handoffNotice || `Play ${state.boundary.series} legal move${state.boundary.series === 1 ? "" : "s"}.`;
     }
-    const canAnalyze = !gameOver;
-    dom.analyze_button.disabled = !canAnalyze;
-    dom.analyze_button.title = canAnalyze ? "Analyze this exact position or series prefix" : "The game is over";
+    updateAnalysisProgress();
   }
 
   function renderAll() {
@@ -1029,7 +1460,7 @@
   }
 
   function chooseSquare(square) {
-    if (state.previewIndex !== null) return;
+    if (state.previewIndex !== null || state.positionBusy || state.outcome || state.complete) return;
     const candidates = state.selected
       ? state.legalMoves.filter((move) => move.from === state.selected && move.to === square)
       : [];
@@ -1083,6 +1514,7 @@
   }
 
   async function submitMove(move) {
+    if (state.positionBusy || state.outcome || state.complete || state.previewIndex !== null) return;
     const boundaryAtMove = cloneBoundary(state.boundary);
     const parentId = state.currentTreeNodeId;
     const seriesParentId = state.seriesParentNodeId;
@@ -1090,8 +1522,14 @@
     const nextSan = [...state.prefixSan, move.san || move.uci];
     state.lastMove = move.uci;
     state.selected = null;
+    state.viewingHistorical = false;
+    state.handoffNotice = null;
     const payload = await refreshPrefix(nextPrefix, nextSan);
-    if (payload) attachMoveToStudy(move, payload, boundaryAtMove, parentId, seriesParentId);
+    if (!payload) return;
+    attachMoveToStudy(move, payload, boundaryAtMove, parentId, seriesParentId);
+    if (payload.complete && payload.next_state && !payload.outcome) {
+      await advanceSeries(true);
+    }
   }
 
   function endDrag() {
@@ -1101,7 +1539,7 @@
   }
 
   function onPointerDown(event) {
-    if (state.previewIndex !== null) return;
+    if (state.previewIndex !== null || state.positionBusy || state.outcome || state.complete) return;
     if (event.button !== 0 && event.pointerType !== "touch") return;
     const square = event.target.closest(".square")?.dataset.square;
     if (!square || !legalMovesFrom(square).length) return;
@@ -1313,10 +1751,16 @@
   }
 
   async function preparePvFrames(result, raw) {
+    state.pvAbort?.abort();
+    const controller = new AbortController();
+    state.pvAbort = controller;
     state.pvFrames = [];
     state.previewIndex = null;
     dom.pv_controls.hidden = true;
-    if (!Array.isArray(raw) || !raw.length) return;
+    if (!Array.isArray(raw) || !raw.length) {
+      if (state.pvAbort === controller) state.pvAbort = null;
+      return;
+    }
     let cursor = normalizeNextState(result.state)
       || (state.complete && state.nextState
         ? { ...state.nextState, ep_targets: [...state.nextState.ep_targets] }
@@ -1332,6 +1776,7 @@
         try {
           response = await requestJson("/api/prefix", {
             method: "POST",
+            signal: controller.signal,
             body: JSON.stringify({
               fen: cursor.fen,
               series: cursor.series,
@@ -1340,7 +1785,8 @@
               prefix: moves.slice(0, micro + 1),
             }),
           });
-        } catch {
+        } catch (error) {
+          if (error.name === "AbortError") return;
           response = null;
         }
         if (!response) break;
@@ -1357,10 +1803,11 @@
       if (!next) break;
       cursor = next;
     }
-    if (state.analysis !== result || !frames.length) return;
+    if (state.analysis !== result || !frames.length || controller.signal.aborted) return;
     state.pvFrames = frames;
     dom.pv_controls.hidden = false;
     updatePvControls();
+    if (state.pvAbort === controller) state.pvAbort = null;
   }
 
   function updatePvControls() {
@@ -1446,7 +1893,7 @@
       row.addEventListener("click", () => {
         const uci = extractUci(first(alternative.next_move_uci, alternative.completion, alternative));
         if (!uci) return;
-        state.analysis = { ...state.analysis, best_series: uci, best_completion: [uci] };
+        state.arrowSelection = uci;
         renderArrows();
         showToast(`Showing ${uci} on the board`);
       });
@@ -1570,7 +2017,11 @@
     dom.result_score.textContent = formatPoints(score);
     dom.result_classification.textContent = String(first(result.classification, "Unclassified"));
     dom.result_confidence.textContent = String(first(result.confidence, "Confidence not reported"));
-    dom.result_side.textContent = `${parseFen(state.boardFen).turn === "white" ? "White" : "Black"} to move`;
+    const analyzedSeries = Math.floor(asNumber(
+      first(result.state?.series, result.state?.series_number),
+      state.complete && state.nextState ? state.nextState.series : state.boundary.series,
+    ));
+    dom.result_side.textContent = `${analyzedSeries % 2 === 1 ? "White" : "Black"} to move`;
     renderProofStrip(result);
     renderBestSeries(result);
     renderPv(result);
@@ -1587,16 +2038,20 @@
     if (!preset) return;
     state.analysisPreset = name;
     dom.depth_control.value = String(preset.depth);
-    dom.cap_control.value = String(preset.cap);
-    dom.time_control.value = String(Math.min(preset.seconds, asNumber(dom.time_control.max, preset.seconds)));
-    dom.alternatives_control.value = String(preset.alternatives);
+    dom.cap_control.value = String(Math.min(preset.cap, state.maximumBranchCap));
+    dom.time_control.value = String(Math.min(preset.seconds, state.maximumAnalysisSeconds));
+    dom.alternatives_control.value = String(Math.min(preset.alternatives, state.maximumAlternatives));
     ["quick", "strong"].forEach((candidate) => {
       const button = dom[`preset_${candidate}`];
       const active = candidate === name;
       button.classList.toggle("is-active", active);
       button.setAttribute("aria-pressed", String(active));
     });
-    if (announce) showToast(name === "strong" ? "Strong search uses the server's full allowed limit" : "Quick search preset selected");
+    if (announce) {
+      clearAnalysisDisplay();
+      queueAutoAnalysis(90);
+      showToast(name === "strong" ? "Deep automatic analysis selected" : "Quick automatic analysis selected");
+    }
   }
 
   function markPresetCustom() {
@@ -1605,79 +2060,26 @@
       button.classList.remove("is-active");
       button.setAttribute("aria-pressed", "false");
     });
+    clearAnalysisDisplay();
+    queueAutoAnalysis(120);
   }
 
   function clearAnalysisDisplay() {
-    state.analysisAbort?.abort();
+    cancelAutoAnalysis(true);
+    state.pvAbort?.abort();
+    state.analysis = null;
     state.previewIndex = null;
     state.pvFrames = [];
+    state.arrowSelection = null;
     dom.pv_controls.hidden = true;
     dom.board_shell.classList.remove("is-previewing");
     dom.analysis_loading.hidden = true;
     dom.analysis_error.hidden = true;
     dom.analysis_results.hidden = true;
     dom.analysis_empty.hidden = false;
-    dom.analyze_button.classList.remove("is-loading");
-    dom.analyze_button.querySelector("span").textContent = "Analyze";
     updateEvalBar(null);
     renderArrows();
-  }
-
-  async function analyzePosition() {
-    exitPvPreview(false);
-    if (state.outcome) {
-      showToast("The game is over. Undo or restart to analyze another boundary.");
-      return;
-    }
-    state.analysisAbort?.abort();
-    const controller = new AbortController();
-    state.analysisAbort = controller;
-    dom.analysis_empty.hidden = true;
-    dom.analysis_results.hidden = true;
-    dom.analysis_error.hidden = true;
-    dom.analysis_loading.hidden = false;
-    dom.analyze_button.disabled = true;
-    dom.analyze_button.classList.add("is-loading");
-    dom.analyze_button.querySelector("span").textContent = "Searching";
-    try {
-      const depth = Math.max(1, Math.floor(asNumber(dom.depth_control.value, 2)));
-      const maxSeries = Math.max(1, Math.floor(asNumber(dom.cap_control.value, 24)));
-      const timeLimit = Math.max(0.1, asNumber(dom.time_control.value, 10));
-      const alternatives = Math.max(1, Math.floor(asNumber(dom.alternatives_control.value, 4)));
-      const preset = ANALYSIS_PRESETS[state.analysisPreset] || ANALYSIS_PRESETS.strong;
-      const generationPositions = Math.min(
-        state.maximumGenerationPositions,
-        Math.max(1_000, Math.floor(asNumber(preset.generationPositions, 500_000))),
-      );
-      const payload = await requestJson("/api/analyze", {
-        method: "POST",
-        signal: controller.signal,
-        body: JSON.stringify({
-          ...boundaryPayload(),
-          prefix: [...state.prefix],
-          depth,
-          max_series: maxSeries,
-          time_limit: timeLimit,
-          max_generation_positions: generationPositions,
-          alternatives,
-          rate_move: state.prefix.length > 0,
-          save: false,
-        }),
-      });
-      const result = first(payload.analysis, payload.result, payload);
-      renderAnalysis(result);
-      recordAnalysis(result);
-    } catch (error) {
-      if (error.name === "AbortError") return;
-      dom.analysis_loading.hidden = true;
-      dom.analysis_error.hidden = false;
-      dom.analysis_error_text.textContent = displayError(error);
-      dom.analysis_empty.hidden = true;
-    } finally {
-      dom.analyze_button.disabled = Boolean(state.outcome);
-      dom.analyze_button.classList.remove("is-loading");
-      dom.analyze_button.querySelector("span").textContent = "Analyze";
-    }
+    updateAnalysisProgress();
   }
 
   function reportData(report) {
@@ -1766,6 +2168,9 @@
     const payload = await refreshPrefix([uci], [uci]);
     if (payload) {
       attachMoveToStudy({ uci, san: notationArray(payload, [uci], [uci])[0] }, payload, state.boundary, null, null);
+      if (payload.complete && payload.next_state && !payload.outcome) {
+        await advanceSeries(true);
+      }
       showToast(`Loaded opening move ${uci}`);
     }
   }
@@ -1792,6 +2197,9 @@
       if (epTargets.some((square) => !/^[a-h][1-8]$/i.test(square))) throw new Error("En-passant targets must be squares such as e3 or c6.");
       const candidate = { fen, series, quiet_series: quiet, ep_targets: epTargets.map((square) => square.toLowerCase()) };
       state.prefixAbort?.abort();
+      state.positionReady = false;
+      cancelAutoAnalysis(true);
+      state.pvAbort?.abort();
       const controller = new AbortController();
       state.prefixAbort = controller;
       const sequence = ++state.prefixSequence;
@@ -1811,6 +2219,8 @@
       state.study = createStudy(candidate);
       state.currentTreeNodeId = null;
       state.seriesParentNodeId = null;
+      state.viewingHistorical = false;
+      state.handoffNotice = null;
       applyPrefixPayload(payload, [], []);
       persistStudy();
       switchTab("analysis");
@@ -1820,12 +2230,111 @@
       dom.setup_error.textContent = displayError(error);
     } finally {
       setBoardBusy(false);
+      queueAutoAnalysis();
     }
   }
 
-  async function advanceSeries() {
+  function rebuildStudyFromValidatedPrefix(boundary, payload) {
+    const prefix = Array.isArray(payload.prefix) ? payload.prefix.map(String) : [];
+    const sans = notationArray(payload, prefix, prefix);
+    state.study = createStudy(boundary);
+    let parentId = null;
+    prefix.forEach((uci, index) => {
+      const id = createId();
+      state.study.nodes[id] = {
+        id,
+        parentId,
+        seriesParentId: null,
+        uci,
+        san: sans[index] || uci,
+        boundary: cloneBoundary(boundary),
+        prefix: prefix.slice(0, index + 1),
+        series: boundary.series,
+        micro: index + 1,
+        complete: index === prefix.length - 1 && Boolean(payload.complete),
+        validated: true,
+        quality: null,
+        createdAt: new Date(Date.now() + index).toISOString(),
+      };
+      parentId = id;
+    });
+    state.currentTreeNodeId = parentId;
+    state.seriesParentNodeId = null;
+  }
+
+  async function loadSavedPosition(id) {
+    const saved = state.savedPositions.find((candidate) => candidate.id === id);
+    if (!saved) return;
+    const loadPlan = globalThis.ScottishProgressiveStudySafety.planSavedPositionLoad({
+      study: state.study,
+      currentBoundary: state.boundary,
+      currentPrefix: state.prefix,
+      savedBoundary: saved.boundary,
+      savedPrefix: saved.prefix,
+      boundaryKey,
+    });
+    const studyDescription = loadPlan.nodeCount
+      ? `${loadPlan.nodeCount} saved move${loadPlan.nodeCount === 1 ? "" : "s"}`
+      : `${loadPlan.analysisCount} saved analysis result${loadPlan.analysisCount === 1 ? "" : "s"}`;
+    if (
+      !globalThis.ScottishProgressiveStudySafety.confirmSavedPositionReplacement(
+        loadPlan,
+        `Loading “${saved.name}” will replace the current local study and its ${studyDescription}. Continue?`,
+        (message) => window.confirm(message),
+      )
+    ) {
+      dom.saved_position_status.textContent = "Kept the current study.";
+      return;
+    }
+    exitPvPreview(false);
+    state.prefixAbort?.abort();
+    state.positionReady = false;
+    cancelAutoAnalysis(true);
+    const controller = new AbortController();
+    state.prefixAbort = controller;
+    const sequence = ++state.prefixSequence;
+    setBoardBusy(true);
+    dom.saved_position_status.textContent = `Checking ${saved.name} with the server…`;
+    try {
+      const payload = await requestJson("/api/prefix", {
+        method: "POST",
+        signal: controller.signal,
+        body: JSON.stringify({
+          ...saved.boundary,
+          progressive_ep: [...saved.boundary.ep_targets],
+          prefix: [...saved.prefix],
+        }),
+      });
+      if (sequence !== state.prefixSequence) return;
+      state.boundary = cloneBoundary(saved.boundary);
+      state.history = [];
+      state.branching = false;
+      state.viewingHistorical = Boolean(payload.complete);
+      state.handoffNotice = null;
+      if (!loadPlan.preserveStudy) rebuildStudyFromValidatedPrefix(state.boundary, payload);
+      applyPrefixPayload(payload, saved.prefix, saved.prefix);
+      persistStudy();
+      renderStudyTree();
+      switchTab("analysis");
+      dom.saved_dialog.close();
+      showToast(`Loaded ${saved.name}`);
+    } catch (error) {
+      if (error.name === "AbortError") return;
+      dom.saved_position_status.textContent = `Could not load ${saved.name}: ${displayError(error)}`;
+    } finally {
+      if (sequence === state.prefixSequence) {
+        setBoardBusy(false);
+        queueAutoAnalysis();
+      }
+    }
+  }
+
+  async function advanceSeries(automatic = false) {
     if (!state.nextState || state.outcome) return;
-    state.history.push({
+    const completedSeries = state.boundary.series;
+    const completedByCheck = state.check;
+    const unusedMoves = state.unusedMoves;
+    const historyEntry = {
       boundary: {
         ...state.boundary,
         ep_targets: [...state.boundary.ep_targets],
@@ -1834,23 +2343,32 @@
       prefixSan: [...state.prefixSan],
       treeNodeId: state.currentTreeNodeId,
       seriesParentNodeId: state.seriesParentNodeId,
-    });
-    state.boundary = { ...state.nextState };
+    };
+    state.history.push(historyEntry);
+    state.boundary = { ...state.nextState, ep_targets: [...state.nextState.ep_targets] };
     state.prefix = [];
     state.prefixSan = [];
     state.seriesParentNodeId = state.currentTreeNodeId;
     state.boardFen = state.boundary.fen;
     state.complete = false;
     state.nextState = null;
+    state.viewingHistorical = false;
+    state.handoffNotice = completedByCheck && unusedMoves > 0
+      ? `Series ${completedSeries} ended by check; ${unusedMoves} unused move${unusedMoves === 1 ? "" : "s"} were forfeited.`
+      : `Series ${completedSeries} complete. Series ${state.boundary.series} started automatically.`;
     const payload = await refreshPrefix([], []);
     if (payload) {
       persistStudy();
       renderStudyTree();
-      showToast(`Series ${state.boundary.series} is ready`);
+      showToast(completedByCheck && unusedMoves > 0
+        ? `Check ended Series ${completedSeries} early · ${unusedMoves} unused move${unusedMoves === 1 ? "" : "s"}`
+        : automatic ? `Series ${state.boundary.series} started` : `Continued to Series ${state.boundary.series}`);
     }
   }
 
   async function undoMove() {
+    state.handoffNotice = null;
+    state.viewingHistorical = true;
     if (state.prefix.length) {
       const node = treeNodeFromCursor();
       const targetId = node?.parentId ?? state.seriesParentNodeId;
@@ -1884,6 +2402,8 @@
     if (!payload) return;
     state.currentTreeNodeId = targetId;
     state.branching = false;
+    state.viewingHistorical = false;
+    state.handoffNotice = null;
     persistStudy();
     renderStudyTree();
   }
@@ -1896,6 +2416,7 @@
     if (state.complete && state.nextState) await advanceSeries();
     state.branching = true;
     clearAnalysisDisplay();
+    queueAutoAnalysis(120);
     renderStudyTree();
     dom.board.querySelector(`[data-square="${state.focusSquare}"]`)?.focus();
     showToast("New line ready — play a different legal move");
@@ -1968,25 +2489,58 @@
       dom.engine_status.classList.add("is-online");
       dom.engine_status.classList.remove("is-offline");
       const profileName = first(health.engine_profile_name, health.profile_name);
-      dom.engine_status_text.textContent = profileName
-        ? `${profileName} online`
-        : first(health.status, "Engine online") === "ok"
-          ? "Engine online"
-          : String(first(health.status, "Engine online"));
+      dom.engine_status_text.textContent = first(health.status, "ok") === "ok"
+        ? "Engine online"
+        : String(first(health.status, "Engine online"));
       const version = first(health.ruleset_version, health.rules_version, health.ruleset);
       if (version) dom.rules_version.textContent = String(version);
       const maximumSeconds = first(health.analysis_limits?.maximum_seconds, health.analysis_limits?.max_seconds);
       if (maximumSeconds !== undefined) {
-        dom.time_control.max = String(maximumSeconds);
-        ANALYSIS_PRESETS.strong.seconds = Math.max(0.1, asNumber(maximumSeconds, 30));
+        state.maximumAnalysisSeconds = Math.max(0.1, asNumber(maximumSeconds, 30));
+        dom.time_control.max = String(state.maximumAnalysisSeconds);
+        ANALYSIS_PRESETS.strong.seconds = Math.min(
+          ANALYSIS_PRESETS.strong.seconds,
+          state.maximumAnalysisSeconds,
+        );
         if (state.analysisPreset === "strong") applyAnalysisPreset("strong", false);
+      }
+      const maximumDepth = health.analysis_limits?.maximum_depth;
+      if (maximumDepth !== undefined) {
+        state.maximumAnalysisDepth = Math.max(1, Math.floor(asNumber(maximumDepth, 8)));
+        dom.depth_control.max = String(state.maximumAnalysisDepth);
+        ANALYSIS_PRESETS.strong.depth = state.maximumAnalysisDepth;
+        if (state.analysisPreset === "strong") dom.depth_control.value = String(state.maximumAnalysisDepth);
+        updateAnalysisProgress();
+      }
+      const maximumBranchCap = first(
+        health.analysis_limits?.maximum_max_series,
+        health.analysis_limits?.maximum_series,
+        health.analysis_limits?.max_series,
+      );
+      if (maximumBranchCap !== undefined) {
+        state.maximumBranchCap = Math.max(1, Math.floor(asNumber(maximumBranchCap, 512)));
+        dom.cap_control.max = String(state.maximumBranchCap);
+        ANALYSIS_PRESETS.strong.cap = Math.min(ANALYSIS_PRESETS.strong.cap, state.maximumBranchCap);
+        if (asNumber(dom.cap_control.value, state.maximumBranchCap) > state.maximumBranchCap) {
+          dom.cap_control.value = String(state.maximumBranchCap);
+        }
+      }
+      const maximumAlternatives = health.analysis_limits?.maximum_alternatives;
+      if (maximumAlternatives !== undefined) {
+        state.maximumAlternatives = Math.max(0, Math.floor(asNumber(maximumAlternatives, 32)));
+        dom.alternatives_control.min = "0";
+        dom.alternatives_control.max = String(Math.min(12, state.maximumAlternatives));
+        ANALYSIS_PRESETS.strong.alternatives = Math.min(ANALYSIS_PRESETS.strong.alternatives, state.maximumAlternatives);
+        if (asNumber(dom.alternatives_control.value, state.maximumAlternatives) > state.maximumAlternatives) {
+          dom.alternatives_control.value = String(Math.min(3, state.maximumAlternatives));
+        }
       }
       const maximumGenerationPositions = health.analysis_limits?.maximum_generation_positions;
       if (maximumGenerationPositions !== undefined) {
         state.maximumGenerationPositions = Math.max(1_000, Math.floor(asNumber(maximumGenerationPositions, 5_000_000)));
         ANALYSIS_PRESETS.strong.generationPositions = state.maximumGenerationPositions;
       }
-      dom.engine_status.title = [first(health.engine_version, health.version), first(health.source_fingerprint, health.fingerprint)].filter(Boolean).join(" · ");
+      dom.engine_status.title = [profileName, first(health.engine_version, health.version), first(health.source_fingerprint, health.fingerprint)].filter(Boolean).join(" · ");
     } catch (error) {
       dom.engine_status.classList.add("is-offline");
       dom.engine_status.classList.remove("is-online");
@@ -2009,8 +2563,8 @@
     });
     dom.undo_move.addEventListener("click", undoMove);
     dom.reset_series.addEventListener("click", resetCurrentSeries);
-    dom.advance_series.addEventListener("click", advanceSeries);
-    dom.analyze_button.addEventListener("click", analyzePosition);
+    dom.advance_series.addEventListener("click", () => advanceSeries(false));
+    dom.analyze_button.addEventListener("click", toggleAutoAnalysis);
     dom.preset_quick.addEventListener("click", () => applyAnalysisPreset("quick"));
     dom.preset_strong.addEventListener("click", () => applyAnalysisPreset("strong"));
     [dom.depth_control, dom.cap_control, dom.time_control, dom.alternatives_control]
@@ -2018,6 +2572,10 @@
     dom.new_variation.addEventListener("click", beginNewVariation);
     dom.delete_variation.addEventListener("click", deleteCurrentVariation);
     dom.clear_study.addEventListener("click", clearStudyTree);
+    dom.save_position.addEventListener("click", () => openSavedPositions(true));
+    dom.load_position.addEventListener("click", () => openSavedPositions(false));
+    dom.saved_dialog_close.addEventListener("click", () => dom.saved_dialog.close());
+    dom.save_position_form.addEventListener("submit", saveCurrentPosition);
     dom.analysis_tree.addEventListener("keydown", (event) => {
       if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
       const items = [...dom.analysis_tree.querySelectorAll("[role='treeitem']")];
@@ -2068,15 +2626,40 @@
 
   async function initialize() {
     const savedCursor = restoreStudy();
+    restoreSavedPositions();
     bindEvents();
     applyAnalysisPreset("strong", false);
     renderAll();
     clearAnalysisDisplay();
-    checkHealth();
+    await checkHealth();
     loadOpenings();
-    const restored = state.currentTreeNodeId
+    const cursorNode = state.currentTreeNodeId ? state.study?.nodes[state.currentTreeNodeId] : null;
+    const cursorIsOnNode = Boolean(
+      cursorNode
+      && savedCursor.prefix.length
+      && boundaryKey(cursorNode.boundary) === boundaryKey(state.boundary)
+      && sameSeries(cursorNode.prefix, savedCursor.prefix),
+    );
+    const restored = cursorIsOnNode
       ? await navigateToTreeNode(state.currentTreeNodeId)
       : await refreshPrefix(savedCursor.prefix, savedCursor.san);
+    if (
+      restored
+      && !savedCursor.prefix.length
+      && cursorNode?.complete
+      && state.boundary.series === cursorNode.series + 1
+    ) {
+      state.history = pathToTreeNode(cursorNode.id)
+        .filter((node) => node.complete)
+        .map((node) => ({
+          boundary: cloneBoundary(node.boundary),
+          prefix: [...node.prefix],
+          prefixSan: [...node.prefix],
+          treeNodeId: node.id,
+          seriesParentNodeId: node.seriesParentId,
+        }));
+      renderPositionStatus();
+    }
     if (!restored) {
       const root = cloneBoundary(state.study.rootBoundary);
       state.boundary = root;

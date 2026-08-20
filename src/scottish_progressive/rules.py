@@ -5,12 +5,13 @@ from typing import Callable, Iterable
 
 import chess
 
-from .model import Outcome, ProgressiveState, SeriesResult, boundary_fen
+from .model import Outcome, ProgressiveState, SeriesResult
 
 
 @dataclass(slots=True)
 class GenerationStats:
     positions_visited: int = 0
+    frontier_score_positions: int = 0
     raw_series: int = 0
     unique_series: int = 0
     transpositions_merged: int = 0
@@ -37,6 +38,44 @@ class GenerationWorkLimit(GenerationCancelled):
     """Raised when a deterministic generation-position budget is exhausted."""
 
 
+def _board_position_key(
+    board: chess.Board,
+    ep_targets: Iterable[int] = (),
+) -> tuple[object, ...]:
+    """Exact in-memory equivalent of the rule-relevant boundary FEN.
+
+    Hot search paths only need equality, not a printable FEN. The six piece
+    bitboards, color occupancy, turn, cleaned castling rights, and explicit
+    progressive e.p. targets capture the same rule state without repeatedly
+    serializing all 64 squares. Move clocks and ``board.ep_square`` are
+    deliberately excluded, matching ``boundary_fen(board, ep_targets)``.
+    """
+
+    return (
+        board.pawns,
+        board.knights,
+        board.bishops,
+        board.rooks,
+        board.queens,
+        board.kings,
+        board.occupied_co[chess.WHITE],
+        board.occupied_co[chess.BLACK],
+        board.turn,
+        board.clean_castling_rights(),
+        tuple(sorted(ep_targets)),
+    )
+
+
+def _progressive_position_key(state: ProgressiveState) -> tuple[object, ...]:
+    """Exact equality key for one in-memory progressive boundary state."""
+
+    return (
+        _board_position_key(state.board, state.ep_targets),
+        state.series_number,
+        state.quiet_series,
+    )
+
+
 FrontierScore = Callable[[chess.Board], int]
 
 
@@ -54,10 +93,28 @@ def _visit_generation_position(
     counters: GenerationStats,
     max_positions: int | None,
 ) -> None:
-    if max_positions is not None and counters.positions_visited >= max_positions:
+    if (
+        max_positions is not None
+        and counters.positions_visited + counters.frontier_score_positions
+        >= max_positions
+    ):
         counters.work_limit_reached = True
         raise GenerationWorkLimit
     counters.positions_visited += 1
+
+
+def _visit_frontier_score_position(
+    counters: GenerationStats,
+    max_positions: int | None,
+) -> None:
+    if (
+        max_positions is not None
+        and counters.positions_visited + counters.frontier_score_positions
+        >= max_positions
+    ):
+        counters.work_limit_reached = True
+        raise GenerationWorkLimit
+    counters.frontier_score_positions += 1
 
 
 def _frontier_order_key(
@@ -442,7 +499,7 @@ def _merged_series_generation(
                 current.turn = mover
                 current.ep_square = None
                 key = (
-                    boundary_fen(current, ()),
+                    _board_position_key(current),
                     tuple(sorted(next_candidates.items())),
                     next_progress,
                 )
@@ -481,7 +538,7 @@ def _merged_series_generation(
     counts: dict[tuple[object, ...], int] = {}
     for result in completed:
         key = (
-            result.final_state.transposition_key,
+            _progressive_position_key(result.final_state),
             result.outcome,
             result.ended_by_check,
         )
@@ -525,7 +582,9 @@ def generate_series(
     reaches the same partial state. ``max_frontier_states`` bounds every
     intermediate same-side layer before complete series are materialized;
     any such pruning is recorded in ``GenerationStats`` and makes the caller's
-    result selective. ``max_positions`` is a deterministic work watchdog.
+    result selective. ``max_positions`` is a deterministic combined watchdog
+    for expanded generation states and distinct partial states evaluated by
+    ``frontier_score``.
     """
 
     counters = stats if stats is not None else GenerationStats()
@@ -535,13 +594,27 @@ def generate_series(
     if max_positions is not None and max_positions < 1:
         raise ValueError("max_positions must be positive")
     if merge_transpositions:
+        metered_frontier_score = frontier_score
+        if frontier_score is not None:
+            cached_frontier_scores: dict[str, int] = {}
+
+            def metered_frontier_score(board: chess.Board) -> int:
+                key = board.fen(en_passant="fen")
+                cached = cached_frontier_scores.get(key)
+                if cached is not None:
+                    return cached
+                _visit_frontier_score_position(counters, max_positions)
+                score = frontier_score(board)
+                cached_frontier_scores[key] = score
+                return score
+
         return _merged_series_generation(
             state,
             counters,
             required_prefix=prefix,
             max_frontier_states=max_frontier_states,
             max_positions=max_positions,
-            frontier_score=frontier_score,
+            frontier_score=metered_frontier_score,
             should_stop=should_stop,
         )
     if max_frontier_states is not None:
@@ -814,7 +887,7 @@ def has_mating_series(
             if not _has_legal_move(child):
                 continue  # Progressive stalemate.
             key = (
-                boundary_fen(child, ()),
+                _board_position_key(child),
                 used + 1,
                 tuple(sorted(next_candidates.items())),
             )

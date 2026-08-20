@@ -1,8 +1,8 @@
 # Selective opening deepening
 
-Generated: `2026-08-20T05:53:33+00:00`<br>
-Engine: `spc-0.4.0`<br>
-Source fingerprint: `7b92ea2a6678d6be`<br>
+Generated: `2026-08-20T13:00:00+00:00`<br>
+Engine: `spc-0.5.0`<br>
+Source fingerprint: `1eba93b447293d8c`<br>
 Rules: `scottish-modern-common-v1`<br>
 Total series horizon: `3`<br>
 Maximum retained series per node: `16`
@@ -14,8 +14,8 @@ The cap bounds intermediate series frontiers as well as complete candidates. Thi
 
 | Move | Score | Classification | Best tested Black series | PV | Depth | Status | Generated unique / raw | Time |
 |:---|---:|:---|:---|:---|---:|:---|---:|---:|
-| `e4` | +848 | Likely Win | f5 / Kf7 | S1 White[1]: e4 \| S2 Black[2]: f5 / Kf7 \| S3 White[3]: Nc3 / Qg4 / Qxf5+ | 2/2 | complete | 9489 / 15920 | 5.41s |
-| `d4` | +752 | Likely Win | d6 / Kd7 | S1 White[1]: d4 \| S2 Black[2]: d6 / Kd7 \| S3 White[3]: e4 / Qh5 / Qf5+ | 2/2 | complete | 9100 / 13758 | 5.82s |
+| `e4` | +848 | Likely Win | f5 / Kf7 | S1 White[1]: e4 \| S2 Black[2]: f5 / Kf7 \| S3 White[3]: Nc3 / Qg4 / Qxf5+ | 2/2 | complete | 9236 / 15555 | 3.70s |
+| `d4` | +752 | Likely Win | d6 / Kd7 | S1 White[1]: d4 \| S2 Black[2]: d6 / Kd7 \| S3 White[3]: e4 / Qh5 / Qf5+ | 2/2 | complete | 8845 / 13393 | 3.16s |
 
 ## Interpretation
 
