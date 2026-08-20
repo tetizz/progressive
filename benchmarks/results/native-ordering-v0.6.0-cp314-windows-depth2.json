@@ -1,0 +1,333 @@
+{
+  "artifact_id": "spc-native-ordering-0e631b2fe6d86b02",
+  "cases": {
+    "S1": {
+      "identical_output_and_work": true,
+      "native_median_seconds": 1.059697699995013,
+      "native_seconds": [
+        1.0576270000019576,
+        1.059697699995013,
+        1.0614463000092655
+      ],
+      "python_median_seconds": 1.3837809999968158,
+      "python_seconds": [
+        1.386181800000486,
+        1.382649399994989,
+        1.3837809999968158
+      ],
+      "raw_samples": [
+        {
+          "elapsed_seconds": 1.386181800000486,
+          "mode": "python",
+          "order_index": 0,
+          "repetition": 0
+        },
+        {
+          "elapsed_seconds": 1.0576270000019576,
+          "mode": "native",
+          "order_index": 1,
+          "repetition": 0
+        },
+        {
+          "elapsed_seconds": 1.059697699995013,
+          "mode": "native",
+          "order_index": 0,
+          "repetition": 1
+        },
+        {
+          "elapsed_seconds": 1.382649399994989,
+          "mode": "python",
+          "order_index": 1,
+          "repetition": 1
+        },
+        {
+          "elapsed_seconds": 1.3837809999968158,
+          "mode": "python",
+          "order_index": 0,
+          "repetition": 2
+        },
+        {
+          "elapsed_seconds": 1.0614463000092655,
+          "mode": "native",
+          "order_index": 1,
+          "repetition": 2
+        }
+      ],
+      "signature": {
+        "adjudication_status": null,
+        "alternatives_sha256": "7dbb1de9300fbb307d312cc11fca892cb527e61d41f9d3bfe299b63a88bec4c3",
+        "best_series": "g2g3",
+        "completed_depth": 2,
+        "exact_width": false,
+        "principal_variation": [
+          "g2g3",
+          "e7e6/d8g5"
+        ],
+        "proof": null,
+        "root_scores_complete": false,
+        "score": -150,
+        "timed_out": false,
+        "work": {
+          "alpha_beta_cutoffs": 15,
+          "branch_caps": 20,
+          "evaluation_reach_positions": 33813,
+          "frontier_paths_pruned": 0,
+          "frontier_prunes": 0,
+          "frontier_score_positions": 400,
+          "frontier_states_pruned": 0,
+          "generated_raw_series": 8922,
+          "generated_unique_series": 5382,
+          "generation_positions": 34838,
+          "generation_work_limit_hits": 0,
+          "incomplete_reach_evaluations": 192,
+          "intra_series_transpositions": 3540,
+          "leaf_evaluations": 204,
+          "nodes": 223,
+          "peak_frontier_states": 20,
+          "quiet_adjudication_cache_hits": 0,
+          "quiet_adjudication_limit_hits": 0,
+          "quiet_adjudication_positions": 0,
+          "root_bound_candidates": 32,
+          "series_generation_cache_evictions": 0,
+          "series_generation_cache_hits": 1,
+          "series_generation_cache_peak": 660,
+          "series_generation_positions": 421,
+          "static_evaluation_positions": 204,
+          "tt_hits": 0
+        },
+        "work_limit_reached": false
+      },
+      "speedup": 1.3058261804317666
+    },
+    "S3": {
+      "identical_output_and_work": true,
+      "native_median_seconds": 8.280727099991054,
+      "native_seconds": [
+        8.336096599989105,
+        8.22932800000126,
+        8.280727099991054
+      ],
+      "python_median_seconds": 13.220848999990267,
+      "python_seconds": [
+        13.220848999990267,
+        13.1654145999928,
+        13.339736099995207
+      ],
+      "raw_samples": [
+        {
+          "elapsed_seconds": 13.220848999990267,
+          "mode": "python",
+          "order_index": 0,
+          "repetition": 0
+        },
+        {
+          "elapsed_seconds": 8.336096599989105,
+          "mode": "native",
+          "order_index": 1,
+          "repetition": 0
+        },
+        {
+          "elapsed_seconds": 8.22932800000126,
+          "mode": "native",
+          "order_index": 0,
+          "repetition": 1
+        },
+        {
+          "elapsed_seconds": 13.1654145999928,
+          "mode": "python",
+          "order_index": 1,
+          "repetition": 1
+        },
+        {
+          "elapsed_seconds": 13.339736099995207,
+          "mode": "python",
+          "order_index": 0,
+          "repetition": 2
+        },
+        {
+          "elapsed_seconds": 8.280727099991054,
+          "mode": "native",
+          "order_index": 1,
+          "repetition": 2
+        }
+      ],
+      "signature": {
+        "adjudication_status": null,
+        "alternatives_sha256": "91e62c289920ec7b5e5156a3a91e513f7305ccbedee715f1d6386cf934d095aa",
+        "best_series": "g1f3/f3e5/e5d7",
+        "completed_depth": 2,
+        "exact_width": false,
+        "principal_variation": [
+          "g1f3/f3e5/e5d7",
+          "e8d7/d7c6/d8d4/d4d2"
+        ],
+        "proof": null,
+        "root_scores_complete": false,
+        "score": -1059,
+        "timed_out": false,
+        "work": {
+          "alpha_beta_cutoffs": 13,
+          "branch_caps": 33,
+          "evaluation_reach_positions": 11681,
+          "frontier_paths_pruned": 39076,
+          "frontier_prunes": 59,
+          "frontier_score_positions": 28923,
+          "frontier_states_pruned": 26507,
+          "generated_raw_series": 60459,
+          "generated_unique_series": 35137,
+          "generation_positions": 43238,
+          "generation_work_limit_hits": 0,
+          "incomplete_reach_evaluations": 41,
+          "intra_series_transpositions": 25322,
+          "leaf_evaluations": 174,
+          "nodes": 205,
+          "peak_frontier_states": 901,
+          "quiet_adjudication_cache_hits": 0,
+          "quiet_adjudication_limit_hits": 0,
+          "quiet_adjudication_positions": 0,
+          "root_bound_candidates": 56,
+          "series_generation_cache_evictions": 0,
+          "series_generation_cache_hits": 1,
+          "series_generation_cache_peak": 1056,
+          "series_generation_positions": 2460,
+          "static_evaluation_positions": 174,
+          "tt_hits": 0
+        },
+        "work_limit_reached": false
+      },
+      "speedup": 1.596580691568081
+    },
+    "S4": {
+      "identical_output_and_work": true,
+      "native_median_seconds": 0.2737723000027472,
+      "native_seconds": [
+        0.27590219999547116,
+        0.2737723000027472,
+        0.27185190000454895
+      ],
+      "python_median_seconds": 0.4583688999991864,
+      "python_seconds": [
+        0.45711540000047535,
+        0.45951509999576956,
+        0.4583688999991864
+      ],
+      "raw_samples": [
+        {
+          "elapsed_seconds": 0.45711540000047535,
+          "mode": "python",
+          "order_index": 0,
+          "repetition": 0
+        },
+        {
+          "elapsed_seconds": 0.27590219999547116,
+          "mode": "native",
+          "order_index": 1,
+          "repetition": 0
+        },
+        {
+          "elapsed_seconds": 0.2737723000027472,
+          "mode": "native",
+          "order_index": 0,
+          "repetition": 1
+        },
+        {
+          "elapsed_seconds": 0.45951509999576956,
+          "mode": "python",
+          "order_index": 1,
+          "repetition": 1
+        },
+        {
+          "elapsed_seconds": 0.4583688999991864,
+          "mode": "python",
+          "order_index": 0,
+          "repetition": 2
+        },
+        {
+          "elapsed_seconds": 0.27185190000454895,
+          "mode": "native",
+          "order_index": 1,
+          "repetition": 2
+        }
+      ],
+      "signature": {
+        "adjudication_status": null,
+        "alternatives_sha256": "5825e9915031ebfffcf1c6e4cd8539b2d9cd5d36a46d64d8b4d7d60f367dd710",
+        "best_series": "c7c6/d8b6/f6e4/b6f2",
+        "completed_depth": 2,
+        "exact_width": false,
+        "principal_variation": [
+          "c7c6/d8b6/f6e4/b6f2"
+        ],
+        "proof": "black",
+        "root_scores_complete": false,
+        "score": -999999,
+        "timed_out": false,
+        "work": {
+          "alpha_beta_cutoffs": 0,
+          "branch_caps": 1,
+          "evaluation_reach_positions": 128,
+          "frontier_paths_pruned": 1039,
+          "frontier_prunes": 2,
+          "frontier_score_positions": 936,
+          "frontier_states_pruned": 866,
+          "generated_raw_series": 1441,
+          "generated_unique_series": 1168,
+          "generation_positions": 1136,
+          "generation_work_limit_hits": 0,
+          "incomplete_reach_evaluations": 1,
+          "intra_series_transpositions": 273,
+          "leaf_evaluations": 1,
+          "nodes": 0,
+          "peak_frontier_states": 802,
+          "quiet_adjudication_cache_hits": 0,
+          "quiet_adjudication_limit_hits": 0,
+          "quiet_adjudication_positions": 0,
+          "root_bound_candidates": 0,
+          "series_generation_cache_evictions": 0,
+          "series_generation_cache_hits": 1,
+          "series_generation_cache_peak": 32,
+          "series_generation_positions": 71,
+          "static_evaluation_positions": 1,
+          "tt_hits": 0
+        },
+        "work_limit_reached": false
+      },
+      "speedup": 1.6742705525525658
+    }
+  },
+  "configuration": {
+    "branch_cap": 32,
+    "depth_series": 2,
+    "fresh_process_samples": 3,
+    "max_generation_positions": 250000,
+    "sampling_order": "paired-interleaved-alternating"
+  },
+  "engine": {
+    "source_fingerprint": "d069ce0b03562041",
+    "version": "spc-0.6.0"
+  },
+  "environment": {
+    "cpu": {
+      "identifier": "AMD64 Family 26 Model 68 Stepping 0, AuthenticAMD",
+      "logical_count": 16
+    },
+    "operating_system": {
+      "machine": "AMD64",
+      "release": "11",
+      "system": "Windows",
+      "version": "10.0.26200"
+    },
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python_compiler": "MSC v.1944 64 bit (AMD64)",
+    "python_implementation": "CPython",
+    "python_version": "3.14.4"
+  },
+  "generated_at": "2026-08-20T15:00:22.511059+00:00",
+  "native_runtime": {
+    "module_filename": "_native_eval.cp314-win_amd64.pyd",
+    "module_sha256": "0c1a2b7709c8ba643cb4cfb1a1b966bb3ba44cbbca18c551f5e9ca47ec4d881c",
+    "source_identity": "812e5933ec947caff72795c543fc1078acbed05bac1599450936150c75d8af90"
+  },
+  "sample_provenance_validated": true,
+  "schema": "spc-native-ordering-benchmark-v2"
+}

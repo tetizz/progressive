@@ -599,6 +599,13 @@ def _play_game(job: GameJob) -> GameRecord:
             ),
             "played": False,
         }
+        if result.adjudication_status == "manual-proof-required":
+            # A legal move-only fallback keeps interactive engine play live,
+            # but it is not a scored minimax choice. A self-play game that
+            # needed one cannot become strength or promotion evidence later,
+            # even if the fallback resets the quiet clock and play continues.
+            trace.append(attempted_trace)
+            return technical_incomplete("manual-adjudication-pending")
         if reduced_for_game_budget and result.work_limit_reached:
             trace.append(attempted_trace)
             return technical_incomplete("technical-game-work-budget-exhausted")

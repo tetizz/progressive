@@ -183,6 +183,9 @@ spc compare-replies --output-dir reports
 - [`reports/published-reply-comparison.md`](reports/published-reply-comparison.md)
   tests named historical and engine reply hypotheses with a 64-finalist White
   response screen.
+- [`docs/native-acceleration.md`](docs/native-acceleration.md) records the
+  optional C++20 ordering kernel, Python fallback, differential rule gates, and
+  fresh-process S1/S3/S4 speed measurements.
 
 The shallow run ranks `1.g3` and `1.c3` first, but that ordering collapses an
 important horizon: White has not yet received the three-move series. In the

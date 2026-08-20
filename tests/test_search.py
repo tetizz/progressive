@@ -297,7 +297,17 @@ def test_wide_frontier_scoring_cannot_overshoot_combined_work_cap() -> None:
     assert result.work_limit_reached
     assert not result.timed_out
     assert result.completed_depth == 0
-    assert result.best_series is None
+    assert result.best_series is not None
+    replayed = play_series(state, result.best_series.moves)
+    assert replayed.final_state.transposition_key == (
+        result.best_series.final_state.transposition_key
+    )
+    assert result.score == result.root_evaluation.total
+    assert result.principal_variation == (result.best_series,)
+    assert result.alternatives == ()
+    assert result.proof is None
+    assert result.forced is None
+    assert not result.root_scores_complete
     assert result.stats.frontier_prunes > 0
     assert result.stats.peak_frontier_states > 64
     assert result.stats.work_positions == 1_736
@@ -410,8 +420,14 @@ def test_prefix_cache_reuse_cannot_bypass_generation_work_payment() -> None:
     )
     assert unpaid.work_limit_reached
     assert unpaid.completed_depth == 0
-    assert unpaid.best_series is None
+    assert unpaid.best_series is not None
+    assert unpaid.best_series.moves[: len(prefix)] == prefix
+    assert unpaid.principal_variation == (unpaid.best_series,)
+    assert unpaid.alternatives == ()
     assert unpaid.proof is None
+    assert unpaid.forced is None
+    assert not unpaid.root_scores_complete
+    assert unpaid.stats.work_positions == 195
     assert unpaid.stats.series_generation_cache_hits == 0
 
     paid = analyze(
@@ -419,7 +435,10 @@ def test_prefix_cache_reuse_cannot_bypass_generation_work_payment() -> None:
         SearchLimits(
             depth_series=3,
             max_series_per_node=64,
-            max_generation_positions=196,
+            # Four positions stay reserved until root generation succeeds,
+            # enough to produce one legal series if the ordinary frontier
+            # exhausts its share of the deterministic budget.
+            max_generation_positions=200,
         ),
         required_prefix=prefix,
     )
@@ -461,6 +480,48 @@ def test_timeout_keeps_best_fully_scored_root_candidate(monkeypatch) -> None:
     assert len(result.alternatives) == 1
     assert not result.exact_width
     assert result.confidence == "partial root candidates only; incomplete/selective"
+
+
+@pytest.mark.parametrize(
+    ("interruption", "timed_out", "work_limited"),
+    (
+        (search_module._Timeout, True, False),
+        (search_module._WorkLimit, False, True),
+    ),
+)
+def test_first_root_interruption_keeps_unscored_legal_fallback(
+    monkeypatch,
+    interruption,
+    timed_out: bool,
+    work_limited: bool,
+) -> None:
+    state = ProgressiveState.initial()
+
+    def interrupt_first_candidate(self, *args, **kwargs):
+        raise interruption
+
+    monkeypatch.setattr(
+        search_module.SeriesSearcher,
+        "_minimax",
+        interrupt_first_candidate,
+    )
+    result = analyze(state, SearchLimits(depth_series=1))
+
+    assert result.best_series is not None
+    replayed = play_series(state, result.best_series.moves)
+    assert replayed.final_state.transposition_key == (
+        result.best_series.final_state.transposition_key
+    )
+    assert result.score == result.root_evaluation.total
+    assert result.principal_variation == (result.best_series,)
+    assert result.alternatives == ()
+    assert result.completed_depth == 0
+    assert result.timed_out is timed_out
+    assert result.work_limit_reached is work_limited
+    assert result.proof is None
+    assert result.forced is None
+    assert not result.exact_width
+    assert not result.root_scores_complete
 
 
 def test_deeper_pending_adjudication_keeps_last_completed_iteration(
@@ -534,6 +595,7 @@ def test_time_limit_cancels_inside_series_generation() -> None:
     )
     assert result.timed_out
     assert result.completed_depth == 0
+    assert not result.root_scores_complete
     assert result.elapsed_seconds < 0.5
 
 
@@ -571,7 +633,14 @@ def test_high_series_quiet_transition_is_charged_to_global_work_budget() -> None
     assert result.adjudication_status == "manual-proof-required"
     assert result.work_limit_reached
     assert not result.timed_out
-    assert result.best_series is None
+    assert result.best_series is not None
+    assert result.best_series.moves == ("a7b8",)
+    assert result.principal_variation == (result.best_series,)
+    assert result.alternatives == ()
+    assert result.score == result.root_evaluation.total
+    assert result.proof is None
+    assert result.forced is None
+    assert not result.root_scores_complete
     assert result.stats.generation_positions == 32
     assert result.stats.series_generation_positions == 1
     assert result.stats.frontier_score_positions == 0
@@ -632,6 +701,7 @@ def test_quiet_draw_with_bare_kings_is_proven_not_heuristically_scored() -> None
     assert result.classification == "Drawn"
     assert result.forced == "draw"
     assert result.adjudication_status == "proven-draw-no-mating-material"
+    assert result.root_scores_complete
 
 
 def test_unresolved_quiet_draw_exception_returns_pending_not_theory_score() -> None:
@@ -642,6 +712,7 @@ def test_unresolved_quiet_draw_exception_returns_pending_not_theory_score() -> N
     assert result.score == 0
     assert result.classification == "Adjudication Pending"
     assert result.adjudication_status == "manual-proof-required"
+    assert not result.root_scores_complete
 
 
 def test_immediate_mate_exception_is_searched_after_ten_quiet_series() -> None:
@@ -718,10 +789,19 @@ def test_unresolved_quiet_draw_at_child_aborts_ordinary_minimax_score() -> None:
         "7k/8/8/8/8/8/6R1/K7 w - - 0 1", 1, quiet_series=9
     )
     result = analyze(state, SearchLimits(depth_series=1))
-    assert result.score == 0
+    assert result.score == result.root_evaluation.total
     assert result.classification == "Adjudication Pending"
     assert result.adjudication_status == "manual-proof-required"
-    assert result.best_series is None
+    assert result.best_series is not None
+    assert result.principal_variation == (result.best_series,)
+    assert result.alternatives == ()
+    assert result.proof is None
+    assert result.forced is None
+    assert not result.root_scores_complete
+    replayed = play_series(state, result.best_series.moves)
+    assert replayed.final_state.transposition_key == (
+        result.best_series.final_state.transposition_key
+    )
 
 
 def test_quiet_adjudication_in_deeper_pass_keeps_fast_kqk_fallback() -> None:
@@ -799,6 +879,157 @@ def test_live_series_22_kqk_pending_pass_keeps_production_fallback() -> None:
     assert not result.work_limit_reached
     assert result.root_scores_complete == shallow.root_scores_complete
     assert result.forced is None
+
+
+def test_live_series_24_pending_first_pass_keeps_legal_root_fallback() -> None:
+    state = ProgressiveState.from_fen(
+        "8/8/5n1b/8/3n4/8/1k4K1/8 b - - 129 89",
+        24,
+        quiet_series=9,
+    )
+    result = analyze(
+        state,
+        SearchLimits(
+            depth_series=2,
+            max_series_per_node=32,
+            max_generation_positions=250_000,
+            collect_all_root_scores=False,
+        ),
+    )
+
+    assert result.best_series is not None
+    assert result.best_series.machine_notation == (
+        "b2b3/d4f5/f6d5/b3c3/h6c1/c1a3/a3c5/c3b2/b2b3/b3b2/b2b3/"
+        "b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/"
+        "b2b3/d5f4"
+    )
+    assert result.best_series.used_moves == 24
+    replayed = play_series(state, result.best_series.moves)
+    assert replayed.final_state.transposition_key == (
+        result.best_series.final_state.transposition_key
+    )
+    assert result.score == result.root_evaluation.total
+    assert result.score != 0
+    assert result.principal_variation == (result.best_series,)
+    assert result.alternatives == ()
+    assert result.completed_depth == 0
+    assert result.requested_depth == 2
+    assert result.adjudication_status == "manual-proof-required"
+    assert result.proof is None
+    assert result.forced is None
+    assert not result.exact_width
+    assert not result.timed_out
+    assert not result.work_limit_reached
+    assert not result.root_scores_complete
+    assert result.stats.series_generation_positions == 736
+    assert result.stats.quiet_adjudication_positions == 4_096
+    assert result.stats.work_positions <= 250_000
+
+
+def test_series_101_pending_fallback_is_legal_deterministic_and_bounded() -> None:
+    state = ProgressiveState.from_fen(
+        "8/8/5n1b/8/3n4/8/1k4K1/8 w - - 129 89",
+        101,
+        quiet_series=9,
+    )
+    limits = SearchLimits(
+        depth_series=1,
+        max_series_per_node=1,
+        max_generation_positions=50_000,
+        collect_all_root_scores=False,
+    )
+
+    first = analyze(state, limits)
+    second = analyze(state, limits)
+
+    assert first.best_series is not None
+    assert second.best_series is not None
+    assert first.best_series.moves == second.best_series.moves
+    assert first.best_series.used_moves == 101
+    replayed = play_series(state, first.best_series.moves)
+    assert replayed.final_state.transposition_key == (
+        first.best_series.final_state.transposition_key
+    )
+    assert first.score == first.root_evaluation.total
+    assert first.principal_variation == (first.best_series,)
+    assert first.alternatives == ()
+    assert first.completed_depth == 0
+    assert first.adjudication_status == "manual-proof-required"
+    assert first.proof is None
+    assert first.forced is None
+    assert not first.exact_width
+    assert not first.timed_out
+    assert not first.work_limit_reached
+    assert not first.root_scores_complete
+    assert first.stats.series_generation_positions == 101
+    assert first.stats.quiet_adjudication_positions == 4_096
+    assert first.stats.work_positions == second.stats.work_positions
+    assert first.stats.work_positions <= 50_000
+
+
+def test_series_101_root_generation_limit_keeps_budgeted_seed_series() -> None:
+    state = ProgressiveState.from_fen(
+        "8/8/5n1b/8/3n4/8/1k4K1/8 w - - 129 89",
+        101,
+        quiet_series=0,
+    )
+    result = analyze(
+        state,
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=1,
+            max_generation_positions=500,
+            collect_all_root_scores=False,
+        ),
+    )
+
+    assert result.best_series is not None
+    assert result.best_series.used_moves == 101
+    replayed = play_series(state, result.best_series.moves)
+    assert replayed.final_state.transposition_key == (
+        result.best_series.final_state.transposition_key
+    )
+    assert result.score == result.root_evaluation.total
+    assert result.principal_variation == (result.best_series,)
+    assert result.alternatives == ()
+    assert result.completed_depth == 0
+    assert result.work_limit_reached
+    assert not result.timed_out
+    assert result.adjudication_status is None
+    assert result.proof is None
+    assert result.forced is None
+    assert not result.exact_width
+    assert not result.root_scores_complete
+    assert result.stats.work_positions <= 500
+
+
+def test_series_101_seed_never_overruns_insufficient_total_work() -> None:
+    state = ProgressiveState.from_fen(
+        "8/8/5n1b/8/3n4/8/1k4K1/8 w - - 129 89",
+        101,
+        quiet_series=0,
+    )
+    # Root evaluation consumes 167 deterministic positions here. The 100
+    # remaining positions cannot pay for a non-checking 101-move seed, so the
+    # sound result is still no move rather than one unit of unmetered work.
+    result = analyze(
+        state,
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=1,
+            max_generation_positions=267,
+            collect_all_root_scores=False,
+        ),
+    )
+
+    assert result.best_series is None
+    assert result.completed_depth == 0
+    assert result.work_limit_reached
+    assert not result.timed_out
+    assert result.proof is None
+    assert result.forced is None
+    assert result.stats.work_positions == 267
+    assert result.stats.series_generation_positions == 100
 
 
 @pytest.mark.parametrize(("quiet_series", "depth"), [(8, 2), (7, 3)])

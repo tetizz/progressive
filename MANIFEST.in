@@ -1,1 +1,4 @@
 include reports/*.json
+include src/scottish_progressive/*.cpp
+include src/scottish_progressive/*.hpp
+include src/scottish_progressive/*.h

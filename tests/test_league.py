@@ -337,6 +337,99 @@ def test_timeout_work_limit_and_no_move_without_a_legal_best_are_incomplete(
     }
 
 
+def test_root_manual_adjudication_is_inconclusive_not_engine_failure() -> None:
+    first, second = _profiles()
+    opening = league_module.OpeningCase(
+        case_id="manual-adjudication-root",
+        fen="7k/8/8/8/8/8/6R1/K7 w - - 0 1",
+        series_number=101,
+        quiet_series=10,
+        source="root quiet-draw proof fixture",
+    )
+    job = league_module.GameJob(
+        job_key="manual-adjudication-root",
+        run_id="fixture",
+        generation=1,
+        stage="promotion-g1",
+        opening_index=0,
+        opening=opening,
+        seed=1,
+        white_profile=first,
+        black_profile=second,
+        search_depth=1,
+        max_series_per_node=8,
+        max_generation_positions=10_000,
+        max_game_work_positions=None,
+        emergency_max_series=None,
+    )
+
+    record = league_module._play_game(job)
+
+    assert record.result == "*"
+    assert record.terminal_reason == "manual-adjudication-pending"
+    assert record.decisive_profile_id is None
+    assert record.engine_failure_profile_id is None
+    assert record.error is None
+    assert record.series_played == 0
+    assert len(record.trace) == 1
+    assert record.trace[0]["played"] is False
+
+    rows = _pair_rows(
+        first.profile_id,
+        second.profile_id,
+        case_id="manual-adjudication-root",
+        pair_index=0,
+        results=("*", "1-0"),
+        reasons=("manual-adjudication-pending", "checkmate"),
+    )
+    evidence = _pair_evidence(rows, first.profile_id)
+    assert evidence.completed_pairs == 0
+    assert evidence.candidate_failures == 0
+    assert evidence.worker_failures == 0
+
+
+def test_child_manual_fallback_is_inconclusive_before_move_is_played() -> None:
+    first, second = _profiles()
+    opening = league_module.OpeningCase(
+        case_id="manual-adjudication-child",
+        fen="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        series_number=1,
+        quiet_series=9,
+        source="child quiet-draw proof fixture",
+    )
+    job = league_module.GameJob(
+        job_key="manual-adjudication-child",
+        run_id="fixture",
+        generation=1,
+        stage="promotion-g1",
+        opening_index=0,
+        opening=opening,
+        seed=1,
+        white_profile=first,
+        black_profile=second,
+        search_depth=1,
+        max_series_per_node=32,
+        max_generation_positions=10_000,
+        max_game_work_positions=None,
+        emergency_max_series=None,
+    )
+
+    record = league_module._play_game(job)
+
+    assert record.result == "*"
+    assert record.terminal_reason == "manual-adjudication-pending"
+    assert record.decisive_profile_id is None
+    assert record.engine_failure_profile_id is None
+    assert record.error is None
+    assert record.series_played == 0
+    assert record.final_pfen == opening.state().pfen
+    assert len(record.trace) == 1
+    assert record.trace[0]["series"] is not None
+    assert record.trace[0]["played"] is False
+    assert record.trace[0]["completed_depth"] == 0
+    assert record.trace[0]["root_scores_complete"] is False
+
+
 def test_worker_exception_is_retriable_and_upserted(tmp_path) -> None:
     database = tmp_path / "retry.sqlite3"
     first, second = _profiles()

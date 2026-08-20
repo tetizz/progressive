@@ -218,14 +218,22 @@ class _RootInterrupted(Exception):
         self,
         scored: tuple[ScoredSeries, ...],
         cause: _Timeout | _WorkLimit,
+        fallback: SeriesResult,
     ) -> None:
         super().__init__(type(cause).__name__)
         self.scored = scored
         self.cause = cause
+        self.fallback = fallback
 
 
 class _AdjudicationPending(Exception):
     pass
+
+
+class _RootAdjudicationPending(_AdjudicationPending):
+    def __init__(self, fallback: SeriesResult) -> None:
+        super().__init__()
+        self.fallback = fallback
 
 
 class SeriesSearcher:
@@ -357,11 +365,33 @@ class SeriesSearcher:
             self.stats.leaf_evaluations += 1
         return cached
 
+    def _record_generation_stats(self, generation: GenerationStats) -> None:
+        self.stats.generated_raw_series += generation.raw_series
+        self.stats.generated_unique_series += generation.unique_series
+        self.stats.intra_series_transpositions += generation.transpositions_merged
+        self.stats.series_generation_positions += generation.positions_visited
+        self.stats.frontier_score_positions += generation.frontier_score_positions
+        self.stats.generation_positions += (
+            generation.positions_visited + generation.frontier_score_positions
+        )
+        self.stats.frontier_prunes += generation.frontier_prunes
+        self.stats.frontier_states_pruned += generation.frontier_states_pruned
+        self.stats.frontier_paths_pruned += generation.frontier_paths_pruned
+        self.stats.peak_frontier_states = max(
+            self.stats.peak_frontier_states,
+            generation.peak_frontier_states,
+        )
+        if generation.frontier_prunes:
+            self._selective = True
+        if generation.work_limit_reached:
+            self.stats.generation_work_limit_hits += 1
+
     def _generate(
         self,
         state: ProgressiveState,
         *,
         required_prefix: tuple[str, ...] = (),
+        reserve_positions: int = 0,
     ) -> list[SeriesResult]:
         generation = GenerationStats()
         remaining_positions: int | None = None
@@ -369,6 +399,7 @@ class SeriesSearcher:
             remaining_positions = (
                 self.limits.max_generation_positions
                 - self.stats.generation_positions
+                - reserve_positions
             )
             if remaining_positions <= 0:
                 if not (
@@ -432,29 +463,59 @@ class SeriesSearcher:
         except GenerationCancelled as error:
             raise _Timeout from error
         finally:
-            self.stats.generated_raw_series += generation.raw_series
-            self.stats.generated_unique_series += generation.unique_series
-            self.stats.intra_series_transpositions += generation.transpositions_merged
-            self.stats.series_generation_positions += generation.positions_visited
-            self.stats.frontier_score_positions += (
-                generation.frontier_score_positions
-            )
-            self.stats.generation_positions += (
-                generation.positions_visited
-                + generation.frontier_score_positions
-            )
-            self.stats.frontier_prunes += generation.frontier_prunes
-            self.stats.frontier_states_pruned += generation.frontier_states_pruned
-            self.stats.frontier_paths_pruned += generation.frontier_paths_pruned
-            self.stats.peak_frontier_states = max(
-                self.stats.peak_frontier_states,
-                generation.peak_frontier_states,
-            )
-            if generation.frontier_prunes:
-                self._selective = True
-            if generation.work_limit_reached:
-                self.stats.generation_work_limit_hits += 1
+            self._record_generation_stats(generation)
         return series
+
+    def _generate_root_seed(
+        self,
+        state: ProgressiveState,
+        *,
+        required_prefix: tuple[str, ...],
+    ) -> SeriesResult:
+        """Generates one deterministic legal root series from reserved work.
+
+        A width-one lexicographic beam expands at most one partial state per
+        micro-move and does no frontier evaluation, so a non-terminal series
+        costs at most ``state.moves_available`` logical positions. Callers
+        reserve that amount before attempting the ordinary root frontier.
+        If the entire configured budget is smaller, this helper still obeys
+        it and can legitimately fail instead of doing unmetered work.
+        """
+
+        generation = GenerationStats()
+        remaining_positions: int | None = None
+        if self.limits.max_generation_positions is not None:
+            remaining_positions = (
+                self.limits.max_generation_positions
+                - self.stats.generation_positions
+            )
+            if remaining_positions <= 0:
+                if not self.stats.generation_work_limit_hits:
+                    self.stats.generation_work_limit_hits += 1
+                raise _WorkLimit
+        try:
+            series = generate_series(
+                state,
+                stats=generation,
+                required_prefix=required_prefix,
+                max_frontier_states=1,
+                max_positions=remaining_positions,
+                frontier_score=None,
+                should_stop=(
+                    (lambda: time.perf_counter() >= self._deadline)
+                    if self._deadline is not None
+                    else None
+                ),
+            )
+        except GenerationWorkLimit as error:
+            raise _WorkLimit from error
+        except GenerationCancelled as error:
+            raise _Timeout from error
+        finally:
+            self._record_generation_stats(generation)
+        if not series:
+            raise _WorkLimit
+        return series[0]
 
     @staticmethod
     def _terminal_score(
@@ -553,6 +614,7 @@ class SeriesSearcher:
         *,
         ply_from_root: int,
         required_prefix: tuple[str, ...] = (),
+        reserve_positions: int = 0,
     ) -> list[SeriesResult]:
         """Returns one deterministic capped frontier with bounded reuse.
 
@@ -571,7 +633,11 @@ class SeriesSearcher:
             return list(cached)
 
         ordered = self._ordered(
-            self._generate(state, required_prefix=required_prefix),
+            self._generate(
+                state,
+                required_prefix=required_prefix,
+                reserve_positions=reserve_positions,
+            ),
             state.board.turn,
             ply_from_root,
         )
@@ -708,11 +774,28 @@ class SeriesSearcher:
         str | None,
     ]:
         mover = state.board.turn
-        series = self._ordered_generated(
-            state,
-            ply_from_root=1,
-            required_prefix=required_prefix,
+        reserve_positions = (
+            state.moves_available
+            if self.limits.max_generation_positions is not None
+            else 0
         )
+        try:
+            series = self._ordered_generated(
+                state,
+                ply_from_root=1,
+                required_prefix=required_prefix,
+                reserve_positions=reserve_positions,
+            )
+        except _WorkLimit as error:
+            # The ordinary frontier exhausted only the non-reserved part of
+            # the deterministic budget. Spend the remaining at-most-one-
+            # position-per-micro-move allowance on a legal width-one seed so
+            # engine play does not fail merely because no scored root existed.
+            fallback = self._generate_root_seed(
+                state,
+                required_prefix=required_prefix,
+            )
+            raise _RootInterrupted((), error, fallback) from error
         scored: list[ScoredSeries] = []
         root_alpha = -MATE_SCORE * 2
         root_beta = MATE_SCORE * 2
@@ -747,9 +830,24 @@ class SeriesSearcher:
                     proof_bounds = self._terminal_proof_bounds(result, mover)
                     score_is_exact = True
             except (_Timeout, _WorkLimit) as error:
-                if scored:
-                    raise _RootInterrupted(tuple(scored), error) from error
-                raise
+                # Root generation already produced a deterministic ordered
+                # frontier. Preserve its first fully legal series even when
+                # no child received a complete score before cancellation.
+                # The caller marks it as an unscored emergency fallback and
+                # never turns it into proof or an evaluated alternative.
+                raise _RootInterrupted(
+                    tuple(scored),
+                    error,
+                    series[0],
+                ) from error
+            except _AdjudicationPending as error:
+                # A child reaching the quiet-series threshold can make the
+                # whole minimax iteration unknown. The ordered root frontier
+                # is nevertheless complete and legal, so carry one series to
+                # the engine-play liveness path without assigning the child a
+                # draw or heuristic minimax score.
+                self._root_scores_complete = False
+                raise _RootAdjudicationPending(series[0]) from error
             if score_is_exact:
                 scored.append(ScoredSeries(result, score, child_pv, proof_bounds))
             else:
@@ -827,6 +925,7 @@ class SeriesSearcher:
                     or self._evaluation_work_limit_reached
                 ),
                 max_generation_positions=self.limits.max_generation_positions,
+                root_scores_complete=False,
             )
         if adjudication in {
             "manual-proof-required",
@@ -860,6 +959,9 @@ class SeriesSearcher:
                     or self._evaluation_work_limit_reached
                 ),
                 max_generation_positions=self.limits.max_generation_positions,
+                root_scores_complete=(
+                    adjudication == "proven-draw-no-mating-material"
+                ),
             )
 
         completed_depth = 0
@@ -882,20 +984,30 @@ class SeriesSearcher:
                 self._selective = True
                 if completed_depth == 0:
                     self._root_scores_complete = False
-                    mover = state.board.turn
-                    partial = tuple(
-                        sorted(
-                            interrupted.scored,
-                            key=lambda item: (
-                                -item.score if mover == chess.WHITE else item.score,
-                                item.series.machine_notation,
-                            ),
+                    if interrupted.scored:
+                        mover = state.board.turn
+                        partial = tuple(
+                            sorted(
+                                interrupted.scored,
+                                key=lambda item: (
+                                    -item.score
+                                    if mover == chess.WHITE
+                                    else item.score,
+                                    item.series.machine_notation,
+                                ),
+                            )
                         )
-                    )
-                    best = partial[0]
-                    best_score = best.score
-                    best_pv = (best.series,) + best.principal_variation
-                    alternatives = partial
+                        best = partial[0]
+                        best_score = best.score
+                        best_pv = (best.series,) + best.principal_variation
+                        alternatives = partial
+                    else:
+                        # This is a move-only liveness fallback. Keep the
+                        # explicitly labeled root evaluation rather than
+                        # pretending the chosen series completed a search.
+                        best_score = root_evaluation.total
+                        best_pv = (interrupted.fallback,)
+                        alternatives = ()
                     best_proof = None
                 break
             except _Timeout:
@@ -910,7 +1022,7 @@ class SeriesSearcher:
                 if completed_depth == 0:
                     self._root_scores_complete = False
                 break
-            except _AdjudicationPending:
+            except _AdjudicationPending as pending:
                 if completed_depth > 0:
                     # The deeper iteration is unknown, but the last fully
                     # completed iteration remains a legal search result. Keep
@@ -919,6 +1031,20 @@ class SeriesSearcher:
                     # quiet-draw adjudication and must never manufacture one.
                     self._selective = True
                     adjudication = "manual-proof-required"
+                    break
+                if isinstance(pending, _RootAdjudicationPending):
+                    # No iteration completed, but root generation did. Return
+                    # its first deterministic legal series solely so engine
+                    # play remains live. Score/proof/alternatives deliberately
+                    # stay at the root/no-proof values because the child was
+                    # not adjudicated or evaluated.
+                    self._selective = True
+                    self._root_scores_complete = False
+                    adjudication = "manual-proof-required"
+                    best_score = root_evaluation.total
+                    best_pv = (pending.fallback,)
+                    alternatives = ()
+                    best_proof = None
                     break
                 return SearchResult(
                     score=0,

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 
-from setuptools import setup
+from setuptools import Extension, setup
 from setuptools.command.build_py import build_py
 
 
@@ -14,17 +15,34 @@ REPORT_FILES = (
     "selective-opening-deepening.json",
     "published-reply-comparison.json",
 )
+NATIVE_SOURCE_FILES = (
+    "_native_eval.cpp",
+    "native_eval.hpp",
+)
 
 
 def engine_source_fingerprint(package: Path) -> str:
     digest = hashlib.sha256()
-    for path in sorted(
-        package.rglob("*.py"),
-        key=lambda item: item.relative_to(package).as_posix(),
-    ):
+    paths = (
+        path
+        for pattern in ("*.py", "*.cpp", "*.hpp", "*.h")
+        for path in package.rglob(pattern)
+    )
+    for path in sorted(paths, key=lambda item: item.relative_to(package).as_posix()):
         digest.update(path.relative_to(package).as_posix().encode("utf-8"))
         digest.update(path.read_bytes())
     return digest.hexdigest()[:16]
+
+
+def native_source_identity(package: Path) -> str:
+    """Identity of the exact sources compiled into the optional extension."""
+
+    digest = hashlib.sha256()
+    for filename in NATIVE_SOURCE_FILES:
+        path = package / filename
+        digest.update(filename.encode("utf-8"))
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
 class BuildPyWithOpeningReports(build_py):
@@ -55,4 +73,24 @@ class BuildPyWithOpeningReports(build_py):
             shutil.copyfile(source, target / filename)
 
 
-setup(cmdclass={"build_py": BuildPyWithOpeningReports})
+native_compile_args = ["/std:c++20", "/O2"] if os.name == "nt" else [
+    "-std=c++20",
+    "-O3",
+]
+native_package = Path(__file__).resolve().parent / "src" / "scottish_progressive"
+native_identity = native_source_identity(native_package)
+
+setup(
+    cmdclass={"build_py": BuildPyWithOpeningReports},
+    ext_modules=[
+        Extension(
+            "scottish_progressive._native_eval",
+            sources=["src/scottish_progressive/_native_eval.cpp"],
+            depends=["src/scottish_progressive/native_eval.hpp"],
+            language="c++",
+            optional=True,
+            define_macros=[("SPC_NATIVE_SOURCE_IDENTITY", f'"{native_identity}"')],
+            extra_compile_args=native_compile_args,
+        )
+    ],
+)

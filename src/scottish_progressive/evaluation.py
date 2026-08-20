@@ -2,12 +2,50 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from functools import lru_cache
+import hashlib
+import os
+from pathlib import Path
 
 import chess
 
 from .model import ProgressiveState
 from .profiles import EngineProfile, EvaluationWeights
 from .rules import _board_position_key, _legal_move_variants
+
+
+_NATIVE_SOURCE_FILES = ("_native_eval.cpp", "native_eval.hpp")
+
+
+def _native_source_identity() -> str | None:
+    """Digest the packaged sources that an accepted extension must contain."""
+
+    package = Path(__file__).resolve().parent
+    digest = hashlib.sha256()
+    try:
+        for filename in _NATIVE_SOURCE_FILES:
+            digest.update(filename.encode("utf-8"))
+            digest.update((package / filename).read_bytes())
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def _validated_native_module(candidate: object | None) -> object | None:
+    expected = _native_source_identity()
+    if expected is None or getattr(candidate, "SOURCE_IDENTITY", None) != expected:
+        return None
+    return candidate
+
+
+if os.environ.get("SPC_DISABLE_NATIVE") == "1":
+    _native_eval = None
+else:
+    try:
+        from . import _native_eval as _native_candidate
+    except ImportError:  # A source checkout or unsupported wheel keeps the oracle path.
+        _native_candidate = None
+    _native_eval = _validated_native_module(_native_candidate)
+    del _native_candidate
 
 
 PIECE_VALUES = {
@@ -18,6 +56,13 @@ PIECE_VALUES = {
     chess.QUEEN: 975,
     chess.KING: 0,
 }
+_NATIVE_INT64_MAX = (1 << 63) - 1
+# EvaluationWeights.scale() is the public Python oracle and divides through a
+# binary float. Keeping every pre-division integer within 53 bits guarantees
+# the C++ integer implementation cannot diverge from that established result.
+_NATIVE_EXACT_FLOAT_INTEGER_MAX = 1 << 53
+_NATIVE_WEIGHT_MIN = 25
+_NATIVE_WEIGHT_MAX = 300
 
 
 @dataclass(frozen=True, slots=True)
@@ -349,7 +394,7 @@ def evaluate(
     )
 
 
-def fast_evaluate(
+def _python_fast_evaluate(
     state: ProgressiveState,
     profile: EngineProfile | EvaluationWeights | None = None,
 ) -> int:
@@ -387,6 +432,101 @@ def fast_evaluate(
             "boundary_check", 140 if board.turn == chess.BLACK else -140
         )
     return score
+
+
+def native_acceleration_available() -> bool:
+    """Whether this runtime loaded the optional C++20 ordering evaluator."""
+
+    return _native_eval is not None
+
+
+def _native_fast_evaluation_is_safe(
+    state: ProgressiveState,
+    weights: EvaluationWeights,
+) -> bool:
+    """Conservatively bounds every signed 64-bit native arithmetic term.
+
+    Progressive series numbers are arbitrary Python integers. Falling back is
+    an acceleration choice only; it never limits the legal series budget.
+    """
+
+    series_number = state.series_number
+    native_weights = (
+        weights.material,
+        weights.king_space,
+        weights.promotion_corridors,
+        weights.immediate_vulnerability,
+        weights.boundary_check,
+    )
+    if (
+        not isinstance(series_number, int)
+        or not 1 <= series_number < _NATIVE_INT64_MAX
+        or any(
+            not isinstance(weight, int)
+            or not _NATIVE_WEIGHT_MIN <= weight <= _NATIVE_WEIGHT_MAX
+            for weight in native_weights
+        )
+    ):
+        return False
+
+    # Board material, flight squares, attacked material, and check are bounded
+    # by 64 squares. Only the progressive promotion budget grows with series.
+    max_promotion_score = 650 + (series_number + 1) * 55
+    raw_bounds = (
+        64 * PIECE_VALUES[chess.QUEEN],
+        8 * 20,
+        max_promotion_score,
+        (64 * PIECE_VALUES[chess.QUEEN] + 5) // 6,
+        140,
+    )
+    products = [
+        raw_bound * weight
+        for raw_bound, weight in zip(raw_bounds, native_weights, strict=True)
+    ]
+    if any(
+        product > _NATIVE_INT64_MAX
+        or product > _NATIVE_EXACT_FLOAT_INTEGER_MAX
+        for product in products
+    ):
+        return False
+    rounded_term_bound = sum((product + 50) // 100 for product in products)
+    return rounded_term_bound <= _NATIVE_INT64_MAX
+
+
+def fast_evaluate(
+    state: ProgressiveState,
+    profile: EngineProfile | EvaluationWeights | None = None,
+) -> int:
+    """Cheap deterministic ordering score with a Python oracle fallback."""
+
+    if _native_eval is None:
+        return _python_fast_evaluate(state, profile)
+    board = state.board
+    weights = _weights(profile)
+    if not _native_fast_evaluation_is_safe(state, weights):
+        return _python_fast_evaluate(state, weights)
+    try:
+        return _native_eval.fast_evaluate(
+            board.pawns,
+            board.knights,
+            board.bishops,
+            board.rooks,
+            board.queens,
+            board.kings,
+            board.occupied_co[chess.WHITE],
+            board.occupied_co[chess.BLACK],
+            board.turn,
+            state.series_number,
+            weights.material,
+            weights.king_space,
+            weights.promotion_corridors,
+            weights.immediate_vulnerability,
+            weights.boundary_check,
+        )
+    except OverflowError:
+        # The C++ API also checks every operation. Keep the unbounded Python
+        # contract if a future evaluation term exceeds this conservative gate.
+        return _python_fast_evaluate(state, weights)
 
 
 def classify_score(score: int, *, forced: str | None = None) -> str:
