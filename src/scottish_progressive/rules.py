@@ -79,6 +79,126 @@ def _progressive_position_key(state: ProgressiveState) -> tuple[object, ...]:
 FrontierScore = Callable[[chess.Board], int]
 
 
+@dataclass(frozen=True, slots=True)
+class NativeFrontierScoreConfig:
+    """Structured form of the exact bounded-frontier ordering heuristic.
+
+    Arbitrary Python scorers remain supported by the oracle generator. This
+    marker exposes only the fixed fast-evaluation plus tactical formula that
+    the native complete-series kernel can reproduce without Python callbacks.
+    """
+
+    series_number: int
+    quiet_series: int
+    material: int
+    king_space: int
+    promotion_corridors: int
+    immediate_vulnerability: int
+    boundary_check: int
+
+    @classmethod
+    def from_profile(cls, state: ProgressiveState, profile: object) -> "NativeFrontierScoreConfig":
+        weights = getattr(profile, "weights")
+        return cls(
+            state.series_number,
+            state.quiet_series,
+            weights.material,
+            weights.king_space,
+            weights.promotion_corridors,
+            weights.immediate_vulnerability,
+            weights.boundary_check,
+        )
+
+    def __call__(self, board: chess.Board) -> int:
+        from .evaluation import fast_evaluate
+        from .profiles import EvaluationWeights
+
+        partial = ProgressiveState(
+            board,
+            self.series_number,
+            quiet_series=self.quiet_series,
+        )
+        weights = EvaluationWeights(
+            material=self.material,
+            king_space=self.king_space,
+            promotion_corridors=self.promotion_corridors,
+            immediate_vulnerability=self.immediate_vulnerability,
+            boundary_check=self.boundary_check,
+        )
+        score = fast_evaluate(partial, weights)
+        checks = 0
+        immediate_mates = 0
+        captures = 0
+        promotions = 0
+        for move, required_ep in _legal_move_variants(board):
+            board.ep_square = required_ep
+            gives_check = board.gives_check(move)
+            checks += int(gives_check)
+            captures += int(board.is_capture(move))
+            promotions += int(move.promotion is not None)
+            if gives_check:
+                child = board.copy(stack=False)
+                child.push(move)
+                immediate_mates += int(child.is_checkmate())
+        board.ep_square = None
+        tactical = (
+            immediate_mates * 5_000_000
+            + checks * 50_000
+            + promotions * 2_000
+            + captures * 100
+        )
+        score += tactical if board.turn == chess.WHITE else -tactical
+        return score
+
+
+@dataclass(frozen=True, slots=True)
+class NativeFinalSeriesScoreConfig:
+    """Internal search hint for native static ordering and return capping.
+
+    The Python rules oracle deliberately ignores this hint and still returns
+    every merged result. Search may opt in only when the source-matched bulk
+    kernel can reproduce its exact terminal/fast-evaluation ordering.
+    """
+
+    max_returned_series: int
+    ply_from_root: int
+    mate_score: int
+    material: int
+    king_space: int
+    promotion_corridors: int
+    immediate_vulnerability: int
+    boundary_check: int
+
+    def __post_init__(self) -> None:
+        if self.max_returned_series < 1:
+            raise ValueError("max_returned_series must be positive")
+        if self.ply_from_root < 0:
+            raise ValueError("ply_from_root cannot be negative")
+        if self.mate_score < 1:
+            raise ValueError("mate_score must be positive")
+
+    @classmethod
+    def from_profile(
+        cls,
+        profile: object,
+        *,
+        max_returned_series: int,
+        ply_from_root: int,
+        mate_score: int,
+    ) -> "NativeFinalSeriesScoreConfig":
+        weights = getattr(profile, "weights")
+        return cls(
+            max_returned_series,
+            ply_from_root,
+            mate_score,
+            weights.material,
+            weights.king_space,
+            weights.promotion_corridors,
+            weights.immediate_vulnerability,
+            weights.boundary_check,
+        )
+
+
 @dataclass(slots=True)
 class _FrontierState:
     board: chess.Board
@@ -778,6 +898,232 @@ def _merged_series_generation(
     return sorted(unique, key=lambda result: result.machine_notation)
 
 
+_NATIVE_SIGNED_MAX = (1 << 63) - 1
+_NATIVE_UNSIGNED_MAX = (1 << 64) - 1
+_NATIVE_GENERATION_IDENTITY_INITIALIZED = False
+_NATIVE_GENERATION_SOURCE_IDENTITY: str | None = None
+_NATIVE_GENERATION_STATS_FIELDS = (
+    "positions_visited",
+    "frontier_score_positions",
+    "raw_series",
+    "unique_series",
+    "transpositions_merged",
+    "checking_series",
+    "checkmates",
+    "stalemates",
+    "frontier_prunes",
+    "frontier_states_pruned",
+    "frontier_paths_pruned",
+    "peak_frontier_states",
+    "required_prefix_moves",
+    "work_limit_reached",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _NativeEvaluationSafetyProbe:
+    """Minimal input used by evaluation's series-number-only safety gate."""
+
+    series_number: int
+
+
+def _apply_native_generation_stats(
+    counters: GenerationStats,
+    raw: tuple[object, ...],
+) -> None:
+    if len(raw) != len(_NATIVE_GENERATION_STATS_FIELDS):
+        raise RuntimeError("native complete-series stats shape mismatch")
+    for field_name, value in zip(
+        _NATIVE_GENERATION_STATS_FIELDS,
+        raw,
+        strict=True,
+    ):
+        setattr(
+            counters,
+            field_name,
+            bool(value) if field_name == "work_limit_reached" else int(value),
+        )
+
+
+def _native_complete_series_generation(
+    state: ProgressiveState,
+    counters: GenerationStats,
+    *,
+    required_prefix: tuple[str, ...],
+    max_frontier_states: int | None,
+    max_positions: int | None,
+    frontier_score: FrontierScore | None,
+    native_final_score: NativeFinalSeriesScoreConfig | None,
+    should_stop: Callable[[], bool] | None,
+) -> list[SeriesResult] | None:
+    """Uses the all-native frontier kernel when its exact contract applies."""
+
+    if (
+        state.series_number == 1
+        or state.board.chess960
+        or should_stop is not None
+        or any(type(move) is not str for move in required_prefix)
+    ):
+        return None
+    if any(
+        getattr(counters, field_name)
+        for field_name in _NATIVE_GENERATION_STATS_FIELDS
+    ):
+        # The native response is a self-contained delta. Preserve the rarer
+        # public case of callers reusing a counters object through the oracle.
+        return None
+
+    from . import evaluation
+
+    native = evaluation._native_eval
+    if native is None or not hasattr(native, "generate_complete_series"):
+        return None
+    global _NATIVE_GENERATION_IDENTITY_INITIALIZED
+    global _NATIVE_GENERATION_SOURCE_IDENTITY
+    if not _NATIVE_GENERATION_IDENTITY_INITIALIZED:
+        _NATIVE_GENERATION_SOURCE_IDENTITY = evaluation._native_source_identity()
+        _NATIVE_GENERATION_IDENTITY_INITIALIZED = True
+    if (
+        _NATIVE_GENERATION_SOURCE_IDENTITY is None
+        or getattr(native, "SOURCE_IDENTITY", None)
+        != _NATIVE_GENERATION_SOURCE_IDENTITY
+    ):
+        return None
+    if not (
+        1 <= state.series_number < _NATIVE_SIGNED_MAX
+        and 0 <= state.quiet_series < _NATIVE_SIGNED_MAX
+        and 0 <= state.board.halfmove_clock <= _NATIVE_SIGNED_MAX
+        and 1 <= state.board.fullmove_number <= _NATIVE_SIGNED_MAX
+    ):
+        return None
+    if any(
+        value is not None and value > _NATIVE_UNSIGNED_MAX
+        for value in (max_frontier_states, max_positions)
+    ):
+        return None
+    if frontier_score is not None or native_final_score is not None:
+        from .profiles import EvaluationWeights
+
+    native_weights: tuple[int, int, int, int, int] | None = None
+    if frontier_score is not None:
+        if type(frontier_score) is not NativeFrontierScoreConfig:
+            return None
+        if (
+            frontier_score.series_number != state.series_number
+            or frontier_score.quiet_series != state.quiet_series
+        ):
+            return None
+        try:
+            weights = EvaluationWeights(
+                material=frontier_score.material,
+                king_space=frontier_score.king_space,
+                promotion_corridors=frontier_score.promotion_corridors,
+                immediate_vulnerability=frontier_score.immediate_vulnerability,
+                boundary_check=frontier_score.boundary_check,
+            )
+        except (TypeError, ValueError):
+            return None
+        if not evaluation._native_fast_evaluation_is_safe(state, weights):
+            return None
+        native_weights = (
+            weights.material,
+            weights.king_space,
+            weights.promotion_corridors,
+            weights.immediate_vulnerability,
+            weights.boundary_check,
+        )
+
+    native_final: tuple[int, int, int, int, int, int, int, int] | None = None
+    if native_final_score is not None:
+        if type(native_final_score) is not NativeFinalSeriesScoreConfig:
+            return None
+        if not (
+            1 <= native_final_score.max_returned_series <= _NATIVE_UNSIGNED_MAX
+            and 0 <= native_final_score.ply_from_root <= _NATIVE_SIGNED_MAX
+            and 1 <= native_final_score.mate_score <= _NATIVE_SIGNED_MAX
+        ):
+            return None
+        try:
+            final_weights = EvaluationWeights(
+                material=native_final_score.material,
+                king_space=native_final_score.king_space,
+                promotion_corridors=native_final_score.promotion_corridors,
+                immediate_vulnerability=(
+                    native_final_score.immediate_vulnerability
+                ),
+                boundary_check=native_final_score.boundary_check,
+            )
+        except (TypeError, ValueError):
+            return None
+        safety_probe = _NativeEvaluationSafetyProbe(state.series_number + 1)
+        if not evaluation._native_fast_evaluation_is_safe(
+            safety_probe,  # type: ignore[arg-type]
+            final_weights,
+        ):
+            return None
+        native_final = (
+            native_final_score.max_returned_series,
+            native_final_score.ply_from_root,
+            native_final_score.mate_score,
+            final_weights.material,
+            final_weights.king_space,
+            final_weights.promotion_corridors,
+            final_weights.immediate_vulnerability,
+            final_weights.boundary_check,
+        )
+
+    try:
+        status, _message, raw_stats, raw_series = native.generate_complete_series(
+            state.board.pawns,
+            state.board.knights,
+            state.board.bishops,
+            state.board.rooks,
+            state.board.queens,
+            state.board.kings,
+            state.board.occupied_co[chess.WHITE],
+            state.board.occupied_co[chess.BLACK],
+            state.board.promoted,
+            state.board.clean_castling_rights(),
+            state.board.turn,
+            state.board.halfmove_clock,
+            state.board.fullmove_number,
+            state.series_number,
+            state.quiet_series,
+            state.ep_targets,
+            required_prefix,
+            max_frontier_states,
+            max_positions,
+            native_weights,
+            native_final,
+        )
+    except (OverflowError, TypeError, ValueError):
+        return None
+
+    status = int(status)
+    if status in {2, 3}:
+        # Invalid-prefix text and arbitrary-precision overflow are both rerun
+        # from pristine Python counters so the public exception/state contract
+        # remains byte-for-byte authoritative.
+        return None
+    if status == 1:
+        _apply_native_generation_stats(counters, tuple(raw_stats))
+        raise GenerationWorkLimit
+    if status != 0:
+        raise RuntimeError(f"unknown native complete-series status {status}")
+
+    materialized: list[SeriesResult] = []
+    try:
+        for moves, transposition_count in raw_series:
+            result = play_series(state, tuple(str(move) for move in moves))
+            materialized.append(
+                result.with_transposition_count(int(transposition_count))
+            )
+    except (SeriesLegalityError, TypeError, ValueError):
+        return None
+    _apply_native_generation_stats(counters, tuple(raw_stats))
+    return materialized
+
+
 def generate_series(
     state: ProgressiveState,
     *,
@@ -787,6 +1133,7 @@ def generate_series(
     max_frontier_states: int | None = None,
     max_positions: int | None = None,
     frontier_score: FrontierScore | None = None,
+    native_final_score: NativeFinalSeriesScoreConfig | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> list[SeriesResult]:
     """Generates complete legal series from a boundary position.
@@ -803,7 +1150,10 @@ def generate_series(
     any such pruning is recorded in ``GenerationStats`` and makes the caller's
     result selective. ``max_positions`` is a deterministic combined watchdog
     for expanded generation states and distinct partial states evaluated by
-    ``frontier_score``.
+    ``frontier_score``. ``native_final_score`` is an internal search-only
+    acceleration hint: the Python oracle ignores it and returns every merged
+    result, while a compatible native kernel may return only its exact static
+    top-K without changing any full-generation counters.
     """
 
     counters = stats if stats is not None else GenerationStats()
@@ -813,6 +1163,18 @@ def generate_series(
     if max_positions is not None and max_positions < 1:
         raise ValueError("max_positions must be positive")
     if merge_transpositions:
+        native_results = _native_complete_series_generation(
+            state,
+            counters,
+            required_prefix=prefix,
+            max_frontier_states=max_frontier_states,
+            max_positions=max_positions,
+            frontier_score=frontier_score,
+            native_final_score=native_final_score,
+            should_stop=should_stop,
+        )
+        if native_results is not None:
+            return native_results
         metered_frontier_score = frontier_score
         if frontier_score is not None:
             cached_frontier_scores: dict[str, int] = {}

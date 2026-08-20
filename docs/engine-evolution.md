@@ -141,6 +141,45 @@ The strict gate requires at least nine pair wins and no loss, so baseline
 and [`selfplay-fresh-seeded-v0.7.0.json`](../benchmarks/results/selfplay-fresh-seeded-v0.7.0.json).
 This is fixed-suite evidence only, not calibrated Elo or a Stockfish comparison.
 
+### v0.8 natural-selection outcome
+
+Completed run `ce7c3cc7-baa1-4a7c-864d-652e18ba4924` used seed `20260824`,
+source fingerprint `f369b5da69c17c5f`, a population of 64, and two generations.
+The finalist match in each generation began with 50 games (25 color-swapped
+pairs) and could add up to 10 replacement games for inconclusive pairs. Both
+sides received the same depth 2, complete-series cap 32, and 250,000-position
+deterministic per-search work budget; games ran across a 16-worker pool.
+
+| Generation | Finalist | Conclusive pairs | Pair W/D/L | Pair score | Gate decision |
+| --- | --- | ---: | ---: | ---: | --- |
+| 1 | `spc-d14d1dae18b54c23` | 25/25 | `6/18/1` | 0.600 | Rejected: only 6 of 23 required wins and one loss |
+| 2 | `spc-c2faf211c4300f12` | 22/25 | `3/14/5` | 0.455 | Rejected: incomplete, below 0.500, only 3 of 23 required wins, and five losses |
+
+The run recorded 118 raw games: 58 in generation one and 60 in generation two.
+There were no exceptions, engine failures, worker failures, or other technical
+failures. Thirteen games ended `manual-adjudication-pending` and were correctly
+kept as `*` incompletes rather than being assigned to either engine. The strict
+zero-loss and required-win gates rejected both finalists, so baseline
+`spc-68942034c41b4cc4` remained champion.
+
+Because generation-one finalist `spc-d14d1dae18b54c23` was the strongest
+league signal, it received a fresh, independently generated 100-game holdout
+with seed `20260825`. The checked report is
+[`league-standout-fresh-seeded-100-v0.8.0.json`](../benchmarks/results/league-standout-fresh-seeded-100-v0.8.0.json).
+Its conclusive game W/D/L was `49/3/45`, plus three manual-adjudication
+incompletes. Its conclusive pair W/D/L was `5/41/2`, plus two incomplete pairs:
+48 conclusive pairs, score `0.53125`, and a descriptive +14 performance
+difference. This is a small fixed-suite edge, not calibrated Elo or proof of
+general superiority. The losses and incompletes would block the league's
+promotion rules, and the independent match harness is explicitly incapable of
+changing the champion. The candidate is therefore a promising runner-up only;
+the baseline remains champion.
+
+The holdout used the same depth-2, cap-32, 250,000-work search limits and 16
+workers. Its report records 62.5576591 seconds and 1.55057 completed
+games/second. Those numbers describe aggregate pool throughput across the 97
+conclusive games, not the latency of an individual game.
+
 Future neutral suites are generated through the public rules API, carry exact
 from-start replay histories, and derive their version from their content. The
 match harness rejects a reused suite ID with changed metadata or PFEN, and each

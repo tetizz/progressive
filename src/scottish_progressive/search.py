@@ -20,7 +20,8 @@ from .rules import (
     GenerationCancelled,
     GenerationStats,
     GenerationWorkLimit,
-    _legal_move_variants,
+    NativeFinalSeriesScoreConfig,
+    NativeFrontierScoreConfig,
     generate_series,
     quiet_adjudication_status,
 )
@@ -396,6 +397,7 @@ class SeriesSearcher:
         self,
         state: ProgressiveState,
         *,
+        ply_from_root: int,
         required_prefix: tuple[str, ...] = (),
         reserve_positions: int = 0,
     ) -> list[SeriesResult]:
@@ -415,36 +417,20 @@ class SeriesSearcher:
                     self.stats.generation_work_limit_hits += 1
                 raise _WorkLimit
 
-        def frontier_score(board: chess.Board) -> int:
-            partial = ProgressiveState(
-                board,
-                state.series_number,
-                quiet_series=state.quiet_series,
+        frontier_score = NativeFrontierScoreConfig.from_profile(
+            state,
+            self.profile,
+        )
+        native_final_score = (
+            NativeFinalSeriesScoreConfig.from_profile(
+                self.profile,
+                max_returned_series=self.limits.max_series_per_node,
+                ply_from_root=ply_from_root,
+                mate_score=MATE_SCORE,
             )
-            score = fast_evaluate(partial, self.profile)
-            checks = 0
-            immediate_mates = 0
-            captures = 0
-            promotions = 0
-            for move, required_ep in _legal_move_variants(board):
-                board.ep_square = required_ep
-                gives_check = board.gives_check(move)
-                checks += int(gives_check)
-                captures += int(board.is_capture(move))
-                promotions += int(move.promotion is not None)
-                if gives_check:
-                    child = board.copy(stack=False)
-                    child.push(move)
-                    immediate_mates += int(child.is_checkmate())
-            board.ep_square = None
-            tactical = (
-                immediate_mates * 5_000_000
-                + checks * 50_000
-                + promotions * 2_000
-                + captures * 100
-            )
-            score += tactical if board.turn == chess.WHITE else -tactical
-            return score
+            if self.limits.max_series_per_node is not None
+            else None
+        )
 
         try:
             series = generate_series(
@@ -458,6 +444,7 @@ class SeriesSearcher:
                     if self.limits.max_series_per_node is not None
                     else None
                 ),
+                native_final_score=native_final_score,
                 should_stop=(
                     (lambda: time.perf_counter() >= self._deadline)
                     if self._deadline is not None
@@ -470,6 +457,9 @@ class SeriesSearcher:
             raise _Timeout from error
         finally:
             self._record_generation_stats(generation)
+        if generation.unique_series > len(series):
+            self.stats.branch_caps += 1
+            self._selective = True
         return series
 
     def _generate_root_seed(
@@ -644,6 +634,7 @@ class SeriesSearcher:
         ordered = self._ordered(
             self._generate(
                 state,
+                ply_from_root=ply_from_root,
                 required_prefix=required_prefix,
                 reserve_positions=reserve_positions,
             ),

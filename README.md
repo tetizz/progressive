@@ -211,17 +211,74 @@ spc compare-replies --output-dir reports
   tests named historical and engine reply hypotheses with a 64-finalist White
   response screen.
 - [`docs/native-acceleration.md`](docs/native-acceleration.md) records the
-  optional C++20 evaluation and legal-series kernels, Python fallback,
-  differential rule gates, and fresh-process speed measurements.
+  optional C++20 evaluation, legal-move, and complete-series kernels, the
+  exact Python fallback boundary, differential rule gates, and fresh-process
+  speed measurements.
+- [`benchmarks/results/selfplay-fresh-seeded-100-v0.8.0.json`](benchmarks/results/selfplay-fresh-seeded-100-v0.8.0.json)
+  freezes the cold-wheel 100-game v0.8 strength gate.
+- [`benchmarks/results/league-standout-fresh-seeded-100-v0.8.0.json`](benchmarks/results/league-standout-fresh-seeded-100-v0.8.0.json)
+  records the independent 100-game holdout for the best v0.8 league runner-up.
 - [`docs/engine-evolution.md`](docs/engine-evolution.md) records the replayed
-  self-play fit, independent match results, and why the v0.7 candidate was not
-  promoted despite a small fixed-suite edge.
+  self-play fit, natural-selection runs, independent match results, and why no
+  v0.7 or v0.8 challenger was promoted.
 
 The shallow run ranks `1.g3` and `1.c3` first, but that ordering collapses an
 important horizon: White has not yet received the three-move series. In the
 selective three-series extension, `1.e4` scores `+848` and `1.d4` `+752` under
 the current heuristic. Those are useful hypotheses only; branch pruning and
 uncalibrated evaluation weights make neither a proof nor an objective answer.
+
+The v0.8 native milestone generates compatible complete-series frontiers in
+C++20 and performs the searcher's exact final top-32 selection before Python
+materializes the retained series. It still reports the full raw/unique/path and
+pruning counts. On a cold-installed Windows CPython 3.14 wheel, the frozen
+depth-2 benchmark measured these median end-to-end search times against the
+same native micro-kernels with the bulk generator hidden:
+
+| Position | Micro-native path | v0.8 bulk path | Speedup |
+| --- | ---: | ---: | ---: |
+| S1 | 0.7127814 s | 0.4193095 s | 1.700x |
+| S3 | 6.8801801 s | 0.6795530 s | 10.1246x |
+| published S4 mate | 0.2163944 s | 0.0170888 s | 12.663x |
+| live S22 adjudication state | 2.3934753 s | 0.1119073 s | 21.388x |
+
+Every complete result, proof field, and `SearchStats` field was identical. A
+same-suite 20-record self-play replay fell from 346.5628463 seconds on v0.7 to
+20.1899159 seconds with the final cold-installed v0.8 wheel, a 17.165x
+throughput gain. All 20 records matched; 19 were valid checkmates and one
+remained a manual-adjudication incomplete. That comparison is 16-worker pool
+throughput, not the latency of one game.
+
+The final cold-installed v0.8 wheel (source fingerprint `f369b5da69c17c5f`)
+then completed 100/100 games conclusively in 75.944 seconds with no technical
+failures or incompletes, averaging 1.31676 games/second across the 16-worker
+pool. The candidate scored 49 wins, 1 draw, and 50 losses by game; its
+color-swapped pairs scored 7 wins, 36 draws, and 7 losses for an exact 0.500
+pair score and a descriptive -3 performance difference. This is fixed-suite
+evidence, not individual-game latency or a general rating. In that
+self-play-fit match, no engine stood out; no profile was promoted, and the
+baseline remains champion.
+
+A separate v0.8 natural-selection run
+`ce7c3cc7-baa1-4a7c-864d-652e18ba4924` screened populations of 64 over two
+generations, then gave each finalist a 50-game color-swapped gate with up to 10
+replacement games. The 16-worker pool used depth 2, cap 32, and 250,000 work
+positions per search. Generation-one finalist `spc-d14d1dae18b54c23`
+completed all 25 pairs at W/D/L `6/18/1` and score `0.600`, but failed the
+required-win and zero-loss rules. Generation-two finalist
+`spc-c2faf211c4300f12` completed only 22/25 pairs at `3/14/5` and score
+`0.455`; it also failed. Across 118 raw games there were no technical failures.
+The baseline therefore remained champion.
+
+The promising generation-one runner-up then faced a fresh 100-game holdout.
+Its conclusive game W/D/L was `49/3/45`, with three manual-adjudication
+incompletes; its conclusive pair W/D/L was `5/41/2`, with two incomplete pairs.
+Across 48 conclusive pairs it scored `0.53125`, a descriptive +14, but the two
+losses and incomplete pairs still rule out a promotion claim. The holdout
+harness cannot change the champion in any case. Its reported 62.558 seconds
+and 1.55057 completed games/second measure the 16-worker pool, not one game's
+latency. `spc-d14d1dae18b54c23` is a promising runner-up only; the baseline
+remains champion.
 
 ## Evidence language
 
