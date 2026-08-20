@@ -129,6 +129,43 @@ def test_analysis_is_real_bounded_search_and_labels_score_unit() -> None:
     assert result["timed_out"] is False
     assert result["principal_variation"]
     assert result["stats"]["generated_unique_series"] >= 1
+    assert {
+        "promotion_mate_positions",
+        "promotion_mate_setup_states",
+        "promotion_mate_candidates",
+        "promotion_mate_completion_probes",
+        "promotion_mate_limit_hits",
+        "promotion_mate_replay_rejects",
+        "promotion_mate_mates",
+    } <= result["stats"].keys()
+
+
+def test_analysis_exposes_nonzero_promotion_mate_evidence() -> None:
+    result = analyze_payload(
+        {
+            "fen": (
+                "7R/pp3p1p/1p3k2/3P4/1b6/5P2/"
+                "PPP2P1P/RNK5 b - - 0 1"
+            ),
+            "series": 8,
+            "prefix": [],
+            "depth": 2,
+            "max_series": 32,
+            "time_limit": 5,
+            "max_generation_positions": 250_000,
+            "alternatives": 1,
+        }
+    )
+
+    stats = result["stats"]
+    assert result["proven_result"] == "black"
+    assert stats["promotion_mate_positions"] > 0
+    assert stats["promotion_mate_setup_states"] > 0
+    assert stats["promotion_mate_candidates"] > 0
+    assert stats["promotion_mate_completion_probes"] > 0
+    assert stats["promotion_mate_mates"] == 1
+    assert stats["promotion_mate_limit_hits"] == 0
+    assert stats["promotion_mate_replay_rejects"] == 0
 
 
 def test_analysis_accepts_a_trusted_incomplete_prefix_and_enforces_time_ceiling() -> None:

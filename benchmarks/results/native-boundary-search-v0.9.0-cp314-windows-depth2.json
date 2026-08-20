@@ -1,0 +1,2973 @@
+{
+  "aggregate": {
+    "all_cases_semantically_equal_under_declared_allowances": true,
+    "case_count": 4,
+    "geometric_mean_speedup": 2.384205485779752,
+    "sum_of_case_medians_speedup": 2.505480499855112
+  },
+  "artifact_id": "spc-v09-native-boundary-471b362564302259",
+  "artifacts": {
+    "baseline": {
+      "filename": "scottish_progressive-0.8.0-cp314-cp314-win_amd64.whl",
+      "kind": "wheel",
+      "sha256": "3cf0ff4e10c38a3ec42e28702b10557a534f390173a36e60e1f1d3c61d967fa4",
+      "size_bytes": 271265
+    },
+    "candidate": {
+      "filename": "scottish_progressive-0.9.0-cp314-cp314-win_amd64.whl",
+      "kind": "wheel",
+      "sha256": "64217d738432a32e4df108e6b0f2a22252cdf76c6a074fd888469d1b0227482e",
+      "size_bytes": 306718
+    }
+  },
+  "cases": {
+    "S1": {
+      "baseline_median_seconds": 0.42716140000266023,
+      "baseline_result_sha256": "59efc903000ea69cc5cfeb24c397d5511817acba44b42057012f8c652fe2e579",
+      "baseline_search_result": {
+        "adjudication_status": null,
+        "alternatives": [
+          {
+            "principal_variation": [
+              {
+                "ended_by_check": false,
+                "final_pfen": "rnb1kbnr/pppp1ppp/4p3/6q1/8/6P1/PPPPPP1P/RNBQKBNR w KQkq - 1 3 | series=3 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+                "moves": [
+                  "e7e6",
+                  "d8g5"
+                ],
+                "outcome": null,
+                "san": [
+                  "e6",
+                  "Qg5"
+                ],
+                "transposition_count": 1,
+                "unused_moves": 0
+              }
+            ],
+            "proof": null,
+            "proof_bounds": [
+              -1,
+              1
+            ],
+            "score": -150,
+            "series": {
+              "ended_by_check": false,
+              "final_pfen": "rnbqkbnr/pppppppp/8/8/8/6P1/PPPPPP1P/RNBQKBNR b KQkq - 0 1 | series=2 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+              "moves": [
+                "g2g3"
+              ],
+              "outcome": null,
+              "san": [
+                "g3"
+              ],
+              "transposition_count": 1,
+              "unused_moves": 0
+            }
+          },
+          {
+            "principal_variation": [
+              {
+                "ended_by_check": false,
+                "final_pfen": "rnb1kbnr/pppp1ppp/8/4p3/7q/2P5/PP1PPPPP/RNBQKBNR w KQkq - 1 3 | series=3 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+                "moves": [
+                  "e7e5",
+                  "d8h4"
+                ],
+                "outcome": null,
+                "san": [
+                  "e5",
+                  "Qh4"
+                ],
+                "transposition_count": 1,
+                "unused_moves": 0
+              }
+            ],
+            "proof": null,
+            "proof_bounds": [
+              -1,
+              1
+            ],
+            "score": -156,
+            "series": {
+              "ended_by_check": false,
+              "final_pfen": "rnbqkbnr/pppppppp/8/8/8/2P5/PP1PPPPP/RNBQKBNR b KQkq - 0 1 | series=2 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+              "moves": [
+                "c2c3"
+              ],
+              "outcome": null,
+              "san": [
+                "c3"
+              ],
+              "transposition_count": 1,
+              "unused_moves": 0
+            }
+          },
+          {
+            "principal_variation": [
+              {
+                "ended_by_check": false,
+                "final_pfen": "rn1qkbnr/ppp1pppp/3p4/8/4P1b1/8/PPPP1PPP/RNBQKBNR w KQkq - 1 3 | series=3 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+                "moves": [
+                  "d7d6",
+                  "c8g4"
+                ],
+                "outcome": null,
+                "san": [
+                  "d6",
+                  "Bg4"
+                ],
+                "transposition_count": 1,
+                "unused_moves": 0
+              }
+            ],
+            "proof": null,
+            "proof_bounds": [
+              -1,
+              1
+            ],
+            "score": -161,
+            "series": {
+              "ended_by_check": false,
+              "final_pfen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1 | series=2 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+              "moves": [
+                "e2e4"
+              ],
+              "outcome": null,
+              "san": [
+                "e4"
+              ],
+              "transposition_count": 1,
+              "unused_moves": 0
+            }
+          },
+          {
+            "principal_variation": [
+              {
+                "ended_by_check": false,
+                "final_pfen": "rn1qkbnr/ppp1pppp/8/3p4/6b1/4P3/PPPP1PPP/RNBQKBNR w KQkq - 1 3 | series=3 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+                "moves": [
+                  "d7d5",
+                  "c8g4"
+                ],
+                "outcome": null,
+                "san": [
+                  "d5",
+                  "Bg4"
+                ],
+                "transposition_count": 1,
+                "unused_moves": 0
+              }
+            ],
+            "proof": null,
+            "proof_bounds": [
+              -1,
+              1
+            ],
+            "score": -163,
+            "series": {
+              "ended_by_check": false,
+              "final_pfen": "rnbqkbnr/pppppppp/8/8/8/4P3/PPPP1PPP/RNBQKBNR b KQkq - 0 1 | series=2 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+              "moves": [
+                "e2e3"
+              ],
+              "outcome": null,
+              "san": [
+                "e3"
+              ],
+              "transposition_count": 1,
+              "unused_moves": 0
+            }
+          }
+        ],
+        "best_series": {
+          "ended_by_check": false,
+          "final_pfen": "rnbqkbnr/pppppppp/8/8/8/6P1/PPPPPP1P/RNBQKBNR b KQkq - 0 1 | series=2 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+          "moves": [
+            "g2g3"
+          ],
+          "outcome": null,
+          "san": [
+            "g3"
+          ],
+          "transposition_count": 1,
+          "unused_moves": 0
+        },
+        "completed_depth": 2,
+        "dataclass_fields": [
+          "adjudication_status",
+          "alternatives",
+          "best_series",
+          "completed_depth",
+          "elapsed_seconds",
+          "engine_profile_id",
+          "engine_profile_name",
+          "engine_version",
+          "exact_width",
+          "max_generation_positions",
+          "max_series_per_node",
+          "principal_variation",
+          "proof",
+          "requested_depth",
+          "required_prefix",
+          "root_evaluation",
+          "root_scores_complete",
+          "score",
+          "source_fingerprint",
+          "stats",
+          "time_limit_seconds",
+          "timed_out",
+          "work_limit_reached"
+        ],
+        "engine_profile_id": "spc-68942034c41b4cc4",
+        "engine_profile_name": "Scottish Progressive baseline",
+        "engine_version": "spc-0.8.0",
+        "exact_width": false,
+        "forced": null,
+        "max_generation_positions": 250000,
+        "max_series_per_node": 32,
+        "principal_variation": [
+          {
+            "ended_by_check": false,
+            "final_pfen": "rnbqkbnr/pppppppp/8/8/8/6P1/PPPPPP1P/RNBQKBNR b KQkq - 0 1 | series=2 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+            "moves": [
+              "g2g3"
+            ],
+            "outcome": null,
+            "san": [
+              "g3"
+            ],
+            "transposition_count": 1,
+            "unused_moves": 0
+          },
+          {
+            "ended_by_check": false,
+            "final_pfen": "rnb1kbnr/pppp1ppp/4p3/6q1/8/6P1/PPPPPP1P/RNBQKBNR w KQkq - 1 3 | series=3 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+            "moves": [
+              "e7e6",
+              "d8g5"
+            ],
+            "outcome": null,
+            "san": [
+              "e6",
+              "Qg5"
+            ],
+            "transposition_count": 1,
+            "unused_moves": 0
+          }
+        ],
+        "proof": null,
+        "requested_depth": 2,
+        "required_prefix": [],
+        "root_evaluation": {
+          "black_check_distance": null,
+          "black_reach_nodes": 128,
+          "boundary_check": 0,
+          "immediate_vulnerability": 0,
+          "king_space": 0,
+          "material": 0,
+          "promotion_corridors": 0,
+          "reach_complete": false,
+          "series_reach": 0,
+          "total": 0,
+          "useful_mobility": 0,
+          "white_check_distance": null,
+          "white_reach_nodes": 20
+        },
+        "root_scores_complete": false,
+        "score": -150,
+        "source_fingerprint": "f369b5da69c17c5f",
+        "stats": {
+          "alpha_beta_cutoffs": 16,
+          "branch_caps": 20,
+          "evaluation_reach_positions": 28562,
+          "frontier_paths_pruned": 0,
+          "frontier_prunes": 0,
+          "frontier_score_positions": 400,
+          "frontier_states_pruned": 0,
+          "generated_raw_series": 8922,
+          "generated_unique_series": 5382,
+          "generation_positions": 29556,
+          "generation_work_limit_hits": 0,
+          "incomplete_reach_evaluations": 162,
+          "intra_series_transpositions": 3540,
+          "leaf_evaluations": 173,
+          "nodes": 192,
+          "peak_frontier_states": 20,
+          "quiet_adjudication_cache_hits": 0,
+          "quiet_adjudication_limit_hits": 0,
+          "quiet_adjudication_positions": 0,
+          "root_bound_candidates": 33,
+          "series_generation_cache_evictions": 0,
+          "series_generation_cache_hits": 1,
+          "series_generation_cache_peak": 660,
+          "series_generation_positions": 421,
+          "static_evaluation_positions": 173,
+          "tt_hits": 0
+        },
+        "time_limit_seconds": null,
+        "timed_out": false,
+        "work_limit_reached": false
+      },
+      "baseline_seconds": [
+        0.4285285000078147,
+        0.42716140000266023,
+        0.4231372000067495,
+        0.4334745000087423,
+        0.423117700003786
+      ],
+      "candidate_median_seconds": 0.05401700000220444,
+      "candidate_result_sha256": "1f01eaed96fccba20f30786e0a466af549e0c453be793b5dc80c1c86dbcf76f2",
+      "candidate_search_result": {
+        "adjudication_status": null,
+        "alternatives": [
+          {
+            "principal_variation": [
+              {
+                "ended_by_check": false,
+                "final_pfen": "rnb1kbnr/pppp1ppp/4p3/6q1/8/6P1/PPPPPP1P/RNBQKBNR w KQkq - 1 3 | series=3 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+                "moves": [
+                  "e7e6",
+                  "d8g5"
+                ],
+                "outcome": null,
+                "san": [
+                  "e6",
+                  "Qg5"
+                ],
+                "transposition_count": 1,
+                "unused_moves": 0
+              }
+            ],
+            "proof": null,
+            "proof_bounds": [
+              -1,
+              1
+            ],
+            "score": -150,
+            "series": {
+              "ended_by_check": false,
+              "final_pfen": "rnbqkbnr/pppppppp/8/8/8/6P1/PPPPPP1P/RNBQKBNR b KQkq - 0 1 | series=2 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+              "moves": [
+                "g2g3"
+              ],
+              "outcome": null,
+              "san": [
+                "g3"
+              ],
+              "transposition_count": 1,
+              "unused_moves": 0
+            }
+          },
+          {
+            "principal_variation": [
+              {
+                "ended_by_check": false,
+                "final_pfen": "rnb1kbnr/pppp1ppp/8/4p3/7q/2P5/PP1PPPPP/RNBQKBNR w KQkq - 1 3 | series=3 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+                "moves": [
+                  "e7e5",
+                  "d8h4"
+                ],
+                "outcome": null,
+                "san": [
+                  "e5",
+                  "Qh4"
+                ],
+                "transposition_count": 1,
+                "unused_moves": 0
+              }
+            ],
+            "proof": null,
+            "proof_bounds": [
+              -1,
+              1
+            ],
+            "score": -156,
+            "series": {
+              "ended_by_check": false,
+              "final_pfen": "rnbqkbnr/pppppppp/8/8/8/2P5/PP1PPPPP/RNBQKBNR b KQkq - 0 1 | series=2 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+              "moves": [
+                "c2c3"
+              ],
+              "outcome": null,
+              "san": [
+                "c3"
+              ],
+              "transposition_count": 1,
+              "unused_moves": 0
+            }
+          },
+          {
+            "principal_variation": [
+              {
+                "ended_by_check": false,
+                "final_pfen": "rn1qkbnr/ppp1pppp/3p4/8/4P1b1/8/PPPP1PPP/RNBQKBNR w KQkq - 1 3 | series=3 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+                "moves": [
+                  "d7d6",
+                  "c8g4"
+                ],
+                "outcome": null,
+                "san": [
+                  "d6",
+                  "Bg4"
+                ],
+                "transposition_count": 1,
+                "unused_moves": 0
+              }
+            ],
+            "proof": null,
+            "proof_bounds": [
+              -1,
+              1
+            ],
+            "score": -161,
+            "series": {
+              "ended_by_check": false,
+              "final_pfen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1 | series=2 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+              "moves": [
+                "e2e4"
+              ],
+              "outcome": null,
+              "san": [
+                "e4"
+              ],
+              "transposition_count": 1,
+              "unused_moves": 0
+            }
+          },
+          {
+            "principal_variation": [
+              {
+                "ended_by_check": false,
+                "final_pfen": "rn1qkbnr/ppp1pppp/8/3p4/6b1/4P3/PPPP1PPP/RNBQKBNR w KQkq - 1 3 | series=3 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+                "moves": [
+                  "d7d5",
+                  "c8g4"
+                ],
+                "outcome": null,
+                "san": [
+                  "d5",
+                  "Bg4"
+                ],
+                "transposition_count": 1,
+                "unused_moves": 0
+              }
+            ],
+            "proof": null,
+            "proof_bounds": [
+              -1,
+              1
+            ],
+            "score": -163,
+            "series": {
+              "ended_by_check": false,
+              "final_pfen": "rnbqkbnr/pppppppp/8/8/8/4P3/PPPP1PPP/RNBQKBNR b KQkq - 0 1 | series=2 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+              "moves": [
+                "e2e3"
+              ],
+              "outcome": null,
+              "san": [
+                "e3"
+              ],
+              "transposition_count": 1,
+              "unused_moves": 0
+            }
+          }
+        ],
+        "best_series": {
+          "ended_by_check": false,
+          "final_pfen": "rnbqkbnr/pppppppp/8/8/8/6P1/PPPPPP1P/RNBQKBNR b KQkq - 0 1 | series=2 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+          "moves": [
+            "g2g3"
+          ],
+          "outcome": null,
+          "san": [
+            "g3"
+          ],
+          "transposition_count": 1,
+          "unused_moves": 0
+        },
+        "completed_depth": 2,
+        "dataclass_fields": [
+          "adjudication_status",
+          "alternatives",
+          "best_series",
+          "completed_depth",
+          "elapsed_seconds",
+          "engine_profile_id",
+          "engine_profile_name",
+          "engine_version",
+          "exact_width",
+          "max_generation_positions",
+          "max_series_per_node",
+          "principal_variation",
+          "proof",
+          "requested_depth",
+          "required_prefix",
+          "root_evaluation",
+          "root_scores_complete",
+          "score",
+          "source_fingerprint",
+          "stats",
+          "time_limit_seconds",
+          "timed_out",
+          "work_limit_reached"
+        ],
+        "engine_profile_id": "spc-68942034c41b4cc4",
+        "engine_profile_name": "Scottish Progressive baseline",
+        "engine_version": "spc-0.9.0",
+        "exact_width": false,
+        "forced": null,
+        "max_generation_positions": 250000,
+        "max_series_per_node": 32,
+        "principal_variation": [
+          {
+            "ended_by_check": false,
+            "final_pfen": "rnbqkbnr/pppppppp/8/8/8/6P1/PPPPPP1P/RNBQKBNR b KQkq - 0 1 | series=2 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+            "moves": [
+              "g2g3"
+            ],
+            "outcome": null,
+            "san": [
+              "g3"
+            ],
+            "transposition_count": 1,
+            "unused_moves": 0
+          },
+          {
+            "ended_by_check": false,
+            "final_pfen": "rnb1kbnr/pppp1ppp/4p3/6q1/8/6P1/PPPPPP1P/RNBQKBNR w KQkq - 1 3 | series=3 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+            "moves": [
+              "e7e6",
+              "d8g5"
+            ],
+            "outcome": null,
+            "san": [
+              "e6",
+              "Qg5"
+            ],
+            "transposition_count": 1,
+            "unused_moves": 0
+          }
+        ],
+        "proof": null,
+        "requested_depth": 2,
+        "required_prefix": [],
+        "root_evaluation": {
+          "black_check_distance": null,
+          "black_reach_nodes": 128,
+          "boundary_check": 0,
+          "immediate_vulnerability": 0,
+          "king_space": 0,
+          "material": 0,
+          "promotion_corridors": 0,
+          "reach_complete": false,
+          "series_reach": 0,
+          "total": 0,
+          "useful_mobility": 0,
+          "white_check_distance": null,
+          "white_reach_nodes": 20
+        },
+        "root_scores_complete": false,
+        "score": -150,
+        "source_fingerprint": "806aa0d679f6d1ef",
+        "stats": {
+          "alpha_beta_cutoffs": 16,
+          "branch_caps": 20,
+          "evaluation_reach_positions": 28562,
+          "frontier_paths_pruned": 0,
+          "frontier_prunes": 0,
+          "frontier_score_positions": 400,
+          "frontier_states_pruned": 0,
+          "generated_raw_series": 8922,
+          "generated_unique_series": 5382,
+          "generation_positions": 29556,
+          "generation_work_limit_hits": 0,
+          "incomplete_reach_evaluations": 162,
+          "intra_series_transpositions": 3540,
+          "leaf_evaluations": 173,
+          "nodes": 192,
+          "peak_frontier_states": 20,
+          "promotion_mate_candidates": 0,
+          "promotion_mate_completion_probes": 0,
+          "promotion_mate_limit_hits": 0,
+          "promotion_mate_mates": 0,
+          "promotion_mate_positions": 0,
+          "promotion_mate_replay_rejects": 0,
+          "promotion_mate_setup_states": 0,
+          "quiet_adjudication_cache_hits": 0,
+          "quiet_adjudication_limit_hits": 0,
+          "quiet_adjudication_positions": 0,
+          "root_bound_candidates": 33,
+          "series_generation_cache_evictions": 0,
+          "series_generation_cache_hits": 1,
+          "series_generation_cache_peak": 660,
+          "series_generation_positions": 421,
+          "static_evaluation_positions": 173,
+          "tt_hits": 0
+        },
+        "time_limit_seconds": null,
+        "timed_out": false,
+        "work_limit_reached": false
+      },
+      "candidate_seconds": [
+        0.0552657999942312,
+        0.05401700000220444,
+        0.05706570000620559,
+        0.05330159999721218,
+        0.05335159999958705
+      ],
+      "comparison": {
+        "allowed_difference_counts": {
+          "pinned_release_identity": 2,
+          "pinned_v09_zero_counter_addition": 7
+        },
+        "allowed_difference_examples": {
+          "pinned_release_identity": [
+            {
+              "baseline": "spc-0.8.0",
+              "candidate": "spc-0.9.0",
+              "path": "/engine_version"
+            },
+            {
+              "baseline": "f369b5da69c17c5f",
+              "candidate": "806aa0d679f6d1ef",
+              "path": "/source_fingerprint"
+            }
+          ],
+          "pinned_v09_zero_counter_addition": [
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_candidates"
+            },
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_completion_probes"
+            },
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_limit_hits"
+            },
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_mates"
+            },
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_positions"
+            },
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_replay_rejects"
+            },
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_setup_states"
+            }
+          ]
+        },
+        "difference_count": 9,
+        "difference_examples_truncated": false,
+        "full_payload_exact": false,
+        "semantic_equal_under_declared_allowances": true,
+        "unallowed_difference_count": 0,
+        "unallowed_difference_examples": []
+      },
+      "raw_samples": [
+        {
+          "order_index": 0,
+          "repetition": 0,
+          "runtime": "baseline",
+          "wall_seconds": 0.4285285000078147
+        },
+        {
+          "order_index": 1,
+          "repetition": 0,
+          "runtime": "candidate",
+          "wall_seconds": 0.0552657999942312
+        },
+        {
+          "order_index": 0,
+          "repetition": 1,
+          "runtime": "candidate",
+          "wall_seconds": 0.05401700000220444
+        },
+        {
+          "order_index": 1,
+          "repetition": 1,
+          "runtime": "baseline",
+          "wall_seconds": 0.42716140000266023
+        },
+        {
+          "order_index": 0,
+          "repetition": 2,
+          "runtime": "baseline",
+          "wall_seconds": 0.4231372000067495
+        },
+        {
+          "order_index": 1,
+          "repetition": 2,
+          "runtime": "candidate",
+          "wall_seconds": 0.05706570000620559
+        },
+        {
+          "order_index": 0,
+          "repetition": 3,
+          "runtime": "candidate",
+          "wall_seconds": 0.05330159999721218
+        },
+        {
+          "order_index": 1,
+          "repetition": 3,
+          "runtime": "baseline",
+          "wall_seconds": 0.4334745000087423
+        },
+        {
+          "order_index": 0,
+          "repetition": 4,
+          "runtime": "baseline",
+          "wall_seconds": 0.423117700003786
+        },
+        {
+          "order_index": 1,
+          "repetition": 4,
+          "runtime": "candidate",
+          "wall_seconds": 0.05335159999958705
+        }
+      ],
+      "speedup": 7.907906769817423
+    },
+    "S22": {
+      "baseline_median_seconds": 0.10992499999701977,
+      "baseline_result_sha256": "f146ac1476321be30baef27030cd4d8a65e05860c6cb12411a5e7c4a8db4ccc2",
+      "baseline_search_result": {
+        "adjudication_status": "manual-proof-required",
+        "alternatives": [
+          {
+            "principal_variation": [],
+            "proof": null,
+            "proof_bounds": [
+              -1,
+              1
+            ],
+            "score": 1411,
+            "series": {
+              "ended_by_check": false,
+              "final_pfen": "8/8/8/8/6Q1/2K1k3/8/8 w - - 166 131 | series=23 quiet=9 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+              "moves": [
+                "g2f1",
+                "f1e1",
+                "e1f1",
+                "f1e1",
+                "e1f1",
+                "f1e1",
+                "e1f1",
+                "f1e1",
+                "e1f1",
+                "f1e1",
+                "e1f1",
+                "f1e1",
+                "e1f1",
+                "f1e1",
+                "e1f1",
+                "f1e1",
+                "e1f1",
+                "f1e1",
+                "e1f1",
+                "f1e1",
+                "e1f2",
+                "f2e3"
+              ],
+              "outcome": null,
+              "san": [
+                "Kf1",
+                "Ke1",
+                "Kf1",
+                "Ke1",
+                "Kf1",
+                "Ke1",
+                "Kf1",
+                "Ke1",
+                "Kf1",
+                "Ke1",
+                "Kf1",
+                "Ke1",
+                "Kf1",
+                "Ke1",
+                "Kf1",
+                "Ke1",
+                "Kf1",
+                "Ke1",
+                "Kf1",
+                "Ke1",
+                "Kf2",
+                "Ke3"
+              ],
+              "transposition_count": 3722857,
+              "unused_moves": 0
+            }
+          }
+        ],
+        "best_series": {
+          "ended_by_check": false,
+          "final_pfen": "8/8/8/8/6Q1/2K1k3/8/8 w - - 166 131 | series=23 quiet=9 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+          "moves": [
+            "g2f1",
+            "f1e1",
+            "e1f1",
+            "f1e1",
+            "e1f1",
+            "f1e1",
+            "e1f1",
+            "f1e1",
+            "e1f1",
+            "f1e1",
+            "e1f1",
+            "f1e1",
+            "e1f1",
+            "f1e1",
+            "e1f1",
+            "f1e1",
+            "e1f1",
+            "f1e1",
+            "e1f1",
+            "f1e1",
+            "e1f2",
+            "f2e3"
+          ],
+          "outcome": null,
+          "san": [
+            "Kf1",
+            "Ke1",
+            "Kf1",
+            "Ke1",
+            "Kf1",
+            "Ke1",
+            "Kf1",
+            "Ke1",
+            "Kf1",
+            "Ke1",
+            "Kf1",
+            "Ke1",
+            "Kf1",
+            "Ke1",
+            "Kf1",
+            "Ke1",
+            "Kf1",
+            "Ke1",
+            "Kf1",
+            "Ke1",
+            "Kf2",
+            "Ke3"
+          ],
+          "transposition_count": 3722857,
+          "unused_moves": 0
+        },
+        "completed_depth": 1,
+        "dataclass_fields": [
+          "adjudication_status",
+          "alternatives",
+          "best_series",
+          "completed_depth",
+          "elapsed_seconds",
+          "engine_profile_id",
+          "engine_profile_name",
+          "engine_version",
+          "exact_width",
+          "max_generation_positions",
+          "max_series_per_node",
+          "principal_variation",
+          "proof",
+          "requested_depth",
+          "required_prefix",
+          "root_evaluation",
+          "root_scores_complete",
+          "score",
+          "source_fingerprint",
+          "stats",
+          "time_limit_seconds",
+          "timed_out",
+          "work_limit_reached"
+        ],
+        "engine_profile_id": "spc-68942034c41b4cc4",
+        "engine_profile_name": "Scottish Progressive baseline",
+        "engine_version": "spc-0.8.0",
+        "exact_width": false,
+        "forced": null,
+        "max_generation_positions": 250000,
+        "max_series_per_node": 32,
+        "principal_variation": [
+          {
+            "ended_by_check": false,
+            "final_pfen": "8/8/8/8/6Q1/2K1k3/8/8 w - - 166 131 | series=23 quiet=9 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+            "moves": [
+              "g2f1",
+              "f1e1",
+              "e1f1",
+              "f1e1",
+              "e1f1",
+              "f1e1",
+              "e1f1",
+              "f1e1",
+              "e1f1",
+              "f1e1",
+              "e1f1",
+              "f1e1",
+              "e1f1",
+              "f1e1",
+              "e1f1",
+              "f1e1",
+              "e1f1",
+              "f1e1",
+              "e1f1",
+              "f1e1",
+              "e1f2",
+              "f2e3"
+            ],
+            "outcome": null,
+            "san": [
+              "Kf1",
+              "Ke1",
+              "Kf1",
+              "Ke1",
+              "Kf1",
+              "Ke1",
+              "Kf1",
+              "Ke1",
+              "Kf1",
+              "Ke1",
+              "Kf1",
+              "Ke1",
+              "Kf1",
+              "Ke1",
+              "Kf1",
+              "Ke1",
+              "Kf1",
+              "Ke1",
+              "Kf1",
+              "Ke1",
+              "Kf2",
+              "Ke3"
+            ],
+            "transposition_count": 3722857,
+            "unused_moves": 0
+          }
+        ],
+        "proof": null,
+        "requested_depth": 2,
+        "required_prefix": [],
+        "root_evaluation": {
+          "black_check_distance": null,
+          "black_reach_nodes": 11,
+          "boundary_check": 170,
+          "immediate_vulnerability": 0,
+          "king_space": 112,
+          "material": 975,
+          "promotion_corridors": 0,
+          "reach_complete": true,
+          "series_reach": 260,
+          "total": 1641,
+          "useful_mobility": 124,
+          "white_check_distance": 0,
+          "white_reach_nodes": 0
+        },
+        "root_scores_complete": false,
+        "score": 1411,
+        "source_fingerprint": "f369b5da69c17c5f",
+        "stats": {
+          "alpha_beta_cutoffs": 0,
+          "branch_caps": 1,
+          "evaluation_reach_positions": 47,
+          "frontier_paths_pruned": 87119400192,
+          "frontier_prunes": 21,
+          "frontier_score_positions": 9043,
+          "frontier_states_pruned": 8229,
+          "generated_raw_series": 318168401356,
+          "generated_unique_series": 1212,
+          "generation_positions": 10797,
+          "generation_work_limit_hits": 0,
+          "incomplete_reach_evaluations": 0,
+          "intra_series_transpositions": 318168400144,
+          "leaf_evaluations": 7,
+          "nodes": 8,
+          "peak_frontier_states": 474,
+          "quiet_adjudication_cache_hits": 0,
+          "quiet_adjudication_limit_hits": 0,
+          "quiet_adjudication_positions": 884,
+          "root_bound_candidates": 5,
+          "series_generation_cache_evictions": 0,
+          "series_generation_cache_hits": 1,
+          "series_generation_cache_peak": 38,
+          "series_generation_positions": 816,
+          "static_evaluation_positions": 7,
+          "tt_hits": 0
+        },
+        "time_limit_seconds": null,
+        "timed_out": false,
+        "work_limit_reached": false
+      },
+      "baseline_seconds": [
+        0.11235710000619292,
+        0.12232450000010431,
+        0.10992499999701977,
+        0.10950010000669863,
+        0.10911199999100063
+      ],
+      "candidate_median_seconds": 0.08764710000832565,
+      "candidate_result_sha256": "8b7fb08d4056721869ed577462d1fe6a4d267d946bbc5f7a4d3a9b2e359836aa",
+      "candidate_search_result": {
+        "adjudication_status": "manual-proof-required",
+        "alternatives": [
+          {
+            "principal_variation": [],
+            "proof": null,
+            "proof_bounds": [
+              -1,
+              1
+            ],
+            "score": 1411,
+            "series": {
+              "ended_by_check": false,
+              "final_pfen": "8/8/8/8/6Q1/2K1k3/8/8 w - - 166 131 | series=23 quiet=9 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+              "moves": [
+                "g2f1",
+                "f1e1",
+                "e1f1",
+                "f1e1",
+                "e1f1",
+                "f1e1",
+                "e1f1",
+                "f1e1",
+                "e1f1",
+                "f1e1",
+                "e1f1",
+                "f1e1",
+                "e1f1",
+                "f1e1",
+                "e1f1",
+                "f1e1",
+                "e1f1",
+                "f1e1",
+                "e1f1",
+                "f1e1",
+                "e1f2",
+                "f2e3"
+              ],
+              "outcome": null,
+              "san": [
+                "Kf1",
+                "Ke1",
+                "Kf1",
+                "Ke1",
+                "Kf1",
+                "Ke1",
+                "Kf1",
+                "Ke1",
+                "Kf1",
+                "Ke1",
+                "Kf1",
+                "Ke1",
+                "Kf1",
+                "Ke1",
+                "Kf1",
+                "Ke1",
+                "Kf1",
+                "Ke1",
+                "Kf1",
+                "Ke1",
+                "Kf2",
+                "Ke3"
+              ],
+              "transposition_count": 3722857,
+              "unused_moves": 0
+            }
+          }
+        ],
+        "best_series": {
+          "ended_by_check": false,
+          "final_pfen": "8/8/8/8/6Q1/2K1k3/8/8 w - - 166 131 | series=23 quiet=9 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+          "moves": [
+            "g2f1",
+            "f1e1",
+            "e1f1",
+            "f1e1",
+            "e1f1",
+            "f1e1",
+            "e1f1",
+            "f1e1",
+            "e1f1",
+            "f1e1",
+            "e1f1",
+            "f1e1",
+            "e1f1",
+            "f1e1",
+            "e1f1",
+            "f1e1",
+            "e1f1",
+            "f1e1",
+            "e1f1",
+            "f1e1",
+            "e1f2",
+            "f2e3"
+          ],
+          "outcome": null,
+          "san": [
+            "Kf1",
+            "Ke1",
+            "Kf1",
+            "Ke1",
+            "Kf1",
+            "Ke1",
+            "Kf1",
+            "Ke1",
+            "Kf1",
+            "Ke1",
+            "Kf1",
+            "Ke1",
+            "Kf1",
+            "Ke1",
+            "Kf1",
+            "Ke1",
+            "Kf1",
+            "Ke1",
+            "Kf1",
+            "Ke1",
+            "Kf2",
+            "Ke3"
+          ],
+          "transposition_count": 3722857,
+          "unused_moves": 0
+        },
+        "completed_depth": 1,
+        "dataclass_fields": [
+          "adjudication_status",
+          "alternatives",
+          "best_series",
+          "completed_depth",
+          "elapsed_seconds",
+          "engine_profile_id",
+          "engine_profile_name",
+          "engine_version",
+          "exact_width",
+          "max_generation_positions",
+          "max_series_per_node",
+          "principal_variation",
+          "proof",
+          "requested_depth",
+          "required_prefix",
+          "root_evaluation",
+          "root_scores_complete",
+          "score",
+          "source_fingerprint",
+          "stats",
+          "time_limit_seconds",
+          "timed_out",
+          "work_limit_reached"
+        ],
+        "engine_profile_id": "spc-68942034c41b4cc4",
+        "engine_profile_name": "Scottish Progressive baseline",
+        "engine_version": "spc-0.9.0",
+        "exact_width": false,
+        "forced": null,
+        "max_generation_positions": 250000,
+        "max_series_per_node": 32,
+        "principal_variation": [
+          {
+            "ended_by_check": false,
+            "final_pfen": "8/8/8/8/6Q1/2K1k3/8/8 w - - 166 131 | series=23 quiet=9 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+            "moves": [
+              "g2f1",
+              "f1e1",
+              "e1f1",
+              "f1e1",
+              "e1f1",
+              "f1e1",
+              "e1f1",
+              "f1e1",
+              "e1f1",
+              "f1e1",
+              "e1f1",
+              "f1e1",
+              "e1f1",
+              "f1e1",
+              "e1f1",
+              "f1e1",
+              "e1f1",
+              "f1e1",
+              "e1f1",
+              "f1e1",
+              "e1f2",
+              "f2e3"
+            ],
+            "outcome": null,
+            "san": [
+              "Kf1",
+              "Ke1",
+              "Kf1",
+              "Ke1",
+              "Kf1",
+              "Ke1",
+              "Kf1",
+              "Ke1",
+              "Kf1",
+              "Ke1",
+              "Kf1",
+              "Ke1",
+              "Kf1",
+              "Ke1",
+              "Kf1",
+              "Ke1",
+              "Kf1",
+              "Ke1",
+              "Kf1",
+              "Ke1",
+              "Kf2",
+              "Ke3"
+            ],
+            "transposition_count": 3722857,
+            "unused_moves": 0
+          }
+        ],
+        "proof": null,
+        "requested_depth": 2,
+        "required_prefix": [],
+        "root_evaluation": {
+          "black_check_distance": null,
+          "black_reach_nodes": 11,
+          "boundary_check": 170,
+          "immediate_vulnerability": 0,
+          "king_space": 112,
+          "material": 975,
+          "promotion_corridors": 0,
+          "reach_complete": true,
+          "series_reach": 260,
+          "total": 1641,
+          "useful_mobility": 124,
+          "white_check_distance": 0,
+          "white_reach_nodes": 0
+        },
+        "root_scores_complete": false,
+        "score": 1411,
+        "source_fingerprint": "806aa0d679f6d1ef",
+        "stats": {
+          "alpha_beta_cutoffs": 0,
+          "branch_caps": 1,
+          "evaluation_reach_positions": 47,
+          "frontier_paths_pruned": 87119400192,
+          "frontier_prunes": 21,
+          "frontier_score_positions": 9043,
+          "frontier_states_pruned": 8229,
+          "generated_raw_series": 318168401356,
+          "generated_unique_series": 1212,
+          "generation_positions": 10797,
+          "generation_work_limit_hits": 0,
+          "incomplete_reach_evaluations": 0,
+          "intra_series_transpositions": 318168400144,
+          "leaf_evaluations": 7,
+          "nodes": 8,
+          "peak_frontier_states": 474,
+          "promotion_mate_candidates": 0,
+          "promotion_mate_completion_probes": 0,
+          "promotion_mate_limit_hits": 0,
+          "promotion_mate_mates": 0,
+          "promotion_mate_positions": 0,
+          "promotion_mate_replay_rejects": 0,
+          "promotion_mate_setup_states": 0,
+          "quiet_adjudication_cache_hits": 0,
+          "quiet_adjudication_limit_hits": 0,
+          "quiet_adjudication_positions": 884,
+          "root_bound_candidates": 5,
+          "series_generation_cache_evictions": 0,
+          "series_generation_cache_hits": 1,
+          "series_generation_cache_peak": 38,
+          "series_generation_positions": 816,
+          "static_evaluation_positions": 7,
+          "tt_hits": 0
+        },
+        "time_limit_seconds": null,
+        "timed_out": false,
+        "work_limit_reached": false
+      },
+      "candidate_seconds": [
+        0.08724900000379421,
+        0.08845819999987725,
+        0.08764710000832565,
+        0.08570630000031088,
+        0.08848310000030324
+      ],
+      "comparison": {
+        "allowed_difference_counts": {
+          "pinned_release_identity": 2,
+          "pinned_v09_zero_counter_addition": 7
+        },
+        "allowed_difference_examples": {
+          "pinned_release_identity": [
+            {
+              "baseline": "spc-0.8.0",
+              "candidate": "spc-0.9.0",
+              "path": "/engine_version"
+            },
+            {
+              "baseline": "f369b5da69c17c5f",
+              "candidate": "806aa0d679f6d1ef",
+              "path": "/source_fingerprint"
+            }
+          ],
+          "pinned_v09_zero_counter_addition": [
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_candidates"
+            },
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_completion_probes"
+            },
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_limit_hits"
+            },
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_mates"
+            },
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_positions"
+            },
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_replay_rejects"
+            },
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_setup_states"
+            }
+          ]
+        },
+        "difference_count": 9,
+        "difference_examples_truncated": false,
+        "full_payload_exact": false,
+        "semantic_equal_under_declared_allowances": true,
+        "unallowed_difference_count": 0,
+        "unallowed_difference_examples": []
+      },
+      "raw_samples": [
+        {
+          "order_index": 0,
+          "repetition": 0,
+          "runtime": "candidate",
+          "wall_seconds": 0.08724900000379421
+        },
+        {
+          "order_index": 1,
+          "repetition": 0,
+          "runtime": "baseline",
+          "wall_seconds": 0.11235710000619292
+        },
+        {
+          "order_index": 0,
+          "repetition": 1,
+          "runtime": "baseline",
+          "wall_seconds": 0.12232450000010431
+        },
+        {
+          "order_index": 1,
+          "repetition": 1,
+          "runtime": "candidate",
+          "wall_seconds": 0.08845819999987725
+        },
+        {
+          "order_index": 0,
+          "repetition": 2,
+          "runtime": "candidate",
+          "wall_seconds": 0.08764710000832565
+        },
+        {
+          "order_index": 1,
+          "repetition": 2,
+          "runtime": "baseline",
+          "wall_seconds": 0.10992499999701977
+        },
+        {
+          "order_index": 0,
+          "repetition": 3,
+          "runtime": "baseline",
+          "wall_seconds": 0.10950010000669863
+        },
+        {
+          "order_index": 1,
+          "repetition": 3,
+          "runtime": "candidate",
+          "wall_seconds": 0.08570630000031088
+        },
+        {
+          "order_index": 0,
+          "repetition": 4,
+          "runtime": "candidate",
+          "wall_seconds": 0.08848310000030324
+        },
+        {
+          "order_index": 1,
+          "repetition": 4,
+          "runtime": "baseline",
+          "wall_seconds": 0.10911199999100063
+        }
+      ],
+      "speedup": 1.254177262985061
+    },
+    "S3": {
+      "baseline_median_seconds": 0.6816580000013346,
+      "baseline_result_sha256": "d3c610888354fc0557ee5301dcc5c9bba5d6852467e7b927b1afda7ef181706d",
+      "baseline_search_result": {
+        "adjudication_status": null,
+        "alternatives": [
+          {
+            "principal_variation": [
+              {
+                "ended_by_check": true,
+                "final_pfen": "rnb2bnr/ppp1pppp/2k5/8/8/8/PPPqPPPP/RNBQKB1R w KQ - 0 5 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+                "moves": [
+                  "e8d7",
+                  "d7c6",
+                  "d8d4",
+                  "d4d2"
+                ],
+                "outcome": null,
+                "san": [
+                  "Kxd7",
+                  "Kc6",
+                  "Qd4",
+                  "Qxd2+"
+                ],
+                "transposition_count": 2,
+                "unused_moves": 0
+              }
+            ],
+            "proof": null,
+            "proof_bounds": [
+              -1,
+              1
+            ],
+            "score": -1059,
+            "series": {
+              "ended_by_check": false,
+              "final_pfen": "rnbqkbnr/pppNpppp/8/8/8/8/PPPPPPPP/RNBQKB1R b KQkq - 0 1 | series=4 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+              "moves": [
+                "g1f3",
+                "f3e5",
+                "e5d7"
+              ],
+              "outcome": null,
+              "san": [
+                "Nf3",
+                "Ne5",
+                "Nxd7"
+              ],
+              "transposition_count": 1,
+              "unused_moves": 0
+            }
+          },
+          {
+            "principal_variation": [
+              {
+                "ended_by_check": true,
+                "final_pfen": "rnb1kb1r/ppp1pppp/4p3/8/4n3/8/PPPqPPPP/RNBQKB1R w KQkq - 0 5 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+                "moves": [
+                  "g8f6",
+                  "f6e4",
+                  "d7e6",
+                  "d8d2"
+                ],
+                "outcome": null,
+                "san": [
+                  "Nf6",
+                  "Ne4",
+                  "dxe6",
+                  "Qxd2+"
+                ],
+                "transposition_count": 1,
+                "unused_moves": 0
+              }
+            ],
+            "proof": null,
+            "proof_bounds": [
+              -1,
+              1
+            ],
+            "score": -1101,
+            "series": {
+              "ended_by_check": false,
+              "final_pfen": "rnbqkbnr/pppppppp/4N3/8/8/8/PPPPPPPP/RNBQKB1R b KQkq - 3 1 | series=4 quiet=1 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+              "moves": [
+                "g1f3",
+                "f3g5",
+                "g5e6"
+              ],
+              "outcome": null,
+              "san": [
+                "Nf3",
+                "Ng5",
+                "Ne6"
+              ],
+              "transposition_count": 2,
+              "unused_moves": 0
+            }
+          },
+          {
+            "principal_variation": [
+              {
+                "ended_by_check": false,
+                "final_pfen": "rn1q1bnr/ppp1pkpp/8/3p4/8/4P3/PPPP1PPP/RNBbK1NR w KQ - 0 5 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+                "moves": [
+                  "e8f7",
+                  "d7d5",
+                  "c8g4",
+                  "g4d1"
+                ],
+                "outcome": null,
+                "san": [
+                  "Kxf7",
+                  "d5",
+                  "Bg4",
+                  "Bxd1"
+                ],
+                "transposition_count": 1,
+                "unused_moves": 0
+              }
+            ],
+            "proof": null,
+            "proof_bounds": [
+              -1,
+              1
+            ],
+            "score": -1241,
+            "series": {
+              "ended_by_check": true,
+              "final_pfen": "rnbqkbnr/pppppBpp/8/8/8/4P3/PPPP1PPP/RNBQK1NR b KQkq - 0 1 | series=4 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+              "moves": [
+                "e2e3",
+                "f1c4",
+                "c4f7"
+              ],
+              "outcome": null,
+              "san": [
+                "e3",
+                "Bc4",
+                "Bxf7+"
+              ],
+              "transposition_count": 1,
+              "unused_moves": 0
+            }
+          },
+          {
+            "principal_variation": [
+              {
+                "ended_by_check": true,
+                "final_pfen": "rnb2bnr/pppp1kpp/4p3/8/8/4P3/PPPP1qPP/RNB1KBNR w KQ - 0 5 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+                "moves": [
+                  "e8f7",
+                  "e7e6",
+                  "d8f6",
+                  "f6f2"
+                ],
+                "outcome": null,
+                "san": [
+                  "Kxf7",
+                  "e6",
+                  "Qf6",
+                  "Qxf2+"
+                ],
+                "transposition_count": 2,
+                "unused_moves": 0
+              }
+            ],
+            "proof": null,
+            "proof_bounds": [
+              -1,
+              1
+            ],
+            "score": -1675,
+            "series": {
+              "ended_by_check": true,
+              "final_pfen": "rnbqkbnr/pppppQpp/8/8/8/4P3/PPPP1PPP/RNB1KBNR b KQkq - 0 1 | series=4 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+              "moves": [
+                "e2e3",
+                "d1f3",
+                "f3f7"
+              ],
+              "outcome": null,
+              "san": [
+                "e3",
+                "Qf3",
+                "Qxf7+"
+              ],
+              "transposition_count": 2,
+              "unused_moves": 0
+            }
+          }
+        ],
+        "best_series": {
+          "ended_by_check": false,
+          "final_pfen": "rnbqkbnr/pppNpppp/8/8/8/8/PPPPPPPP/RNBQKB1R b KQkq - 0 1 | series=4 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+          "moves": [
+            "g1f3",
+            "f3e5",
+            "e5d7"
+          ],
+          "outcome": null,
+          "san": [
+            "Nf3",
+            "Ne5",
+            "Nxd7"
+          ],
+          "transposition_count": 1,
+          "unused_moves": 0
+        },
+        "completed_depth": 2,
+        "dataclass_fields": [
+          "adjudication_status",
+          "alternatives",
+          "best_series",
+          "completed_depth",
+          "elapsed_seconds",
+          "engine_profile_id",
+          "engine_profile_name",
+          "engine_version",
+          "exact_width",
+          "max_generation_positions",
+          "max_series_per_node",
+          "principal_variation",
+          "proof",
+          "requested_depth",
+          "required_prefix",
+          "root_evaluation",
+          "root_scores_complete",
+          "score",
+          "source_fingerprint",
+          "stats",
+          "time_limit_seconds",
+          "timed_out",
+          "work_limit_reached"
+        ],
+        "engine_profile_id": "spc-68942034c41b4cc4",
+        "engine_profile_name": "Scottish Progressive baseline",
+        "engine_version": "spc-0.8.0",
+        "exact_width": false,
+        "forced": null,
+        "max_generation_positions": 250000,
+        "max_series_per_node": 32,
+        "principal_variation": [
+          {
+            "ended_by_check": false,
+            "final_pfen": "rnbqkbnr/pppNpppp/8/8/8/8/PPPPPPPP/RNBQKB1R b KQkq - 0 1 | series=4 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+            "moves": [
+              "g1f3",
+              "f3e5",
+              "e5d7"
+            ],
+            "outcome": null,
+            "san": [
+              "Nf3",
+              "Ne5",
+              "Nxd7"
+            ],
+            "transposition_count": 1,
+            "unused_moves": 0
+          },
+          {
+            "ended_by_check": true,
+            "final_pfen": "rnb2bnr/ppp1pppp/2k5/8/8/8/PPPqPPPP/RNBQKB1R w KQ - 0 5 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+            "moves": [
+              "e8d7",
+              "d7c6",
+              "d8d4",
+              "d4d2"
+            ],
+            "outcome": null,
+            "san": [
+              "Kxd7",
+              "Kc6",
+              "Qd4",
+              "Qxd2+"
+            ],
+            "transposition_count": 2,
+            "unused_moves": 0
+          }
+        ],
+        "proof": null,
+        "requested_depth": 2,
+        "required_prefix": [],
+        "root_evaluation": {
+          "black_check_distance": null,
+          "black_reach_nodes": 128,
+          "boundary_check": 0,
+          "immediate_vulnerability": 0,
+          "king_space": 0,
+          "material": 0,
+          "promotion_corridors": 0,
+          "reach_complete": false,
+          "series_reach": 0,
+          "total": 0,
+          "useful_mobility": 0,
+          "white_check_distance": null,
+          "white_reach_nodes": 128
+        },
+        "root_scores_complete": false,
+        "score": -1059,
+        "source_fingerprint": "f369b5da69c17c5f",
+        "stats": {
+          "alpha_beta_cutoffs": 13,
+          "branch_caps": 33,
+          "evaluation_reach_positions": 12398,
+          "frontier_paths_pruned": 39076,
+          "frontier_prunes": 59,
+          "frontier_score_positions": 28923,
+          "frontier_states_pruned": 26507,
+          "generated_raw_series": 60459,
+          "generated_unique_series": 35137,
+          "generation_positions": 43955,
+          "generation_work_limit_hits": 0,
+          "incomplete_reach_evaluations": 46,
+          "intra_series_transpositions": 25322,
+          "leaf_evaluations": 174,
+          "nodes": 205,
+          "peak_frontier_states": 901,
+          "quiet_adjudication_cache_hits": 0,
+          "quiet_adjudication_limit_hits": 0,
+          "quiet_adjudication_positions": 0,
+          "root_bound_candidates": 57,
+          "series_generation_cache_evictions": 0,
+          "series_generation_cache_hits": 1,
+          "series_generation_cache_peak": 1056,
+          "series_generation_positions": 2460,
+          "static_evaluation_positions": 174,
+          "tt_hits": 0
+        },
+        "time_limit_seconds": null,
+        "timed_out": false,
+        "work_limit_reached": false
+      },
+      "baseline_seconds": [
+        0.6850483000016538,
+        0.6728739999962272,
+        0.6816580000013346,
+        0.6753331000072649,
+        0.6867365999933099
+      ],
+      "candidate_median_seconds": 0.34095610000076704,
+      "candidate_result_sha256": "9a943336d78947e514cac26c3c68b6e6404ab8a97fbb2dd091debbe94374321a",
+      "candidate_search_result": {
+        "adjudication_status": null,
+        "alternatives": [
+          {
+            "principal_variation": [
+              {
+                "ended_by_check": true,
+                "final_pfen": "rnb2bnr/ppp1pppp/2k5/8/8/8/PPPqPPPP/RNBQKB1R w KQ - 0 5 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+                "moves": [
+                  "e8d7",
+                  "d7c6",
+                  "d8d4",
+                  "d4d2"
+                ],
+                "outcome": null,
+                "san": [
+                  "Kxd7",
+                  "Kc6",
+                  "Qd4",
+                  "Qxd2+"
+                ],
+                "transposition_count": 2,
+                "unused_moves": 0
+              }
+            ],
+            "proof": null,
+            "proof_bounds": [
+              -1,
+              1
+            ],
+            "score": -1059,
+            "series": {
+              "ended_by_check": false,
+              "final_pfen": "rnbqkbnr/pppNpppp/8/8/8/8/PPPPPPPP/RNBQKB1R b KQkq - 0 1 | series=4 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+              "moves": [
+                "g1f3",
+                "f3e5",
+                "e5d7"
+              ],
+              "outcome": null,
+              "san": [
+                "Nf3",
+                "Ne5",
+                "Nxd7"
+              ],
+              "transposition_count": 1,
+              "unused_moves": 0
+            }
+          },
+          {
+            "principal_variation": [
+              {
+                "ended_by_check": true,
+                "final_pfen": "rnb1kb1r/ppp1pppp/4p3/8/4n3/8/PPPqPPPP/RNBQKB1R w KQkq - 0 5 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+                "moves": [
+                  "g8f6",
+                  "f6e4",
+                  "d7e6",
+                  "d8d2"
+                ],
+                "outcome": null,
+                "san": [
+                  "Nf6",
+                  "Ne4",
+                  "dxe6",
+                  "Qxd2+"
+                ],
+                "transposition_count": 1,
+                "unused_moves": 0
+              }
+            ],
+            "proof": null,
+            "proof_bounds": [
+              -1,
+              1
+            ],
+            "score": -1101,
+            "series": {
+              "ended_by_check": false,
+              "final_pfen": "rnbqkbnr/pppppppp/4N3/8/8/8/PPPPPPPP/RNBQKB1R b KQkq - 3 1 | series=4 quiet=1 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+              "moves": [
+                "g1f3",
+                "f3g5",
+                "g5e6"
+              ],
+              "outcome": null,
+              "san": [
+                "Nf3",
+                "Ng5",
+                "Ne6"
+              ],
+              "transposition_count": 2,
+              "unused_moves": 0
+            }
+          },
+          {
+            "principal_variation": [
+              {
+                "ended_by_check": false,
+                "final_pfen": "rn1q1bnr/ppp1pkpp/8/3p4/8/4P3/PPPP1PPP/RNBbK1NR w KQ - 0 5 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+                "moves": [
+                  "e8f7",
+                  "d7d5",
+                  "c8g4",
+                  "g4d1"
+                ],
+                "outcome": null,
+                "san": [
+                  "Kxf7",
+                  "d5",
+                  "Bg4",
+                  "Bxd1"
+                ],
+                "transposition_count": 1,
+                "unused_moves": 0
+              }
+            ],
+            "proof": null,
+            "proof_bounds": [
+              -1,
+              1
+            ],
+            "score": -1241,
+            "series": {
+              "ended_by_check": true,
+              "final_pfen": "rnbqkbnr/pppppBpp/8/8/8/4P3/PPPP1PPP/RNBQK1NR b KQkq - 0 1 | series=4 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+              "moves": [
+                "e2e3",
+                "f1c4",
+                "c4f7"
+              ],
+              "outcome": null,
+              "san": [
+                "e3",
+                "Bc4",
+                "Bxf7+"
+              ],
+              "transposition_count": 1,
+              "unused_moves": 0
+            }
+          },
+          {
+            "principal_variation": [
+              {
+                "ended_by_check": true,
+                "final_pfen": "rnb2bnr/pppp1kpp/4p3/8/8/4P3/PPPP1qPP/RNB1KBNR w KQ - 0 5 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+                "moves": [
+                  "e8f7",
+                  "e7e6",
+                  "d8f6",
+                  "f6f2"
+                ],
+                "outcome": null,
+                "san": [
+                  "Kxf7",
+                  "e6",
+                  "Qf6",
+                  "Qxf2+"
+                ],
+                "transposition_count": 2,
+                "unused_moves": 0
+              }
+            ],
+            "proof": null,
+            "proof_bounds": [
+              -1,
+              1
+            ],
+            "score": -1675,
+            "series": {
+              "ended_by_check": true,
+              "final_pfen": "rnbqkbnr/pppppQpp/8/8/8/4P3/PPPP1PPP/RNB1KBNR b KQkq - 0 1 | series=4 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+              "moves": [
+                "e2e3",
+                "d1f3",
+                "f3f7"
+              ],
+              "outcome": null,
+              "san": [
+                "e3",
+                "Qf3",
+                "Qxf7+"
+              ],
+              "transposition_count": 2,
+              "unused_moves": 0
+            }
+          }
+        ],
+        "best_series": {
+          "ended_by_check": false,
+          "final_pfen": "rnbqkbnr/pppNpppp/8/8/8/8/PPPPPPPP/RNBQKB1R b KQkq - 0 1 | series=4 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+          "moves": [
+            "g1f3",
+            "f3e5",
+            "e5d7"
+          ],
+          "outcome": null,
+          "san": [
+            "Nf3",
+            "Ne5",
+            "Nxd7"
+          ],
+          "transposition_count": 1,
+          "unused_moves": 0
+        },
+        "completed_depth": 2,
+        "dataclass_fields": [
+          "adjudication_status",
+          "alternatives",
+          "best_series",
+          "completed_depth",
+          "elapsed_seconds",
+          "engine_profile_id",
+          "engine_profile_name",
+          "engine_version",
+          "exact_width",
+          "max_generation_positions",
+          "max_series_per_node",
+          "principal_variation",
+          "proof",
+          "requested_depth",
+          "required_prefix",
+          "root_evaluation",
+          "root_scores_complete",
+          "score",
+          "source_fingerprint",
+          "stats",
+          "time_limit_seconds",
+          "timed_out",
+          "work_limit_reached"
+        ],
+        "engine_profile_id": "spc-68942034c41b4cc4",
+        "engine_profile_name": "Scottish Progressive baseline",
+        "engine_version": "spc-0.9.0",
+        "exact_width": false,
+        "forced": null,
+        "max_generation_positions": 250000,
+        "max_series_per_node": 32,
+        "principal_variation": [
+          {
+            "ended_by_check": false,
+            "final_pfen": "rnbqkbnr/pppNpppp/8/8/8/8/PPPPPPPP/RNBQKB1R b KQkq - 0 1 | series=4 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+            "moves": [
+              "g1f3",
+              "f3e5",
+              "e5d7"
+            ],
+            "outcome": null,
+            "san": [
+              "Nf3",
+              "Ne5",
+              "Nxd7"
+            ],
+            "transposition_count": 1,
+            "unused_moves": 0
+          },
+          {
+            "ended_by_check": true,
+            "final_pfen": "rnb2bnr/ppp1pppp/2k5/8/8/8/PPPqPPPP/RNBQKB1R w KQ - 0 5 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+            "moves": [
+              "e8d7",
+              "d7c6",
+              "d8d4",
+              "d4d2"
+            ],
+            "outcome": null,
+            "san": [
+              "Kxd7",
+              "Kc6",
+              "Qd4",
+              "Qxd2+"
+            ],
+            "transposition_count": 2,
+            "unused_moves": 0
+          }
+        ],
+        "proof": null,
+        "requested_depth": 2,
+        "required_prefix": [],
+        "root_evaluation": {
+          "black_check_distance": null,
+          "black_reach_nodes": 128,
+          "boundary_check": 0,
+          "immediate_vulnerability": 0,
+          "king_space": 0,
+          "material": 0,
+          "promotion_corridors": 0,
+          "reach_complete": false,
+          "series_reach": 0,
+          "total": 0,
+          "useful_mobility": 0,
+          "white_check_distance": null,
+          "white_reach_nodes": 128
+        },
+        "root_scores_complete": false,
+        "score": -1059,
+        "source_fingerprint": "806aa0d679f6d1ef",
+        "stats": {
+          "alpha_beta_cutoffs": 13,
+          "branch_caps": 33,
+          "evaluation_reach_positions": 12398,
+          "frontier_paths_pruned": 39076,
+          "frontier_prunes": 59,
+          "frontier_score_positions": 28923,
+          "frontier_states_pruned": 26507,
+          "generated_raw_series": 60459,
+          "generated_unique_series": 35137,
+          "generation_positions": 43955,
+          "generation_work_limit_hits": 0,
+          "incomplete_reach_evaluations": 46,
+          "intra_series_transpositions": 25322,
+          "leaf_evaluations": 174,
+          "nodes": 205,
+          "peak_frontier_states": 901,
+          "promotion_mate_candidates": 0,
+          "promotion_mate_completion_probes": 0,
+          "promotion_mate_limit_hits": 0,
+          "promotion_mate_mates": 0,
+          "promotion_mate_positions": 0,
+          "promotion_mate_replay_rejects": 0,
+          "promotion_mate_setup_states": 0,
+          "quiet_adjudication_cache_hits": 0,
+          "quiet_adjudication_limit_hits": 0,
+          "quiet_adjudication_positions": 0,
+          "root_bound_candidates": 57,
+          "series_generation_cache_evictions": 0,
+          "series_generation_cache_hits": 1,
+          "series_generation_cache_peak": 1056,
+          "series_generation_positions": 2460,
+          "static_evaluation_positions": 174,
+          "tt_hits": 0
+        },
+        "time_limit_seconds": null,
+        "timed_out": false,
+        "work_limit_reached": false
+      },
+      "candidate_seconds": [
+        0.3382372999913059,
+        0.34095610000076704,
+        0.3434164999925997,
+        0.3341625000030035,
+        0.34283209999557585
+      ],
+      "comparison": {
+        "allowed_difference_counts": {
+          "pinned_release_identity": 2,
+          "pinned_v09_zero_counter_addition": 7
+        },
+        "allowed_difference_examples": {
+          "pinned_release_identity": [
+            {
+              "baseline": "spc-0.8.0",
+              "candidate": "spc-0.9.0",
+              "path": "/engine_version"
+            },
+            {
+              "baseline": "f369b5da69c17c5f",
+              "candidate": "806aa0d679f6d1ef",
+              "path": "/source_fingerprint"
+            }
+          ],
+          "pinned_v09_zero_counter_addition": [
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_candidates"
+            },
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_completion_probes"
+            },
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_limit_hits"
+            },
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_mates"
+            },
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_positions"
+            },
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_replay_rejects"
+            },
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_setup_states"
+            }
+          ]
+        },
+        "difference_count": 9,
+        "difference_examples_truncated": false,
+        "full_payload_exact": false,
+        "semantic_equal_under_declared_allowances": true,
+        "unallowed_difference_count": 0,
+        "unallowed_difference_examples": []
+      },
+      "raw_samples": [
+        {
+          "order_index": 0,
+          "repetition": 0,
+          "runtime": "candidate",
+          "wall_seconds": 0.3382372999913059
+        },
+        {
+          "order_index": 1,
+          "repetition": 0,
+          "runtime": "baseline",
+          "wall_seconds": 0.6850483000016538
+        },
+        {
+          "order_index": 0,
+          "repetition": 1,
+          "runtime": "baseline",
+          "wall_seconds": 0.6728739999962272
+        },
+        {
+          "order_index": 1,
+          "repetition": 1,
+          "runtime": "candidate",
+          "wall_seconds": 0.34095610000076704
+        },
+        {
+          "order_index": 0,
+          "repetition": 2,
+          "runtime": "candidate",
+          "wall_seconds": 0.3434164999925997
+        },
+        {
+          "order_index": 1,
+          "repetition": 2,
+          "runtime": "baseline",
+          "wall_seconds": 0.6816580000013346
+        },
+        {
+          "order_index": 0,
+          "repetition": 3,
+          "runtime": "baseline",
+          "wall_seconds": 0.6753331000072649
+        },
+        {
+          "order_index": 1,
+          "repetition": 3,
+          "runtime": "candidate",
+          "wall_seconds": 0.3341625000030035
+        },
+        {
+          "order_index": 0,
+          "repetition": 4,
+          "runtime": "candidate",
+          "wall_seconds": 0.34283209999557585
+        },
+        {
+          "order_index": 1,
+          "repetition": 4,
+          "runtime": "baseline",
+          "wall_seconds": 0.6867365999933099
+        }
+      ],
+      "speedup": 1.9992544494725306
+    },
+    "S4": {
+      "baseline_median_seconds": 0.017766600009053946,
+      "baseline_result_sha256": "e8c3f356d38c269438a717f5257bb7c887ece51bafb78190603452f484edb307",
+      "baseline_search_result": {
+        "adjudication_status": null,
+        "alternatives": [
+          {
+            "principal_variation": [],
+            "proof": "black",
+            "proof_bounds": [
+              -1,
+              -1
+            ],
+            "score": -999999,
+            "series": {
+              "ended_by_check": true,
+              "final_pfen": "rnb1kb1r/pp2pppp/2p5/1B1P4/4n3/5N2/PPPP1qPP/RNBQK2R w KQkq - 0 7 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+              "moves": [
+                "c7c6",
+                "d8b6",
+                "f6e4",
+                "b6f2"
+              ],
+              "outcome": "checkmate",
+              "san": [
+                "c6",
+                "Qb6",
+                "Ne4",
+                "Qxf2#"
+              ],
+              "transposition_count": 1,
+              "unused_moves": 0
+            }
+          }
+        ],
+        "best_series": {
+          "ended_by_check": true,
+          "final_pfen": "rnb1kb1r/pp2pppp/2p5/1B1P4/4n3/5N2/PPPP1qPP/RNBQK2R w KQkq - 0 7 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+          "moves": [
+            "c7c6",
+            "d8b6",
+            "f6e4",
+            "b6f2"
+          ],
+          "outcome": "checkmate",
+          "san": [
+            "c6",
+            "Qb6",
+            "Ne4",
+            "Qxf2#"
+          ],
+          "transposition_count": 1,
+          "unused_moves": 0
+        },
+        "completed_depth": 2,
+        "dataclass_fields": [
+          "adjudication_status",
+          "alternatives",
+          "best_series",
+          "completed_depth",
+          "elapsed_seconds",
+          "engine_profile_id",
+          "engine_profile_name",
+          "engine_version",
+          "exact_width",
+          "max_generation_positions",
+          "max_series_per_node",
+          "principal_variation",
+          "proof",
+          "requested_depth",
+          "required_prefix",
+          "root_evaluation",
+          "root_scores_complete",
+          "score",
+          "source_fingerprint",
+          "stats",
+          "time_limit_seconds",
+          "timed_out",
+          "work_limit_reached"
+        ],
+        "engine_profile_id": "spc-68942034c41b4cc4",
+        "engine_profile_name": "Scottish Progressive baseline",
+        "engine_version": "spc-0.8.0",
+        "exact_width": false,
+        "forced": null,
+        "max_generation_positions": 250000,
+        "max_series_per_node": 32,
+        "principal_variation": [
+          {
+            "ended_by_check": true,
+            "final_pfen": "rnb1kb1r/pp2pppp/2p5/1B1P4/4n3/5N2/PPPP1qPP/RNBQK2R w KQkq - 0 7 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+            "moves": [
+              "c7c6",
+              "d8b6",
+              "f6e4",
+              "b6f2"
+            ],
+            "outcome": "checkmate",
+            "san": [
+              "c6",
+              "Qb6",
+              "Ne4",
+              "Qxf2#"
+            ],
+            "transposition_count": 1,
+            "unused_moves": 0
+          }
+        ],
+        "proof": "black",
+        "requested_depth": 2,
+        "required_prefix": [],
+        "root_evaluation": {
+          "black_check_distance": null,
+          "black_reach_nodes": 128,
+          "boundary_check": 170,
+          "immediate_vulnerability": -20,
+          "king_space": 56,
+          "material": 100,
+          "promotion_corridors": 0,
+          "reach_complete": false,
+          "series_reach": 0,
+          "total": 484,
+          "useful_mobility": 178,
+          "white_check_distance": 0,
+          "white_reach_nodes": 0
+        },
+        "root_scores_complete": false,
+        "score": -999999,
+        "source_fingerprint": "f369b5da69c17c5f",
+        "stats": {
+          "alpha_beta_cutoffs": 0,
+          "branch_caps": 1,
+          "evaluation_reach_positions": 128,
+          "frontier_paths_pruned": 1039,
+          "frontier_prunes": 2,
+          "frontier_score_positions": 936,
+          "frontier_states_pruned": 866,
+          "generated_raw_series": 1441,
+          "generated_unique_series": 1168,
+          "generation_positions": 1136,
+          "generation_work_limit_hits": 0,
+          "incomplete_reach_evaluations": 1,
+          "intra_series_transpositions": 273,
+          "leaf_evaluations": 1,
+          "nodes": 0,
+          "peak_frontier_states": 802,
+          "quiet_adjudication_cache_hits": 0,
+          "quiet_adjudication_limit_hits": 0,
+          "quiet_adjudication_positions": 0,
+          "root_bound_candidates": 0,
+          "series_generation_cache_evictions": 0,
+          "series_generation_cache_hits": 1,
+          "series_generation_cache_peak": 32,
+          "series_generation_positions": 71,
+          "static_evaluation_positions": 1,
+          "tt_hits": 0
+        },
+        "time_limit_seconds": null,
+        "timed_out": false,
+        "work_limit_reached": false
+      },
+      "baseline_seconds": [
+        0.017865199988591485,
+        0.018185599998105317,
+        0.017013099990435876,
+        0.017404400001396425,
+        0.017766600009053946
+      ],
+      "candidate_median_seconds": 0.01090229999681469,
+      "candidate_result_sha256": "66239a5b492dc3ee807f4fcc0a2c9036453bdb0889b17fa300100341bf93bcc6",
+      "candidate_search_result": {
+        "adjudication_status": null,
+        "alternatives": [
+          {
+            "principal_variation": [],
+            "proof": "black",
+            "proof_bounds": [
+              -1,
+              -1
+            ],
+            "score": -999999,
+            "series": {
+              "ended_by_check": true,
+              "final_pfen": "rnb1kb1r/pp2pppp/2p5/1B1P4/4n3/5N2/PPPP1qPP/RNBQK2R w KQkq - 0 7 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+              "moves": [
+                "c7c6",
+                "d8b6",
+                "f6e4",
+                "b6f2"
+              ],
+              "outcome": "checkmate",
+              "san": [
+                "c6",
+                "Qb6",
+                "Ne4",
+                "Qxf2#"
+              ],
+              "transposition_count": 1,
+              "unused_moves": 0
+            }
+          }
+        ],
+        "best_series": {
+          "ended_by_check": true,
+          "final_pfen": "rnb1kb1r/pp2pppp/2p5/1B1P4/4n3/5N2/PPPP1qPP/RNBQK2R w KQkq - 0 7 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+          "moves": [
+            "c7c6",
+            "d8b6",
+            "f6e4",
+            "b6f2"
+          ],
+          "outcome": "checkmate",
+          "san": [
+            "c6",
+            "Qb6",
+            "Ne4",
+            "Qxf2#"
+          ],
+          "transposition_count": 1,
+          "unused_moves": 0
+        },
+        "completed_depth": 2,
+        "dataclass_fields": [
+          "adjudication_status",
+          "alternatives",
+          "best_series",
+          "completed_depth",
+          "elapsed_seconds",
+          "engine_profile_id",
+          "engine_profile_name",
+          "engine_version",
+          "exact_width",
+          "max_generation_positions",
+          "max_series_per_node",
+          "principal_variation",
+          "proof",
+          "requested_depth",
+          "required_prefix",
+          "root_evaluation",
+          "root_scores_complete",
+          "score",
+          "source_fingerprint",
+          "stats",
+          "time_limit_seconds",
+          "timed_out",
+          "work_limit_reached"
+        ],
+        "engine_profile_id": "spc-68942034c41b4cc4",
+        "engine_profile_name": "Scottish Progressive baseline",
+        "engine_version": "spc-0.9.0",
+        "exact_width": false,
+        "forced": "black",
+        "max_generation_positions": 250000,
+        "max_series_per_node": 32,
+        "principal_variation": [
+          {
+            "ended_by_check": true,
+            "final_pfen": "rnb1kb1r/pp2pppp/2p5/1B1P4/4n3/5N2/PPPP1qPP/RNBQK2R w KQkq - 0 7 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+            "moves": [
+              "c7c6",
+              "d8b6",
+              "f6e4",
+              "b6f2"
+            ],
+            "outcome": "checkmate",
+            "san": [
+              "c6",
+              "Qb6",
+              "Ne4",
+              "Qxf2#"
+            ],
+            "transposition_count": 1,
+            "unused_moves": 0
+          }
+        ],
+        "proof": "black",
+        "requested_depth": 2,
+        "required_prefix": [],
+        "root_evaluation": {
+          "black_check_distance": null,
+          "black_reach_nodes": 128,
+          "boundary_check": 170,
+          "immediate_vulnerability": -20,
+          "king_space": 56,
+          "material": 100,
+          "promotion_corridors": 0,
+          "reach_complete": false,
+          "series_reach": 0,
+          "total": 484,
+          "useful_mobility": 178,
+          "white_check_distance": 0,
+          "white_reach_nodes": 0
+        },
+        "root_scores_complete": false,
+        "score": -999999,
+        "source_fingerprint": "806aa0d679f6d1ef",
+        "stats": {
+          "alpha_beta_cutoffs": 0,
+          "branch_caps": 1,
+          "evaluation_reach_positions": 128,
+          "frontier_paths_pruned": 1039,
+          "frontier_prunes": 2,
+          "frontier_score_positions": 936,
+          "frontier_states_pruned": 866,
+          "generated_raw_series": 1441,
+          "generated_unique_series": 1168,
+          "generation_positions": 1136,
+          "generation_work_limit_hits": 0,
+          "incomplete_reach_evaluations": 1,
+          "intra_series_transpositions": 273,
+          "leaf_evaluations": 1,
+          "nodes": 0,
+          "peak_frontier_states": 802,
+          "promotion_mate_candidates": 0,
+          "promotion_mate_completion_probes": 0,
+          "promotion_mate_limit_hits": 0,
+          "promotion_mate_mates": 0,
+          "promotion_mate_positions": 0,
+          "promotion_mate_replay_rejects": 0,
+          "promotion_mate_setup_states": 0,
+          "quiet_adjudication_cache_hits": 0,
+          "quiet_adjudication_limit_hits": 0,
+          "quiet_adjudication_positions": 0,
+          "root_bound_candidates": 0,
+          "series_generation_cache_evictions": 0,
+          "series_generation_cache_hits": 1,
+          "series_generation_cache_peak": 32,
+          "series_generation_positions": 71,
+          "static_evaluation_positions": 1,
+          "tt_hits": 0
+        },
+        "time_limit_seconds": null,
+        "timed_out": false,
+        "work_limit_reached": false
+      },
+      "candidate_seconds": [
+        0.01090229999681469,
+        0.010681100000510924,
+        0.011012500006472692,
+        0.01085360000433866,
+        0.01188549998914823
+      ],
+      "comparison": {
+        "allowed_difference_counts": {
+          "pinned_release_identity": 2,
+          "pinned_sound_proof_correction": 1,
+          "pinned_v09_zero_counter_addition": 7
+        },
+        "allowed_difference_examples": {
+          "pinned_release_identity": [
+            {
+              "baseline": "spc-0.8.0",
+              "candidate": "spc-0.9.0",
+              "path": "/engine_version"
+            },
+            {
+              "baseline": "f369b5da69c17c5f",
+              "candidate": "806aa0d679f6d1ef",
+              "path": "/source_fingerprint"
+            }
+          ],
+          "pinned_sound_proof_correction": [
+            {
+              "baseline": null,
+              "candidate": "black",
+              "path": "/forced"
+            }
+          ],
+          "pinned_v09_zero_counter_addition": [
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_candidates"
+            },
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_completion_probes"
+            },
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_limit_hits"
+            },
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_mates"
+            },
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_positions"
+            },
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_replay_rejects"
+            },
+            {
+              "baseline": {
+                "missing": true
+              },
+              "candidate": 0,
+              "path": "/stats/promotion_mate_setup_states"
+            }
+          ]
+        },
+        "difference_count": 10,
+        "difference_examples_truncated": false,
+        "full_payload_exact": false,
+        "semantic_equal_under_declared_allowances": true,
+        "unallowed_difference_count": 0,
+        "unallowed_difference_examples": []
+      },
+      "raw_samples": [
+        {
+          "order_index": 0,
+          "repetition": 0,
+          "runtime": "baseline",
+          "wall_seconds": 0.017865199988591485
+        },
+        {
+          "order_index": 1,
+          "repetition": 0,
+          "runtime": "candidate",
+          "wall_seconds": 0.01090229999681469
+        },
+        {
+          "order_index": 0,
+          "repetition": 1,
+          "runtime": "candidate",
+          "wall_seconds": 0.010681100000510924
+        },
+        {
+          "order_index": 1,
+          "repetition": 1,
+          "runtime": "baseline",
+          "wall_seconds": 0.018185599998105317
+        },
+        {
+          "order_index": 0,
+          "repetition": 2,
+          "runtime": "baseline",
+          "wall_seconds": 0.017013099990435876
+        },
+        {
+          "order_index": 1,
+          "repetition": 2,
+          "runtime": "candidate",
+          "wall_seconds": 0.011012500006472692
+        },
+        {
+          "order_index": 0,
+          "repetition": 3,
+          "runtime": "candidate",
+          "wall_seconds": 0.01085360000433866
+        },
+        {
+          "order_index": 1,
+          "repetition": 3,
+          "runtime": "baseline",
+          "wall_seconds": 0.017404400001396425
+        },
+        {
+          "order_index": 0,
+          "repetition": 4,
+          "runtime": "baseline",
+          "wall_seconds": 0.017766600009053946
+        },
+        {
+          "order_index": 1,
+          "repetition": 4,
+          "runtime": "candidate",
+          "wall_seconds": 0.01188549998914823
+        }
+      ],
+      "speedup": 1.6296194394068029
+    }
+  },
+  "configuration": {
+    "branch_cap": 32,
+    "cases": [
+      "S1",
+      "S3",
+      "S4",
+      "S22"
+    ],
+    "declared_cross_release_allowances": {
+      "pinned_release_identity": {
+        "engine_version": [
+          "spc-0.8.0",
+          "spc-0.9.0"
+        ],
+        "source_fingerprint": [
+          "f369b5da69c17c5f",
+          "806aa0d679f6d1ef"
+        ]
+      },
+      "pinned_sound_proof_correction": {
+        "case": "S4",
+        "field": "SearchResult.forced",
+        "proof_field_remains": "black",
+        "transition": [
+          null,
+          "black"
+        ]
+      },
+      "pinned_v09_zero_counter_addition": [
+        "SearchResult.stats.promotion_mate_candidates: missing -> 0",
+        "SearchResult.stats.promotion_mate_completion_probes: missing -> 0",
+        "SearchResult.stats.promotion_mate_limit_hits: missing -> 0",
+        "SearchResult.stats.promotion_mate_mates: missing -> 0",
+        "SearchResult.stats.promotion_mate_positions: missing -> 0",
+        "SearchResult.stats.promotion_mate_replay_rejects: missing -> 0",
+        "SearchResult.stats.promotion_mate_setup_states: missing -> 0"
+      ]
+    },
+    "depth_series": 2,
+    "fresh_process_samples": 5,
+    "include_exact_20_game_pool": false,
+    "max_generation_positions": 250000,
+    "sampling_order": "paired-interleaved-alternating-by-runtime-and-case",
+    "search_timing_scope": "analyze-call-only-after-import-and-position-setup",
+    "subprocess_startup_excluded_from_search_timing": true
+  },
+  "exact_20_game_pool": null,
+  "generated_at": "2026-08-20T21:35:16.823022+00:00",
+  "measurement_limits": [
+    "Fresh-process medians reduce warm-cache and import-state bias but do not remove operating-system scheduling noise.",
+    "Search timing excludes interpreter startup, imports, and position setup.",
+    "Pool timing includes worker startup and measures throughput under fixed 16-worker contention by default.",
+    "Game strength is not inferred from speed; semantic and promotion gates remain separate evidence."
+  ],
+  "runtimes": {
+    "baseline": {
+      "distributions": {
+        "chess": "1.11.2",
+        "python-chess": "1.999",
+        "scottish-progressive": "0.8.0"
+      },
+      "engine": {
+        "source_fingerprint": "f369b5da69c17c5f",
+        "version": "spc-0.8.0"
+      },
+      "module_set_sha256": "b06fea06be846cfa940fc69e20aa351b6b811c241da354cf7e12edf4923ab515",
+      "modules": [
+        {
+          "filename": "__init__.py",
+          "label": "package",
+          "sha256": "d59cff1ab77b4b9c8778443c1450bfb283ca0540a9e585a9c99be5ee6bae2d26"
+        },
+        {
+          "filename": "model.py",
+          "label": "model",
+          "sha256": "e081e78085849791e066cbbb8d82f26620e500160b18eb6111eda614997503df"
+        },
+        {
+          "filename": "evaluation.py",
+          "label": "evaluation",
+          "sha256": "d61047cd1adb9f087342e1680c750f7b4a80c553d0ba203aea05f4e123f2220e"
+        },
+        {
+          "filename": "rules.py",
+          "label": "rules",
+          "sha256": "5dab44253483e76d8b7fa93e97f409a3989a60ca68751442ab732eb5fb4002c4"
+        },
+        {
+          "filename": "search.py",
+          "label": "search",
+          "sha256": "f9b279cdae49121724fc20479e1dbf8aee5a8e2dfeaea9220af6f4d512fbd099"
+        },
+        {
+          "filename": "__init__.py",
+          "label": "chess-dependency",
+          "sha256": "1fde6a8e932508d14b31f6a584497b49c2969fc3c7cdc675347f819f0d667a5b"
+        }
+      ],
+      "native": {
+        "capabilities": [
+          "expand_legal_move_variants",
+          "generate_complete_series"
+        ],
+        "filename": "_native_eval.cp314-win_amd64.pyd",
+        "sha256": "e01fd89efe3e275e4d44003a3690cbce2e4f0f5d490a92945f93d3fcc258f3bf",
+        "source_identity": "4b3ed236917abdfb0939ce63d567d811913f6e6a86548d99011ed3a10c645627"
+      },
+      "platform": {
+        "cpu": "AMD64 Family 26 Model 68 Stepping 0, AuthenticAMD",
+        "description": "Windows-11-10.0.26200-SP0",
+        "logical_cpu_count": 16,
+        "machine": "AMD64",
+        "release": "11",
+        "system": "Windows",
+        "version": "10.0.26200"
+      },
+      "python": {
+        "compiler": "MSC v.1944 64 bit (AMD64)",
+        "executable_filename": "python.exe",
+        "implementation": "CPython",
+        "version": "3.14.4"
+      }
+    },
+    "candidate": {
+      "distributions": {
+        "chess": "1.11.2",
+        "python-chess": "1.999",
+        "scottish-progressive": "0.9.0"
+      },
+      "engine": {
+        "source_fingerprint": "806aa0d679f6d1ef",
+        "version": "spc-0.9.0"
+      },
+      "module_set_sha256": "c7b0bf1082a3cf3e1ae1d1062257b35e3acf8f1053e9d1f38ee1b0ee907de390",
+      "modules": [
+        {
+          "filename": "__init__.py",
+          "label": "package",
+          "sha256": "d59cff1ab77b4b9c8778443c1450bfb283ca0540a9e585a9c99be5ee6bae2d26"
+        },
+        {
+          "filename": "model.py",
+          "label": "model",
+          "sha256": "e1cbc0eaab006215e633ca0d9d046ff39e7e43893794f20474977e7a8382f078"
+        },
+        {
+          "filename": "evaluation.py",
+          "label": "evaluation",
+          "sha256": "65946565dede97d14afdea277320c12faf8440379e1cd68085ed6fbfc36ef571"
+        },
+        {
+          "filename": "rules.py",
+          "label": "rules",
+          "sha256": "fa2eb5e71bc58811db908159a0e7e08e38ecd89a300089e16cf0d93c0451a39d"
+        },
+        {
+          "filename": "search.py",
+          "label": "search",
+          "sha256": "0129a50b445648b4c4642aa02ce92b5c272022aec2471591e080e713700ebbe1"
+        },
+        {
+          "filename": "__init__.py",
+          "label": "chess-dependency",
+          "sha256": "1fde6a8e932508d14b31f6a584497b49c2969fc3c7cdc675347f819f0d667a5b"
+        }
+      ],
+      "native": {
+        "capabilities": [
+          "complete_series_candidate",
+          "expand_legal_move_variants",
+          "full_evaluate",
+          "generate_complete_series",
+          "prepare_complete_series"
+        ],
+        "filename": "_native_eval.cp314-win_amd64.pyd",
+        "sha256": "8600241b399e309c324ac4e1c14f809fb70076e12ee8ae96e45e0e2d115aff8d",
+        "source_identity": "e7d36c5fc755cca2ae8877f4e73d8f9aa161a405a4c91361a6866d2f6463ca4f"
+      },
+      "platform": {
+        "cpu": "AMD64 Family 26 Model 68 Stepping 0, AuthenticAMD",
+        "description": "Windows-11-10.0.26200-SP0",
+        "logical_cpu_count": 16,
+        "machine": "AMD64",
+        "release": "11",
+        "system": "Windows",
+        "version": "10.0.26200"
+      },
+      "python": {
+        "compiler": "MSC v.1944 64 bit (AMD64)",
+        "executable_filename": "python.exe",
+        "implementation": "CPython",
+        "version": "3.14.4"
+      }
+    }
+  },
+  "schema": "spc-v09-native-boundary-benchmark-v1"
+}

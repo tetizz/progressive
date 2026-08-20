@@ -108,7 +108,7 @@ def test_branch_cap_marks_search_selective() -> None:
     assert len(result.alternatives) == 3
 
 
-def test_selective_mate_score_is_not_labeled_forced() -> None:
+def test_selective_terminal_mate_proof_is_labeled_forced() -> None:
     state = ProgressiveState.from_fen(
         "7k/8/5KQ1/8/8/8/8/8 w - - 0 1", 1
     )
@@ -117,8 +117,9 @@ def test_selective_mate_score_is_not_labeled_forced() -> None:
     )
     assert result.score == MATE_SCORE - 1
     assert not result.exact_width
-    assert result.forced is None
-    assert result.confidence == "selective depth-limited heuristic"
+    assert result.proof == "white"
+    assert result.forced == "white"
+    assert result.confidence == "forced/proven by sound search proof bounds"
 
 
 def test_search_is_reproducible() -> None:
@@ -340,6 +341,7 @@ def test_frontier_cap_finds_known_series_four_mate_before_full_materialization()
     assert result.stats.generation_positions == (
         result.stats.series_generation_positions
         + result.stats.frontier_score_positions
+        + result.stats.promotion_mate_positions
         + result.stats.static_evaluation_positions
         + result.stats.evaluation_reach_positions
         + result.stats.quiet_adjudication_positions
@@ -387,6 +389,7 @@ def test_wide_frontier_scoring_cannot_overshoot_combined_work_cap() -> None:
     assert result.stats.work_positions == (
         result.stats.series_generation_positions
         + result.stats.frontier_score_positions
+        + result.stats.promotion_mate_positions
         + result.stats.static_evaluation_positions
         + result.stats.evaluation_reach_positions
         + result.stats.quiet_adjudication_positions

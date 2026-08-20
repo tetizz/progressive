@@ -214,13 +214,17 @@ spc compare-replies --output-dir reports
   optional C++20 evaluation, legal-move, and complete-series kernels, the
   exact Python fallback boundary, differential rule gates, and fresh-process
   speed measurements.
-- [`benchmarks/results/selfplay-fresh-seeded-100-v0.8.0.json`](benchmarks/results/selfplay-fresh-seeded-100-v0.8.0.json)
-  freezes the cold-wheel 100-game v0.8 strength gate.
-- [`benchmarks/results/league-standout-fresh-seeded-100-v0.8.0.json`](benchmarks/results/league-standout-fresh-seeded-100-v0.8.0.json)
-  records the independent 100-game holdout for the best v0.8 league runner-up.
+- [`benchmarks/results/native-boundary-search-v0.9.0-cp314-windows-depth2.json`](benchmarks/results/native-boundary-search-v0.9.0-cp314-windows-depth2.json)
+  is the v0.9 N2 boundary-search benchmark target. The release evidence below
+  uses only the verified speedup ratios; the artifact owns the final raw
+  timings and semantic signatures.
+- [`benchmarks/results/selfplay-fresh-seeded-100-v0.9.0.json`](benchmarks/results/selfplay-fresh-seeded-100-v0.9.0.json),
+  [`benchmarks/results/league-standout-fresh-seeded-100-v0.9.0.json`](benchmarks/results/league-standout-fresh-seeded-100-v0.9.0.json),
+  and [`benchmarks/results/league-generation1-standout-fresh-seeded-100-v0.9.0.json`](benchmarks/results/league-generation1-standout-fresh-seeded-100-v0.9.0.json)
+  freeze three fresh 100-game v0.9 checks against the baseline.
 - [`docs/engine-evolution.md`](docs/engine-evolution.md) records the replayed
   self-play fit, natural-selection runs, independent match results, and why no
-  v0.7 or v0.8 challenger was promoted.
+  v0.7, v0.8, or v0.9 challenger was promoted.
 
 The shallow run ranks `1.g3` and `1.c3` first, but that ordering collapses an
 important horizon: White has not yet received the three-move series. In the
@@ -279,6 +283,46 @@ harness cannot change the champion in any case. Its reported 62.558 seconds
 and 1.55057 completed games/second measure the 16-worker pool, not one game's
 latency. `spc-d14d1dae18b54c23` is a promising runner-up only; the baseline
 remains champion.
+
+The v0.9 N2 milestone keeps the v0.8 native complete-series semantics while
+holding retained candidates in a native capsule and decoding them lazily for
+search. The frozen engine source fingerprint is `806aa0d679f6d1ef`; the
+source-matched native identity is
+`e7d36c5fc755cca2ae8877f4e73d8f9aa161a405a4c91361a6866d2f6463ca4f`.
+The exact-native gate passed 374 tests. With native acceleration forced off,
+the same gate passed 302 fallback tests and skipped the 72 native-only checks.
+All five published tactical positions remained replay-proven searched mates,
+and the promotion-mate regressions also preserved the same early checking
+mates at S9 and S10 with two unused moves. These are parity and tactical
+correctness results, not a playing-strength claim.
+
+The final five-sample v0.9 wheel benchmark preserves every undeclared search
+result and deterministic work field. Rounded end-to-end speedups over the
+frozen v0.8 wheel are:
+
+| Position | N2 speedup over v0.8 | Output/proof/work |
+| --- | ---: | --- |
+| S1 | about 7.9x | identical |
+| S3 | about 2.0x | identical |
+| published S4 mate | about 1.5x | identical, apart from the pinned sound-proof correction |
+| live S22 adjudication state | about 1.3x | identical |
+
+The benchmark deliberately omits the old exact-trajectory pool comparison:
+v0.9's new tactical lane can choose a different legal game, so that would no
+longer be an apples-to-apples speed measurement. The raw benchmark is
+[`native-boundary-search-v0.9.0-cp314-windows-depth2.json`](benchmarks/results/native-boundary-search-v0.9.0-cp314-windows-depth2.json).
+
+Natural-selection run `70e97c0e-596f-4cb3-b4a9-f5024e42ac7d` then completed
+two v0.9 generations under the unchanged fixed-suite gate. Generation-one
+finalist `spc-5db5dfc40c211826` scored pair W/D/L `6/16/3` and `0.560`;
+generation-two finalist `spc-71dde5190fddd22a` scored `4/18/3` and `0.520`.
+Both were rejected because they missed the required-win gate and lost three
+pairs. The three fresh 100-game reports were also mixed: the self-play-fit
+candidate recorded conclusive game W/D/L `50/0/49` plus one incomplete, the
+older `spc-d14d1dae18b54c23` recorded `47/2/48` plus three incompletes, and
+`spc-5db5dfc40c211826` recorded `47/4/48` plus one incomplete. None of this is
+Stockfish-level evidence, and baseline `spc-68942034c41b4cc4` remains the only
+champion.
 
 ## Evidence language
 

@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
+#include <memory>
 #include <new>
 #include <set>
 #include <stdexcept>
@@ -856,6 +857,337 @@ std::optional<std::int64_t> fast_evaluate(
     return score;
 }
 
+namespace {
+
+struct ReachIdentity {
+    std::array<Bitboard, 9> words;
+    bool white_to_move;
+    Bitboard ep_targets;
+
+    bool operator==(const ReachIdentity&) const = default;
+};
+
+void hash_reach_word(std::size_t& seed, std::uint64_t value) noexcept {
+    seed ^= std::hash<std::uint64_t>{}(value)
+        + static_cast<std::size_t>(0x9e3779b97f4a7c15ULL)
+        + (seed << 6)
+        + (seed >> 2);
+}
+
+struct ReachIdentityHash {
+    std::size_t operator()(const ReachIdentity& key) const noexcept {
+        std::size_t seed = 0;
+        for (const Bitboard word : key.words) {
+            hash_reach_word(seed, word);
+        }
+        hash_reach_word(seed, key.white_to_move ? 1 : 0);
+        hash_reach_word(seed, key.ep_targets);
+        return seed;
+    }
+};
+
+[[nodiscard]] Bitboard reach_target_bits(
+    const std::vector<int>& targets
+) noexcept {
+    Bitboard result = 0;
+    for (const int target : targets) {
+        if (target >= 0 && target < 64) {
+            result |= bit(target);
+        }
+    }
+    return result;
+}
+
+[[nodiscard]] ReachIdentity reach_identity(
+    const BoardState& board,
+    const std::vector<int>& ep_targets
+) noexcept {
+    return ReachIdentity{
+        {
+            board.pawns,
+            board.knights,
+            board.bishops,
+            board.rooks,
+            board.queens,
+            board.kings,
+            board.occupied[0],
+            board.occupied[1],
+            board.castling_rights,
+        },
+        board.white_to_move,
+        reach_target_bits(ep_targets),
+    };
+}
+
+[[nodiscard]] bool reach_move_precedes(
+    const ExpandedMove& left,
+    const ExpandedMove& right
+) noexcept {
+    if (left.delivered_check != right.delivered_check) {
+        return left.delivered_check;
+    }
+    const bool left_promotion = left.move.promotion != 0;
+    const bool right_promotion = right.move.promotion != 0;
+    if (left_promotion != right_promotion) {
+        return left_promotion;
+    }
+    if (left.is_capture != right.is_capture) {
+        return left.is_capture;
+    }
+    return left.move.uci < right.move.uci;
+}
+
+[[nodiscard]] ReachProbe probe_series_reach_native(
+    const BoardState& boundary,
+    const std::vector<int>& boundary_ep_targets,
+    bool color,
+    int max_moves,
+    std::uint64_t node_limit
+) {
+    const Position initial = evaluation_position(boundary);
+    const int enemy_king = king_square(initial, !color);
+    if (
+        enemy_king < 0
+        || board_attacked_by(boundary, enemy_king, color)
+    ) {
+        return ReachProbe{0, 0, true};
+    }
+
+    BoardState root = boundary;
+    root.white_to_move = color;
+    std::vector<BoardState> frontier{root};
+    std::unordered_map<ReachIdentity, bool, ReachIdentityHash> seen;
+    seen.emplace(reach_identity(root, boundary_ep_targets), true);
+    std::uint64_t nodes = 0;
+    for (int distance = 1; distance <= max_moves; ++distance) {
+        std::vector<BoardState> following;
+        for (const BoardState& position : frontier) {
+            const bool first = distance == 1;
+            auto variants = expand_legal_move_variants(
+                position,
+                first ? boundary_ep_targets : std::vector<int>{}
+            );
+            std::sort(variants.begin(), variants.end(), reach_move_precedes);
+            for (const ExpandedMove& expanded : variants) {
+                if (nodes >= node_limit) {
+                    return ReachProbe{std::nullopt, nodes, false};
+                }
+                ++nodes;
+                if (expanded.delivered_check) {
+                    return ReachProbe{distance, nodes, true};
+                }
+                BoardState child = expanded.child;
+                child.white_to_move = color;
+                const ReachIdentity key = reach_identity(child, {});
+                if (seen.emplace(key, true).second) {
+                    following.push_back(std::move(child));
+                }
+            }
+        }
+        frontier = std::move(following);
+        if (frontier.empty()) {
+            break;
+        }
+    }
+    return ReachProbe{std::nullopt, nodes, true};
+}
+
+[[nodiscard]] int useful_mobility_native(
+    const BoardState& boundary,
+    const std::vector<int>& boundary_ep_targets,
+    bool color
+) {
+    BoardState board = boundary;
+    board.white_to_move = color;
+    const auto variants = expand_legal_move_variants(
+        board,
+        color == boundary.white_to_move
+            ? boundary_ep_targets
+            : std::vector<int>{}
+    );
+    int useful = 0;
+    for (const ExpandedMove& expanded : variants) {
+        useful += (
+            expanded.delivered_check
+            || expanded.is_capture
+            || expanded.move.promotion != 0
+        ) ? 3 : 1;
+    }
+    return useful;
+}
+
+[[nodiscard]] int reach_value_native(
+    const ReachProbe& probe,
+    std::int64_t budget
+) noexcept {
+    if (!probe.distance.has_value()) {
+        return 0;
+    }
+    if (*probe.distance == 0) {
+        return 260;
+    }
+    if (*probe.distance <= budget) {
+        return static_cast<int>(std::max<std::int64_t>(
+            60,
+            230 - (*probe.distance - 1) * 80
+        ));
+    }
+    return 0;
+}
+
+}  // namespace
+
+std::optional<FullEvaluation> full_evaluate(
+    const BoardState& board,
+    const std::vector<int>& ep_targets,
+    std::int64_t series_number,
+    std::uint64_t max_reach_positions,
+    const FullWeights& weights
+) {
+    if (
+        series_number < 1
+        || series_number == std::numeric_limits<std::int64_t>::max()
+    ) {
+        return std::nullopt;
+    }
+    const Position position{
+        board.pawns,
+        board.knights,
+        board.bishops,
+        board.rooks,
+        board.queens,
+        board.kings,
+        board.occupied,
+        board.white_to_move,
+        series_number,
+    };
+
+    const std::int64_t white_budget = series_number
+        + (board.white_to_move == WHITE ? 0 : 1);
+    const std::int64_t black_budget = series_number
+        + (board.white_to_move == BLACK ? 0 : 1);
+    std::uint64_t reach_remaining = max_reach_positions;
+    const ReachProbe white_reach = probe_series_reach_native(
+        board,
+        board.white_to_move == WHITE ? ep_targets : std::vector<int>{},
+        WHITE,
+        static_cast<int>(std::min<std::int64_t>(2, white_budget)),
+        std::min<std::uint64_t>(128, reach_remaining)
+    );
+    reach_remaining -= std::min(reach_remaining, white_reach.nodes);
+    const ReachProbe black_reach = probe_series_reach_native(
+        board,
+        board.white_to_move == BLACK ? ep_targets : std::vector<int>{},
+        BLACK,
+        static_cast<int>(std::min<std::int64_t>(2, black_budget)),
+        std::min<std::uint64_t>(128, reach_remaining)
+    );
+
+    FullEvaluation result;
+    result.white_reach = white_reach;
+    result.black_reach = black_reach;
+    const auto assign_scaled = [](
+        std::int64_t raw,
+        std::int64_t weight,
+        std::int64_t& target
+    ) noexcept {
+        const auto scaled = bankers_scale(raw, weight);
+        if (!scaled.has_value()) {
+            return false;
+        }
+        target = *scaled;
+        return true;
+    };
+
+    if (!assign_scaled(material(position), weights.material, result.material)) {
+        return std::nullopt;
+    }
+    if (!assign_scaled(
+            (king_flight_squares(position, WHITE)
+             - king_flight_squares(position, BLACK)) * 28,
+            weights.king_space,
+            result.king_space
+        )) {
+        return std::nullopt;
+    }
+    if (white_reach.complete && black_reach.complete) {
+        if (!assign_scaled(
+                reach_value_native(white_reach, white_budget)
+                    - reach_value_native(black_reach, black_budget),
+                weights.series_reach,
+                result.series_reach
+            )) {
+            return std::nullopt;
+        }
+    }
+    const auto white_promotion = promotion_score(position, WHITE);
+    const auto black_promotion = promotion_score(position, BLACK);
+    std::int64_t promotion_difference = 0;
+    if (
+        !white_promotion.has_value()
+        || !black_promotion.has_value()
+        || !checked_subtract(
+            *white_promotion,
+            *black_promotion,
+            promotion_difference
+        )
+        || !assign_scaled(
+            promotion_difference,
+            weights.promotion_corridors,
+            result.promotion_corridors
+        )
+    ) {
+        return std::nullopt;
+    }
+    if (!assign_scaled(
+            floor_div(
+                attacked_material(position, BLACK)
+                    - attacked_material(position, WHITE),
+                5
+            ),
+            weights.immediate_vulnerability,
+            result.immediate_vulnerability
+        )) {
+        return std::nullopt;
+    }
+    if (!assign_scaled(
+            (
+                useful_mobility_native(board, ep_targets, WHITE)
+                - useful_mobility_native(board, ep_targets, BLACK)
+            ) * 2,
+            weights.useful_mobility,
+            result.useful_mobility
+        )) {
+        return std::nullopt;
+    }
+    if (
+        is_check(position)
+        && !assign_scaled(
+            board.white_to_move == WHITE ? -170 : 170,
+            weights.boundary_check,
+            result.boundary_check
+        )
+    ) {
+        return std::nullopt;
+    }
+
+    const std::array<std::int64_t, 7> terms = {
+        result.material,
+        result.king_space,
+        result.series_reach,
+        result.promotion_corridors,
+        result.immediate_vulnerability,
+        result.useful_mobility,
+        result.boundary_check,
+    };
+    for (const std::int64_t term : terms) {
+        if (!checked_add(result.total, term, result.total)) {
+            return std::nullopt;
+        }
+    }
+    return result;
+}
+
 std::vector<ExpandedMove> expand_legal_move_variants(
     const BoardState& position,
     const std::vector<int>& ep_targets
@@ -944,12 +1276,7 @@ bool has_legal_move(
 
 namespace {
 
-enum class NativeSeriesOutcome : std::uint8_t {
-    None = 0,
-    Checkmate = 1,
-    Stalemate = 2,
-    TenSeriesDraw = 3,
-};
+using NativeSeriesOutcome = CompleteSeriesOutcome;
 
 struct BoardIdentity {
     std::array<Bitboard, 9> words;
@@ -1048,6 +1375,8 @@ struct NativeCompletedSeries {
     BoardState board;
     std::vector<std::string> moves;
     std::vector<int> boundary_ep_targets;
+    std::int64_t halfmove_clock;
+    std::int64_t fullmove_number;
     std::int64_t series_number;
     std::int64_t quiet_series;
     NativeSeriesOutcome outcome = NativeSeriesOutcome::None;
@@ -1458,6 +1787,8 @@ bool record_completed(
         board,
         std::move(moves),
         ep_targets,
+        state.halfmove_clock,
+        state.fullmove_number,
         request.series_number + 1,
         quiet_series,
         outcome,
@@ -1474,6 +1805,8 @@ bool record_completed(
         state.board,
         state.moves,
         {},
+        state.halfmove_clock,
+        state.fullmove_number,
         request.series_number,
         request.quiet_series,
         board_in_check(state.board)
@@ -1755,9 +2088,20 @@ bool merge_complete_series(NativeGenerationContext& context) {
         }
         context.response.series.reserve(ranked.size());
         for (auto& item : ranked) {
-            context.response.series.push_back(CompleteSeriesPath{
-                std::move(item.series.representative.moves),
-                item.series.path_count,
+            auto& representative = item.series.representative;
+            context.response.series.push_back(CompleteSeriesCandidate{
+                CompleteSeriesPath{
+                    std::move(representative.moves),
+                    item.series.path_count,
+                },
+                representative.board,
+                representative.halfmove_clock,
+                representative.fullmove_number,
+                representative.series_number,
+                representative.quiet_series,
+                std::move(representative.boundary_ep_targets),
+                representative.outcome,
+                representative.ended_by_check,
             });
         }
         return true;
@@ -1765,16 +2109,28 @@ bool merge_complete_series(NativeGenerationContext& context) {
 
     context.response.series.reserve(merged.size());
     for (auto& item : merged) {
-        context.response.series.push_back(CompleteSeriesPath{
-            std::move(item.representative.moves),
-            item.path_count,
+        auto& representative = item.representative;
+        context.response.series.push_back(CompleteSeriesCandidate{
+            CompleteSeriesPath{
+                std::move(representative.moves),
+                item.path_count,
+            },
+            representative.board,
+            representative.halfmove_clock,
+            representative.fullmove_number,
+            representative.series_number,
+            representative.quiet_series,
+            std::move(representative.boundary_ep_targets),
+            representative.outcome,
+            representative.ended_by_check,
         });
     }
     std::sort(
         context.response.series.begin(),
         context.response.series.end(),
-        [](const CompleteSeriesPath& left, const CompleteSeriesPath& right) {
-            return left.moves < right.moves;
+        [](const CompleteSeriesCandidate& left,
+           const CompleteSeriesCandidate& right) {
+            return left.path.moves < right.path.moves;
         }
     );
     return true;
@@ -2263,14 +2619,14 @@ PyObject* generation_stats_tuple(
 }
 
 PyObject* complete_series_tuple(
-    const std::vector<spc::native::CompleteSeriesPath>& series
+    const std::vector<spc::native::CompleteSeriesCandidate>& series
 ) {
     PyObject* result = PyTuple_New(static_cast<Py_ssize_t>(series.size()));
     if (result == nullptr) {
         return nullptr;
     }
     for (std::size_t index = 0; index < series.size(); ++index) {
-        const auto& item = series[index];
+        const auto& item = series[index].path;
         PyObject* moves = PyTuple_New(static_cast<Py_ssize_t>(item.moves.size()));
         if (moves == nullptr) {
             Py_DECREF(result);
@@ -2470,6 +2826,508 @@ PyObject* py_generate_complete_series(PyObject*, PyObject* arguments) {
     PyTuple_SET_ITEM(result, 1, message);
     PyTuple_SET_ITEM(result, 2, stats);
     PyTuple_SET_ITEM(result, 3, series);
+    return result;
+}
+
+constexpr const char* COMPLETE_SERIES_BATCH_CAPSULE =
+    "scottish_progressive.CompleteSeriesBatch.v1";
+
+bool parse_complete_series_batch_request(
+    PyObject* arguments,
+    spc::native::CompleteSeriesRequest& request
+) {
+    unsigned long long pawns = 0;
+    unsigned long long knights = 0;
+    unsigned long long bishops = 0;
+    unsigned long long rooks = 0;
+    unsigned long long queens = 0;
+    unsigned long long kings = 0;
+    unsigned long long white_occupied = 0;
+    unsigned long long black_occupied = 0;
+    unsigned long long promoted = 0;
+    unsigned long long castling_rights = 0;
+    int white_to_move = 0;
+    long long halfmove_clock = 0;
+    long long fullmove_number = 0;
+    long long series_number = 0;
+    long long quiet_series = 0;
+    PyObject* ep_targets_object = nullptr;
+    PyObject* required_prefix_object = nullptr;
+    PyObject* max_frontier_states_object = nullptr;
+    PyObject* max_positions_object = nullptr;
+    PyObject* frontier_weights_object = nullptr;
+    PyObject* final_series_score_object = nullptr;
+    if (!PyArg_ParseTuple(
+            arguments,
+            "KKKKKKKKKKpLLLLOOOOOO:prepare_complete_series",
+            &pawns,
+            &knights,
+            &bishops,
+            &rooks,
+            &queens,
+            &kings,
+            &white_occupied,
+            &black_occupied,
+            &promoted,
+            &castling_rights,
+            &white_to_move,
+            &halfmove_clock,
+            &fullmove_number,
+            &series_number,
+            &quiet_series,
+            &ep_targets_object,
+            &required_prefix_object,
+            &max_frontier_states_object,
+            &max_positions_object,
+            &frontier_weights_object,
+            &final_series_score_object
+        )) {
+        return false;
+    }
+
+    std::vector<int> ep_targets;
+    std::vector<std::string> required_prefix;
+    std::optional<std::uint64_t> max_frontier_states;
+    std::optional<std::uint64_t> max_positions;
+    std::optional<spc::native::FastWeights> frontier_weights;
+    std::optional<spc::native::FinalSeriesScore> final_series_score;
+    if (
+        !parse_square_sequence(
+            ep_targets_object,
+            ep_targets,
+            "ep_targets must be an iterable of squares"
+        )
+        || !parse_string_sequence(
+            required_prefix_object,
+            required_prefix,
+            "required_prefix must be an iterable of UCI strings"
+        )
+        || !parse_optional_positive_u64(
+            max_frontier_states_object,
+            max_frontier_states,
+            "max_frontier_states must be positive"
+        )
+        || !parse_optional_positive_u64(
+            max_positions_object,
+            max_positions,
+            "max_positions must be positive"
+        )
+        || !parse_optional_frontier_weights(
+            frontier_weights_object,
+            frontier_weights
+        )
+        || !parse_optional_final_series_score(
+            final_series_score_object,
+            final_series_score
+        )
+    ) {
+        return false;
+    }
+
+    request = spc::native::CompleteSeriesRequest{
+        {
+            pawns,
+            knights,
+            bishops,
+            rooks,
+            queens,
+            kings,
+            {black_occupied, white_occupied},
+            promoted,
+            castling_rights,
+            white_to_move != 0,
+        },
+        halfmove_clock,
+        fullmove_number,
+        series_number,
+        quiet_series,
+        std::move(ep_targets),
+        std::move(required_prefix),
+        max_frontier_states,
+        max_positions,
+        frontier_weights,
+        final_series_score,
+    };
+    return true;
+}
+
+void destroy_complete_series_batch(PyObject* capsule) noexcept {
+    void* pointer = PyCapsule_GetPointer(
+        capsule,
+        COMPLETE_SERIES_BATCH_CAPSULE
+    );
+    if (pointer == nullptr) {
+        PyErr_Clear();
+        return;
+    }
+    delete static_cast<spc::native::CompleteSeriesResponse*>(pointer);
+}
+
+PyObject* py_prepare_complete_series(PyObject*, PyObject* arguments) {
+    spc::native::CompleteSeriesRequest request{};
+    try {
+        if (!parse_complete_series_batch_request(arguments, request)) {
+            return nullptr;
+        }
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    } catch (const std::length_error&) {
+        return PyErr_NoMemory();
+    } catch (...) {
+        PyErr_SetString(
+            PyExc_RuntimeError,
+            "native complete-series batch argument parsing failed"
+        );
+        return nullptr;
+    }
+
+    auto response = std::make_unique<spc::native::CompleteSeriesResponse>();
+    try {
+        *response = spc::native::generate_complete_series(request);
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    } catch (...) {
+        PyErr_SetString(
+            PyExc_RuntimeError,
+            "native complete-series batch generation failed"
+        );
+        return nullptr;
+    }
+
+    PyObject* status = PyLong_FromLong(static_cast<long>(response->status));
+    PyObject* message = PyUnicode_FromString(response->message.c_str());
+    PyObject* stats = generation_stats_tuple(response->stats);
+    PyObject* series = complete_series_tuple(response->series);
+    if (
+        status == nullptr
+        || message == nullptr
+        || stats == nullptr
+        || series == nullptr
+    ) {
+        Py_XDECREF(status);
+        Py_XDECREF(message);
+        Py_XDECREF(stats);
+        Py_XDECREF(series);
+        return nullptr;
+    }
+    PyObject* capsule = PyCapsule_New(
+        response.get(),
+        COMPLETE_SERIES_BATCH_CAPSULE,
+        destroy_complete_series_batch
+    );
+    if (capsule == nullptr) {
+        Py_DECREF(status);
+        Py_DECREF(message);
+        Py_DECREF(stats);
+        Py_DECREF(series);
+        return nullptr;
+    }
+    response.release();
+    PyObject* result = PyTuple_New(5);
+    if (result == nullptr) {
+        Py_DECREF(status);
+        Py_DECREF(message);
+        Py_DECREF(stats);
+        Py_DECREF(series);
+        Py_DECREF(capsule);
+        return nullptr;
+    }
+    PyTuple_SET_ITEM(result, 0, status);
+    PyTuple_SET_ITEM(result, 1, message);
+    PyTuple_SET_ITEM(result, 2, stats);
+    PyTuple_SET_ITEM(result, 3, series);
+    PyTuple_SET_ITEM(result, 4, capsule);
+    return result;
+}
+
+PyObject* square_vector_tuple(const std::vector<int>& squares) {
+    PyObject* result = PyTuple_New(static_cast<Py_ssize_t>(squares.size()));
+    if (result == nullptr) {
+        return nullptr;
+    }
+    for (std::size_t index = 0; index < squares.size(); ++index) {
+        PyObject* value = PyLong_FromLong(squares[index]);
+        if (value == nullptr) {
+            Py_DECREF(result);
+            return nullptr;
+        }
+        PyTuple_SET_ITEM(result, static_cast<Py_ssize_t>(index), value);
+    }
+    return result;
+}
+
+PyObject* py_complete_series_candidate(PyObject*, PyObject* arguments) {
+    PyObject* capsule = nullptr;
+    Py_ssize_t index = 0;
+    if (!PyArg_ParseTuple(
+            arguments,
+            "On:complete_series_candidate",
+            &capsule,
+            &index
+        )) {
+        return nullptr;
+    }
+    auto* response = static_cast<spc::native::CompleteSeriesResponse*>(
+        PyCapsule_GetPointer(capsule, COMPLETE_SERIES_BATCH_CAPSULE)
+    );
+    if (response == nullptr) {
+        return nullptr;
+    }
+    if (
+        index < 0
+        || static_cast<std::size_t>(index) >= response->series.size()
+    ) {
+        PyErr_SetString(PyExc_IndexError, "complete-series candidate index out of range");
+        return nullptr;
+    }
+    const auto& candidate = response->series[static_cast<std::size_t>(index)];
+    const auto& board = candidate.board;
+    PyObject* result = PyTuple_New(18);
+    if (result == nullptr) {
+        return nullptr;
+    }
+    const std::array<spc::native::Bitboard, 10> masks = {
+        board.pawns,
+        board.knights,
+        board.bishops,
+        board.rooks,
+        board.queens,
+        board.kings,
+        board.occupied[1],
+        board.occupied[0],
+        board.promoted,
+        board.castling_rights,
+    };
+    for (std::size_t item = 0; item < masks.size(); ++item) {
+        PyObject* value = PyLong_FromUnsignedLongLong(masks[item]);
+        if (value == nullptr) {
+            Py_DECREF(result);
+            return nullptr;
+        }
+        PyTuple_SET_ITEM(result, static_cast<Py_ssize_t>(item), value);
+    }
+    PyObject* turn = PyBool_FromLong(board.white_to_move ? 1 : 0);
+    PyObject* halfmove = PyLong_FromLongLong(candidate.halfmove_clock);
+    PyObject* fullmove = PyLong_FromLongLong(candidate.fullmove_number);
+    PyObject* series_number = PyLong_FromLongLong(candidate.series_number);
+    PyObject* quiet_series = PyLong_FromLongLong(candidate.quiet_series);
+    PyObject* ep_targets = square_vector_tuple(candidate.ep_targets);
+    PyObject* outcome = PyLong_FromLong(static_cast<long>(candidate.outcome));
+    PyObject* ended_by_check = PyBool_FromLong(candidate.ended_by_check ? 1 : 0);
+    if (
+        turn == nullptr
+        || halfmove == nullptr
+        || fullmove == nullptr
+        || series_number == nullptr
+        || quiet_series == nullptr
+        || ep_targets == nullptr
+        || outcome == nullptr
+        || ended_by_check == nullptr
+    ) {
+        Py_XDECREF(turn);
+        Py_XDECREF(halfmove);
+        Py_XDECREF(fullmove);
+        Py_XDECREF(series_number);
+        Py_XDECREF(quiet_series);
+        Py_XDECREF(ep_targets);
+        Py_XDECREF(outcome);
+        Py_XDECREF(ended_by_check);
+        Py_DECREF(result);
+        return nullptr;
+    }
+    PyTuple_SET_ITEM(result, 10, turn);
+    PyTuple_SET_ITEM(result, 11, halfmove);
+    PyTuple_SET_ITEM(result, 12, fullmove);
+    PyTuple_SET_ITEM(result, 13, series_number);
+    PyTuple_SET_ITEM(result, 14, quiet_series);
+    PyTuple_SET_ITEM(result, 15, ep_targets);
+    PyTuple_SET_ITEM(result, 16, outcome);
+    PyTuple_SET_ITEM(result, 17, ended_by_check);
+    return result;
+}
+
+PyObject* optional_distance_object(
+    const std::optional<std::int64_t>& distance
+) {
+    if (!distance.has_value()) {
+        Py_RETURN_NONE;
+    }
+    return PyLong_FromLongLong(*distance);
+}
+
+PyObject* py_full_evaluate(PyObject*, PyObject* arguments) {
+    constexpr Py_ssize_t ARGUMENT_COUNT = 21;
+    if (PyTuple_GET_SIZE(arguments) != ARGUMENT_COUNT) {
+        PyErr_Format(
+            PyExc_TypeError,
+            "full_evaluate() takes exactly %zd arguments (%zd given)",
+            ARGUMENT_COUNT,
+            PyTuple_GET_SIZE(arguments)
+        );
+        return nullptr;
+    }
+
+    std::array<unsigned long long, 10> masks{};
+    for (Py_ssize_t index = 0; index < 10; ++index) {
+        masks[static_cast<std::size_t>(index)] = PyLong_AsUnsignedLongLong(
+            PyTuple_GET_ITEM(arguments, index)
+        );
+        if (
+            masks[static_cast<std::size_t>(index)]
+                == static_cast<unsigned long long>(-1)
+            && PyErr_Occurred()
+        ) {
+            return nullptr;
+        }
+    }
+    const int white_to_move = PyObject_IsTrue(PyTuple_GET_ITEM(arguments, 10));
+    if (white_to_move < 0) {
+        return nullptr;
+    }
+    const long long series_number = PyLong_AsLongLong(
+        PyTuple_GET_ITEM(arguments, 11)
+    );
+    if (series_number == -1 && PyErr_Occurred()) {
+        return nullptr;
+    }
+    std::vector<int> ep_targets;
+    try {
+        if (!parse_square_sequence(
+                PyTuple_GET_ITEM(arguments, 12),
+                ep_targets,
+                "ep_targets must be an iterable of squares"
+            )) {
+            return nullptr;
+        }
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    } catch (const std::length_error&) {
+        return PyErr_NoMemory();
+    }
+    const unsigned long long max_reach_positions = PyLong_AsUnsignedLongLong(
+        PyTuple_GET_ITEM(arguments, 13)
+    );
+    if (
+        max_reach_positions == static_cast<unsigned long long>(-1)
+        && PyErr_Occurred()
+    ) {
+        return nullptr;
+    }
+    std::array<long long, 7> weight_values{};
+    for (Py_ssize_t index = 0; index < 7; ++index) {
+        weight_values[static_cast<std::size_t>(index)] = PyLong_AsLongLong(
+            PyTuple_GET_ITEM(arguments, index + 14)
+        );
+        if (
+            weight_values[static_cast<std::size_t>(index)] == -1
+            && PyErr_Occurred()
+        ) {
+            return nullptr;
+        }
+    }
+
+    const spc::native::BoardState board{
+        masks[0],
+        masks[1],
+        masks[2],
+        masks[3],
+        masks[4],
+        masks[5],
+        {masks[7], masks[6]},
+        masks[8],
+        masks[9],
+        white_to_move != 0,
+    };
+    const spc::native::FullWeights weights{
+        weight_values[0],
+        weight_values[1],
+        weight_values[2],
+        weight_values[3],
+        weight_values[4],
+        weight_values[5],
+        weight_values[6],
+    };
+
+    std::optional<spc::native::FullEvaluation> evaluated;
+    try {
+        evaluated = spc::native::full_evaluate(
+            board,
+            ep_targets,
+            series_number,
+            max_reach_positions,
+            weights
+        );
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    } catch (...) {
+        PyErr_SetString(PyExc_RuntimeError, "native full evaluation failed");
+        return nullptr;
+    }
+    if (!evaluated.has_value()) {
+        PyErr_SetString(
+            PyExc_OverflowError,
+            "native full evaluation exceeded signed 64-bit arithmetic"
+        );
+        return nullptr;
+    }
+
+    PyObject* result = PyTuple_New(13);
+    if (result == nullptr) {
+        return nullptr;
+    }
+    const std::array<std::int64_t, 8> terms = {
+        evaluated->total,
+        evaluated->material,
+        evaluated->king_space,
+        evaluated->series_reach,
+        evaluated->promotion_corridors,
+        evaluated->immediate_vulnerability,
+        evaluated->useful_mobility,
+        evaluated->boundary_check,
+    };
+    for (std::size_t index = 0; index < terms.size(); ++index) {
+        PyObject* value = PyLong_FromLongLong(terms[index]);
+        if (value == nullptr) {
+            Py_DECREF(result);
+            return nullptr;
+        }
+        PyTuple_SET_ITEM(result, static_cast<Py_ssize_t>(index), value);
+    }
+    PyObject* white_distance = optional_distance_object(
+        evaluated->white_reach.distance
+    );
+    PyObject* black_distance = optional_distance_object(
+        evaluated->black_reach.distance
+    );
+    PyObject* reach_complete = PyBool_FromLong(
+        evaluated->white_reach.complete && evaluated->black_reach.complete
+    );
+    PyObject* white_nodes = PyLong_FromUnsignedLongLong(
+        evaluated->white_reach.nodes
+    );
+    PyObject* black_nodes = PyLong_FromUnsignedLongLong(
+        evaluated->black_reach.nodes
+    );
+    if (
+        white_distance == nullptr
+        || black_distance == nullptr
+        || reach_complete == nullptr
+        || white_nodes == nullptr
+        || black_nodes == nullptr
+    ) {
+        Py_XDECREF(white_distance);
+        Py_XDECREF(black_distance);
+        Py_XDECREF(reach_complete);
+        Py_XDECREF(white_nodes);
+        Py_XDECREF(black_nodes);
+        Py_DECREF(result);
+        return nullptr;
+    }
+    PyTuple_SET_ITEM(result, 8, white_distance);
+    PyTuple_SET_ITEM(result, 9, black_distance);
+    PyTuple_SET_ITEM(result, 10, reach_complete);
+    PyTuple_SET_ITEM(result, 11, white_nodes);
+    PyTuple_SET_ITEM(result, 12, black_nodes);
     return result;
 }
 
@@ -2819,10 +3677,28 @@ PyObject* py_has_legal_move(PyObject*, PyObject* arguments) {
 
 PyMethodDef METHODS[] = {
     {
+        "prepare_complete_series",
+        py_prepare_complete_series,
+        METH_VARARGS,
+        PyDoc_STR("Prepare an opaque exact batch with lazily decoded final states.")
+    },
+    {
+        "complete_series_candidate",
+        py_complete_series_candidate,
+        METH_VARARGS,
+        PyDoc_STR("Decode one final state from an opaque complete-series batch.")
+    },
+    {
         "generate_complete_series",
         py_generate_complete_series,
         METH_VARARGS,
         PyDoc_STR("Bulk exact complete-series generation for supported frontiers.")
+    },
+    {
+        "full_evaluate",
+        py_full_evaluate,
+        METH_VARARGS,
+        PyDoc_STR("Exact compiled full leaf evaluation with bounded reach work.")
     },
     {
         "fast_evaluate",

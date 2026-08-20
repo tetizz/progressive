@@ -292,7 +292,7 @@ def _weights(profile: EngineProfile | EvaluationWeights | None) -> EvaluationWei
     return profile or EvaluationWeights()
 
 
-def evaluate(
+def _python_evaluate(
     state: ProgressiveState,
     profile: EngineProfile | EvaluationWeights | None = None,
     *,
@@ -392,6 +392,94 @@ def evaluate(
         white_reach_nodes=white_reach.nodes,
         black_reach_nodes=black_reach.nodes,
     )
+
+
+def _native_full_evaluation_is_safe(
+    state: ProgressiveState,
+    weights: EvaluationWeights,
+    max_reach_positions: int | None,
+) -> bool:
+    """Whether the exact full evaluator can preserve Python's contract."""
+
+    if (
+        _native_eval is None
+        or not hasattr(_native_eval, "full_evaluate")
+        or state.board.chess960
+        or type(weights) is not EvaluationWeights
+        or not _native_fast_evaluation_is_safe(state, weights)
+        or any(
+            type(value) is not int or not _NATIVE_WEIGHT_MIN <= value <= _NATIVE_WEIGHT_MAX
+            for value in (weights.series_reach, weights.useful_mobility)
+        )
+    ):
+        return False
+    if max_reach_positions is None:
+        return True
+    return (
+        type(max_reach_positions) is int
+        and -(1 << 64) < max_reach_positions <= (1 << 64) - 1
+    )
+
+
+def evaluate(
+    state: ProgressiveState,
+    profile: EngineProfile | EvaluationWeights | None = None,
+    *,
+    max_reach_positions: int | None = None,
+) -> EvaluationBreakdown:
+    """Returns the exact full evaluation through native code when supported."""
+
+    weights = _weights(profile)
+    if not _native_full_evaluation_is_safe(
+        state,
+        weights,
+        max_reach_positions,
+    ):
+        return _python_evaluate(
+            state,
+            profile,
+            max_reach_positions=max_reach_positions,
+        )
+
+    board = state.board
+    reach_limit = 256 if max_reach_positions is None else max(0, max_reach_positions)
+    try:
+        raw = tuple(
+            _native_eval.full_evaluate(
+                board.pawns,
+                board.knights,
+                board.bishops,
+                board.rooks,
+                board.queens,
+                board.kings,
+                board.occupied_co[chess.WHITE],
+                board.occupied_co[chess.BLACK],
+                board.promoted,
+                board.clean_castling_rights(),
+                board.turn,
+                state.series_number,
+                state.ep_targets,
+                reach_limit,
+                weights.material,
+                weights.king_space,
+                weights.series_reach,
+                weights.promotion_corridors,
+                weights.immediate_vulnerability,
+                weights.useful_mobility,
+                weights.boundary_check,
+            )
+        )
+        if len(raw) != len(EvaluationBreakdown.__dataclass_fields__):
+            raise ValueError("native full-evaluation result shape mismatch")
+        return EvaluationBreakdown(*raw)
+    except (OverflowError, TypeError, ValueError):
+        # The Python evaluator is deliberately unbounded and remains the
+        # authority for hostile inputs or future terms outside the native ABI.
+        return _python_evaluate(
+            state,
+            weights,
+            max_reach_positions=max_reach_positions,
+        )
 
 
 def _python_fast_evaluate(

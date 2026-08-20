@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import pytest
 
+from scottish_progressive.league import PUBLISHED_RULE_ANCHORS
 from scottish_progressive.model import Outcome, ProgressiveState
 from scottish_progressive.rules import SeriesLegalityError, play_series
 from scottish_progressive.rules import generate_series
+from scottish_progressive.search import SearchLimits, analyze
 from scottish_progressive.theory import PUBLISHED_REPLY_CANDIDATES
 
 
@@ -45,6 +47,39 @@ def test_published_tactical_series_are_legal_mates(
     assert result.outcome == Outcome.CHECKMATE
     assert result.ended_by_check
     assert result.used_moves == series_number
+
+
+@pytest.mark.parametrize(
+    ("fen", "series_number", "_published_moves"),
+    PUBLISHED_RULE_ANCHORS,
+)
+def test_production_search_finds_every_published_tactical_mate(
+    fen: str,
+    series_number: int,
+    _published_moves: tuple[str, ...],
+) -> None:
+    state = ProgressiveState.from_fen(fen, series_number)
+    result = analyze(
+        state,
+        SearchLimits(
+            depth_series=2,
+            max_series_per_node=32,
+            max_generation_positions=250_000,
+            collect_all_root_scores=False,
+        ),
+    )
+
+    assert result.best_series is not None
+    assert play_series(state, result.best_series.moves).outcome == Outcome.CHECKMATE
+    assert result.best_series.ended_by_check
+    assert result.completed_depth == 2
+    assert not result.timed_out
+    assert not result.work_limit_reached
+    assert result.stats.work_positions <= 250_000
+    assert not result.exact_width
+    winner = "white" if state.board.turn else "black"
+    assert result.proof == winner
+    assert result.forced == winner
 
 
 def test_scottish_countercheck_refutes_an_italian_mate_construction() -> None:

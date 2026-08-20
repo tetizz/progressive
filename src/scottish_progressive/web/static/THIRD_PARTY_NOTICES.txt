@@ -10,6 +10,8 @@ The artwork is licensed under the GNU General Public License, version 2 or
 (at your option) any later version (GPL-2.0-or-later). The files are packaged
 locally and are not fetched from a CDN. Scottish Progressive is distributed
 under GPL-3.0-or-later, which is compatible with GPL-2.0-or-later artwork.
+The complete GNU GPL version 3 text is included in the distribution's LICENSE
+file; GPL-2.0-or-later permits recipients to use the artwork under version 3.
 
 Upstream source directory:
 https://github.com/lichess-org/lila/tree/master/public/piece/cburnett

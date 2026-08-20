@@ -27,6 +27,17 @@ the searcher's exact terminal/static ordering and returns only the top 32
 series. Python then materializes those retained UCI paths and continues to own
 minimax, proof propagation, quiet-series adjudication, and the public result.
 
+The v0.9 N2 milestone adds the exact full evaluation boundary and changes the
+bulk handoff from eagerly materialized retained series to an opaque native
+capsule plus lightweight UCI references. Search decodes a candidate's final
+boundary only when it needs that candidate, and an active reference keeps its
+capsule alive even after the generation cache evicts the batch. Published
+result evidence is still replayed through `play_series`; Python continues to
+own minimax, proof intervals, adjudication, cancellation policy, and the public
+objects. A separately metered promotion-mate lane covers the verified
+check-avoiding underpromotion/reuse construction without turning failure to
+find a mate into a no-mate proof.
+
 ## Correctness boundary
 
 The compiled implementation exactly mirrors the integer terms in
@@ -45,9 +56,11 @@ quiet-series metadata, SAN, transposition path counts, cancellation, and
 deterministic work charging. The v0.8 bulk path now mirrors that generation and
 charging in native code when its exact contract applies. It retains every
 full-generation count even when native final scoring pre-caps the returned
-series to 32. Python replays only those retained paths through `play_series`,
-which remains authoritative for `SeriesResult`, PFEN, SAN, and outcome
-materialization, and Python still owns minimax, proof, and adjudication.
+series to 32. In v0.9, native records may supply lazy search boundaries, but
+Python replays the series that become returned search evidence through
+`play_series`, which remains authoritative for `SeriesResult`, PFEN, SAN, and
+published outcome materialization. Python still owns minimax, proof, and
+adjudication.
 
 The one-move S1 root deliberately bypasses the bulk kernel; the cheap direct
 Python path handles that series, while its S2 descendants use native bulk
@@ -64,6 +77,15 @@ weight vectors, the published S4 mating position, and live high-series S22,
 S24, and S101 anchors. Full-search tests compare the complete scored ordering
 and logical-work counters, not only the selected move.
 
+For the frozen v0.9 source, the exact-native gate passed 374 tests. The forced
+Python-fallback run passed 302 tests and skipped 72 native-only checks. All five
+published tactical anchors were found as replay-proven mates at the production
+depth/cap/work limits. The promotion-mate gate also reproduced the same early
+checking mates at S9 and S10, correctly ending each series with two moves
+unused. A standard-checkmate prefilter is never sufficient by itself: the
+authoritative replay rejects a nominal mate when Scottish multi-target en
+passant supplies a reply.
+
 The compiled API uses checked signed 64-bit arithmetic throughout. The Python
 dispatcher keeps the public unbounded-series contract: it uses the oracle when
 a series/profile could exceed that native range or the exact-integer envelope
@@ -79,6 +101,10 @@ the packaged copies and enables the extension only on an exact match, so a
 locked or stale in-place binary falls back instead of silently running old
 code. `SPC_DISABLE_NATIVE=1` forces the oracle path
 for differential testing.
+
+The frozen v0.9 engine fingerprint is `806aa0d679f6d1ef`. Its embedded native
+source identity is
+`e7d36c5fc755cca2ae8877f4e73d8f9aa161a405a4c91361a6866d2f6463ca4f`.
 
 ## Reproducible benchmark
 
@@ -182,6 +208,27 @@ difference. Those results establish neither a speed-related strength gain nor
 a standout variant: no promotion occurred and the baseline remains champion.
 The rate is aggregate pool throughput, not single-game latency.
 
+### v0.9 N2 lazy boundary search
+
+The final five-sample benchmark compares the frozen source-matched v0.9 wheel
+against the frozen v0.8 wheel. It rejects any undeclared difference in score,
+best series, PV, alternatives, completion/width/timeout/work flags, proof,
+adjudication, or deterministic work categories. The checked benchmark is
+[`native-boundary-search-v0.9.0-cp314-windows-depth2.json`](../benchmarks/results/native-boundary-search-v0.9.0-cp314-windows-depth2.json).
+Rounded release comparisons are:
+
+| Position | N2 speedup over v0.8 | Output/proof/work |
+| --- | ---: | --- |
+| S1 | about 7.9x | identical |
+| S3 | about 2.0x | identical |
+| published S4 mate | about 1.5x | identical, apart from the pinned sound-proof correction |
+| live S22 adjudication state | about 1.3x | identical |
+
+The final artifact does not claim a pool speedup. The new tactical lane can
+legitimately change a full-game trajectory, so v0.8 and v0.9 pool games are not
+accepted as an apples-to-apples timing pair. None of these timings is a playing
+strength gain or evidence of Stockfish-level play.
+
 ## Packaging and fallback
 
 Setuptools builds `scottish_progressive._native_eval` with `/std:c++20 /O2` on
@@ -192,12 +239,11 @@ cold-installed before publication.
 
 ## Next boundary
 
-Compatible complete-series generation and exact final pre-capping are now
-native. Python still replays the retained paths into objects before it performs
-minimax, proof propagation, adjudication, and transposition storage. The next
-performance boundary is native series-boundary alpha-beta with lazy series
-search, so candidates can be consumed without eagerly materializing every
-retained Python object while preserving Scottish truncation, liveness
-fallbacks, proof bounds, and every deterministic work/cancellation count. This
-milestone is a verified kernel, not a claim of a fully native or
-Stockfish-strength engine.
+Compatible complete-series generation, exact final pre-capping, full
+evaluation, and lazy retained-candidate decoding are now native. Python still
+performs series-boundary alpha-beta, proof propagation, adjudication,
+transposition policy, and authoritative replay of published evidence. A future
+boundary can move more of that search loop native only if it preserves Scottish
+truncation, liveness fallbacks, proof intervals, capsule ownership, and every
+deterministic work/cancellation count. N2 is a verified acceleration boundary,
+not a fully native or Stockfish-strength engine.

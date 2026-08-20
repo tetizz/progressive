@@ -16,13 +16,23 @@ from .model import (
     SeriesResult,
 )
 from .profiles import EngineProfile, baseline_profile
+from .promotion_mate import (
+    MAX_PROMOTION_MATE_POSITIONS,
+    PromotionMateProbe,
+    find_promotion_series_mate,
+    promotion_mate_eligible,
+)
 from .rules import (
     GenerationCancelled,
     GenerationStats,
     GenerationWorkLimit,
     NativeFinalSeriesScoreConfig,
     NativeFrontierScoreConfig,
+    _NativeSeriesBatch,
+    _NativeSeriesReference,
+    _native_complete_series_batch,
     generate_series,
+    play_series,
     quiet_adjudication_status,
 )
 
@@ -104,6 +114,13 @@ class SearchStats:
     series_generation_cache_hits: int = 0
     series_generation_cache_evictions: int = 0
     series_generation_cache_peak: int = 0
+    promotion_mate_positions: int = 0
+    promotion_mate_setup_states: int = 0
+    promotion_mate_candidates: int = 0
+    promotion_mate_completion_probes: int = 0
+    promotion_mate_limit_hits: int = 0
+    promotion_mate_replay_rejects: int = 0
+    promotion_mate_mates: int = 0
 
     @property
     def work_positions(self) -> int:
@@ -111,8 +128,8 @@ class SearchStats:
 
         ``generation_positions`` remains the stored compatibility name used
         by existing API/database consumers. New code should prefer this alias;
-        both include series generation, frontier scoring, static evaluation,
-        evaluation reach, and quiet-proof work.
+        both include series generation, frontier scoring, promotion-mate
+        probing, static evaluation, evaluation reach, and quiet-proof work.
         """
 
         return self.generation_positions
@@ -160,14 +177,19 @@ class SearchResult:
     def forced(self) -> str | None:
         if self.adjudication_status == "proven-draw-no-mating-material":
             return "draw"
+        if self.adjudication_status == "manual-proof-required":
+            return None
+        # Proof intervals remain sound under selective width: an existential
+        # terminal win for the mover cannot be invalidated by omitted siblings.
+        # Keep the heuristic mate-score fallback below exact-width gated.
+        if self.proof in {"white", "black", "draw"}:
+            return self.proof
         if (
             not self.exact_width
             or self.timed_out
             or self.completed_depth != self.requested_depth
         ):
             return None
-        if self.proof in {"white", "black", "draw"}:
-            return self.proof
         if abs(self.score) >= MATE_SCORE - 10_000:
             return "white" if self.score > 0 else "black"
         return None
@@ -184,6 +206,8 @@ class SearchResult:
             return "quiet-draw proof required; no theory score issued"
         if self.adjudication_status == "proven-draw-no-mating-material":
             return "forced/proven draw by no mating material"
+        if self.proof in {"white", "black", "draw"}:
+            return "forced/proven by sound search proof bounds"
         if self.work_limit_reached:
             return "deterministic work limit reached; incomplete/selective"
         if self.forced and self.exact_width and not self.timed_out:
@@ -204,6 +228,27 @@ class _TTEntry:
     bound: Bound
     pv: tuple[SeriesResult, ...]
     proof_bounds: tuple[int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class _SeriesCacheEntry:
+    collection: tuple[SeriesResult, ...] | _NativeSeriesBatch
+    width_complete: bool
+
+
+class _GeneratedSeriesList(list[SeriesResult | _NativeSeriesReference]):
+    """List-compatible frontier carrying whether every legal branch exists."""
+
+    __slots__ = ("width_complete",)
+
+    def __init__(
+        self,
+        values: list[SeriesResult | _NativeSeriesReference],
+        *,
+        width_complete: bool,
+    ) -> None:
+        super().__init__(values)
+        self.width_complete = width_complete
 
 
 class _Timeout(Exception):
@@ -258,7 +303,7 @@ class SeriesSearcher:
         ] = {}
         self._series_generation_cache: OrderedDict[
             tuple[tuple[int, str, int, int], tuple[str, ...], int],
-            tuple[SeriesResult, ...],
+            _SeriesCacheEntry,
         ] = OrderedDict()
         self._series_generation_cache_weight = 0
         self._deadline: float | None = None
@@ -267,6 +312,8 @@ class SeriesSearcher:
         self._evaluation_work_limit_reached = False
         self._root_scores_complete = True
         self._preferred_root_series: str | None = None
+        self._promotion_mate_checked = False
+        self._promotion_mate_series: SeriesResult | None = None
 
     def _check_deadline(self) -> None:
         if self._deadline is not None and time.perf_counter() >= self._deadline:
@@ -393,6 +440,75 @@ class SeriesSearcher:
         if generation.work_limit_reached:
             self.stats.generation_work_limit_hits += 1
 
+    def _record_promotion_mate_probe(self, probe: PromotionMateProbe) -> None:
+        self.stats.promotion_mate_positions += probe.positions_visited
+        self.stats.promotion_mate_setup_states += probe.setup_states
+        self.stats.promotion_mate_candidates += probe.promotion_candidates
+        self.stats.promotion_mate_completion_probes += probe.completion_probes
+        self.stats.promotion_mate_limit_hits += int(probe.work_limit_reached)
+        self.stats.promotion_mate_replay_rejects += probe.replay_rejects
+        self.stats.promotion_mate_mates += int(probe.series is not None)
+        self.stats.generation_positions += probe.positions_visited
+
+    def _root_promotion_mate(
+        self,
+        state: ProgressiveState,
+        *,
+        required_prefix: tuple[str, ...],
+        reserve_positions: int,
+    ) -> SeriesResult | None:
+        """Runs the separately bounded current-series mate lane at most once."""
+
+        if self._promotion_mate_checked:
+            return self._promotion_mate_series
+        self._promotion_mate_checked = True
+        if (
+            self.limits.max_series_per_node is None
+            or not promotion_mate_eligible(
+                state,
+                required_prefix=required_prefix,
+            )
+        ):
+            return None
+
+        lane_limit = MAX_PROMOTION_MATE_POSITIONS
+        if self.limits.max_generation_positions is not None:
+            available = max(
+                0,
+                self.limits.max_generation_positions
+                - self.stats.generation_positions
+                - reserve_positions,
+            )
+            # Preserve four fifths of every finite budget for the ordinary
+            # search. At the production 250k gate this gives the lane its
+            # independently validated at-most-50k envelope.
+            lane_limit = min(lane_limit, available // 5)
+        if lane_limit < 1:
+            return None
+
+        probe = find_promotion_series_mate(
+            state,
+            required_prefix=required_prefix,
+            max_positions=lane_limit,
+            should_stop=(
+                (lambda: time.perf_counter() >= self._deadline)
+                if self._deadline is not None
+                else None
+            ),
+            promotion_score=NativeFrontierScoreConfig.from_profile(
+                state,
+                self.profile,
+            ),
+        )
+        self._record_promotion_mate_probe(probe)
+        if probe.cancelled:
+            return None
+        if probe.series is None:
+            return None
+        self._promotion_mate_series = probe.series
+        self._selective = True
+        return probe.series
+
     def _generate(
         self,
         state: ProgressiveState,
@@ -400,7 +516,7 @@ class SeriesSearcher:
         ply_from_root: int,
         required_prefix: tuple[str, ...] = (),
         reserve_positions: int = 0,
-    ) -> list[SeriesResult]:
+    ) -> tuple[list[SeriesResult] | _NativeSeriesBatch, bool]:
         generation = GenerationStats()
         remaining_positions: int | None = None
         if self.limits.max_generation_positions is not None:
@@ -432,25 +548,41 @@ class SeriesSearcher:
             else None
         )
 
+        should_stop = (
+            (lambda: time.perf_counter() >= self._deadline)
+            if self._deadline is not None
+            else None
+        )
         try:
-            series = generate_series(
-                state,
-                stats=generation,
-                required_prefix=required_prefix,
-                max_frontier_states=self.limits.max_series_per_node,
-                max_positions=remaining_positions,
-                frontier_score=(
-                    frontier_score
-                    if self.limits.max_series_per_node is not None
-                    else None
-                ),
-                native_final_score=native_final_score,
-                should_stop=(
-                    (lambda: time.perf_counter() >= self._deadline)
-                    if self._deadline is not None
-                    else None
-                ),
+            series = (
+                _native_complete_series_batch(
+                    state,
+                    generation,
+                    required_prefix=required_prefix,
+                    max_frontier_states=self.limits.max_series_per_node,
+                    max_positions=remaining_positions,
+                    frontier_score=frontier_score,
+                    native_final_score=native_final_score,
+                    should_stop=should_stop,
+                )
+                if native_final_score is not None
+                else None
             )
+            if series is None:
+                series = generate_series(
+                    state,
+                    stats=generation,
+                    required_prefix=required_prefix,
+                    max_frontier_states=self.limits.max_series_per_node,
+                    max_positions=remaining_positions,
+                    frontier_score=(
+                        frontier_score
+                        if self.limits.max_series_per_node is not None
+                        else None
+                    ),
+                    native_final_score=native_final_score,
+                    should_stop=should_stop,
+                )
         except GenerationWorkLimit as error:
             raise _WorkLimit from error
         except GenerationCancelled as error:
@@ -460,7 +592,11 @@ class SeriesSearcher:
         if generation.unique_series > len(series):
             self.stats.branch_caps += 1
             self._selective = True
-        return series
+        width_complete = (
+            generation.frontier_prunes == 0
+            and generation.unique_series <= len(series)
+        )
+        return series, width_complete
 
     def _generate_root_seed(
         self,
@@ -515,7 +651,9 @@ class SeriesSearcher:
 
     @staticmethod
     def _terminal_score(
-        result: SeriesResult, mover: chess.Color, ply_from_root: int
+        result: SeriesResult | _NativeSeriesReference,
+        mover: chess.Color,
+        ply_from_root: int,
     ) -> int | None:
         if result.outcome == Outcome.CHECKMATE:
             winner = mover if result.ended_by_check else not mover
@@ -530,7 +668,8 @@ class SeriesSearcher:
 
     @staticmethod
     def _terminal_proof_bounds(
-        result: SeriesResult, mover: chess.Color
+        result: SeriesResult | _NativeSeriesReference,
+        mover: chess.Color,
     ) -> tuple[int, int]:
         if result.outcome == Outcome.CHECKMATE:
             winner = mover if result.ended_by_check else not mover
@@ -545,25 +684,38 @@ class SeriesSearcher:
         mover: chess.Color,
         bounds: list[tuple[int, int]],
         *,
-        total_series: int,
+        all_branches_visited: bool,
     ) -> tuple[int, int]:
         """Combines proof intervals without treating heuristic zero as draw.
 
         ``(-1, 1)`` means Black win through White win are all still possible.
-        Unexamined alpha-beta siblings retain that interval. This lets a
-        parent prove, for example, that one exact draw plus only draw-or-loss
-        alternatives is game-theoretically drawn.
+        One unknown sentinel covers every absent branch, whether it was
+        skipped by alpha-beta or omitted by selective frontier/final capping.
+        Max/min interval combination is idempotent, and an existential mate
+        for the mover remains provable in the presence of that sentinel.
         """
 
         if not bounds:
             return UNKNOWN_PROOF_BOUNDS
-        candidates = bounds + [UNKNOWN_PROOF_BOUNDS] * (total_series - len(bounds))
+        candidates = list(bounds)
+        if not all_branches_visited:
+            candidates.append(UNKNOWN_PROOF_BOUNDS)
         if mover == chess.WHITE:
             return max(item[0] for item in candidates), max(
                 item[1] for item in candidates
             )
         return min(item[0] for item in candidates), min(
             item[1] for item in candidates
+        )
+
+    @staticmethod
+    def _materialize_series(
+        result: SeriesResult | _NativeSeriesReference,
+    ) -> SeriesResult:
+        return (
+            result.materialize()
+            if isinstance(result, _NativeSeriesReference)
+            else result
         )
 
     def _static_series_score(
@@ -604,6 +756,68 @@ class SeriesSearcher:
             return ordered[:cap]
         return ordered
 
+    def _apply_root_promotion_mate_lane(
+        self,
+        state: ProgressiveState,
+        series: _GeneratedSeriesList,
+        *,
+        ply_from_root: int,
+        required_prefix: tuple[str, ...],
+        reserve_positions: int,
+    ) -> _GeneratedSeriesList:
+        """Runs the costly lane only when the retained root has no legal mate."""
+
+        if ply_from_root != 1:
+            return series
+        if self._promotion_mate_checked:
+            if self._promotion_mate_series is None:
+                return series
+            return _GeneratedSeriesList(
+                [self._promotion_mate_series],
+                width_complete=False,
+            )
+        if (
+            self.limits.max_series_per_node is None
+            or not promotion_mate_eligible(
+                state,
+                required_prefix=required_prefix,
+            )
+        ):
+            # Preserve native series references as genuinely lazy on the
+            # overwhelming ordinary-position path. Metadata scanning below
+            # materializes a reference, so do it only when the specialized
+            # lane could actually run.
+            self._promotion_mate_checked = True
+            return series
+
+        for candidate in series:
+            if (
+                candidate.outcome != Outcome.CHECKMATE
+                or not candidate.ended_by_check
+            ):
+                continue
+            try:
+                replayed = play_series(state, candidate.moves)
+            except ValueError:
+                continue
+            if replayed.outcome == Outcome.CHECKMATE and replayed.ended_by_check:
+                # Ordinary bounded generation already retained an authoritative
+                # current-series mate. The specialized lane cannot improve it.
+                self._promotion_mate_checked = True
+                return series
+
+        promotion_mate = self._root_promotion_mate(
+            state,
+            required_prefix=required_prefix,
+            reserve_positions=reserve_positions,
+        )
+        if promotion_mate is None:
+            return series
+        return _GeneratedSeriesList(
+            [promotion_mate],
+            width_complete=False,
+        )
+
     def _ordered_generated(
         self,
         state: ProgressiveState,
@@ -612,7 +826,7 @@ class SeriesSearcher:
         required_prefix: tuple[str, ...] = (),
         reserve_positions: int = 0,
         preferred_series: str | None = None,
-    ) -> list[SeriesResult]:
+    ) -> _GeneratedSeriesList:
         """Returns one deterministic capped frontier with bounded reuse.
 
         The ply is part of the key because terminal mate-distance ordering is
@@ -627,43 +841,90 @@ class SeriesSearcher:
         if cached is not None:
             self._series_generation_cache.move_to_end(key)
             self.stats.series_generation_cache_hits += 1
-            ordered = list(cached)
+            ordered: list[SeriesResult | _NativeSeriesReference] = (
+                cached.collection.references()
+                if isinstance(cached.collection, _NativeSeriesBatch)
+                else list(cached.collection)
+            )
             self._prefer_series(ordered, preferred_series)
-            return ordered
-
-        ordered = self._ordered(
-            self._generate(
+            return self._apply_root_promotion_mate_lane(
                 state,
+                _GeneratedSeriesList(
+                    ordered,
+                    width_complete=cached.width_complete,
+                ),
                 ply_from_root=ply_from_root,
                 required_prefix=required_prefix,
                 reserve_positions=reserve_positions,
-            ),
-            state.board.turn,
-            ply_from_root,
+            )
+
+        generated, width_complete = self._generate(
+            state,
+            ply_from_root=ply_from_root,
+            required_prefix=required_prefix,
+            reserve_positions=reserve_positions,
         )
+        if isinstance(generated, _NativeSeriesBatch):
+            ordered = generated.references()
+            collection: tuple[SeriesResult, ...] | _NativeSeriesBatch = generated
+        else:
+            generated_count = len(generated)
+            ordered = self._ordered(
+                generated,
+                state.board.turn,
+                ply_from_root,
+            )
+            width_complete = width_complete and len(ordered) == generated_count
+            collection = tuple(ordered)
         weight = max(1, len(ordered))
         if weight > SERIES_GENERATION_CACHE_CAPACITY:
-            return ordered
+            self._prefer_series(ordered, preferred_series)
+            return self._apply_root_promotion_mate_lane(
+                state,
+                _GeneratedSeriesList(
+                    ordered,
+                    width_complete=width_complete,
+                ),
+                ply_from_root=ply_from_root,
+                required_prefix=required_prefix,
+                reserve_positions=reserve_positions,
+            )
         while (
             self._series_generation_cache
             and self._series_generation_cache_weight + weight
             > SERIES_GENERATION_CACHE_CAPACITY
         ):
             _, evicted = self._series_generation_cache.popitem(last=False)
-            self._series_generation_cache_weight -= max(1, len(evicted))
+            self._series_generation_cache_weight -= max(
+                1,
+                len(evicted.collection),
+            )
             self.stats.series_generation_cache_evictions += 1
-        self._series_generation_cache[key] = tuple(ordered)
+        self._series_generation_cache[key] = _SeriesCacheEntry(
+            collection,
+            width_complete,
+        )
         self._series_generation_cache_weight += weight
         self.stats.series_generation_cache_peak = max(
             self.stats.series_generation_cache_peak,
             self._series_generation_cache_weight,
         )
         self._prefer_series(ordered, preferred_series)
-        return ordered
+        return self._apply_root_promotion_mate_lane(
+            state,
+            _GeneratedSeriesList(
+                ordered,
+                width_complete=width_complete,
+            ),
+            ply_from_root=ply_from_root,
+            required_prefix=required_prefix,
+            reserve_positions=reserve_positions,
+        )
 
     @staticmethod
     def _prefer_series(
-        series: list[SeriesResult], preferred_series: str | None
+        series: list[SeriesResult | _NativeSeriesReference],
+        preferred_series: str | None,
     ) -> None:
         """Moves an already-legal PV/hash series to the front in-place.
 
@@ -722,11 +983,13 @@ class SeriesSearcher:
                 else None
             ),
         )
+        width_complete = series.width_complete
         if not series:
             return 0, (), UNKNOWN_PROOF_BOUNDS
 
         best_score = -MATE_SCORE * 2 if mover == chess.WHITE else MATE_SCORE * 2
-        best_pv: tuple[SeriesResult, ...] = ()
+        best_candidate: SeriesResult | _NativeSeriesReference | None = None
+        best_child_pv: tuple[SeriesResult, ...] = ()
         child_bounds: list[tuple[int, int]] = []
         for result in series:
             self._check_deadline()
@@ -751,7 +1014,8 @@ class SeriesSearcher:
                 and score < best_score
             ):
                 best_score = score
-                best_pv = (result,) + child_pv
+                best_candidate = result
+                best_child_pv = child_pv
 
             immediate_mate_score = MATE_SCORE - (ply_from_root + 1)
             if (
@@ -773,6 +1037,12 @@ class SeriesSearcher:
                 self.stats.alpha_beta_cutoffs += 1
                 break
 
+        best_pv = (
+            (self._materialize_series(best_candidate),) + best_child_pv
+            if best_candidate is not None
+            else ()
+        )
+
         if best_score <= original_alpha:
             bound = Bound.UPPER
         elif best_score >= original_beta:
@@ -782,7 +1052,9 @@ class SeriesSearcher:
         proof_bounds = self._combine_proof_bounds(
             mover,
             child_bounds,
-            total_series=len(series),
+            all_branches_visited=(
+                width_complete and len(child_bounds) == len(series)
+            ),
         )
         replacement = _TTEntry(depth, best_score, bound, best_pv, proof_bounds)
         if (
@@ -822,6 +1094,7 @@ class SeriesSearcher:
                 reserve_positions=reserve_positions,
                 preferred_series=self._preferred_root_series,
             )
+            width_complete = series.width_complete
         except _WorkLimit as error:
             # The ordinary frontier exhausted only the non-reserved part of
             # the deterministic budget. Spend the remaining at-most-one-
@@ -874,7 +1147,7 @@ class SeriesSearcher:
                 raise _RootInterrupted(
                     tuple(scored),
                     error,
-                    series[0],
+                    self._materialize_series(series[0]),
                 ) from error
             except _AdjudicationPending as error:
                 # A child reaching the quiet-series threshold can make the
@@ -883,9 +1156,18 @@ class SeriesSearcher:
                 # the engine-play liveness path without assigning the child a
                 # draw or heuristic minimax score.
                 self._root_scores_complete = False
-                raise _RootAdjudicationPending(series[0]) from error
+                raise _RootAdjudicationPending(
+                    self._materialize_series(series[0])
+                ) from error
             if score_is_exact:
-                scored.append(ScoredSeries(result, score, child_pv, proof_bounds))
+                scored.append(
+                    ScoredSeries(
+                        self._materialize_series(result),
+                        score,
+                        child_pv,
+                        proof_bounds,
+                    )
+                )
             else:
                 self.stats.root_bound_candidates += 1
 
@@ -901,6 +1183,9 @@ class SeriesSearcher:
                 and score == -MATE_SCORE + 1
             ):
                 break
+        # This flag intentionally means every retained root candidate has an
+        # exact score. ``exact_width`` separately reports whether the retained
+        # frontier contains every legal branch.
         self._root_scores_complete = len(scored) == len(series)
         scored.sort(
             key=lambda item: (
@@ -915,7 +1200,9 @@ class SeriesSearcher:
         proof_bounds = self._combine_proof_bounds(
             mover,
             [item.proof_bounds for item in scored],
-            total_series=len(series),
+            all_branches_visited=(
+                width_complete and len(scored) == len(series)
+            ),
         )
         return (
             best.score,

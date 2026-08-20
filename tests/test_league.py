@@ -373,6 +373,13 @@ def test_root_manual_adjudication_is_inconclusive_not_engine_failure() -> None:
     assert record.series_played == 0
     assert len(record.trace) == 1
     assert record.trace[0]["played"] is False
+    assert record.trace[0]["promotion_mate_positions"] == 0
+    assert record.trace[0]["promotion_mate_setup_states"] == 0
+    assert record.trace[0]["promotion_mate_candidates"] == 0
+    assert record.trace[0]["promotion_mate_completion_probes"] == 0
+    assert record.trace[0]["promotion_mate_mates"] == 0
+    assert record.trace[0]["promotion_mate_limit_hits"] == 0
+    assert record.trace[0]["promotion_mate_replay_rejects"] == 0
 
     rows = _pair_rows(
         first.profile_id,
@@ -386,6 +393,74 @@ def test_root_manual_adjudication_is_inconclusive_not_engine_failure() -> None:
     assert evidence.completed_pairs == 0
     assert evidence.candidate_failures == 0
     assert evidence.worker_failures == 0
+
+
+def test_league_trace_preserves_nonzero_promotion_mate_evidence(monkeypatch) -> None:
+    first, second = _profiles()
+    opening = league_module.OpeningCase(
+        case_id="promotion-mate-trace",
+        fen=(
+            "bnq1nr2/p1pp1pk1/8/4PP2/1P2P1p1/8/"
+            "P1P2KP1/BNbBN2r w - - 0 1"
+        ),
+        series_number=7,
+        source="trace serialization fixture",
+    )
+    job = league_module.GameJob(
+        job_key="promotion-mate-trace",
+        run_id="fixture",
+        generation=1,
+        stage="promotion-g1",
+        opening_index=0,
+        opening=opening,
+        seed=1,
+        white_profile=first,
+        black_profile=second,
+        search_depth=2,
+        max_series_per_node=32,
+        max_generation_positions=250_000,
+        max_game_work_positions=None,
+        emergency_max_series=None,
+    )
+    selected = play_series(
+        opening.state(),
+        ("e1f3", "f3d4", "e5e6", "e6e7", "e7f8r", "f8h8", "d4e6"),
+    )
+    stats = SimpleNamespace(
+        work_positions=31,
+        nodes=2,
+        root_bound_candidates=0,
+        promotion_mate_positions=23,
+        promotion_mate_setup_states=17,
+        promotion_mate_candidates=11,
+        promotion_mate_completion_probes=7,
+        promotion_mate_mates=1,
+        promotion_mate_limit_hits=2,
+        promotion_mate_replay_rejects=3,
+    )
+    result = SimpleNamespace(
+        best_series=selected,
+        score=999_999,
+        completed_depth=2,
+        exact_width=False,
+        root_scores_complete=True,
+        work_limit_reached=False,
+        timed_out=False,
+        proof="white",
+        adjudication_status=None,
+        stats=stats,
+    )
+    monkeypatch.setattr(league_module, "analyze", lambda *args, **kwargs: result)
+
+    record = league_module._play_game(job)
+    trace = record.trace[0]
+    assert trace["promotion_mate_positions"] == 23
+    assert trace["promotion_mate_setup_states"] == 17
+    assert trace["promotion_mate_candidates"] == 11
+    assert trace["promotion_mate_completion_probes"] == 7
+    assert trace["promotion_mate_mates"] == 1
+    assert trace["promotion_mate_limit_hits"] == 2
+    assert trace["promotion_mate_replay_rejects"] == 3
 
 
 def test_child_manual_fallback_is_inconclusive_before_move_is_played() -> None:

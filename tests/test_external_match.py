@@ -58,6 +58,13 @@ def _local_result(state: ProgressiveState, moves: tuple[str, ...]):
         work_positions=7,
         generation_positions=7,
         nodes=3,
+        promotion_mate_positions=5,
+        promotion_mate_setup_states=6,
+        promotion_mate_candidates=4,
+        promotion_mate_completion_probes=3,
+        promotion_mate_mates=1,
+        promotion_mate_limit_hits=0,
+        promotion_mate_replay_rejects=2,
     )
     return SimpleNamespace(
         best_series=selected,
@@ -126,6 +133,14 @@ def test_color_swapped_pair_groups_real_legal_results(tmp_path: Path) -> None:
     assert pairs[0]["result"] == "draw"
     assert records[0].trace[0]["request_script"].endswith("q\n")
     assert records[0].trace[0]["stdout"].startswith("Bucephalus v1.0.0")
+    local_trace = records[1].trace[0]
+    assert local_trace["promotion_mate_positions"] == 5
+    assert local_trace["promotion_mate_setup_states"] == 6
+    assert local_trace["promotion_mate_candidates"] == 4
+    assert local_trace["promotion_mate_completion_probes"] == 3
+    assert local_trace["promotion_mate_mates"] == 1
+    assert local_trace["promotion_mate_limit_hits"] == 0
+    assert local_trace["promotion_mate_replay_rejects"] == 2
 
 
 def test_external_timeout_is_incomplete_not_a_loss(tmp_path: Path) -> None:

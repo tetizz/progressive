@@ -585,6 +585,27 @@ def _play_game(job: GameJob) -> GameRecord:
             "series_generation_positions": int(
                 getattr(stats, "series_generation_positions", 0)
             ),
+            "promotion_mate_positions": int(
+                getattr(stats, "promotion_mate_positions", 0)
+            ),
+            "promotion_mate_setup_states": int(
+                getattr(stats, "promotion_mate_setup_states", 0)
+            ),
+            "promotion_mate_candidates": int(
+                getattr(stats, "promotion_mate_candidates", 0)
+            ),
+            "promotion_mate_completion_probes": int(
+                getattr(stats, "promotion_mate_completion_probes", 0)
+            ),
+            "promotion_mate_mates": int(
+                getattr(stats, "promotion_mate_mates", 0)
+            ),
+            "promotion_mate_limit_hits": int(
+                getattr(stats, "promotion_mate_limit_hits", 0)
+            ),
+            "promotion_mate_replay_rejects": int(
+                getattr(stats, "promotion_mate_replay_rejects", 0)
+            ),
             "evaluation_reach_positions": int(
                 getattr(stats, "evaluation_reach_positions", 0)
             ),

@@ -945,7 +945,7 @@ def _apply_native_generation_stats(
         )
 
 
-def _native_complete_series_generation(
+def _native_complete_series_call(
     state: ProgressiveState,
     counters: GenerationStats,
     *,
@@ -955,8 +955,9 @@ def _native_complete_series_generation(
     frontier_score: FrontierScore | None,
     native_final_score: NativeFinalSeriesScoreConfig | None,
     should_stop: Callable[[], bool] | None,
-) -> list[SeriesResult] | None:
-    """Uses the all-native frontier kernel when its exact contract applies."""
+    symbols: tuple[str, ...],
+) -> tuple[object, tuple[object, ...]] | None:
+    """Builds one strictly gated source-matched native generation call."""
 
     if (
         state.series_number == 1
@@ -976,7 +977,7 @@ def _native_complete_series_generation(
     from . import evaluation
 
     native = evaluation._native_eval
-    if native is None or not hasattr(native, "generate_complete_series"):
+    if native is None or any(not hasattr(native, symbol) for symbol in symbols):
         return None
     global _NATIVE_GENERATION_IDENTITY_INITIALIZED
     global _NATIVE_GENERATION_SOURCE_IDENTITY
@@ -1072,29 +1073,61 @@ def _native_complete_series_generation(
             final_weights.boundary_check,
         )
 
+    return native, (
+        state.board.pawns,
+        state.board.knights,
+        state.board.bishops,
+        state.board.rooks,
+        state.board.queens,
+        state.board.kings,
+        state.board.occupied_co[chess.WHITE],
+        state.board.occupied_co[chess.BLACK],
+        state.board.promoted,
+        state.board.clean_castling_rights(),
+        state.board.turn,
+        state.board.halfmove_clock,
+        state.board.fullmove_number,
+        state.series_number,
+        state.quiet_series,
+        state.ep_targets,
+        required_prefix,
+        max_frontier_states,
+        max_positions,
+        native_weights,
+        native_final,
+    )
+
+
+def _native_complete_series_generation(
+    state: ProgressiveState,
+    counters: GenerationStats,
+    *,
+    required_prefix: tuple[str, ...],
+    max_frontier_states: int | None,
+    max_positions: int | None,
+    frontier_score: FrontierScore | None,
+    native_final_score: NativeFinalSeriesScoreConfig | None,
+    should_stop: Callable[[], bool] | None,
+) -> list[SeriesResult] | None:
+    """Uses the all-native frontier kernel when its exact contract applies."""
+
+    call = _native_complete_series_call(
+        state,
+        counters,
+        required_prefix=required_prefix,
+        max_frontier_states=max_frontier_states,
+        max_positions=max_positions,
+        frontier_score=frontier_score,
+        native_final_score=native_final_score,
+        should_stop=should_stop,
+        symbols=("generate_complete_series",),
+    )
+    if call is None:
+        return None
+    native, arguments = call
     try:
-        status, _message, raw_stats, raw_series = native.generate_complete_series(
-            state.board.pawns,
-            state.board.knights,
-            state.board.bishops,
-            state.board.rooks,
-            state.board.queens,
-            state.board.kings,
-            state.board.occupied_co[chess.WHITE],
-            state.board.occupied_co[chess.BLACK],
-            state.board.promoted,
-            state.board.clean_castling_rights(),
-            state.board.turn,
-            state.board.halfmove_clock,
-            state.board.fullmove_number,
-            state.series_number,
-            state.quiet_series,
-            state.ep_targets,
-            required_prefix,
-            max_frontier_states,
-            max_positions,
-            native_weights,
-            native_final,
+        status, _message, raw_stats, raw_series = (
+            native.generate_complete_series(*arguments)
         )
     except (OverflowError, TypeError, ValueError):
         return None
@@ -1122,6 +1155,197 @@ def _native_complete_series_generation(
         return None
     _apply_native_generation_stats(counters, tuple(raw_stats))
     return materialized
+
+
+class _NativeSeriesReference:
+    """One cheap path whose trusted final state is decoded only on demand."""
+
+    __slots__ = (
+        "_capsule",
+        "_decoded",
+        "_index",
+        "_materialized",
+        "_native",
+        "_root",
+        "moves",
+        "transposition_count",
+    )
+
+    def __init__(
+        self,
+        batch: "_NativeSeriesBatch",
+        root: ProgressiveState,
+        index: int,
+        moves: tuple[str, ...],
+        transposition_count: int,
+    ) -> None:
+        self._native = batch._native  # noqa: SLF001
+        self._capsule = batch._capsule  # noqa: SLF001
+        self._root = root
+        self._index = index
+        self.moves = moves
+        self.transposition_count = transposition_count
+        self._decoded: tuple[ProgressiveState, Outcome | None, bool] | None = None
+        self._materialized: SeriesResult | None = None
+
+    @property
+    def machine_notation(self) -> str:
+        return "/".join(self.moves)
+
+    def _decode(self) -> tuple[ProgressiveState, Outcome | None, bool]:
+        if self._decoded is not None:
+            return self._decoded
+        raw = tuple(
+            self._native.complete_series_candidate(
+                self._capsule,
+                self._index,
+            )
+        )
+        if len(raw) != 18:
+            raise RuntimeError("native complete-series candidate shape mismatch")
+        board = chess.Board(None)
+        board.pawns = int(raw[0])
+        board.knights = int(raw[1])
+        board.bishops = int(raw[2])
+        board.rooks = int(raw[3])
+        board.queens = int(raw[4])
+        board.kings = int(raw[5])
+        board.occupied_co[chess.WHITE] = int(raw[6])
+        board.occupied_co[chess.BLACK] = int(raw[7])
+        board.occupied = board.occupied_co[chess.WHITE] | board.occupied_co[chess.BLACK]
+        board.promoted = int(raw[8])
+        board.castling_rights = int(raw[9])
+        board.turn = bool(raw[10])
+        board.halfmove_clock = int(raw[11])
+        board.fullmove_number = int(raw[12])
+        final_state = ProgressiveState(
+            board,
+            series_number=int(raw[13]),
+            quiet_series=int(raw[14]),
+            ep_targets=tuple(int(square) for square in raw[15]),
+        )
+        outcomes: tuple[Outcome | None, ...] = (
+            None,
+            Outcome.CHECKMATE,
+            Outcome.STALEMATE,
+            Outcome.TEN_SERIES_DRAW,
+        )
+        outcome_code = int(raw[16])
+        if not 0 <= outcome_code < len(outcomes):
+            raise RuntimeError("native complete-series outcome is invalid")
+        self._decoded = final_state, outcomes[outcome_code], bool(raw[17])
+        return self._decoded
+
+    @property
+    def final_state(self) -> ProgressiveState:
+        return self._decode()[0]
+
+    @property
+    def outcome(self) -> Outcome | None:
+        return self._decode()[1]
+
+    @property
+    def ended_by_check(self) -> bool:
+        return self._decode()[2]
+
+    def materialize(self) -> SeriesResult:
+        if self._materialized is None:
+            self._materialized = play_series(
+                self._root,
+                self.moves,
+            ).with_transposition_count(self.transposition_count)
+        return self._materialized
+
+
+class _NativeSeriesBatch:
+    """Opaque native storage plus lightweight deterministically ordered paths."""
+
+    __slots__ = ("_capsule", "_native", "_references")
+
+    def __init__(
+        self,
+        native: object,
+        capsule: object,
+        root: ProgressiveState,
+        raw_series: object,
+    ) -> None:
+        self._native = native
+        self._capsule = capsule
+        references: list[_NativeSeriesReference] = []
+        for index, item in enumerate(raw_series):
+            moves, count = item
+            canonical_moves = tuple(moves)
+            if any(type(move) is not str for move in canonical_moves):
+                raise TypeError("native complete-series move is not an exact string")
+            canonical_count = int(count)
+            if canonical_count < 1:
+                raise ValueError("native complete-series count must be positive")
+            references.append(
+                _NativeSeriesReference(
+                    self,
+                    root,
+                    index,
+                    canonical_moves,
+                    canonical_count,
+                )
+            )
+        self._references = tuple(references)
+
+    def __len__(self) -> int:
+        return len(self._references)
+
+    def references(self) -> list[_NativeSeriesReference]:
+        return list(self._references)
+
+
+def _native_complete_series_batch(
+    state: ProgressiveState,
+    counters: GenerationStats,
+    *,
+    required_prefix: tuple[str, ...],
+    max_frontier_states: int | None,
+    max_positions: int | None,
+    frontier_score: FrontierScore | None,
+    native_final_score: NativeFinalSeriesScoreConfig | None,
+    should_stop: Callable[[], bool] | None,
+) -> _NativeSeriesBatch | None:
+    """Prepares a native batch without replaying any retained series."""
+
+    call = _native_complete_series_call(
+        state,
+        counters,
+        required_prefix=required_prefix,
+        max_frontier_states=max_frontier_states,
+        max_positions=max_positions,
+        frontier_score=frontier_score,
+        native_final_score=native_final_score,
+        should_stop=should_stop,
+        symbols=("prepare_complete_series", "complete_series_candidate"),
+    )
+    if call is None:
+        return None
+    native, arguments = call
+    try:
+        status, _message, raw_stats, raw_series, capsule = (
+            native.prepare_complete_series(*arguments)
+        )
+    except (OverflowError, TypeError, ValueError):
+        return None
+
+    status = int(status)
+    if status in {2, 3}:
+        return None
+    if status == 1:
+        _apply_native_generation_stats(counters, tuple(raw_stats))
+        raise GenerationWorkLimit
+    if status != 0:
+        raise RuntimeError(f"unknown native complete-series status {status}")
+    try:
+        batch = _NativeSeriesBatch(native, capsule, state, raw_series)
+    except (TypeError, ValueError):
+        return None
+    _apply_native_generation_stats(counters, tuple(raw_stats))
+    return batch
 
 
 def generate_series(

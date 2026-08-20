@@ -180,6 +180,43 @@ workers. Its report records 62.5576591 seconds and 1.55057 completed
 games/second. Those numbers describe aggregate pool throughput across the 97
 conclusive games, not the latency of an individual game.
 
+### v0.9 N2 and natural-selection outcome
+
+The v0.9 evidence uses engine fingerprint `806aa0d679f6d1ef` and the
+source-matched native identity
+`e7d36c5fc755cca2ae8877f4e73d8f9aa161a405a4c91361a6866d2f6463ca4f`.
+The exact-native gate passed 374 tests; the forced fallback run passed 302 and
+skipped 72 native-only checks. The searched tactical gate found all five
+published mates, while separate S9 and S10 regressions proved that the same
+early checks still end those longer series with two unused moves. These gates
+establish rules/search parity, not general strength.
+
+Completed run `70e97c0e-596f-4cb3-b4a9-f5024e42ac7d` used seed `20260826`, a
+population of 64, two generations, depth 2, complete-series cap 32, and 250,000
+deterministic work positions per search. Both finalist matches completed 25
+conclusive color-swapped pairs:
+
+| Generation | Finalist | Pair W/D/L | Pair score | Gate decision |
+| --- | --- | ---: | ---: | --- |
+| 1 | `spc-5db5dfc40c211826` | `6/16/3` | 0.560 | Rejected: only 6/23 required wins and three losses |
+| 2 | `spc-71dde5190fddd22a` | `4/18/3` | 0.520 | Rejected: only 4/23 required wins and three losses |
+
+Three fresh 100-game reports then tested distinct v0.9 challengers against the
+same baseline. Game W/D/L counts below exclude incompletes; pair counts are
+likewise conclusive-only:
+
+| Candidate and report | Game W/D/L | Incomplete games | Pair W/D/L | Incomplete pairs |
+| --- | ---: | ---: | ---: | ---: |
+| self-play fit `spc-19916d80f2a58da3` ([report](../benchmarks/results/selfplay-fresh-seeded-100-v0.9.0.json)) | `50/0/49` | 1 | `3/44/2` | 1 |
+| prior v0.8 runner-up `spc-d14d1dae18b54c23` ([report](../benchmarks/results/league-standout-fresh-seeded-100-v0.9.0.json)) | `47/2/48` | 3 | `4/41/3` | 2 |
+| v0.9 generation-one finalist `spc-5db5dfc40c211826` ([report](../benchmarks/results/league-generation1-standout-fresh-seeded-100-v0.9.0.json)) | `47/4/48` | 1 | `2/44/3` | 1 |
+
+The independent 100-game harness cannot promote a profile, and every candidate
+also recorded conclusive pair losses. No v0.9 result clears the league's strict
+promotion contract. Baseline `spc-68942034c41b4cc4` remains champion. These are
+fixed-suite outcomes, not calibrated Elo, not a comparison with orthodox
+Stockfish, and not evidence of Stockfish-level strength.
+
 Future neutral suites are generated through the public rules API, carry exact
 from-start replay histories, and derive their version from their content. The
 match harness rejects a reused suite ID with changed metadata or PFEN, and each

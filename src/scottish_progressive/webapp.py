@@ -641,6 +641,17 @@ def _analysis_payload(
             "alpha_beta_cutoffs": result.stats.alpha_beta_cutoffs,
             "branch_caps": result.stats.branch_caps,
             "generation_positions": result.stats.generation_positions,
+            "promotion_mate_positions": result.stats.promotion_mate_positions,
+            "promotion_mate_setup_states": result.stats.promotion_mate_setup_states,
+            "promotion_mate_candidates": result.stats.promotion_mate_candidates,
+            "promotion_mate_completion_probes": (
+                result.stats.promotion_mate_completion_probes
+            ),
+            "promotion_mate_limit_hits": result.stats.promotion_mate_limit_hits,
+            "promotion_mate_replay_rejects": (
+                result.stats.promotion_mate_replay_rejects
+            ),
+            "promotion_mate_mates": result.stats.promotion_mate_mates,
             "frontier_prunes": result.stats.frontier_prunes,
             "frontier_states_pruned": result.stats.frontier_states_pruned,
             "frontier_paths_pruned": result.stats.frontier_paths_pruned,
