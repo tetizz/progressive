@@ -1,7 +1,7 @@
 {
-  "generated_at": "2026-08-20T14:57:27+00:00",
-  "engine_version": "spc-0.6.0",
-  "source_fingerprint": "d069ce0b03562041",
+  "generated_at": "2026-08-20T17:44:23+00:00",
+  "engine_version": "spc-0.7.0",
+  "source_fingerprint": "1b7cfe378fa646c6",
   "ruleset_version": "scottish-modern-common-v1",
   "reply_depth": 1,
   "total_series_horizon": 2,
@@ -13,7 +13,7 @@
   "initial_raw_series": 20,
   "initial_unique_series": 20,
   "total_nodes": 5362,
-  "total_elapsed_seconds": 14.704713500002981,
+  "total_elapsed_seconds": 12.674176300002728,
   "host": "Windows 11 / Python 3.14.4",
   "results": [
     {
@@ -34,7 +34,7 @@
       "raw_black_series": 445,
       "unique_black_series": 268,
       "intra_series_transpositions": 177,
-      "elapsed_seconds": 0.7456721999915317
+      "elapsed_seconds": 0.6479088999913074
     },
     {
       "rank": 2,
@@ -54,7 +54,7 @@
       "raw_black_series": 445,
       "unique_black_series": 268,
       "intra_series_transpositions": 177,
-      "elapsed_seconds": 0.7362314999918453
+      "elapsed_seconds": 0.624935200001346
     },
     {
       "rank": 3,
@@ -74,7 +74,7 @@
       "raw_black_series": 445,
       "unique_black_series": 268,
       "intra_series_transpositions": 177,
-      "elapsed_seconds": 0.7599209000036353
+      "elapsed_seconds": 0.6566260999970837
     },
     {
       "rank": 4,
@@ -94,7 +94,7 @@
       "raw_black_series": 446,
       "unique_black_series": 269,
       "intra_series_transpositions": 177,
-      "elapsed_seconds": 0.684803500000271
+      "elapsed_seconds": 0.5781615000014426
     },
     {
       "rank": 5,
@@ -114,7 +114,7 @@
       "raw_black_series": 445,
       "unique_black_series": 268,
       "intra_series_transpositions": 177,
-      "elapsed_seconds": 0.7357266000035452
+      "elapsed_seconds": 0.6299987000093097
     },
     {
       "rank": 6,
@@ -134,7 +134,7 @@
       "raw_black_series": 445,
       "unique_black_series": 268,
       "intra_series_transpositions": 177,
-      "elapsed_seconds": 0.6971008000109578
+      "elapsed_seconds": 0.5904461000027368
     },
     {
       "rank": 7,
@@ -154,7 +154,7 @@
       "raw_black_series": 446,
       "unique_black_series": 269,
       "intra_series_transpositions": 177,
-      "elapsed_seconds": 0.7056374000094365
+      "elapsed_seconds": 0.6090447000024142
     },
     {
       "rank": 8,
@@ -174,7 +174,7 @@
       "raw_black_series": 444,
       "unique_black_series": 267,
       "intra_series_transpositions": 177,
-      "elapsed_seconds": 0.7760980000020936
+      "elapsed_seconds": 0.6588126999995438
     },
     {
       "rank": 9,
@@ -194,7 +194,7 @@
       "raw_black_series": 445,
       "unique_black_series": 268,
       "intra_series_transpositions": 177,
-      "elapsed_seconds": 0.7356927999935579
+      "elapsed_seconds": 0.6288024000095902
     },
     {
       "rank": 10,
@@ -214,7 +214,7 @@
       "raw_black_series": 445,
       "unique_black_series": 268,
       "intra_series_transpositions": 177,
-      "elapsed_seconds": 0.7651022999925772
+      "elapsed_seconds": 0.6669218000024557
     },
     {
       "rank": 11,
@@ -234,7 +234,7 @@
       "raw_black_series": 445,
       "unique_black_series": 268,
       "intra_series_transpositions": 177,
-      "elapsed_seconds": 0.7835557000071276
+      "elapsed_seconds": 0.6862812000035774
     },
     {
       "rank": 12,
@@ -254,7 +254,7 @@
       "raw_black_series": 445,
       "unique_black_series": 268,
       "intra_series_transpositions": 177,
-      "elapsed_seconds": 0.7793480999971507
+      "elapsed_seconds": 0.697597999998834
     },
     {
       "rank": 13,
@@ -274,7 +274,7 @@
       "raw_black_series": 445,
       "unique_black_series": 268,
       "intra_series_transpositions": 177,
-      "elapsed_seconds": 0.7940298000030452
+      "elapsed_seconds": 0.6945598000020254
     },
     {
       "rank": 14,
@@ -294,7 +294,7 @@
       "raw_black_series": 444,
       "unique_black_series": 267,
       "intra_series_transpositions": 177,
-      "elapsed_seconds": 0.7306721999921137
+      "elapsed_seconds": 0.6442867000005208
     },
     {
       "rank": 15,
@@ -314,7 +314,7 @@
       "raw_black_series": 445,
       "unique_black_series": 268,
       "intra_series_transpositions": 177,
-      "elapsed_seconds": 0.778349200001685
+      "elapsed_seconds": 0.6631045999965863
     },
     {
       "rank": 16,
@@ -334,7 +334,7 @@
       "raw_black_series": 445,
       "unique_black_series": 268,
       "intra_series_transpositions": 177,
-      "elapsed_seconds": 0.6354729000013322
+      "elapsed_seconds": 0.5497515000024578
     },
     {
       "rank": 17,
@@ -354,7 +354,7 @@
       "raw_black_series": 445,
       "unique_black_series": 268,
       "intra_series_transpositions": 177,
-      "elapsed_seconds": 0.6973073999979533
+      "elapsed_seconds": 0.6026585999934468
     },
     {
       "rank": 18,
@@ -374,7 +374,7 @@
       "raw_black_series": 446,
       "unique_black_series": 269,
       "intra_series_transpositions": 177,
-      "elapsed_seconds": 0.6683538999932352
+      "elapsed_seconds": 0.5702887999941595
     },
     {
       "rank": 19,
@@ -394,7 +394,7 @@
       "raw_black_series": 445,
       "unique_black_series": 268,
       "intra_series_transpositions": 177,
-      "elapsed_seconds": 0.7490415000065695
+      "elapsed_seconds": 0.6325513999909163
     },
     {
       "rank": 20,
@@ -414,7 +414,7 @@
       "raw_black_series": 446,
       "unique_black_series": 269,
       "intra_series_transpositions": 177,
-      "elapsed_seconds": 0.7465968000033172
+      "elapsed_seconds": 0.6414376000029733
     }
   ],
   "method": "Each legal White first move is fixed, then a deterministic series-level minimax searches Black's replies. One ply is one complete series. Leaf values are progressive-specific heuristics.",

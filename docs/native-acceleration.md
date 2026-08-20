@@ -1,4 +1,4 @@
-# Native ordering acceleration
+# Native acceleration
 
 The first native milestone accelerates the exact ordering evaluator used twice
 on the serious search path: while bounded complete-series frontiers are ranked
@@ -10,6 +10,13 @@ This boundary was selected from a profile of the actual S1/S3/S4 search. On the
 published S4 position, ordering evaluation accounted for about 0.86 seconds of
 a 2.11-second profiled run. Moving only the final `sorted()` call would not have
 removed that work.
+
+The v0.7 milestone extends the same source-matched C++20 module with exact legal
+micro-move generation, post-move state transitions, check/capture/pawn flags,
+ordinary castling, promotion, and Scottish multi-target en passant. Python still
+owns complete-series orchestration, SAN, proof-aware search, training, and the
+web API. Unsupported Chess960 boards and any stale or missing native module use
+the retained Python oracle.
 
 ## Correctness boundary
 
@@ -23,11 +30,13 @@ The compiled implementation exactly mirrors the integer terms in
 - boundary check and profile-specific weights;
 - Python-compatible floor division and ties-to-even rounding.
 
-The Python complete-series generator remains authoritative for Scottish
-multi-en-passant state, check truncation, repeated promotion-piece moves,
-castling, progressive stalemate, quiet-series metadata, SAN, transposition path
-counts, cancellation, and deterministic work charging. Because native and
-fallback ordering scores are identical, none of those rules or counters change.
+Python complete-series orchestration remains authoritative for check
+truncation, repeated promoted-piece moves, progressive stalemate,
+quiet-series metadata, SAN, transposition path counts, cancellation, and
+deterministic work charging. The compiled move batch mirrors python-chess legal
+move ordering and returns exact transition metadata to the merged frontier.
+Native and fallback paths must produce identical series, PFENs, SAN, outcomes,
+and every generation/search work counter.
 
 The differential gate covers deterministic random progressive-reachable
 positions, multi-en-passant, promotion, castling, checked boundaries, mutated
@@ -81,6 +90,28 @@ configuration. The parity signature includes every search-stat counter and
 every alternative's proof bounds. No user-specific filesystem path is
 serialized.
 
+### v0.7 legal-series kernel
+
+The series benchmark isolates legal generation with a constant frontier score,
+so it measures the new rules kernel rather than re-crediting the ordering
+evaluator. Seven fresh-process, paired, interleaved samples on the same Windows
+host produced:
+
+| Position | Python | Native | Speedup | Series/work |
+| --- | ---: | ---: | ---: | --- |
+| S1 | 1.249 ms | 0.767 ms | 1.63x | identical |
+| S3 | 55.881 ms | 35.649 ms | 1.57x | identical |
+| published S4 mate | 93.213 ms | 60.403 ms | 1.54x | identical |
+| live S22 adjudication state | 6.456 ms | 4.482 ms | 1.44x | identical |
+| S101 width-one stress case | 23.291 ms | 20.495 ms | 1.14x | identical |
+
+Artifact `spc-native-series-8da9cb0440334621` is checked in as
+[`native-series-v0.7.0-cp314-windows.json`](../benchmarks/results/native-series-v0.7.0-cp314-windows.json).
+It records engine fingerprint `1b7cfe378fa646c6`, native source identity,
+compiled-module SHA-256, host/runtime data, every raw timing, full series digest,
+and every `GenerationStats` field. This is a generation benchmark, not a claim
+that complete games became 1.6 times faster.
+
 ## Packaging and fallback
 
 Setuptools builds `scottish_progressive._native_eval` with `/std:c++20 /O2` on
@@ -91,8 +122,9 @@ cold-installed before publication.
 
 ## Next boundary
 
-Legal move generation, board copies, SAN construction, and transposition
-materialization are still Python. A later native complete-series frontier can
-reuse this bitboard core, but it must first reproduce every rule result and
-every deterministic work/cancellation count. This milestone deliberately does
-not claim the previously estimated 3x frontier target or a fully native engine.
+Complete-series recursion, SAN construction, minimax, proof propagation,
+transposition storage, and most allocation remain Python. The next performance
+boundary is a native make/unmake series search that lazily yields complete root
+series while preserving Scottish truncation, liveness fallbacks, proof bounds,
+and every deterministic work/cancellation count. This milestone is a verified
+kernel, not a claim of a fully native or Stockfish-strength engine.

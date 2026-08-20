@@ -430,9 +430,95 @@ def _train_fast(args: argparse.Namespace) -> int:
     return 0
 
 
+def _train_selfplay(args: argparse.Namespace) -> int:
+    from .profiles import baseline_profile, save_profile
+    from .selfplay_training import (
+        build_selfplay_corpus,
+        tune_selfplay_profile,
+        write_selfplay_artifact,
+    )
+
+    parent = (
+        load_profile(args.parent_profile)
+        if args.parent_profile
+        else baseline_profile()
+    )
+    corpus = build_selfplay_corpus(
+        args.databases,
+        seed=args.seed,
+        holdout_percent=args.holdout_percent,
+    )
+    candidate, tuning = tune_selfplay_profile(
+        corpus,
+        parent,
+        name=args.candidate_name,
+        regularization=args.regularization,
+    )
+    output_dir = Path(args.output_dir).expanduser().resolve()
+    corpus_path = write_selfplay_artifact(
+        corpus.as_dict(), output_dir / "selfplay-corpus.json"
+    )
+    tuning_path = write_selfplay_artifact(
+        {
+            **tuning,
+            "candidate": candidate.as_dict(),
+            "corpus_summary": corpus.as_dict()["summary"],
+        },
+        output_dir / "selfplay-tuning-report.json",
+    )
+    candidate_path = save_profile(candidate, output_dir / "candidate-profile.json")
+    payload = {
+        "corpus_id": corpus.corpus_id,
+        "completed_games": corpus.completed_games,
+        "excluded_games": corpus.excluded_games,
+        "samples": len(corpus.samples),
+        "train_samples": len(corpus.train_samples),
+        "holdout_samples": len(corpus.holdout_samples),
+        "parent_profile_id": parent.profile_id,
+        "candidate_profile_id": candidate.profile_id,
+        "candidate_weights": candidate.as_dict()["weights"],
+        "baseline_train_loss": tuning["baseline_train_loss"],
+        "candidate_train_loss": tuning["candidate_train_loss"],
+        "baseline_holdout_loss": tuning["baseline_holdout_loss"],
+        "candidate_holdout_loss": tuning["candidate_holdout_loss"],
+        "corpus_path": str(corpus_path),
+        "tuning_report_path": str(tuning_path),
+        "candidate_path": str(candidate_path),
+        "claim_scope": tuning["claim_scope"],
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(
+            f"Replayed {corpus.completed_games} conclusive games into "
+            f"{len(corpus.samples)} verified boundary samples; "
+            f"excluded {corpus.excluded_games} manual/technical games."
+        )
+        print(
+            "Value loss train: "
+            f"{tuning['baseline_train_loss']:.6f} -> "
+            f"{tuning['candidate_train_loss']:.6f}"
+        )
+        if tuning["baseline_holdout_loss"] is not None:
+            print(
+                "Value loss holdout: "
+                f"{tuning['baseline_holdout_loss']:.6f} -> "
+                f"{tuning['candidate_holdout_loss']:.6f}"
+            )
+        print(
+            f"Candidate: {candidate.profile_id} (unpromoted; tactical and "
+            "fixed-suite match gates still required)"
+        )
+        print(f"Corpus: {corpus_path}")
+        print(f"Tuning report: {tuning_path}")
+        print(f"Candidate profile: {candidate_path}")
+    return 0
+
+
 def _strength_match(args: argparse.Namespace) -> int:
     from .strength import (
         StrengthMatchConfig,
+        build_seeded_opening_suite,
         resolve_match_profile,
         run_strength_match,
         write_strength_report,
@@ -440,6 +526,29 @@ def _strength_match(args: argparse.Namespace) -> int:
 
     candidate = resolve_match_profile(args.candidate)
     reference = resolve_match_profile(args.reference)
+    seeded_suite = None
+    opening_case_ids = None
+    opening_suite_version = None
+    if args.seeded_openings is not None:
+        seeded_suite = build_seeded_opening_suite(
+            seed=args.seed,
+            count=args.seeded_openings,
+            min_series=args.seeded_min_series,
+            max_series=args.seeded_max_series,
+            max_frontier_states=args.seeded_frontier_cap,
+        )
+        opening_case_ids = tuple(case.case_id for case in seeded_suite.cases)
+        opening_suite_version = seeded_suite.version
+        if args.pairs > len(opening_case_ids):
+            raise ValueError(
+                "--pairs cannot exceed the number of generated seeded openings"
+            )
+    config_options: dict[str, object] = {}
+    if opening_case_ids is not None and opening_suite_version is not None:
+        config_options.update(
+            opening_case_ids=opening_case_ids,
+            opening_suite_version=opening_suite_version,
+        )
     config = StrengthMatchConfig(
         pairs=args.pairs,
         seed=args.seed,
@@ -448,8 +557,12 @@ def _strength_match(args: argparse.Namespace) -> int:
         max_generation_positions=args.max_generation_positions,
         max_game_work_positions=args.max_game_work_positions,
         emergency_max_series=args.emergency_max_series,
+        **config_options,
     )
     progress = None if args.json else (lambda message: print(message, flush=True))
+    match_options: dict[str, object] = {}
+    if seeded_suite is not None:
+        match_options["opening_cases"] = seeded_suite
     report = run_strength_match(
         candidate,
         reference,
@@ -458,6 +571,7 @@ def _strength_match(args: argparse.Namespace) -> int:
         memory_per_worker_mb=args.memory_per_worker_mb,
         reserve_memory_mb=args.reserve_memory_mb,
         progress=progress,
+        **match_options,
     )
     output = write_strength_report(report, args.output) if args.output else None
     if args.json:
@@ -797,6 +911,27 @@ def build_parser() -> argparse.ArgumentParser:
     train_fast.add_argument("--json", action="store_true")
     train_fast.set_defaults(handler=_train_fast)
 
+    train_selfplay = subparsers.add_parser(
+        "train-selfplay",
+        help=(
+            "replay completed league databases and fit an unpromoted "
+            "value-evaluation candidate"
+        ),
+    )
+    train_selfplay.add_argument(
+        "output_dir", help="directory for corpus, tuning report, and candidate profile"
+    )
+    train_selfplay.add_argument(
+        "databases", nargs="+", help="one or more completed league SQLite databases"
+    )
+    train_selfplay.add_argument("--parent-profile")
+    train_selfplay.add_argument("--candidate-name", default="self-play Texel candidate")
+    train_selfplay.add_argument("--seed", type=int, default=20260820)
+    train_selfplay.add_argument("--holdout-percent", type=int, default=20)
+    train_selfplay.add_argument("--regularization", type=float, default=0.02)
+    train_selfplay.add_argument("--json", action="store_true")
+    train_selfplay.set_defaults(handler=_train_selfplay)
+
     strength = subparsers.add_parser(
         "strength-match",
         help="compare two profiles on isolated color-swapped fixed-suite pairs",
@@ -809,6 +944,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     strength.add_argument("--pairs", type=int, default=10)
     strength.add_argument("--seed", type=int, default=20260820)
+    strength.add_argument(
+        "--seeded-openings",
+        type=int,
+        help=(
+            "generate this many neutral replayable openings instead of using "
+            "the built-in fixed suite"
+        ),
+    )
+    strength.add_argument("--seeded-min-series", type=int, default=3)
+    strength.add_argument("--seeded-max-series", type=int, default=6)
+    strength.add_argument("--seeded-frontier-cap", type=int, default=32)
     strength.add_argument("--depth", type=int, default=2)
     strength.add_argument(
         "--branch-cap",

@@ -91,6 +91,33 @@ training window does not erase completed games: run `train-engine.cmd` again
 to resume the latest unfinished run. Full design and evidence boundaries are
 in [`docs/engine-evolution.md`](docs/engine-evolution.md).
 
+Completed league databases can also be replayed into a leakage-resistant value
+corpus and an explicitly unpromoted evaluation candidate:
+
+```powershell
+spc train-selfplay build\selfplay-tuning `
+  data\evolution-seed-a.sqlite3 data\evolution-seed-b.sqlite3
+```
+
+The command rechecks every stored series and terminal PFEN. It excludes manual
+or technical results, reports train and holdout loss separately, and never
+changes the board champion. Tactical and color-swapped match gates remain
+mandatory.
+
+For an independent color-swapped test, generate neutral openings without using
+either profile's evaluation:
+
+```powershell
+spc strength-match build\selfplay-tuning\candidate-profile.json baseline `
+  --pairs 10 --seed 20260822 --seeded-openings 20 --workers 16 `
+  --output build\fresh-strength.json
+```
+
+The generated suite is replayable from the initial position and
+content-addressed inside the report. A good proxy score or a slight match edge
+does not update the champion; the tactical and fixed-pair promotion gate still
+decides that.
+
 ## Rules contract
 
 The implementation follows the Scottish rules documented by Timo Honkela's
@@ -184,8 +211,11 @@ spc compare-replies --output-dir reports
   tests named historical and engine reply hypotheses with a 64-finalist White
   response screen.
 - [`docs/native-acceleration.md`](docs/native-acceleration.md) records the
-  optional C++20 ordering kernel, Python fallback, differential rule gates, and
-  fresh-process S1/S3/S4 speed measurements.
+  optional C++20 evaluation and legal-series kernels, Python fallback,
+  differential rule gates, and fresh-process speed measurements.
+- [`docs/engine-evolution.md`](docs/engine-evolution.md) records the replayed
+  self-play fit, independent match results, and why the v0.7 candidate was not
+  promoted despite a small fixed-suite edge.
 
 The shallow run ranks `1.g3` and `1.c3` first, but that ordering collapses an
 important horizon: White has not yet received the three-move series. In the

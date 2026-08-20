@@ -13,6 +13,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
+#include <string>
+#include <vector>
 
 namespace spc::native {
 namespace {
@@ -26,6 +28,14 @@ constexpr int BISHOP = 3;
 constexpr int ROOK = 4;
 constexpr int QUEEN = 5;
 constexpr int KING = 6;
+
+struct Move {
+    int from;
+    int to;
+    int promotion;
+    int required_ep_square;
+    bool castling;
+};
 
 constexpr std::array<int, 7> PIECE_VALUES = {0, 100, 325, 340, 525, 975, 0};
 constexpr std::array<std::array<int, 2>, 8> KNIGHT_DELTAS = {{
@@ -182,6 +192,358 @@ constexpr std::array<std::array<int, 2>, 4> DIAGONAL = {{
         position.occupied[0] | position.occupied[1],
         position.occupied[(!mover) ? 1 : 0]
     );
+}
+
+[[nodiscard]] Position evaluation_position(const BoardState& board) noexcept {
+    return Position{
+        board.pawns,
+        board.knights,
+        board.bishops,
+        board.rooks,
+        board.queens,
+        board.kings,
+        board.occupied,
+        board.white_to_move,
+        1,
+    };
+}
+
+[[nodiscard]] bool board_attacked_by(
+    const BoardState& board,
+    int target,
+    bool attacker
+) noexcept {
+    const Position position = evaluation_position(board);
+    return attacked_by(
+        position,
+        target,
+        attacker,
+        board.occupied[0] | board.occupied[1],
+        board.occupied[attacker ? 1 : 0]
+    );
+}
+
+void clear_piece(BoardState& board, int square_index) noexcept {
+    const Bitboard mask = ~bit(square_index);
+    board.pawns &= mask;
+    board.knights &= mask;
+    board.bishops &= mask;
+    board.rooks &= mask;
+    board.queens &= mask;
+    board.kings &= mask;
+    board.occupied[0] &= mask;
+    board.occupied[1] &= mask;
+    board.promoted &= mask;
+}
+
+void set_piece(
+    BoardState& board,
+    int square_index,
+    int piece_type,
+    bool color,
+    bool promoted
+) noexcept {
+    const Bitboard mask = bit(square_index);
+    switch (piece_type) {
+        case PAWN: board.pawns |= mask; break;
+        case KNIGHT: board.knights |= mask; break;
+        case BISHOP: board.bishops |= mask; break;
+        case ROOK: board.rooks |= mask; break;
+        case QUEEN: board.queens |= mask; break;
+        case KING: board.kings |= mask; break;
+        default: return;
+    }
+    board.occupied[color ? 1 : 0] |= mask;
+    if (promoted) {
+        board.promoted |= mask;
+    }
+}
+
+[[nodiscard]] BoardState apply_move(
+    const BoardState& source,
+    const Move& move
+) noexcept {
+    BoardState board = source;
+    const bool mover = source.white_to_move;
+    const int moving_piece = piece_type_at(evaluation_position(source), move.from);
+    const bool was_promoted = (source.promoted & bit(move.from)) != 0;
+    const bool en_passant = move.required_ep_square >= 0
+        && moving_piece == PAWN
+        && move.to == move.required_ep_square
+        && (source.occupied[0] & bit(move.to)) == 0
+        && (source.occupied[1] & bit(move.to)) == 0;
+    const int capture_square = en_passant
+        ? move.to + (mover == WHITE ? -8 : 8)
+        : move.to;
+
+    clear_piece(board, move.from);
+    clear_piece(board, capture_square);
+    set_piece(
+        board,
+        move.to,
+        move.promotion != 0 ? move.promotion : moving_piece,
+        mover,
+        was_promoted || move.promotion != 0
+    );
+
+    if (move.castling) {
+        const int rank = mover == WHITE ? 0 : 7;
+        const bool king_side = (move.to & 7) == 6;
+        const int rook_from = square(king_side ? 7 : 0, rank);
+        const int rook_to = square(king_side ? 5 : 3, rank);
+        const bool rook_promoted = (source.promoted & bit(rook_from)) != 0;
+        clear_piece(board, rook_from);
+        set_piece(board, rook_to, ROOK, mover, rook_promoted);
+    }
+
+    board.castling_rights &= ~bit(move.from);
+    board.castling_rights &= ~bit(move.to);
+    if (moving_piece == KING) {
+        const int rank = mover == WHITE ? 0 : 7;
+        board.castling_rights &= ~bit(square(0, rank));
+        board.castling_rights &= ~bit(square(7, rank));
+    }
+    board.white_to_move = !mover;
+    return board;
+}
+
+[[nodiscard]] bool legal_after_move(
+    const BoardState& source,
+    const Move& move
+) noexcept {
+    const bool mover = source.white_to_move;
+    const BoardState child = apply_move(source, move);
+    const Bitboard king = child.kings & child.occupied[mover ? 1 : 0];
+    if (king == 0) {
+        return false;
+    }
+    const int king_index = static_cast<int>(std::countr_zero(king));
+    return !board_attacked_by(child, king_index, !mover);
+}
+
+void add_promotions(
+    std::vector<Move>& moves,
+    int from,
+    int to,
+    int required_ep_square = -1
+) {
+    for (const int promotion : {QUEEN, ROOK, BISHOP, KNIGHT}) {
+        moves.push_back(Move{from, to, promotion, required_ep_square, false});
+    }
+}
+
+void add_standard_castling(
+    const BoardState& board,
+    std::vector<Move>& moves
+) {
+    const bool mover = board.white_to_move;
+    const int rank = mover == WHITE ? 0 : 7;
+    const int king_from = square(4, rank);
+    const Bitboard own = board.occupied[mover ? 1 : 0];
+    const Bitboard occupancy = board.occupied[0] | board.occupied[1];
+    if (
+        (board.kings & own & bit(king_from)) == 0
+        || board_attacked_by(board, king_from, !mover)
+    ) {
+        return;
+    }
+
+    const auto try_side = [&](bool king_side) {
+        const int rook_from = square(king_side ? 7 : 0, rank);
+        if (
+            (board.castling_rights & bit(rook_from)) == 0
+            || (board.rooks & own & bit(rook_from)) == 0
+            || (board.promoted & bit(rook_from)) != 0
+        ) {
+            return;
+        }
+        const int first_file = king_side ? 5 : 1;
+        const int last_file = king_side ? 6 : 3;
+        for (int file = first_file; file <= last_file; ++file) {
+            if ((occupancy & bit(square(file, rank))) != 0) {
+                return;
+            }
+        }
+        const int pass = square(king_side ? 5 : 3, rank);
+        Move pass_move{king_from, pass, 0, -1, false};
+        if (!legal_after_move(board, pass_move)) {
+            return;
+        }
+        const int destination = square(king_side ? 6 : 2, rank);
+        Move castle{king_from, destination, 0, -1, true};
+        if (legal_after_move(board, castle)) {
+            moves.push_back(castle);
+        }
+    };
+    try_side(true);
+    try_side(false);
+}
+
+[[nodiscard]] std::vector<Move> pseudo_moves(
+    const BoardState& board,
+    const std::vector<int>& ep_targets
+) {
+    std::vector<Move> moves;
+    moves.reserve(64);
+    const bool mover = board.white_to_move;
+    const Bitboard own = board.occupied[mover ? 1 : 0];
+    const Bitboard enemy = board.occupied[(!mover) ? 1 : 0];
+    const Bitboard occupancy = own | enemy;
+    const Position position = evaluation_position(board);
+
+    Bitboard pawns = board.pawns & own;
+    while (pawns != 0) {
+        const int from = static_cast<int>(std::countr_zero(pawns));
+        pawns &= pawns - 1;
+        const int from_file = from & 7;
+        const int from_rank = from >> 3;
+        const int direction = mover == WHITE ? 1 : -1;
+        const int next_rank = from_rank + direction;
+        if (inside(from_file, next_rank)) {
+            const int to = square(from_file, next_rank);
+            if ((occupancy & bit(to)) == 0) {
+                if (next_rank == 0 || next_rank == 7) {
+                    add_promotions(moves, from, to);
+                } else {
+                    moves.push_back(Move{from, to, 0, -1, false});
+                    const int start_rank = mover == WHITE ? 1 : 6;
+                    const int double_rank = from_rank + direction * 2;
+                    if (
+                        from_rank == start_rank
+                        && (occupancy & bit(square(from_file, double_rank))) == 0
+                    ) {
+                        moves.push_back(Move{
+                            from,
+                            square(from_file, double_rank),
+                            0,
+                            -1,
+                            false,
+                        });
+                    }
+                }
+            }
+        }
+        for (const int file_delta : {-1, 1}) {
+            const int to_file = from_file + file_delta;
+            const int to_rank = from_rank + direction;
+            if (!inside(to_file, to_rank)) {
+                continue;
+            }
+            const int to = square(to_file, to_rank);
+            if ((enemy & bit(to)) == 0) {
+                continue;
+            }
+            if (to_rank == 0 || to_rank == 7) {
+                add_promotions(moves, from, to);
+            } else {
+                moves.push_back(Move{from, to, 0, -1, false});
+            }
+        }
+    }
+
+    for (const int target : ep_targets) {
+        if (target < 0 || target >= 64 || (occupancy & bit(target)) != 0) {
+            continue;
+        }
+        const int target_file = target & 7;
+        const int target_rank = target >> 3;
+        const int expected_rank = mover == WHITE ? 5 : 2;
+        const int source_rank = target_rank + (mover == WHITE ? -1 : 1);
+        const int captured = target + (mover == WHITE ? -8 : 8);
+        if (
+            target_rank != expected_rank
+            || captured < 0
+            || captured >= 64
+            || (board.pawns & enemy & bit(captured)) == 0
+        ) {
+            continue;
+        }
+        for (const int file_delta : {-1, 1}) {
+            const int source_file = target_file + file_delta;
+            if (!inside(source_file, source_rank)) {
+                continue;
+            }
+            const int from = square(source_file, source_rank);
+            if ((board.pawns & own & bit(from)) != 0) {
+                moves.push_back(Move{from, target, 0, target, false});
+            }
+        }
+    }
+
+    Bitboard knights = board.knights & own;
+    while (knights != 0) {
+        const int from = static_cast<int>(std::countr_zero(knights));
+        knights &= knights - 1;
+        const int from_file = from & 7;
+        const int from_rank = from >> 3;
+        for (const auto& delta : KNIGHT_DELTAS) {
+            const int file = from_file + delta[0];
+            const int rank = from_rank + delta[1];
+            if (inside(file, rank) && (own & bit(square(file, rank))) == 0) {
+                moves.push_back(Move{from, square(file, rank), 0, -1, false});
+            }
+        }
+    }
+
+    const auto add_sliders = [&](Bitboard pieces, const auto& deltas) {
+        while (pieces != 0) {
+            const int from = static_cast<int>(std::countr_zero(pieces));
+            pieces &= pieces - 1;
+            const int from_file = from & 7;
+            const int from_rank = from >> 3;
+            for (const auto& delta : deltas) {
+                int file = from_file + delta[0];
+                int rank = from_rank + delta[1];
+                while (inside(file, rank)) {
+                    const int to = square(file, rank);
+                    if ((own & bit(to)) != 0) {
+                        break;
+                    }
+                    moves.push_back(Move{from, to, 0, -1, false});
+                    if ((enemy & bit(to)) != 0) {
+                        break;
+                    }
+                    file += delta[0];
+                    rank += delta[1];
+                }
+            }
+        }
+    };
+    add_sliders(board.bishops & own, DIAGONAL);
+    add_sliders(board.rooks & own, ORTHOGONAL);
+    add_sliders(board.queens & own, DIAGONAL);
+    add_sliders(board.queens & own, ORTHOGONAL);
+
+    Bitboard kings = board.kings & own;
+    while (kings != 0) {
+        const int from = static_cast<int>(std::countr_zero(kings));
+        kings &= kings - 1;
+        const int from_file = from & 7;
+        const int from_rank = from >> 3;
+        for (const auto& delta : KING_DELTAS) {
+            const int file = from_file + delta[0];
+            const int rank = from_rank + delta[1];
+            if (inside(file, rank) && (own & bit(square(file, rank))) == 0) {
+                moves.push_back(Move{from, square(file, rank), 0, -1, false});
+            }
+        }
+    }
+    add_standard_castling(board, moves);
+    return moves;
+}
+
+[[nodiscard]] std::string move_uci(const Move& move) {
+    std::string result;
+    result.reserve(move.promotion == 0 ? 4 : 5);
+    result.push_back(static_cast<char>('a' + (move.from & 7)));
+    result.push_back(static_cast<char>('1' + (move.from >> 3)));
+    result.push_back(static_cast<char>('a' + (move.to & 7)));
+    result.push_back(static_cast<char>('1' + (move.to >> 3)));
+    if (move.promotion != 0) {
+        constexpr std::array<char, 7> SYMBOLS = {'\0', 'p', 'n', 'b', 'r', 'q', 'k'};
+        result.push_back(SYMBOLS[move.promotion]);
+    }
+    return result;
 }
 
 [[nodiscard]] int king_flight_squares(
@@ -489,6 +851,92 @@ std::optional<std::int64_t> fast_evaluate(
     return score;
 }
 
+std::vector<ExpandedMove> expand_legal_move_variants(
+    const BoardState& position,
+    const std::vector<int>& ep_targets
+) {
+    std::vector<ExpandedMove> legal;
+    const bool mover = position.white_to_move;
+    const Bitboard enemy = position.occupied[(!mover) ? 1 : 0];
+    const Position evaluation = evaluation_position(position);
+    for (const Move& move : pseudo_moves(position, ep_targets)) {
+        if (legal_after_move(position, move)) {
+            const int moving_piece = piece_type_at(evaluation, move.from);
+            const bool en_passant = move.required_ep_square >= 0
+                && moving_piece == PAWN
+                && move.to == move.required_ep_square
+                && (position.occupied[0] & bit(move.to)) == 0
+                && (position.occupied[1] & bit(move.to)) == 0;
+            const bool is_capture = en_passant || (enemy & bit(move.to)) != 0;
+            BoardState child = apply_move(position, move);
+            const Bitboard opponent_king = child.kings
+                & child.occupied[(!mover) ? 1 : 0];
+            const bool delivered_check = opponent_king != 0
+                && board_attacked_by(
+                    child,
+                    static_cast<int>(std::countr_zero(opponent_king)),
+                    mover
+                );
+            legal.push_back(ExpandedMove{
+                LegalMove{
+                    move_uci(move),
+                    move.from,
+                    move.to,
+                    move.promotion,
+                    move.required_ep_square,
+                },
+                child,
+                moving_piece == PAWN,
+                is_capture,
+                delivered_check,
+            });
+        }
+    }
+    std::sort(
+        legal.begin(),
+        legal.end(),
+        [](const ExpandedMove& left, const ExpandedMove& right) {
+            return left.move.uci < right.move.uci;
+        }
+    );
+    legal.erase(
+        std::unique(
+            legal.begin(),
+            legal.end(),
+            [](const ExpandedMove& left, const ExpandedMove& right) {
+                return left.move.uci == right.move.uci;
+            }
+        ),
+        legal.end()
+    );
+    return legal;
+}
+
+std::vector<LegalMove> legal_move_variants(
+    const BoardState& position,
+    const std::vector<int>& ep_targets
+) {
+    std::vector<LegalMove> legal;
+    const auto expanded = expand_legal_move_variants(position, ep_targets);
+    legal.reserve(expanded.size());
+    for (const ExpandedMove& move : expanded) {
+        legal.push_back(move.move);
+    }
+    return legal;
+}
+
+bool has_legal_move(
+    const BoardState& position,
+    const std::vector<int>& ep_targets
+) {
+    for (const Move& move : pseudo_moves(position, ep_targets)) {
+        if (legal_after_move(position, move)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace spc::native
 
 namespace {
@@ -563,12 +1011,304 @@ PyObject* py_fast_evaluate(PyObject*, PyObject* arguments) {
     return PyLong_FromLongLong(*score);
 }
 
+PyObject* py_legal_move_variants(PyObject*, PyObject* arguments) {
+    unsigned long long pawns = 0;
+    unsigned long long knights = 0;
+    unsigned long long bishops = 0;
+    unsigned long long rooks = 0;
+    unsigned long long queens = 0;
+    unsigned long long kings = 0;
+    unsigned long long white_occupied = 0;
+    unsigned long long black_occupied = 0;
+    unsigned long long promoted = 0;
+    unsigned long long castling_rights = 0;
+    int white_to_move = 0;
+    PyObject* ep_targets_object = nullptr;
+    if (!PyArg_ParseTuple(
+            arguments,
+            "KKKKKKKKKKpO:legal_move_variants",
+            &pawns,
+            &knights,
+            &bishops,
+            &rooks,
+            &queens,
+            &kings,
+            &white_occupied,
+            &black_occupied,
+            &promoted,
+            &castling_rights,
+            &white_to_move,
+            &ep_targets_object
+        )) {
+        return nullptr;
+    }
+    PyObject* ep_targets_sequence = PySequence_Fast(
+        ep_targets_object,
+        "ep_targets must be an iterable of squares"
+    );
+    if (ep_targets_sequence == nullptr) {
+        return nullptr;
+    }
+    std::vector<int> ep_targets;
+    const Py_ssize_t ep_count = PySequence_Fast_GET_SIZE(ep_targets_sequence);
+    ep_targets.reserve(static_cast<std::size_t>(ep_count));
+    for (Py_ssize_t index = 0; index < ep_count; ++index) {
+        PyObject* item = PySequence_Fast_GET_ITEM(ep_targets_sequence, index);
+        const long square_index = PyLong_AsLong(item);
+        if (square_index == -1 && PyErr_Occurred()) {
+            Py_DECREF(ep_targets_sequence);
+            return nullptr;
+        }
+        if (square_index < 0 || square_index >= 64) {
+            Py_DECREF(ep_targets_sequence);
+            PyErr_SetString(PyExc_ValueError, "e.p. target must be in [0, 63]");
+            return nullptr;
+        }
+        ep_targets.push_back(static_cast<int>(square_index));
+    }
+    Py_DECREF(ep_targets_sequence);
+
+    const spc::native::BoardState position{
+        pawns,
+        knights,
+        bishops,
+        rooks,
+        queens,
+        kings,
+        {black_occupied, white_occupied},
+        promoted,
+        castling_rights,
+        white_to_move != 0,
+    };
+    const auto legal = spc::native::legal_move_variants(position, ep_targets);
+    PyObject* result = PyTuple_New(static_cast<Py_ssize_t>(legal.size()));
+    if (result == nullptr) {
+        return nullptr;
+    }
+    for (std::size_t index = 0; index < legal.size(); ++index) {
+        const auto& move = legal[index];
+        PyObject* entry = Py_BuildValue(
+            "(siiii)",
+            move.uci.c_str(),
+            move.from_square,
+            move.to_square,
+            move.promotion,
+            move.required_ep_square
+        );
+        if (entry == nullptr) {
+            Py_DECREF(result);
+            return nullptr;
+        }
+        PyTuple_SET_ITEM(result, static_cast<Py_ssize_t>(index), entry);
+    }
+    return result;
+}
+
+PyObject* py_expand_legal_move_variants(PyObject*, PyObject* arguments) {
+    unsigned long long pawns = 0;
+    unsigned long long knights = 0;
+    unsigned long long bishops = 0;
+    unsigned long long rooks = 0;
+    unsigned long long queens = 0;
+    unsigned long long kings = 0;
+    unsigned long long white_occupied = 0;
+    unsigned long long black_occupied = 0;
+    unsigned long long promoted = 0;
+    unsigned long long castling_rights = 0;
+    int white_to_move = 0;
+    PyObject* ep_targets_object = nullptr;
+    if (!PyArg_ParseTuple(
+            arguments,
+            "KKKKKKKKKKpO:expand_legal_move_variants",
+            &pawns,
+            &knights,
+            &bishops,
+            &rooks,
+            &queens,
+            &kings,
+            &white_occupied,
+            &black_occupied,
+            &promoted,
+            &castling_rights,
+            &white_to_move,
+            &ep_targets_object
+        )) {
+        return nullptr;
+    }
+    PyObject* ep_targets_sequence = PySequence_Fast(
+        ep_targets_object,
+        "ep_targets must be an iterable of squares"
+    );
+    if (ep_targets_sequence == nullptr) {
+        return nullptr;
+    }
+    std::vector<int> ep_targets;
+    const Py_ssize_t ep_count = PySequence_Fast_GET_SIZE(ep_targets_sequence);
+    ep_targets.reserve(static_cast<std::size_t>(ep_count));
+    for (Py_ssize_t index = 0; index < ep_count; ++index) {
+        PyObject* item = PySequence_Fast_GET_ITEM(ep_targets_sequence, index);
+        const long square_index = PyLong_AsLong(item);
+        if (square_index == -1 && PyErr_Occurred()) {
+            Py_DECREF(ep_targets_sequence);
+            return nullptr;
+        }
+        if (square_index < 0 || square_index >= 64) {
+            Py_DECREF(ep_targets_sequence);
+            PyErr_SetString(PyExc_ValueError, "e.p. target must be in [0, 63]");
+            return nullptr;
+        }
+        ep_targets.push_back(static_cast<int>(square_index));
+    }
+    Py_DECREF(ep_targets_sequence);
+
+    const spc::native::BoardState position{
+        pawns,
+        knights,
+        bishops,
+        rooks,
+        queens,
+        kings,
+        {black_occupied, white_occupied},
+        promoted,
+        castling_rights,
+        white_to_move != 0,
+    };
+    const auto expanded = spc::native::expand_legal_move_variants(
+        position,
+        ep_targets
+    );
+    PyObject* result = PyTuple_New(static_cast<Py_ssize_t>(expanded.size()));
+    if (result == nullptr) {
+        return nullptr;
+    }
+    for (std::size_t index = 0; index < expanded.size(); ++index) {
+        const auto& item = expanded[index];
+        const auto& child = item.child;
+        PyObject* entry = Py_BuildValue(
+            "(siiiiKKKKKKKKKKiii)",
+            item.move.uci.c_str(),
+            item.move.from_square,
+            item.move.to_square,
+            item.move.promotion,
+            item.move.required_ep_square,
+            child.pawns,
+            child.knights,
+            child.bishops,
+            child.rooks,
+            child.queens,
+            child.kings,
+            child.occupied[1],
+            child.occupied[0],
+            child.promoted,
+            child.castling_rights,
+            item.is_pawn_move ? 1 : 0,
+            item.is_capture ? 1 : 0,
+            item.delivered_check ? 1 : 0
+        );
+        if (entry == nullptr) {
+            Py_DECREF(result);
+            return nullptr;
+        }
+        PyTuple_SET_ITEM(result, static_cast<Py_ssize_t>(index), entry);
+    }
+    return result;
+}
+
+PyObject* py_has_legal_move(PyObject*, PyObject* arguments) {
+    unsigned long long pawns = 0;
+    unsigned long long knights = 0;
+    unsigned long long bishops = 0;
+    unsigned long long rooks = 0;
+    unsigned long long queens = 0;
+    unsigned long long kings = 0;
+    unsigned long long white_occupied = 0;
+    unsigned long long black_occupied = 0;
+    unsigned long long promoted = 0;
+    unsigned long long castling_rights = 0;
+    int white_to_move = 0;
+    PyObject* ep_targets_object = nullptr;
+    if (!PyArg_ParseTuple(
+            arguments,
+            "KKKKKKKKKKpO:has_legal_move",
+            &pawns,
+            &knights,
+            &bishops,
+            &rooks,
+            &queens,
+            &kings,
+            &white_occupied,
+            &black_occupied,
+            &promoted,
+            &castling_rights,
+            &white_to_move,
+            &ep_targets_object
+        )) {
+        return nullptr;
+    }
+    PyObject* ep_targets_sequence = PySequence_Fast(
+        ep_targets_object,
+        "ep_targets must be an iterable of squares"
+    );
+    if (ep_targets_sequence == nullptr) {
+        return nullptr;
+    }
+    std::vector<int> ep_targets;
+    const Py_ssize_t ep_count = PySequence_Fast_GET_SIZE(ep_targets_sequence);
+    ep_targets.reserve(static_cast<std::size_t>(ep_count));
+    for (Py_ssize_t index = 0; index < ep_count; ++index) {
+        PyObject* item = PySequence_Fast_GET_ITEM(ep_targets_sequence, index);
+        const long square_index = PyLong_AsLong(item);
+        if (square_index == -1 && PyErr_Occurred()) {
+            Py_DECREF(ep_targets_sequence);
+            return nullptr;
+        }
+        if (square_index < 0 || square_index >= 64) {
+            Py_DECREF(ep_targets_sequence);
+            PyErr_SetString(PyExc_ValueError, "e.p. target must be in [0, 63]");
+            return nullptr;
+        }
+        ep_targets.push_back(static_cast<int>(square_index));
+    }
+    Py_DECREF(ep_targets_sequence);
+    const spc::native::BoardState position{
+        pawns,
+        knights,
+        bishops,
+        rooks,
+        queens,
+        kings,
+        {black_occupied, white_occupied},
+        promoted,
+        castling_rights,
+        white_to_move != 0,
+    };
+    return PyBool_FromLong(spc::native::has_legal_move(position, ep_targets));
+}
+
 PyMethodDef METHODS[] = {
     {
         "fast_evaluate",
         py_fast_evaluate,
         METH_VARARGS,
         PyDoc_STR("Exact compiled fast-ordering evaluation for one boundary board.")
+    },
+    {
+        "legal_move_variants",
+        py_legal_move_variants,
+        METH_VARARGS,
+        PyDoc_STR("Exact compiled legal move variants for one orthodox board.")
+    },
+    {
+        "expand_legal_move_variants",
+        py_expand_legal_move_variants,
+        METH_VARARGS,
+        PyDoc_STR("Exact compiled legal moves and post-move board transitions.")
+    },
+    {
+        "has_legal_move",
+        py_has_legal_move,
+        METH_VARARGS,
+        PyDoc_STR("Exact compiled existence test without materializing moves.")
     },
     {nullptr, nullptr, 0, nullptr},
 };

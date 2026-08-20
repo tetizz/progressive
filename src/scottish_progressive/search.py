@@ -245,7 +245,12 @@ class SeriesSearcher:
         self.limits = limits
         self.profile = profile or baseline_profile()
         self.stats = SearchStats()
-        self._tt: dict[tuple[tuple[int, str, int, int], int], _TTEntry] = {}
+        # Keep the deepest result per boundary. Iterative deepening can then
+        # use a shallower principal variation as a hash-series ordering hint,
+        # while score/bound reuse remains gated by ``entry.depth >= depth``.
+        # This is the progressive-series equivalent of Stockfish's hash-move
+        # ordering: it changes visit order, never the generated legal set.
+        self._tt: dict[tuple[int, str, int, int], _TTEntry] = {}
         self._eval_cache: dict[tuple[int, str, int, int], EvaluationBreakdown] = {}
         self._quiet_adjudication_cache: dict[
             tuple[int, str, int, int], str | None
@@ -260,6 +265,7 @@ class SeriesSearcher:
         self._quiet_work_limit_reached = False
         self._evaluation_work_limit_reached = False
         self._root_scores_complete = True
+        self._preferred_root_series: str | None = None
 
     def _check_deadline(self) -> None:
         if self._deadline is not None and time.perf_counter() >= self._deadline:
@@ -615,6 +621,7 @@ class SeriesSearcher:
         ply_from_root: int,
         required_prefix: tuple[str, ...] = (),
         reserve_positions: int = 0,
+        preferred_series: str | None = None,
     ) -> list[SeriesResult]:
         """Returns one deterministic capped frontier with bounded reuse.
 
@@ -630,7 +637,9 @@ class SeriesSearcher:
         if cached is not None:
             self._series_generation_cache.move_to_end(key)
             self.stats.series_generation_cache_hits += 1
-            return list(cached)
+            ordered = list(cached)
+            self._prefer_series(ordered, preferred_series)
+            return ordered
 
         ordered = self._ordered(
             self._generate(
@@ -658,7 +667,27 @@ class SeriesSearcher:
             self.stats.series_generation_cache_peak,
             self._series_generation_cache_weight,
         )
+        self._prefer_series(ordered, preferred_series)
         return ordered
+
+    @staticmethod
+    def _prefer_series(
+        series: list[SeriesResult], preferred_series: str | None
+    ) -> None:
+        """Moves an already-legal PV/hash series to the front in-place.
+
+        The cached frontier retains its deterministic static ordering. A
+        preference is applied only to the per-call list, so iterative depths
+        and transpositions cannot poison the canonical generation cache.
+        """
+
+        if preferred_series is None:
+            return
+        for index, result in enumerate(series):
+            if result.machine_notation == preferred_series:
+                if index:
+                    series.insert(0, series.pop(index))
+                return
 
     def _minimax(
         self,
@@ -678,7 +707,7 @@ class SeriesSearcher:
         if depth == 0:
             return self._evaluate(state).total, (), UNKNOWN_PROOF_BOUNDS
 
-        key = (state.transposition_key, depth)
+        key = state.transposition_key
         entry = self._tt.get(key)
         original_alpha, original_beta = alpha, beta
         if entry is not None and entry.depth >= depth:
@@ -696,6 +725,11 @@ class SeriesSearcher:
         series = self._ordered_generated(
             state,
             ply_from_root=ply_from_root + 1,
+            preferred_series=(
+                entry.pv[0].machine_notation
+                if entry is not None and entry.pv
+                else None
+            ),
         )
         if not series:
             return 0, (), UNKNOWN_PROOF_BOUNDS
@@ -759,7 +793,17 @@ class SeriesSearcher:
             child_bounds,
             total_series=len(series),
         )
-        self._tt[key] = _TTEntry(depth, best_score, bound, best_pv, proof_bounds)
+        replacement = _TTEntry(depth, best_score, bound, best_pv, proof_bounds)
+        if (
+            entry is None
+            or depth > entry.depth
+            or (
+                depth == entry.depth
+                and replacement.bound == Bound.EXACT
+                and entry.bound != Bound.EXACT
+            )
+        ):
+            self._tt[key] = replacement
         return best_score, best_pv, proof_bounds
 
     def _search_root(
@@ -785,6 +829,7 @@ class SeriesSearcher:
                 ply_from_root=1,
                 required_prefix=required_prefix,
                 reserve_positions=reserve_positions,
+                preferred_series=self._preferred_root_series,
             )
         except _WorkLimit as error:
             # The ordinary frontier exhausted only the non-reserved part of
@@ -896,6 +941,7 @@ class SeriesSearcher:
     ) -> SearchResult:
         required_prefix = tuple(required_prefix)
         started = time.perf_counter()
+        self._preferred_root_series = None
         if self.limits.time_limit_seconds is not None:
             self._deadline = started + self.limits.time_limit_seconds
         root_evaluation = self._evaluate(state)
@@ -1076,6 +1122,9 @@ class SeriesSearcher:
             alternatives = root_alternatives
             best_proof = proof
             completed_depth = depth
+            self._preferred_root_series = (
+                best_pv[0].machine_notation if best_pv else None
+            )
 
         elapsed = time.perf_counter() - started
         work_limit_reached = (

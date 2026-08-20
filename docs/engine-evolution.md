@@ -91,6 +91,61 @@ atomic cache and report. `--smoke` is an explicitly labeled four-position
 wiring preset; it is not a smaller strength test. The normal `spc league run`
 path calls the same funnel before its unchanged full-game promotion stage.
 
+## Replayed self-play value fitting
+
+Completed league games can be converted into a separate value-training corpus:
+
+```powershell
+spc train-selfplay build\selfplay-tuning `
+  data\evolution-seed-a.sqlite3 data\evolution-seed-b.sqlite3
+```
+
+This path does not trust stored scores or intermediate FENs. It reconstructs
+each persisted opening boundary, replays every complete series through the
+public Scottish rules API, and requires the reconstructed final PFEN and
+terminal outcome to match. Only real checkmates and rules-proven ten-series
+draws become value labels. Manual adjudications, work limits, engine failures,
+and worker failures are excluded rather than assigned an outcome.
+
+Each completed game contributes total weight one regardless of its length.
+Related opening boundaries are grouped by their first complete series, and a
+connected-component pass joins otherwise separate groups if their games
+transpose to an identical progressive state. The entire component goes to
+train or holdout, preventing adjacent states or transpositions from leaking
+across the split.
+
+The v1 fitter performs deterministic Texel-style coordinate descent over the
+seven explainable evaluation scales. It chooses parameters using train data
+only and reports holdout log loss separately. Its output is deliberately named
+`candidate-profile.json`, never a champion envelope. Lower train or holdout
+loss is a value-fit proxy, not match strength: the candidate must still pass
+the searched tactical gate and an isolated color-swapped strength match before
+the league may consider promotion.
+
+### v0.7 outcome
+
+Two completed v0.6 leagues supplied 88 conclusive games (852 replay-verified
+boundary samples); eight manual-adjudication games were excluded. The fitted
+candidate improved weighted value loss from `0.886026` to `0.732856` on train
+and from `0.870439` to `0.670045` on the untouched line-family holdout. The
+parameter trace is checked in as
+[`selfplay-tuning-v0.7.0.json`](../benchmarks/results/selfplay-tuning-v0.7.0.json).
+
+That proxy improvement did not promote the engine. On six held-out opening
+families the candidate scored pair W/D/L `3/1/2`. On a separately generated,
+content-addressed 20-opening suite it scored `1/8/0` across nine complete pairs,
+with one pair incomplete because one side reached manual quiet adjudication.
+The strict gate requires at least nine pair wins and no loss, so baseline
+`spc-68942034c41b4cc4` remains champion. Exact reports are
+[`selfplay-family-heldout-v0.7.0.json`](../benchmarks/results/selfplay-family-heldout-v0.7.0.json)
+and [`selfplay-fresh-seeded-v0.7.0.json`](../benchmarks/results/selfplay-fresh-seeded-v0.7.0.json).
+This is fixed-suite evidence only, not calibrated Elo or a Stockfish comparison.
+
+Future neutral suites are generated through the public rules API, carry exact
+from-start replay histories, and derive their version from their content. The
+match harness rejects a reused suite ID with changed metadata or PFEN, and each
+game record retains the verified suite version.
+
 This shallow/wide design is informed by Janko and Guid's 2016 Progressive Chess
 experiments: they tested search depths through self-play, reported their
 depth-one configuration outperforming deeper/narrower configurations under the

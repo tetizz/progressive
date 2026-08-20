@@ -89,6 +89,17 @@ class _FrontierState:
     path_count: int = 1
 
 
+@dataclass(slots=True)
+class _ExpandedVariant:
+    move: chess.Move
+    required_ep: int | None
+    board: chess.Board
+    san: str
+    is_pawn_move: bool
+    is_capture: bool
+    delivered_check: bool
+
+
 def _visit_generation_position(
     counters: GenerationStats,
     max_positions: int | None,
@@ -182,7 +193,7 @@ def _bound_frontier(
     return selected
 
 
-def _legal_move_variants(
+def _python_legal_move_variants(
     board: chess.Board, ep_targets: Iterable[int] = ()
 ) -> list[tuple[chess.Move, int | None]]:
     """Returns legal moves and the e.p. square needed to apply each move.
@@ -209,8 +220,220 @@ def _legal_move_variants(
     return [variants[key] for key in sorted(variants)]
 
 
+def _native_legal_move_variants(
+    board: chess.Board,
+    ep_targets: tuple[int, ...],
+) -> list[tuple[chess.Move, int | None]] | None:
+    """Runs the source-matched native move generator when it is available.
+
+    The optional extension is owned and identity-checked by ``evaluation``.
+    Importing it lazily avoids a rules/evaluation import cycle and guarantees
+    that ``SPC_DISABLE_NATIVE`` selects the Python oracle for both kernels.
+    Chess960 is deliberately left to python-chess: Scottish research positions
+    use orthodox castling, while the native kernel has an exact standard-chess
+    castling contract.
+    """
+
+    if board.chess960:
+        return None
+    from . import evaluation
+
+    native = evaluation._native_eval
+    if native is None or not hasattr(native, "legal_move_variants"):
+        return None
+    raw = native.legal_move_variants(
+        board.pawns,
+        board.knights,
+        board.bishops,
+        board.rooks,
+        board.queens,
+        board.kings,
+        board.occupied_co[chess.WHITE],
+        board.occupied_co[chess.BLACK],
+        board.promoted,
+        board.clean_castling_rights(),
+        board.turn,
+        ep_targets,
+    )
+    return [
+        (
+            chess.Move(
+                from_square,
+                to_square,
+                promotion=promotion or None,
+            ),
+            required_ep if required_ep >= 0 else None,
+        )
+        for _uci, from_square, to_square, promotion, required_ep in raw
+    ]
+
+
+def _legal_move_variants(
+    board: chess.Board, ep_targets: Iterable[int] = ()
+) -> list[tuple[chess.Move, int | None]]:
+    """Returns canonical legal moves through native code or the Python oracle."""
+
+    targets = tuple(sorted(set(ep_targets)))
+    native = _native_legal_move_variants(board, targets)
+    if native is not None:
+        return native
+    return _python_legal_move_variants(board, targets)
+
+
+def _native_expanded_move_variants(
+    board: chess.Board,
+    ep_targets: tuple[int, ...],
+) -> list[_ExpandedVariant] | None:
+    if board.chess960:
+        return None
+    from . import evaluation
+
+    native = evaluation._native_eval
+    if native is None or not hasattr(native, "expand_legal_move_variants"):
+        return None
+    raw = native.expand_legal_move_variants(
+        board.pawns,
+        board.knights,
+        board.bishops,
+        board.rooks,
+        board.queens,
+        board.kings,
+        board.occupied_co[chess.WHITE],
+        board.occupied_co[chess.BLACK],
+        board.promoted,
+        board.clean_castling_rights(),
+        board.turn,
+        ep_targets,
+    )
+    expanded: list[_ExpandedVariant] = []
+    saved_ep = board.ep_square
+    try:
+        for (
+            _uci,
+            from_square,
+            to_square,
+            promotion,
+            required_ep,
+            pawns,
+            knights,
+            bishops,
+            rooks,
+            queens,
+            kings,
+            white_occupied,
+            black_occupied,
+            promoted,
+            castling_rights,
+            is_pawn_move,
+            is_capture,
+            delivered_check,
+        ) in raw:
+            required_ep = required_ep if required_ep >= 0 else None
+            move = chess.Move(
+                from_square,
+                to_square,
+                promotion=promotion or None,
+            )
+            board.ep_square = required_ep
+            san = board.san(move)
+            current = board.copy(stack=False)
+            current.pawns = pawns
+            current.knights = knights
+            current.bishops = bishops
+            current.rooks = rooks
+            current.queens = queens
+            current.kings = kings
+            current.occupied_co[chess.WHITE] = white_occupied
+            current.occupied_co[chess.BLACK] = black_occupied
+            current.occupied = white_occupied | black_occupied
+            current.promoted = promoted
+            current.castling_rights = castling_rights
+            current.turn = not board.turn
+            current.ep_square = (
+                (move.from_square + move.to_square) // 2
+                if is_pawn_move
+                and abs(move.to_square - move.from_square) == 16
+                else None
+            )
+            current.halfmove_clock = (
+                0 if is_pawn_move or is_capture else board.halfmove_clock + 1
+            )
+            current.fullmove_number = board.fullmove_number + int(
+                board.turn == chess.BLACK
+            )
+            expanded.append(
+                _ExpandedVariant(
+                    move,
+                    required_ep,
+                    current,
+                    san,
+                    bool(is_pawn_move),
+                    bool(is_capture),
+                    bool(delivered_check),
+                )
+            )
+    finally:
+        board.ep_square = saved_ep
+    return expanded
+
+
+def _expanded_move_variants(
+    board: chess.Board,
+    ep_targets: Iterable[int] = (),
+) -> list[_ExpandedVariant]:
+    """Returns legal moves with exact post-push boards and tactical flags."""
+
+    targets = tuple(sorted(set(ep_targets)))
+    native = _native_expanded_move_variants(board, targets)
+    if native is not None:
+        return native
+    expanded: list[_ExpandedVariant] = []
+    for move, required_ep in _python_legal_move_variants(board, targets):
+        current = board.copy(stack=False)
+        current.ep_square = required_ep
+        san = current.san(move)
+        piece = current.piece_at(move.from_square)
+        is_pawn_move = piece is not None and piece.piece_type == chess.PAWN
+        is_capture = current.is_capture(move)
+        current.push(move)
+        expanded.append(
+            _ExpandedVariant(
+                move,
+                required_ep,
+                current,
+                san,
+                is_pawn_move,
+                is_capture,
+                current.is_check(),
+            )
+        )
+    return expanded
+
+
 def _has_legal_move(board: chess.Board, ep_targets: Iterable[int] = ()) -> bool:
-    return bool(_legal_move_variants(board, ep_targets))
+    targets = tuple(sorted(set(ep_targets)))
+    if not board.chess960:
+        from . import evaluation
+
+        native = evaluation._native_eval
+        if native is not None and hasattr(native, "has_legal_move"):
+            return bool(
+                native.has_legal_move(
+                    board.pawns,
+                    board.knights,
+                    board.bishops,
+                    board.rooks,
+                    board.queens,
+                    board.kings,
+                    board.occupied_co[chess.WHITE],
+                    board.occupied_co[chess.BLACK],
+                    board.promoted,
+                    board.clean_castling_rights(),
+                    board.turn,
+                    targets,
+                )
+            )
+    return bool(_python_legal_move_variants(board, targets))
 
 
 def _series_outcome(
@@ -443,7 +666,7 @@ def _merged_series_generation(
             if should_stop is not None and should_stop():
                 raise GenerationCancelled
             _visit_generation_position(counters, max_positions)
-            variants = _legal_move_variants(
+            variants = _expanded_move_variants(
                 item.board, state.ep_targets if not item.moves else ()
             )
             if not variants:
@@ -458,15 +681,12 @@ def _merged_series_generation(
                 )
                 continue
 
-            for move, required_ep in variants:
-                current = item.board.copy(stack=False)
-                current.ep_square = required_ep
-                san = current.san(move)
-                piece = current.piece_at(move.from_square)
-                is_pawn_move = (
-                    piece is not None and piece.piece_type == chess.PAWN
-                )
-                is_capture = current.is_capture(move)
+            for expanded in variants:
+                move = expanded.move
+                current = expanded.board
+                san = expanded.san
+                is_pawn_move = expanded.is_pawn_move
+                is_capture = expanded.is_capture
 
                 next_candidates = dict(item.ep_candidates)
                 if move.from_square in next_candidates:
@@ -476,8 +696,7 @@ def _merged_series_generation(
                         move.from_square + move.to_square
                     ) // 2
 
-                current.push(move)
-                delivered_check = current.is_check()
+                delivered_check = expanded.delivered_check
                 next_moves = item.moves + (move.uci(),)
                 next_sans = item.sans + (san,)
                 next_progress = item.made_progress or is_pawn_move or is_capture

@@ -13,6 +13,8 @@ import tempfile
 import time
 from typing import Any, Callable, Mapping, Sequence
 
+import chess
+
 from .league import (
     OPENING_SUITE,
     OPENING_SUITE_VERSION,
@@ -22,12 +24,14 @@ from .league import (
     _play_game,
     runtime_provenance,
 )
-from .model import ENGINE_SOURCE_FINGERPRINT, ENGINE_VERSION
+from .model import ENGINE_SOURCE_FINGERPRINT, ENGINE_VERSION, ProgressiveState
 from .profiles import EngineProfile, baseline_profile, load_profile
 from .resources import ResourceBudget, detect_resource_budget
+from .rules import generate_series, play_series
 
 
 STRENGTH_REPORT_FORMAT = "spc-fixed-suite-strength-v1"
+SEEDED_OPENING_SUITE_FORMAT = "spc-neutral-seeded-openings-v1"
 
 
 def _now() -> str:
@@ -42,6 +46,243 @@ def _stable_seed(*parts: object) -> int:
 def _stable_id(*parts: object) -> str:
     encoded = "|".join(str(part) for part in parts).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class SeededOpeningHistory:
+    """Replayable neutral sampling trace for one generated boundary."""
+
+    case_id: str
+    target_series: int
+    attempt: int
+    series: tuple[tuple[str, ...], ...]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "case_id": self.case_id,
+            "target_series": self.target_series,
+            "attempt": self.attempt,
+            "series": [list(moves) for moves in self.series],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class SeededOpeningSuite:
+    """A content-addressed set of legal, nonterminal opening boundaries."""
+
+    version: str
+    seed: int
+    min_series: int
+    max_series: int
+    max_frontier_states: int
+    cases: tuple[OpeningCase, ...]
+    histories: tuple[SeededOpeningHistory, ...]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "format": SEEDED_OPENING_SUITE_FORMAT,
+            "version": self.version,
+            "seed": self.seed,
+            "count": len(self.cases),
+            "min_series": self.min_series,
+            "max_series": self.max_series,
+            "max_frontier_states": self.max_frontier_states,
+            "cases": [case.as_dict() for case in self.cases],
+            "histories": [history.as_dict() for history in self.histories],
+        }
+
+
+def _seeded_suite_version(
+    *,
+    seed: int,
+    min_series: int,
+    max_series: int,
+    max_frontier_states: int,
+    cases: Sequence[OpeningCase],
+    histories: Sequence[SeededOpeningHistory],
+) -> str:
+    payload = {
+        "format": SEEDED_OPENING_SUITE_FORMAT,
+        "seed": seed,
+        "min_series": min_series,
+        "max_series": max_series,
+        "max_frontier_states": max_frontier_states,
+        "boundaries": [
+            {
+                "opening": case.as_dict(),
+                "history": history.as_dict(),
+            }
+            for case, history in zip(cases, histories, strict=True)
+        ],
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(canonical.encode()).hexdigest()[:20]
+    return f"{SEEDED_OPENING_SUITE_FORMAT}-{digest}"
+
+
+def verify_seeded_opening_suite(suite: SeededOpeningSuite) -> None:
+    """Raises if any generated boundary cannot be reproduced from its history."""
+
+    if not suite.cases or len(suite.cases) != len(suite.histories):
+        raise ValueError("seeded opening suite cases and histories must align")
+    case_ids = [case.case_id for case in suite.cases]
+    if len(set(case_ids)) != len(case_ids):
+        raise ValueError("seeded opening suite contains duplicate case ids")
+    hashes = [case.state().position_hash for case in suite.cases]
+    if len(set(hashes)) != len(hashes):
+        raise ValueError("seeded opening suite contains duplicate positions")
+
+    for case, history in zip(suite.cases, suite.histories, strict=True):
+        if history.case_id != case.case_id:
+            raise ValueError("seeded opening history names the wrong case")
+        state = ProgressiveState.initial()
+        for moves in history.series:
+            result = play_series(state, moves)
+            if result.is_terminal:
+                raise ValueError(
+                    f"seeded opening {case.case_id} crosses a terminal result"
+                )
+            state = result.final_state
+        if state.series_number != history.target_series:
+            raise ValueError(
+                f"seeded opening {case.case_id} has the wrong target series"
+            )
+        if state.pfen != case.state().pfen:
+            raise ValueError(
+                f"seeded opening {case.case_id} does not replay to its boundary"
+            )
+
+    expected_version = _seeded_suite_version(
+        seed=suite.seed,
+        min_series=suite.min_series,
+        max_series=suite.max_series,
+        max_frontier_states=suite.max_frontier_states,
+        cases=suite.cases,
+        histories=suite.histories,
+    )
+    if suite.version != expected_version:
+        raise ValueError("seeded opening suite version does not match its content")
+
+
+def build_seeded_opening_suite(
+    *,
+    seed: int,
+    count: int,
+    min_series: int = 3,
+    max_series: int = 6,
+    max_frontier_states: int = 32,
+) -> SeededOpeningSuite:
+    """Builds neutral deterministic boundaries without consulting an engine.
+
+    Complete legal series are generated by the public rules API. Selection is
+    based only on the declared seed, attempt number, and position identity; no
+    profile, evaluation, result label, or trained parameter influences it.
+    """
+
+    if not 1 <= count <= 512:
+        raise ValueError("count must be between 1 and 512")
+    if not 2 <= min_series <= max_series <= 16:
+        raise ValueError("series range must satisfy 2 <= min <= max <= 16")
+    if not 2 <= max_frontier_states <= 512:
+        raise ValueError("max_frontier_states must be between 2 and 512")
+
+    cases: list[OpeningCase] = []
+    histories: list[SeededOpeningHistory] = []
+    seen_hashes: set[str] = set()
+    span = max_series - min_series + 1
+    target_offset = _stable_seed(
+        SEEDED_OPENING_SUITE_FORMAT, seed, "target-series-offset"
+    ) % span
+    max_attempts = max(256, count * 128)
+
+    for attempt in range(max_attempts):
+        target_series = min_series + ((attempt + target_offset) % span)
+        state = ProgressiveState.initial()
+        history: list[tuple[str, ...]] = []
+        usable = True
+        while state.series_number < target_series:
+            generated = generate_series(
+                state,
+                merge_transpositions=True,
+                max_frontier_states=max_frontier_states,
+            )
+            continuations = [result for result in generated if not result.is_terminal]
+            if not continuations:
+                usable = False
+                break
+            choice_seed = _stable_seed(
+                SEEDED_OPENING_SUITE_FORMAT,
+                seed,
+                attempt,
+                state.series_number,
+                state.position_hash,
+            )
+            selected = continuations[choice_seed % len(continuations)]
+            replayed = play_series(state, selected.moves)
+            if (
+                replayed.is_terminal
+                or replayed.final_state.pfen != selected.final_state.pfen
+            ):
+                raise RuntimeError("generated series failed exact public-API replay")
+            history.append(selected.moves)
+            state = replayed.final_state
+
+        if not usable or state.position_hash in seen_hashes:
+            continue
+        seen_hashes.add(state.position_hash)
+        case_id = (
+            f"seeded-{len(cases) + 1:03d}-s{state.series_number}-"
+            f"{state.position_hash[:12]}"
+        )
+        history_text = " | ".join("/".join(moves) for moves in history)
+        source = (
+            f"neutral deterministic legal-series sampling v1; seed={seed}; "
+            f"attempt={attempt}; history={history_text}"
+        )
+        case = OpeningCase(
+            case_id=case_id,
+            fen=state.board.fen(en_passant="fen"),
+            series_number=state.series_number,
+            quiet_series=state.quiet_series,
+            ep_targets=tuple(
+                chess.square_name(square) for square in state.ep_targets
+            ),
+            source=source,
+        )
+        trace = SeededOpeningHistory(
+            case_id=case_id,
+            target_series=target_series,
+            attempt=attempt,
+            series=tuple(history),
+        )
+        cases.append(case)
+        histories.append(trace)
+        if len(cases) == count:
+            break
+
+    if len(cases) != count:
+        raise RuntimeError(
+            f"could only build {len(cases)}/{count} unique nonterminal openings"
+        )
+    version = _seeded_suite_version(
+        seed=seed,
+        min_series=min_series,
+        max_series=max_series,
+        max_frontier_states=max_frontier_states,
+        cases=cases,
+        histories=histories,
+    )
+    suite = SeededOpeningSuite(
+        version=version,
+        seed=seed,
+        min_series=min_series,
+        max_series=max_series,
+        max_frontier_states=max_frontier_states,
+        cases=tuple(cases),
+        histories=tuple(histories),
+    )
+    verify_seeded_opening_suite(suite)
+    return suite
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,17 +302,16 @@ class StrengthMatchConfig:
     )
 
     def __post_init__(self) -> None:
-        if self.opening_suite_version != OPENING_SUITE_VERSION:
-            raise ValueError(
-                f"unsupported opening suite {self.opening_suite_version}"
-            )
-        available = {case.case_id for case in OPENING_SUITE}
+        if not self.opening_suite_version.strip():
+            raise ValueError("opening_suite_version cannot be empty")
         if not self.opening_case_ids:
             raise ValueError("opening_case_ids cannot be empty")
         if len(set(self.opening_case_ids)) != len(self.opening_case_ids):
             raise ValueError("opening_case_ids cannot contain duplicates")
-        if not set(self.opening_case_ids) <= available:
-            raise ValueError("opening_case_ids must name cases in the active suite")
+        if self.opening_suite_version == OPENING_SUITE_VERSION:
+            available = {case.case_id for case in OPENING_SUITE}
+            if not set(self.opening_case_ids) <= available:
+                raise ValueError("opening_case_ids must name cases in the active suite")
         if not 1 <= self.pairs <= len(self.opening_case_ids):
             raise ValueError(
                 "pairs must be between 1 and the number of unique opening cases"
@@ -146,8 +386,54 @@ def resolve_match_profile(reference: str | Path) -> EngineProfile:
     return load_profile(reference)
 
 
-def _ordered_openings(config: StrengthMatchConfig) -> tuple[OpeningCase, ...]:
-    by_id = {case.case_id: case for case in OPENING_SUITE}
+def _ordered_openings(
+    config: StrengthMatchConfig,
+    opening_cases: SeededOpeningSuite | Sequence[OpeningCase] | None = None,
+) -> tuple[OpeningCase, ...]:
+    if isinstance(opening_cases, SeededOpeningSuite):
+        verify_seeded_opening_suite(opening_cases)
+        if config.opening_suite_version != opening_cases.version:
+            raise ValueError(
+                "config opening_suite_version does not match the verified suite"
+            )
+        available_cases = opening_cases.cases
+    elif opening_cases is None:
+        if config.opening_suite_version != OPENING_SUITE_VERSION:
+            raise ValueError(
+                "a verified SeededOpeningSuite is required for a non-default suite"
+            )
+        available_cases = OPENING_SUITE
+    else:
+        if config.opening_suite_version != OPENING_SUITE_VERSION:
+            raise ValueError(
+                "a verified SeededOpeningSuite is required for a non-default suite"
+            )
+        available_cases = tuple(opening_cases)
+        if not available_cases:
+            raise ValueError("opening_cases cannot be empty")
+        case_ids = [case.case_id for case in available_cases]
+        if len(set(case_ids)) != len(case_ids):
+            raise ValueError("opening_cases cannot contain duplicate case ids")
+        hashes = [case.state().position_hash for case in available_cases]
+        if len(set(hashes)) != len(hashes):
+            raise ValueError("opening_cases cannot contain duplicate positions")
+        if config.opening_suite_version == OPENING_SUITE_VERSION:
+            canonical = {case.case_id: case.as_dict() for case in OPENING_SUITE}
+            if any(
+                canonical.get(case.case_id) != case.as_dict()
+                for case in available_cases
+            ):
+                raise ValueError(
+                    "custom opening content cannot use the default suite version"
+                )
+
+    by_id = {case.case_id: case for case in available_cases}
+    missing = [case_id for case_id in config.opening_case_ids if case_id not in by_id]
+    if missing:
+        raise ValueError(
+            "opening_case_ids are missing from the supplied suite: "
+            + ", ".join(missing)
+        )
     cases = [by_id[case_id] for case_id in config.opening_case_ids]
     ordering_seed = _stable_seed(
         STRENGTH_REPORT_FORMAT,
@@ -163,15 +449,22 @@ def _build_jobs(
     candidate: EngineProfile,
     reference: EngineProfile,
     config: StrengthMatchConfig,
+    opening_cases: SeededOpeningSuite | Sequence[OpeningCase] | None = None,
 ) -> tuple[GameJob, ...]:
     if candidate.profile_id == reference.profile_id:
         raise ValueError("strength match requires two different engine profiles")
-    openings = _ordered_openings(config)
+    openings = _ordered_openings(config, opening_cases)
+    opening_identity = json.dumps(
+        [opening.as_dict() for opening in openings],
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     run_id = "strength-" + _stable_id(
         STRENGTH_REPORT_FORMAT,
         candidate.profile_id,
         reference.profile_id,
         json.dumps(config.as_dict(), sort_keys=True, separators=(",", ":")),
+        opening_identity,
     )[:20]
     jobs: list[GameJob] = []
     for pair_index, opening in enumerate(openings):
@@ -185,12 +478,16 @@ def _build_jobs(
             ((candidate, reference), (reference, candidate))
         ):
             opening_index = pair_index * 2 + swap
+            opening_payload = json.dumps(
+                opening.as_dict(), sort_keys=True, separators=(",", ":")
+            )
             jobs.append(
                 GameJob(
                     job_key=_stable_id(
                         run_id,
                         opening_index,
                         opening.case_id,
+                        opening_payload,
                         pair_seed,
                         white.profile_id,
                         black.profile_id,
@@ -208,6 +505,7 @@ def _build_jobs(
                     max_generation_positions=config.max_generation_positions,
                     max_game_work_positions=config.max_game_work_positions,
                     emergency_max_series=config.emergency_max_series,
+                    opening_suite_version=config.opening_suite_version,
                 )
             )
     return tuple(jobs)
@@ -239,7 +537,7 @@ def _worker_failure(job: GameJob, error: BaseException) -> GameRecord:
         job.stage,
         job.opening_index,
         job.opening.case_id,
-        OPENING_SUITE_VERSION,
+        job.opening_suite_version,
         job.seed,
         job.white_profile.profile_id,
         job.black_profile.profile_id,
@@ -442,6 +740,7 @@ def run_strength_match(
     reference: EngineProfile,
     *,
     config: StrengthMatchConfig | None = None,
+    opening_cases: SeededOpeningSuite | Sequence[OpeningCase] | None = None,
     requested_workers: int | None = None,
     memory_per_worker_mb: int = 512,
     reserve_memory_mb: int = 512,
@@ -451,11 +750,13 @@ def run_strength_match(
 
     No league or champion database is opened or modified. Each selected boundary
     is used exactly twice with colors swapped, and every move-selection search
-    receives the same deterministic limits regardless of profile metadata.
+    receives the same deterministic limits regardless of profile metadata. A
+    non-default version requires its verified ``SeededOpeningSuite`` through
+    ``opening_cases``.
     """
 
     config = config or StrengthMatchConfig()
-    jobs = _build_jobs(candidate, reference, config)
+    jobs = _build_jobs(candidate, reference, config, opening_cases)
     detected_resources = detect_resource_budget(
         requested_workers,
         memory_per_worker_mb=memory_per_worker_mb,
@@ -484,6 +785,14 @@ def run_strength_match(
         "candidate": candidate.as_dict(),
         "reference": reference.as_dict(),
         "config": config.as_dict(),
+        "opening_suite": (
+            opening_cases.as_dict()
+            if isinstance(opening_cases, SeededOpeningSuite)
+            else {
+                "format": "built-in-opening-suite",
+                "version": OPENING_SUITE_VERSION,
+            }
+        ),
         "resources": resources.as_dict(),
         "execution": {
             "wall_elapsed_seconds": elapsed_seconds,

@@ -1,0 +1,229 @@
+{
+  "baseline_holdout_loss": 0.8704391108737539,
+  "baseline_train_loss": 0.8860255548104087,
+  "candidate": {
+    "generation": 1,
+    "mutation_seed": null,
+    "name": "self-play Texel candidate",
+    "notes": "deterministic-texel-coordinate-v1 candidate from spc-selfplay-corpus-fa0ae60cadbd7a9e4c98; not strength-verified until tactical and fixed-suite match gates pass.",
+    "parent_profile_ids": [
+      "spc-68942034c41b4cc4"
+    ],
+    "profile_id": "spc-19916d80f2a58da3",
+    "recommended_branch_cap": 32,
+    "recommended_depth": 2,
+    "schema_version": 1,
+    "weights": {
+      "boundary_check": 25,
+      "immediate_vulnerability": 84,
+      "king_space": 70,
+      "material": 56,
+      "promotion_corridors": 25,
+      "series_reach": 72,
+      "useful_mobility": 25
+    }
+  },
+  "candidate_holdout_loss": 0.6700449284215153,
+  "candidate_profile_id": "spc-19916d80f2a58da3",
+  "candidate_train_loss": 0.7328557096145736,
+  "changes": [
+    {
+      "feature": "promotion_corridors",
+      "step": 20,
+      "train_loss": 0.8578652820984077,
+      "value": 80
+    },
+    {
+      "feature": "promotion_corridors",
+      "step": 20,
+      "train_loss": 0.8335648776199095,
+      "value": 60
+    },
+    {
+      "feature": "promotion_corridors",
+      "step": 20,
+      "train_loss": 0.8136220510920905,
+      "value": 40
+    },
+    {
+      "feature": "material",
+      "step": 20,
+      "train_loss": 0.7997979584141499,
+      "value": 80
+    },
+    {
+      "feature": "promotion_corridors",
+      "step": 20,
+      "train_loss": 0.7877096662004195,
+      "value": 25
+    },
+    {
+      "feature": "useful_mobility",
+      "step": 20,
+      "train_loss": 0.7784475748216336,
+      "value": 80
+    },
+    {
+      "feature": "boundary_check",
+      "step": 20,
+      "train_loss": 0.7702659067208708,
+      "value": 80
+    },
+    {
+      "feature": "material",
+      "step": 20,
+      "train_loss": 0.7626989488868718,
+      "value": 60
+    },
+    {
+      "feature": "useful_mobility",
+      "step": 20,
+      "train_loss": 0.755978416419196,
+      "value": 60
+    },
+    {
+      "feature": "boundary_check",
+      "step": 20,
+      "train_loss": 0.7500569745040249,
+      "value": 60
+    },
+    {
+      "feature": "useful_mobility",
+      "step": 20,
+      "train_loss": 0.7455065306451572,
+      "value": 40
+    },
+    {
+      "feature": "boundary_check",
+      "step": 20,
+      "train_loss": 0.7417834813155916,
+      "value": 40
+    },
+    {
+      "feature": "series_reach",
+      "step": 20,
+      "train_loss": 0.739365559327146,
+      "value": 80
+    },
+    {
+      "feature": "king_space",
+      "step": 20,
+      "train_loss": 0.737453218282091,
+      "value": 80
+    },
+    {
+      "feature": "useful_mobility",
+      "step": 20,
+      "train_loss": 0.7356764485820928,
+      "value": 25
+    },
+    {
+      "feature": "boundary_check",
+      "step": 20,
+      "train_loss": 0.7344211460593854,
+      "value": 25
+    },
+    {
+      "feature": "immediate_vulnerability",
+      "step": 20,
+      "train_loss": 0.73382756794494,
+      "value": 80
+    },
+    {
+      "feature": "series_reach",
+      "step": 20,
+      "train_loss": 0.7336323518640713,
+      "value": 60
+    },
+    {
+      "feature": "king_space",
+      "step": 20,
+      "train_loss": 0.7335438150143595,
+      "value": 60
+    },
+    {
+      "feature": "king_space",
+      "step": 10,
+      "train_loss": 0.7332686236043887,
+      "value": 70
+    },
+    {
+      "feature": "series_reach",
+      "step": 10,
+      "train_loss": 0.7331184020589283,
+      "value": 70
+    },
+    {
+      "feature": "material",
+      "step": 5,
+      "train_loss": 0.7329454247248307,
+      "value": 55
+    },
+    {
+      "feature": "immediate_vulnerability",
+      "step": 5,
+      "train_loss": 0.7329208420650652,
+      "value": 85
+    },
+    {
+      "feature": "immediate_vulnerability",
+      "step": 2,
+      "train_loss": 0.7329025109068316,
+      "value": 83
+    },
+    {
+      "feature": "series_reach",
+      "step": 2,
+      "train_loss": 0.7328999271412572,
+      "value": 72
+    },
+    {
+      "feature": "material",
+      "step": 1,
+      "train_loss": 0.7328750904337942,
+      "value": 56
+    },
+    {
+      "feature": "immediate_vulnerability",
+      "step": 1,
+      "train_loss": 0.7328557096145736,
+      "value": 84
+    }
+  ],
+  "claim_scope": "self-play value-fit proxy only; tactical and controlled match promotion remain mandatory",
+  "corpus_id": "spc-selfplay-corpus-fa0ae60cadbd7a9e4c98",
+  "corpus_summary": {
+    "games_by_result": {
+      "0-1": 48,
+      "1-0": 35,
+      "1/2-1/2": 5
+    },
+    "holdout_samples": 208,
+    "label_contract": "eventual legal checkmate or rules-proven ten-series draw; manual and technical results excluded",
+    "samples": 852,
+    "train_samples": 644,
+    "weight_contract": "each completed game contributes total weight 1"
+  },
+  "holdout_samples": 208,
+  "method": "deterministic-texel-coordinate-v1",
+  "parent_profile_id": "spc-68942034c41b4cc4",
+  "regularization": 0.02,
+  "scale": 1200,
+  "step_schedule": [
+    20,
+    10,
+    5,
+    2,
+    1
+  ],
+  "train_samples": 644,
+  "weights": {
+    "boundary_check": 25,
+    "immediate_vulnerability": 84,
+    "king_space": 70,
+    "material": 56,
+    "promotion_corridors": 25,
+    "series_reach": 72,
+    "useful_mobility": 25
+  }
+}

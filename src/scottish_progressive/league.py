@@ -344,6 +344,7 @@ class GameJob:
     max_generation_positions: int
     max_game_work_positions: int | None
     emergency_max_series: int | None
+    opening_suite_version: str = OPENING_SUITE_VERSION
 
 
 @dataclass(frozen=True, slots=True)
@@ -473,7 +474,7 @@ def _technical_failure(
         job.stage,
         job.opening_index,
         job.opening.case_id,
-        OPENING_SUITE_VERSION,
+        job.opening_suite_version,
         job.seed,
         job.white_profile.profile_id,
         job.black_profile.profile_id,
@@ -503,7 +504,7 @@ def _play_game(job: GameJob) -> GameRecord:
             job.stage,
             job.opening_index,
             job.opening.case_id,
-            OPENING_SUITE_VERSION,
+            job.opening_suite_version,
             job.seed,
             job.white_profile.profile_id,
             job.black_profile.profile_id,
@@ -627,7 +628,7 @@ def _play_game(job: GameJob) -> GameRecord:
                 )
             return GameRecord(
                 job.job_key, job.run_id, job.generation, job.stage,
-                job.opening_index, job.opening.case_id, OPENING_SUITE_VERSION,
+                job.opening_index, job.opening.case_id, job.opening_suite_version,
                 job.seed, job.white_profile.profile_id, job.black_profile.profile_id,
                 "1/2-1/2", "proven-draw-no-mating-material", None, None,
                 start_pfen, state.pfen, len(trace), tuple(trace),
@@ -650,7 +651,7 @@ def _play_game(job: GameJob) -> GameRecord:
                 job.stage,
                 job.opening_index,
                 job.opening.case_id,
-                OPENING_SUITE_VERSION,
+                job.opening_suite_version,
                 job.seed,
                 job.white_profile.profile_id,
                 job.black_profile.profile_id,
@@ -671,7 +672,7 @@ def _play_game(job: GameJob) -> GameRecord:
                 job.stage,
                 job.opening_index,
                 job.opening.case_id,
-                OPENING_SUITE_VERSION,
+                job.opening_suite_version,
                 job.seed,
                 job.white_profile.profile_id,
                 job.black_profile.profile_id,
@@ -1579,7 +1580,7 @@ def _paired_jobs(
         stage,
         first.profile_id,
         second.profile_id,
-        OPENING_SUITE_VERSION,
+        config.opening_suite_version,
         "opening-order",
     )
     ordered_cases = list(cases)
@@ -1616,6 +1617,7 @@ def _paired_jobs(
                     config.max_generation_positions,
                     config.max_game_work_positions,
                     config.emergency_max_series,
+                    config.opening_suite_version,
                 )
             )
     return jobs
@@ -1681,7 +1683,7 @@ def _execute_jobs(
                     job.stage,
                     job.opening_index,
                     job.opening.case_id,
-                    OPENING_SUITE_VERSION,
+                    job.opening_suite_version,
                     job.seed,
                     job.white_profile.profile_id,
                     job.black_profile.profile_id,

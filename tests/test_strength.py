@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 import json
 import sqlite3
@@ -27,11 +28,15 @@ from scottish_progressive.profiles import (
 from scottish_progressive.resources import detect_resource_budget
 from scottish_progressive.rules import play_series
 from scottish_progressive.strength import (
+    SEEDED_OPENING_SUITE_FORMAT,
     STRENGTH_REPORT_FORMAT,
     StrengthMatchConfig,
     _build_jobs,
+    _worker_failure,
+    build_seeded_opening_suite,
     resolve_match_profile,
     run_strength_match,
+    verify_seeded_opening_suite,
     write_strength_report,
 )
 
@@ -80,6 +85,168 @@ def test_strength_config_rejects_duplicate_suite_cases_and_identical_profiles() 
         _build_jobs(baseline_profile(), baseline_profile(), StrengthMatchConfig.smoke())
 
 
+def test_seeded_opening_suite_is_deterministic_unique_and_replay_verified() -> None:
+    first = build_seeded_opening_suite(
+        seed=818,
+        count=8,
+        min_series=3,
+        max_series=5,
+        max_frontier_states=12,
+    )
+    repeated = build_seeded_opening_suite(
+        seed=818,
+        count=8,
+        min_series=3,
+        max_series=5,
+        max_frontier_states=12,
+    )
+    changed = build_seeded_opening_suite(
+        seed=819,
+        count=8,
+        min_series=3,
+        max_series=5,
+        max_frontier_states=12,
+    )
+
+    assert first.as_dict() == repeated.as_dict()
+    assert first.version.startswith(f"{SEEDED_OPENING_SUITE_FORMAT}-")
+    assert changed.version != first.version
+    assert [case.state().position_hash for case in changed.cases] != [
+        case.state().position_hash for case in first.cases
+    ]
+    assert len({case.case_id for case in first.cases}) == 8
+    assert len({case.state().position_hash for case in first.cases}) == 8
+    assert {case.series_number for case in first.cases} == {3, 4, 5}
+    assert all("history=" in case.source for case in first.cases)
+    verify_seeded_opening_suite(first)
+
+    corrupted = replace(first, version=first.version + "-tampered")
+    with pytest.raises(ValueError, match="version does not match"):
+        verify_seeded_opening_suite(corrupted)
+
+
+def test_custom_seeded_suite_builds_fixed_color_swapped_jobs() -> None:
+    candidate, reference = _profiles()
+    suite = build_seeded_opening_suite(seed=33, count=3, max_frontier_states=8)
+    config = StrengthMatchConfig(
+        pairs=3,
+        seed=44,
+        search_depth=1,
+        max_series_per_node=2,
+        max_generation_positions=5_000,
+        max_game_work_positions=10_000,
+        opening_suite_version=suite.version,
+        opening_case_ids=tuple(case.case_id for case in suite.cases),
+    )
+    with pytest.raises(ValueError, match="verified SeededOpeningSuite"):
+        _build_jobs(candidate, reference, config)
+    with pytest.raises(ValueError, match="verified SeededOpeningSuite"):
+        _build_jobs(candidate, reference, config, suite.cases)
+
+    jobs = _build_jobs(candidate, reference, config, suite)
+    assert len(jobs) == 6
+    assert {job.opening_suite_version for job in jobs} == {suite.version}
+    assert len({job.opening.case_id for job in jobs[::2]}) == 3
+    for first, second in zip(jobs[::2], jobs[1::2], strict=True):
+        assert first.opening.as_dict() == second.opening.as_dict()
+        assert first.seed == second.seed
+        assert first.white_profile.profile_id == second.black_profile.profile_id
+        assert first.black_profile.profile_id == second.white_profile.profile_id
+
+
+def test_custom_suite_version_survives_match_records_and_worker_failure(
+    monkeypatch,
+) -> None:
+    candidate, reference = _profiles()
+    suite = build_seeded_opening_suite(seed=73, count=1, max_frontier_states=8)
+    config = StrengthMatchConfig(
+        pairs=1,
+        seed=74,
+        search_depth=1,
+        max_series_per_node=2,
+        max_generation_positions=5_000,
+        max_game_work_positions=10_000,
+        opening_suite_version=suite.version,
+        opening_case_ids=(suite.cases[0].case_id,),
+    )
+
+    def fake_play(job):
+        state = job.opening.state()
+        return GameRecord(
+            job.job_key,
+            job.run_id,
+            job.generation,
+            job.stage,
+            job.opening_index,
+            job.opening.case_id,
+            job.opening_suite_version,
+            job.seed,
+            job.white_profile.profile_id,
+            job.black_profile.profile_id,
+            "1/2-1/2",
+            "stalemate",
+            None,
+            None,
+            state.pfen,
+            state.pfen,
+            0,
+            (),
+        )
+
+    monkeypatch.setattr("scottish_progressive.strength._play_game", fake_play)
+    report = run_strength_match(
+        candidate,
+        reference,
+        config=config,
+        opening_cases=suite,
+        requested_workers=1,
+        memory_per_worker_mb=128,
+        reserve_memory_mb=128,
+    )
+    assert report["config"]["opening_suite_version"] == suite.version
+    assert report["opening_suite"] == suite.as_dict()
+    assert report["summary"]["completed_pairs"] == 1
+    assert {game["opening_suite_version"] for game in report["games"]} == {
+        suite.version
+    }
+
+    jobs = _build_jobs(candidate, reference, config, suite)
+    failure = _worker_failure(jobs[0], RuntimeError("fixture"))
+    assert failure.opening_suite_version == suite.version
+
+
+def test_custom_suite_rejects_reused_version_after_opening_tamper() -> None:
+    candidate, reference = _profiles()
+    suite = build_seeded_opening_suite(seed=991, count=2, max_frontier_states=8)
+    config = StrengthMatchConfig(
+        pairs=2,
+        opening_suite_version=suite.version,
+        opening_case_ids=tuple(case.case_id for case in suite.cases),
+    )
+
+    altered_case = replace(suite.cases[0], source=suite.cases[0].source + "; altered")
+    tampered = replace(suite, cases=(altered_case, *suite.cases[1:]))
+    with pytest.raises(ValueError, match="version does not match its content"):
+        _build_jobs(candidate, reference, config, tampered)
+
+    replacement = build_seeded_opening_suite(
+        seed=992,
+        count=1,
+        min_series=suite.cases[0].series_number,
+        max_series=suite.cases[0].series_number,
+        max_frontier_states=8,
+    ).cases[0]
+    altered_pfen = replace(
+        suite.cases[0],
+        fen=replacement.fen,
+        quiet_series=replacement.quiet_series,
+        ep_targets=replacement.ep_targets,
+    )
+    pfen_tampered = replace(suite, cases=(altered_pfen, *suite.cases[1:]))
+    with pytest.raises(ValueError, match="does not replay to its boundary"):
+        _build_jobs(candidate, reference, config, pfen_tampered)
+
+
 def test_series_twelve_advances_to_thirteen_with_thirteen_moves_available() -> None:
     state = ProgressiveState.from_fen(
         "7k/8/8/8/8/8/8/K5n1 b - - 0 1", 12
@@ -114,6 +281,7 @@ def test_whole_game_work_cutoff_is_unattributed_incomplete_with_attempt_trace(
         5_000,
         1_000,
         None,
+        "unit-work-suite-v1",
     )
     partial = SimpleNamespace(
         timed_out=False,
@@ -144,6 +312,7 @@ def test_whole_game_work_cutoff_is_unattributed_incomplete_with_attempt_trace(
     assert record.trace[-1]["search_work_limit"] == 1_000
     assert record.trace[-1]["game_work_positions"] == 1_000
     assert record.trace[-1]["reduced_for_game_budget"] is True
+    assert record.opening_suite_version == "unit-work-suite-v1"
 
 
 def test_per_search_work_limit_plays_legal_best_so_far_mate(monkeypatch) -> None:
@@ -169,6 +338,7 @@ def test_per_search_work_limit_plays_legal_best_so_far_mate(monkeypatch) -> None
         1_000,
         None,
         None,
+        "unit-mate-suite-v1",
     )
     partial = SimpleNamespace(
         timed_out=False,
@@ -194,6 +364,7 @@ def test_per_search_work_limit_plays_legal_best_so_far_mate(monkeypatch) -> None
     assert record.engine_failure_profile_id is None
     assert record.trace[-1]["played"] is True
     assert record.trace[-1]["work_limit_reached"] is True
+    assert record.opening_suite_version == "unit-mate-suite-v1"
 
 
 def test_report_counts_game_pair_failures_and_preserves_traces(monkeypatch) -> None:
@@ -323,6 +494,7 @@ def test_cli_strength_match_threads_limits_and_writes_report(
         reference_profile,
         *,
         config,
+        opening_cases=None,
         requested_workers,
         memory_per_worker_mb,
         reserve_memory_mb,
@@ -331,6 +503,7 @@ def test_cli_strength_match_threads_limits_and_writes_report(
         captured["candidate"] = candidate_profile
         captured["reference"] = reference_profile
         captured["config"] = config
+        captured["opening_cases"] = opening_cases
         captured["requested_workers"] = requested_workers
         progress("strength match: finished 2/2 games")
         return {
@@ -391,6 +564,33 @@ def test_cli_strength_match_threads_limits_and_writes_report(
     printed = capsys.readouterr().out
     assert "Games W/D/L: 1/1/0" in printed
     assert "No Stockfish claim." in printed
+
+    seeded_output = tmp_path / "seeded-report.json"
+    assert main(
+        [
+            "strength-match",
+            str(candidate_path),
+            "baseline",
+            "--pairs",
+            "1",
+            "--seed",
+            "20260822",
+            "--seeded-openings",
+            "2",
+            "--seeded-min-series",
+            "3",
+            "--seeded-max-series",
+            "4",
+            "--seeded-frontier-cap",
+            "8",
+            "--output",
+            str(seeded_output),
+        ]
+    ) == 0
+    seeded_suite = captured["opening_cases"]
+    assert seeded_suite is not None
+    assert len(seeded_suite.cases) == 2
+    assert captured["config"].opening_suite_version == seeded_suite.version
 
 
 def test_population_order_and_preliminary_job_keys_survive_reopen(tmp_path) -> None:

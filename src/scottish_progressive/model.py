@@ -11,7 +11,7 @@ import chess
 import chess.polyglot
 
 
-ENGINE_VERSION = "spc-0.6.0"
+ENGINE_VERSION = "spc-0.7.0"
 RULESET_VERSION = "scottish-modern-common-v1"
 QUIET_DRAW_POLICY = "manual-proof-required"
 MASK_64 = (1 << 64) - 1

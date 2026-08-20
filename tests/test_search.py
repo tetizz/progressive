@@ -130,6 +130,74 @@ def test_search_is_reproducible() -> None:
     assert first.best_series.moves == second.best_series.moves
 
 
+def test_pv_ordering_keeps_generation_cache_canonical() -> None:
+    state = ProgressiveState.initial()
+    searcher = SeriesSearcher(
+        SearchLimits(depth_series=1, max_series_per_node=8)
+    )
+
+    canonical = searcher._ordered_generated(state, ply_from_root=1)
+    preferred = canonical[-1].machine_notation
+    reordered = searcher._ordered_generated(
+        state,
+        ply_from_root=1,
+        preferred_series=preferred,
+    )
+    canonical_again = searcher._ordered_generated(state, ply_from_root=1)
+
+    assert reordered[0].machine_notation == preferred
+    assert [item.machine_notation for item in canonical_again] == [
+        item.machine_notation for item in canonical
+    ]
+
+
+def test_shallow_tt_entry_cannot_answer_a_deeper_search() -> None:
+    state = play_series(ProgressiveState.initial(), ("e2e4",)).final_state
+    limits = SearchLimits(depth_series=2, max_series_per_node=4)
+    warm = SeriesSearcher(limits)
+    window = (-2 * MATE_SCORE, 2 * MATE_SCORE)
+
+    shallow = warm._minimax(state, 1, *window, 1)
+    assert warm._tt[state.transposition_key].depth == 1
+    deep_after_shallow = warm._minimax(state, 2, *window, 1)
+    assert warm._tt[state.transposition_key].depth == 2
+
+    fresh = SeriesSearcher(limits)
+    deep_fresh = fresh._minimax(state, 2, *window, 1)
+
+    assert deep_after_shallow == deep_fresh
+    assert deep_after_shallow[0] != shallow[0]
+
+
+def test_iterative_pv_ordering_preserves_result_with_less_work(monkeypatch) -> None:
+    state = ProgressiveState.initial()
+    limits = SearchLimits(
+        depth_series=3,
+        max_series_per_node=6,
+        max_generation_positions=250_000,
+        collect_all_root_scores=False,
+    )
+    ordered = analyze(state, limits)
+
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_prefer_series",
+        staticmethod(lambda series, preferred_series: None),
+    )
+    static_only = analyze(state, limits)
+
+    assert ordered.score == static_only.score
+    assert ordered.proof == static_only.proof
+    assert ordered.completed_depth == static_only.completed_depth == 3
+    assert ordered.best_series is not None and static_only.best_series is not None
+    assert ordered.best_series.moves == static_only.best_series.moves
+    assert [item.machine_notation for item in ordered.principal_variation] == [
+        item.machine_notation for item in static_only.principal_variation
+    ]
+    assert ordered.stats.nodes < static_only.stats.nodes
+    assert ordered.stats.work_positions < static_only.stats.work_positions
+
+
 def test_best_only_root_returns_only_scores_exact_under_full_root_search() -> None:
     state = ProgressiveState.initial()
     full = analyze(
