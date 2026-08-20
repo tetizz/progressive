@@ -28,10 +28,10 @@
 
 * { box-sizing: border-box; }
 
-html { min-width: 320px; background: var(--page); }
+html { min-width: 0; background: var(--page); }
 
 body {
-  min-width: 320px;
+  min-width: 0;
   min-height: 100vh;
   margin: 0;
   overflow-x: hidden;
@@ -538,6 +538,9 @@ dialog::backdrop { background: rgb(10 10 9 / 70%); backdrop-filter: blur(2px); }
   :root { --board-size: min(calc(100vw - 72px), 720px); }
   .analysis-workspace { display: block; padding: 15px 14px 28px; }
   .board-pane { width: 100%; }
+  .board-layout { width: min(100%, calc(var(--board-size) + 32px)); grid-template-columns: 26px minmax(0, 1fr); }
+  .board-shell { width: 100%; height: auto; aspect-ratio: 1; }
+  .eval-rail { height: auto; }
   .inspector { position: relative; top: auto; width: min(calc(var(--board-size) + 32px), 100%); height: auto; min-height: 520px; margin: 18px auto 0; }
   .tab-panel { height: auto; max-height: none; overflow: visible; }
   .analysis-tree { max-height: 420px; }
@@ -557,7 +560,7 @@ dialog::backdrop { background: rgb(10 10 9 / 70%); backdrop-filter: blur(2px); }
   .series-number small { display: none; }
   .series-number b { font-size: 19px; }
   .series-ledger, .board-toolbar, .boundary-notice { padding-left: 30px; }
-  .board-layout { grid-template-columns: 24px var(--board-size); gap: 4px; }
+  .board-layout { width: min(100%, calc(var(--board-size) + 28px)); grid-template-columns: 24px minmax(0, 1fr); gap: 4px; }
   .eval-rail { width: 24px; }
   .tool-button { min-height: 40px; padding: 6px 8px; }
   .tool-button span { font-size: 11px; }
@@ -587,7 +590,7 @@ dialog::backdrop { background: rgb(10 10 9 / 70%); backdrop-filter: blur(2px); }
   .analysis-workspace { padding-right: 4px; padding-left: 4px; }
   .position-strip { padding-left: 26px; }
   .series-ledger, .board-toolbar, .boundary-notice { padding-left: 26px; }
-  .board-layout { grid-template-columns: 22px var(--board-size); gap: 3px; }
+  .board-layout { width: min(100%, calc(var(--board-size) + 25px)); grid-template-columns: 22px minmax(0, 1fr); gap: 3px; }
   .eval-rail { width: 22px; }
   .tool-button span { display: none; }
   .tool-button { width: 40px; justify-content: center; }
