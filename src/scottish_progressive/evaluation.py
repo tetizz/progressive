@@ -6,6 +6,7 @@ from functools import lru_cache
 import chess
 
 from .model import ProgressiveState, boundary_fen
+from .profiles import EngineProfile, EvaluationWeights
 from .rules import _legal_move_variants
 
 
@@ -238,15 +239,25 @@ def _reach_value(probe: ReachProbe, budget: int) -> int:
     return 0
 
 
-def evaluate(state: ProgressiveState) -> EvaluationBreakdown:
+def _weights(profile: EngineProfile | EvaluationWeights | None) -> EvaluationWeights:
+    if isinstance(profile, EngineProfile):
+        return profile.weights
+    return profile or EvaluationWeights()
+
+
+def evaluate(
+    state: ProgressiveState,
+    profile: EngineProfile | EvaluationWeights | None = None,
+) -> EvaluationBreakdown:
     """Returns a White-centric progressive-specific heuristic score."""
 
     board = state.board
-    material = _material(board)
-    king_space = (
+    weights = _weights(profile)
+    material = weights.scale("material", _material(board))
+    king_space = weights.scale("king_space", (
         _king_flight_squares(board, chess.WHITE)
         - _king_flight_squares(board, chess.BLACK)
-    ) * 28
+    ) * 28)
 
     white_budget = state.series_number if board.turn == chess.WHITE else state.series_number + 1
     black_budget = state.series_number if board.turn == chess.BLACK else state.series_number + 1
@@ -256,25 +267,47 @@ def evaluate(state: ProgressiveState) -> EvaluationBreakdown:
     black_reach = probe_series_reach(
         state, chess.BLACK, max_moves=min(2, black_budget), node_limit=128
     )
-    series_reach = _reach_value(white_reach, white_budget) - _reach_value(
-        black_reach, black_budget
-    )
+    # A failed bounded probe is unknown, not proof that a checking route does
+    # not exist. Scoring one side's found route against the other side's
+    # incomplete search created large move-order artifacts (notably 1.Na3 over
+    # 1.e4 from the initial position). Retain the diagnostic distances but do
+    # not turn an asymmetric unknown into evaluation points.
+    if white_reach.complete and black_reach.complete:
+        series_reach = weights.scale(
+            "series_reach",
+            _reach_value(white_reach, white_budget) - _reach_value(
+                black_reach, black_budget
+            ),
+        )
+    else:
+        series_reach = 0
 
-    promotion_corridors = _promotion_score(
-        state, chess.WHITE
-    ) - _promotion_score(state, chess.BLACK)
-    immediate_vulnerability = (
-        _attacked_material(board, chess.BLACK)
-        - _attacked_material(board, chess.WHITE)
-    ) // 5
-    useful_mobility = (
-        _first_move_mobility(state, chess.WHITE)
-        - _first_move_mobility(state, chess.BLACK)
-    ) * 2
+    promotion_corridors = weights.scale(
+        "promotion_corridors",
+        _promotion_score(state, chess.WHITE) - _promotion_score(state, chess.BLACK),
+    )
+    immediate_vulnerability = weights.scale(
+        "immediate_vulnerability",
+        (
+            _attacked_material(board, chess.BLACK)
+            - _attacked_material(board, chess.WHITE)
+        )
+        // 5,
+    )
+    useful_mobility = weights.scale(
+        "useful_mobility",
+        (
+            _first_move_mobility(state, chess.WHITE)
+            - _first_move_mobility(state, chess.BLACK)
+        )
+        * 2,
+    )
 
     boundary_check = 0
     if board.is_check():
-        boundary_check = 170 if board.turn == chess.BLACK else -170
+        boundary_check = weights.scale(
+            "boundary_check", 170 if board.turn == chess.BLACK else -170
+        )
 
     total = (
         material
@@ -300,7 +333,10 @@ def evaluate(state: ProgressiveState) -> EvaluationBreakdown:
     )
 
 
-def fast_evaluate(state: ProgressiveState) -> int:
+def fast_evaluate(
+    state: ProgressiveState,
+    profile: EngineProfile | EvaluationWeights | None = None,
+) -> int:
     """Cheap White-centric score used only for deterministic move ordering.
 
     It deliberately omits the bounded reach search and first-move mobility.
@@ -308,20 +344,32 @@ def fast_evaluate(state: ProgressiveState) -> int:
     """
 
     board = state.board
-    score = _material(board)
-    score += (
-        _king_flight_squares(board, chess.WHITE)
-        - _king_flight_squares(board, chess.BLACK)
-    ) * 20
-    score += _promotion_score(state, chess.WHITE) - _promotion_score(
-        state, chess.BLACK
+    weights = _weights(profile)
+    score = weights.scale("material", _material(board))
+    score += weights.scale(
+        "king_space",
+        (
+            _king_flight_squares(board, chess.WHITE)
+            - _king_flight_squares(board, chess.BLACK)
+        )
+        * 20,
     )
-    score += (
-        _attacked_material(board, chess.BLACK)
-        - _attacked_material(board, chess.WHITE)
-    ) // 6
+    score += weights.scale(
+        "promotion_corridors",
+        _promotion_score(state, chess.WHITE) - _promotion_score(state, chess.BLACK),
+    )
+    score += weights.scale(
+        "immediate_vulnerability",
+        (
+            _attacked_material(board, chess.BLACK)
+            - _attacked_material(board, chess.WHITE)
+        )
+        // 6,
+    )
     if board.is_check():
-        score += 140 if board.turn == chess.BLACK else -140
+        score += weights.scale(
+            "boundary_check", 140 if board.turn == chess.BLACK else -140
+        )
     return score
 
 

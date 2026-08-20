@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scottish-progressive"
-version = "0.2.0"
+version = "0.4.0"
 description = "A reproducible Scottish Progressive Chess research engine"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "GPL-3.0-or-later"
 authors = [{ name = "tetizz" }]
-dependencies = ["python-chess>=1.999"]
+dependencies = ["python-chess==1.999", "chess==1.11.2"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Games/Entertainment :: Board Games",
@@ -27,6 +27,12 @@ package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"scottish_progressive.web" = [
+    "static/*",
+    "static/pieces/cburnett/*.svg",
+]
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers"

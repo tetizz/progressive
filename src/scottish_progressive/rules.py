@@ -17,6 +17,12 @@ class GenerationStats:
     checking_series: int = 0
     checkmates: int = 0
     stalemates: int = 0
+    frontier_prunes: int = 0
+    frontier_states_pruned: int = 0
+    frontier_paths_pruned: int = 0
+    peak_frontier_states: int = 0
+    required_prefix_moves: int = 0
+    work_limit_reached: bool = False
 
 
 class SeriesLegalityError(ValueError):
@@ -27,6 +33,13 @@ class GenerationCancelled(Exception):
     pass
 
 
+class GenerationWorkLimit(GenerationCancelled):
+    """Raised when a deterministic generation-position budget is exhausted."""
+
+
+FrontierScore = Callable[[chess.Board], int]
+
+
 @dataclass(slots=True)
 class _FrontierState:
     board: chess.Board
@@ -35,6 +48,81 @@ class _FrontierState:
     ep_candidates: dict[int, int]
     made_progress: bool
     path_count: int = 1
+
+
+def _visit_generation_position(
+    counters: GenerationStats,
+    max_positions: int | None,
+) -> None:
+    if max_positions is not None and counters.positions_visited >= max_positions:
+        counters.work_limit_reached = True
+        raise GenerationWorkLimit
+    counters.positions_visited += 1
+
+
+def _frontier_order_key(
+    item: _FrontierState,
+    mover: chess.Color,
+    frontier_score: FrontierScore | None,
+) -> tuple[int, tuple[str, ...]]:
+    score = frontier_score(item.board) if frontier_score is not None else 0
+    return (-score if mover == chess.WHITE else score, item.moves)
+
+
+def _bound_frontier(
+    frontier: dict[tuple[object, ...], _FrontierState],
+    *,
+    mover: chess.Color,
+    prefix_length: int,
+    max_frontier_states: int | None,
+    frontier_score: FrontierScore | None,
+    counters: GenerationStats,
+) -> list[_FrontierState]:
+    counters.peak_frontier_states = max(
+        counters.peak_frontier_states,
+        len(frontier),
+    )
+    if max_frontier_states is None:
+        # Preserve the exact generator's historical traversal and cost when
+        # no selective bound was requested.
+        return list(frontier.values())
+    ordered = sorted(
+        frontier.values(),
+        key=lambda item: _frontier_order_key(item, mover, frontier_score),
+    )
+    if len(ordered) <= max_frontier_states:
+        return ordered
+
+    # Keep deterministic root-choice diversity instead of letting one flashy
+    # first micro-move consume the entire beam. At later layers the tactical
+    # rank still decides which descendants of each first suffix move survive.
+    groups: dict[str, list[_FrontierState]] = {}
+    for item in ordered:
+        group_index = min(prefix_length, len(item.moves) - 1)
+        groups.setdefault(item.moves[group_index], []).append(item)
+    quota = max(1, max_frontier_states // len(groups))
+    selected = [
+        item
+        for group in groups.values()
+        for item in group[:quota]
+    ]
+    selected.sort(key=lambda item: _frontier_order_key(item, mover, frontier_score))
+    selected = selected[:max_frontier_states]
+    selected_moves = {item.moves for item in selected}
+    if len(selected) < max_frontier_states:
+        for item in ordered:
+            if item.moves in selected_moves:
+                continue
+            selected.append(item)
+            selected_moves.add(item.moves)
+            if len(selected) == max_frontier_states:
+                break
+    selected.sort(key=lambda item: _frontier_order_key(item, mover, frontier_score))
+    discarded = [item for item in ordered if item.moves not in selected_moves]
+    counters.frontier_prunes += 1
+    counters.frontier_states_pruned += len(discarded)
+    counters.frontier_paths_pruned += sum(item.path_count for item in discarded)
+    return selected
 
 
 def _legal_move_variants(
@@ -151,17 +239,129 @@ def _stuck_result(
     )
 
 
+def _replay_required_prefix(
+    state: ProgressiveState,
+    required_prefix: tuple[str, ...],
+    counters: GenerationStats,
+    *,
+    max_positions: int | None,
+    should_stop: Callable[[], bool] | None,
+) -> tuple[_FrontierState | None, SeriesResult | None]:
+    """Replays a fixed move-order prefix before any transposition merging.
+
+    Filtering merged complete series after generation is not equivalent: the
+    representative retained for a transposition may use a different move
+    order. Replaying first keeps every descendant inside the requested line.
+    """
+
+    if len(required_prefix) > state.moves_available:
+        raise SeriesLegalityError(
+            f"required prefix has {len(required_prefix)} moves but series "
+            f"budget is {state.moves_available}"
+        )
+    counters.required_prefix_moves = len(required_prefix)
+
+    mover = state.board.turn
+    board = state.board.copy(stack=False)
+    board.ep_square = state.ep_targets[0] if len(state.ep_targets) == 1 else None
+    moves: tuple[str, ...] = ()
+    sans: tuple[str, ...] = ()
+    ep_candidates: dict[int, int] = {}
+    made_progress = False
+
+    for index, uci in enumerate(required_prefix):
+        if should_stop is not None and should_stop():
+            raise GenerationCancelled
+        _visit_generation_position(counters, max_positions)
+        variants = {
+            move.uci(): (move, required_ep)
+            for move, required_ep in _legal_move_variants(
+                board,
+                state.ep_targets if index == 0 else (),
+            )
+        }
+        selected = variants.get(uci)
+        if selected is None:
+            raise SeriesLegalityError(
+                f"illegal required-prefix move {uci} at series index {index + 1}"
+            )
+
+        move, required_ep = selected
+        board.ep_square = required_ep
+        san = board.san(move)
+        piece = board.piece_at(move.from_square)
+        is_pawn_move = piece is not None and piece.piece_type == chess.PAWN
+        is_capture = board.is_capture(move)
+        if move.from_square in ep_candidates:
+            del ep_candidates[move.from_square]
+        if is_pawn_move and abs(move.to_square - move.from_square) == 16:
+            ep_candidates[move.to_square] = (
+                move.from_square + move.to_square
+            ) // 2
+
+        board.push(move)
+        moves += (move.uci(),)
+        sans += (san,)
+        made_progress = made_progress or is_pawn_move or is_capture
+        delivered_check = board.is_check()
+        complete = delivered_check or len(moves) == state.moves_available
+        if complete:
+            if index + 1 != len(required_prefix):
+                raise SeriesLegalityError(
+                    "required prefix continues after check or series-budget completion"
+                )
+            return None, _finish_series(
+                state,
+                board,
+                moves,
+                sans,
+                ep_candidates,
+                made_progress,
+                delivered_check=delivered_check,
+            )
+
+        board.turn = mover
+        board.ep_square = None
+        if not _has_legal_move(board):
+            if index + 1 != len(required_prefix):
+                raise SeriesLegalityError(
+                    "required prefix continues after progressive stalemate"
+                )
+            return None, _stuck_result(state, board, moves, sans)
+
+    return (
+        _FrontierState(
+            board=board,
+            moves=moves,
+            sans=sans,
+            ep_candidates=ep_candidates,
+            made_progress=made_progress,
+        ),
+        None,
+    )
+
+
 def _merged_series_generation(
     state: ProgressiveState,
     counters: GenerationStats,
-    should_stop: Callable[[], bool] | None = None,
+    *,
+    required_prefix: tuple[str, ...],
+    max_frontier_states: int | None,
+    max_positions: int | None,
+    frontier_score: FrontierScore | None,
+    should_stop: Callable[[], bool] | None,
 ) -> list[SeriesResult]:
     """Dynamic-programming generator that merges intra-series states early."""
 
     mover = state.board.turn
-    root = state.board.copy(stack=False)
-    root.ep_square = state.ep_targets[0] if len(state.ep_targets) == 1 else None
-    frontier = [_FrontierState(root, (), (), {}, False)]
+    root, prefix_result = _replay_required_prefix(
+        state,
+        required_prefix,
+        counters,
+        max_positions=max_positions,
+        should_stop=should_stop,
+    )
+    frontier = [root] if root is not None else []
     completed: list[SeriesResult] = []
 
     def record(result: SeriesResult, path_count: int) -> None:
@@ -175,6 +375,9 @@ def _merged_series_generation(
             counters.stalemates += path_count
         completed.append(weighted)
 
+    if prefix_result is not None:
+        record(prefix_result, 1)
+
     while frontier:
         if should_stop is not None and should_stop():
             raise GenerationCancelled
@@ -182,7 +385,7 @@ def _merged_series_generation(
         for item in frontier:
             if should_stop is not None and should_stop():
                 raise GenerationCancelled
-            counters.positions_visited += 1
+            _visit_generation_position(counters, max_positions)
             variants = _legal_move_variants(
                 item.board, state.ep_targets if not item.moves else ()
             )
@@ -265,7 +468,14 @@ def _merged_series_generation(
                     chosen.made_progress,
                     total_paths,
                 )
-        frontier = list(following.values())
+        frontier = _bound_frontier(
+            following,
+            mover=mover,
+            prefix_length=len(required_prefix),
+            max_frontier_states=max_frontier_states,
+            frontier_score=frontier_score,
+            counters=counters,
+        )
 
     merged: dict[tuple[object, ...], SeriesResult] = {}
     counts: dict[tuple[object, ...], int] = {}
@@ -297,6 +507,10 @@ def generate_series(
     *,
     merge_transpositions: bool = True,
     stats: GenerationStats | None = None,
+    required_prefix: Iterable[str] = (),
+    max_frontier_states: int | None = None,
+    max_positions: int | None = None,
+    frontier_score: FrontierScore | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> list[SeriesResult]:
     """Generates complete legal series from a boundary position.
@@ -305,11 +519,35 @@ def generate_series(
     shorter than the nominal series budget. When ``merge_transpositions`` is
     true, different move orders reaching the same full progressive state are
     represented once and counted on ``SeriesResult.transposition_count``.
+
+    ``required_prefix`` is replayed before any merge, so a requested move
+    order cannot disappear merely because a lexicographically smaller route
+    reaches the same partial state. ``max_frontier_states`` bounds every
+    intermediate same-side layer before complete series are materialized;
+    any such pruning is recorded in ``GenerationStats`` and makes the caller's
+    result selective. ``max_positions`` is a deterministic work watchdog.
     """
 
     counters = stats if stats is not None else GenerationStats()
+    prefix = tuple(required_prefix)
+    if max_frontier_states is not None and max_frontier_states < 1:
+        raise ValueError("max_frontier_states must be positive")
+    if max_positions is not None and max_positions < 1:
+        raise ValueError("max_positions must be positive")
     if merge_transpositions:
-        return _merged_series_generation(state, counters, should_stop)
+        return _merged_series_generation(
+            state,
+            counters,
+            required_prefix=prefix,
+            max_frontier_states=max_frontier_states,
+            max_positions=max_positions,
+            frontier_score=frontier_score,
+            should_stop=should_stop,
+        )
+    if max_frontier_states is not None:
+        raise ValueError(
+            "max_frontier_states requires merge_transpositions=True"
+        )
     mover = state.board.turn
     budget = state.moves_available
     results: list[SeriesResult] = []
@@ -325,7 +563,7 @@ def generate_series(
     ) -> None:
         if should_stop is not None and should_stop():
             raise GenerationCancelled
-        counters.positions_visited += 1
+        _visit_generation_position(counters, max_positions)
         variants = _legal_move_variants(
             board, state.ep_targets if first_move else ()
         )
@@ -395,9 +633,29 @@ def generate_series(
                 first_move=False,
             )
 
-    root_board = state.board.copy(stack=False)
-    root_board.ep_square = state.ep_targets[0] if len(state.ep_targets) == 1 else None
-    walk(root_board, (), (), {}, False, first_move=True)
+    root, prefix_result = _replay_required_prefix(
+        state,
+        prefix,
+        counters,
+        max_positions=max_positions,
+        should_stop=should_stop,
+    )
+    if prefix_result is not None:
+        counters.raw_series = 1
+        counters.unique_series = 1
+        counters.checking_series = int(prefix_result.ended_by_check)
+        counters.checkmates = int(prefix_result.outcome == Outcome.CHECKMATE)
+        counters.stalemates = int(prefix_result.outcome == Outcome.STALEMATE)
+        return [prefix_result]
+    assert root is not None
+    walk(
+        root.board,
+        root.moves,
+        root.sans,
+        root.ep_candidates,
+        root.made_progress,
+        first_move=not root.moves,
+    )
 
     counters.unique_series = len(results)
     return sorted(results, key=lambda result: result.machine_notation)

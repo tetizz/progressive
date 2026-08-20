@@ -9,7 +9,7 @@ from .model import Outcome, ProgressiveState, QUIET_DRAW_POLICY, RULESET_VERSION
 from .search import MATE_SCORE, SearchResult
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class TheoryDatabase:
@@ -93,7 +93,11 @@ class TheoryDatabase:
                 source_fingerprint TEXT NOT NULL DEFAULT 'unknown',
                 search_limits_json TEXT NOT NULL DEFAULT '{}',
                 adjudication_status TEXT,
-                proof_kind TEXT
+                proof_kind TEXT,
+                engine_profile_id TEXT NOT NULL DEFAULT 'unknown',
+                engine_profile_name TEXT NOT NULL DEFAULT 'unknown',
+                work_limit_reached INTEGER NOT NULL DEFAULT 0,
+                required_prefix_json TEXT NOT NULL DEFAULT '[]'
             );
 
             CREATE TABLE IF NOT EXISTS edges (
@@ -155,6 +159,10 @@ class TheoryDatabase:
             ("search_limits_json", "TEXT NOT NULL DEFAULT '{}'"),
             ("adjudication_status", "TEXT"),
             ("proof_kind", "TEXT"),
+            ("engine_profile_id", "TEXT NOT NULL DEFAULT 'unknown'"),
+            ("engine_profile_name", "TEXT NOT NULL DEFAULT 'unknown'"),
+            ("work_limit_reached", "INTEGER NOT NULL DEFAULT 0"),
+            ("required_prefix_json", "TEXT NOT NULL DEFAULT '[]'"),
         ):
             if name not in analysis_columns:
                 self.connection.execute(
@@ -273,13 +281,18 @@ class TheoryDatabase:
             state,
             root_terminal,
             result.adjudication_status,
-            result.forced,
+            result.forced if not result.required_prefix else None,
         )
         search_limits_json = json.dumps(
             {
                 "depth_series": result.requested_depth,
                 "max_series_per_node": result.max_series_per_node,
                 "time_limit_seconds": result.time_limit_seconds,
+                "max_generation_positions": result.max_generation_positions,
+                "work_limit_reached": result.work_limit_reached,
+                "required_prefix": list(result.required_prefix),
+                "engine_profile_id": result.engine_profile_id,
+                "engine_profile_name": result.engine_profile_name,
                 "deterministic": True,
                 "search_unit": "complete-series",
             },
@@ -295,8 +308,10 @@ class TheoryDatabase:
                 exact_width, timed_out, elapsed_seconds, analysis_timestamp,
                 engine_version, confidence, evaluation_breakdown_json
                 , ruleset_version, quiet_draw_policy, source_fingerprint,
-                search_limits_json, adjudication_status, proof_kind
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                search_limits_json, adjudication_status, proof_kind,
+                engine_profile_id, engine_profile_name, work_limit_reached,
+                required_prefix_json
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 state.position_hash,
@@ -323,30 +338,41 @@ class TheoryDatabase:
                 search_limits_json,
                 result.adjudication_status,
                 result.forced,
+                result.engine_profile_id,
+                result.engine_profile_name,
+                int(result.work_limit_reached),
+                json.dumps(list(result.required_prefix), separators=(",", ":")),
             ),
         )
         analysis_id = int(cursor.lastrowid)
 
         current = self.connection.execute(
             """
-            SELECT search_depth, exact_width, timed_out, node_count
-            FROM positions WHERE position_hash=?
+            SELECT p.search_depth, p.exact_width, p.timed_out, p.node_count,
+                   COALESCE(a.work_limit_reached, 0) AS work_limit_reached
+            FROM positions p
+            LEFT JOIN analyses a ON a.id=p.best_analysis_id
+            WHERE p.position_hash=?
             """,
             (state.position_hash,),
         ).fetchone()
         existing_quality = (
-            int(current["search_depth"] if current["search_depth"] is not None else -1),
             int(current["exact_width"] or 0),
             0 if current["timed_out"] else 1,
+            0 if current["work_limit_reached"] else 1,
+            int(current["search_depth"] if current["search_depth"] is not None else -1),
             int(current["node_count"] or 0),
         )
         new_quality = (
-            result.completed_depth,
             int(result.exact_width),
             int(not result.timed_out),
+            int(not result.work_limit_reached),
+            result.completed_depth,
             result.stats.nodes,
         )
-        promote = current["search_depth"] is None or new_quality > existing_quality
+        promote = not result.required_prefix and (
+            current["search_depth"] is None or new_quality > existing_quality
+        )
         if promote:
             self.connection.execute(
                 """

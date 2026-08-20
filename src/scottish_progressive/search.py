@@ -14,9 +14,12 @@ from .model import (
     ProgressiveState,
     SeriesResult,
 )
+from .profiles import EngineProfile, baseline_profile
 from .rules import (
     GenerationCancelled,
     GenerationStats,
+    GenerationWorkLimit,
+    _legal_move_variants,
     generate_series,
     quiet_adjudication_status,
 )
@@ -43,6 +46,7 @@ class SearchLimits:
     depth_series: int = 1
     max_series_per_node: int | None = None
     time_limit_seconds: float | None = None
+    max_generation_positions: int | None = None
 
     def __post_init__(self) -> None:
         if self.depth_series < 1:
@@ -51,6 +55,11 @@ class SearchLimits:
             raise ValueError("max_series_per_node must be positive")
         if self.time_limit_seconds is not None and self.time_limit_seconds <= 0:
             raise ValueError("time_limit_seconds must be positive")
+        if (
+            self.max_generation_positions is not None
+            and self.max_generation_positions < 1
+        ):
+            raise ValueError("max_generation_positions must be positive")
 
 
 @dataclass(slots=True)
@@ -63,6 +72,12 @@ class SearchStats:
     tt_hits: int = 0
     alpha_beta_cutoffs: int = 0
     branch_caps: int = 0
+    generation_positions: int = 0
+    frontier_prunes: int = 0
+    frontier_states_pruned: int = 0
+    frontier_paths_pruned: int = 0
+    peak_frontier_states: int = 0
+    generation_work_limit_hits: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +111,11 @@ class SearchResult:
     time_limit_seconds: float | None = None
     engine_version: str = ENGINE_VERSION
     source_fingerprint: str = ENGINE_SOURCE_FINGERPRINT
+    engine_profile_id: str = ""
+    engine_profile_name: str = ""
+    required_prefix: tuple[str, ...] = ()
+    work_limit_reached: bool = False
+    max_generation_positions: int | None = None
 
     @property
     def forced(self) -> str | None:
@@ -125,12 +145,16 @@ class SearchResult:
             return "quiet-draw proof required; no theory score issued"
         if self.adjudication_status == "proven-draw-no-mating-material":
             return "forced/proven draw by no mating material"
+        if self.work_limit_reached:
+            return "deterministic work limit reached; incomplete/selective"
         if self.forced and self.exact_width and not self.timed_out:
             return "forced/proven within searched horizon"
         if self.exact_width and self.completed_depth == self.requested_depth:
             return "exhaustive at stated series depth; heuristic leaf evaluation"
         if self.completed_depth:
             return "selective depth-limited heuristic"
+        if self.best_series is not None:
+            return "partial root candidates only; incomplete/selective"
         return "static heuristic only"
 
 
@@ -147,6 +171,21 @@ class _Timeout(Exception):
     pass
 
 
+class _WorkLimit(Exception):
+    pass
+
+
+class _RootInterrupted(Exception):
+    def __init__(
+        self,
+        scored: tuple[ScoredSeries, ...],
+        cause: _Timeout | _WorkLimit,
+    ) -> None:
+        super().__init__(type(cause).__name__)
+        self.scored = scored
+        self.cause = cause
+
+
 class _AdjudicationPending(Exception):
     pass
 
@@ -154,8 +193,11 @@ class _AdjudicationPending(Exception):
 class SeriesSearcher:
     """Deterministic alpha-beta search where one ply is one complete series."""
 
-    def __init__(self, limits: SearchLimits) -> None:
+    def __init__(
+        self, limits: SearchLimits, profile: EngineProfile | None = None
+    ) -> None:
         self.limits = limits
+        self.profile = profile or baseline_profile()
         self.stats = SearchStats()
         self._tt: dict[tuple[tuple[int, str, int, int], int], _TTEntry] = {}
         self._eval_cache: dict[tuple[int, str, int, int], EvaluationBreakdown] = {}
@@ -183,29 +225,104 @@ class SeriesSearcher:
         key = state.transposition_key
         cached = self._eval_cache.get(key)
         if cached is None:
-            cached = evaluate(state)
+            cached = evaluate(state, self.profile)
             self._eval_cache[key] = cached
             self.stats.leaf_evaluations += 1
         return cached
 
-    def _generate(self, state: ProgressiveState) -> list[SeriesResult]:
+    def _generate(
+        self,
+        state: ProgressiveState,
+        *,
+        required_prefix: tuple[str, ...] = (),
+    ) -> list[SeriesResult]:
         generation = GenerationStats()
+        remaining_positions: int | None = None
+        if self.limits.max_generation_positions is not None:
+            remaining_positions = (
+                self.limits.max_generation_positions
+                - self.stats.generation_positions
+            )
+            if remaining_positions <= 0:
+                self.stats.generation_work_limit_hits += 1
+                raise _WorkLimit
+
+        score_cache: dict[str, int] = {}
+
+        def frontier_score(board: chess.Board) -> int:
+            key = board.fen(en_passant="fen")
+            cached = score_cache.get(key)
+            if cached is not None:
+                return cached
+            partial = ProgressiveState(
+                board,
+                state.series_number,
+                quiet_series=state.quiet_series,
+            )
+            score = fast_evaluate(partial, self.profile)
+            checks = 0
+            immediate_mates = 0
+            captures = 0
+            promotions = 0
+            for move, required_ep in _legal_move_variants(board):
+                board.ep_square = required_ep
+                gives_check = board.gives_check(move)
+                checks += int(gives_check)
+                captures += int(board.is_capture(move))
+                promotions += int(move.promotion is not None)
+                if gives_check:
+                    child = board.copy(stack=False)
+                    child.push(move)
+                    immediate_mates += int(child.is_checkmate())
+            board.ep_square = None
+            tactical = (
+                immediate_mates * 5_000_000
+                + checks * 50_000
+                + promotions * 2_000
+                + captures * 100
+            )
+            score += tactical if board.turn == chess.WHITE else -tactical
+            score_cache[key] = score
+            return score
+
         try:
             series = generate_series(
                 state,
                 stats=generation,
+                required_prefix=required_prefix,
+                max_frontier_states=self.limits.max_series_per_node,
+                max_positions=remaining_positions,
+                frontier_score=(
+                    frontier_score
+                    if self.limits.max_series_per_node is not None
+                    else None
+                ),
                 should_stop=(
                     (lambda: time.perf_counter() >= self._deadline)
                     if self._deadline is not None
                     else None
                 ),
             )
+        except GenerationWorkLimit as error:
+            raise _WorkLimit from error
         except GenerationCancelled as error:
             raise _Timeout from error
         finally:
             self.stats.generated_raw_series += generation.raw_series
             self.stats.generated_unique_series += generation.unique_series
             self.stats.intra_series_transpositions += generation.transpositions_merged
+            self.stats.generation_positions += generation.positions_visited
+            self.stats.frontier_prunes += generation.frontier_prunes
+            self.stats.frontier_states_pruned += generation.frontier_states_pruned
+            self.stats.frontier_paths_pruned += generation.frontier_paths_pruned
+            self.stats.peak_frontier_states = max(
+                self.stats.peak_frontier_states,
+                generation.peak_frontier_states,
+            )
+            if generation.frontier_prunes:
+                self._selective = True
+            if generation.work_limit_reached:
+                self.stats.generation_work_limit_hits += 1
         return series
 
     @staticmethod
@@ -265,7 +382,11 @@ class SeriesSearcher:
         self, result: SeriesResult, mover: chess.Color, ply_from_root: int
     ) -> int:
         terminal = self._terminal_score(result, mover, ply_from_root)
-        return terminal if terminal is not None else fast_evaluate(result.final_state)
+        return (
+            terminal
+            if terminal is not None
+            else fast_evaluate(result.final_state, self.profile)
+        )
 
     def _ordered(
         self,
@@ -395,7 +516,10 @@ class SeriesSearcher:
         return best_score, best_pv, proof_bounds
 
     def _search_root(
-        self, state: ProgressiveState, depth: int
+        self,
+        state: ProgressiveState,
+        depth: int,
+        required_prefix: tuple[str, ...],
     ) -> tuple[
         int,
         tuple[SeriesResult, ...],
@@ -403,22 +527,31 @@ class SeriesSearcher:
         str | None,
     ]:
         mover = state.board.turn
-        series = self._ordered(self._generate(state), mover, 1)
+        series = self._ordered(
+            self._generate(state, required_prefix=required_prefix),
+            mover,
+            1,
+        )
         scored: list[ScoredSeries] = []
         for result in series:
-            self._check_deadline()
-            terminal = self._terminal_score(result, mover, 1)
-            if terminal is None:
-                score, child_pv, proof_bounds = self._minimax(
-                    result.final_state,
-                    depth - 1,
-                    -MATE_SCORE * 2,
-                    MATE_SCORE * 2,
-                    1,
-                )
-            else:
-                score, child_pv = terminal, ()
-                proof_bounds = self._terminal_proof_bounds(result, mover)
+            try:
+                self._check_deadline()
+                terminal = self._terminal_score(result, mover, 1)
+                if terminal is None:
+                    score, child_pv, proof_bounds = self._minimax(
+                        result.final_state,
+                        depth - 1,
+                        -MATE_SCORE * 2,
+                        MATE_SCORE * 2,
+                        1,
+                    )
+                else:
+                    score, child_pv = terminal, ()
+                    proof_bounds = self._terminal_proof_bounds(result, mover)
+            except (_Timeout, _WorkLimit) as error:
+                if scored:
+                    raise _RootInterrupted(tuple(scored), error) from error
+                raise
             scored.append(ScoredSeries(result, score, child_pv, proof_bounds))
             if (
                 mover == chess.WHITE
@@ -449,7 +582,13 @@ class SeriesSearcher:
             _proof_from_bounds(proof_bounds),
         )
 
-    def run(self, state: ProgressiveState) -> SearchResult:
+    def run(
+        self,
+        state: ProgressiveState,
+        *,
+        required_prefix: tuple[str, ...] = (),
+    ) -> SearchResult:
+        required_prefix = tuple(required_prefix)
         started = time.perf_counter()
         if self.limits.time_limit_seconds is not None:
             self._deadline = started + self.limits.time_limit_seconds
@@ -472,6 +611,10 @@ class SeriesSearcher:
                 proof=None,
                 max_series_per_node=self.limits.max_series_per_node,
                 time_limit_seconds=self.limits.time_limit_seconds,
+                engine_profile_id=self.profile.profile_id,
+                engine_profile_name=self.profile.name,
+                required_prefix=required_prefix,
+                max_generation_positions=self.limits.max_generation_positions,
             )
         if adjudication in {
             "manual-proof-required",
@@ -497,19 +640,53 @@ class SeriesSearcher:
                 adjudication_status=adjudication,
                 max_series_per_node=self.limits.max_series_per_node,
                 time_limit_seconds=self.limits.time_limit_seconds,
+                engine_profile_id=self.profile.profile_id,
+                engine_profile_name=self.profile.name,
+                required_prefix=required_prefix,
+                max_generation_positions=self.limits.max_generation_positions,
             )
 
         completed_depth = 0
         timed_out = False
+        work_limit_reached = False
         best_score = root_evaluation.total
         best_pv: tuple[SeriesResult, ...] = ()
         alternatives: tuple[ScoredSeries, ...] = ()
         best_proof: str | None = None
         for depth in range(1, self.limits.depth_series + 1):
             try:
-                score, pv, root_alternatives, proof = self._search_root(state, depth)
+                score, pv, root_alternatives, proof = self._search_root(
+                    state,
+                    depth,
+                    required_prefix,
+                )
+            except _RootInterrupted as interrupted:
+                timed_out = isinstance(interrupted.cause, _Timeout)
+                work_limit_reached = isinstance(interrupted.cause, _WorkLimit)
+                self._selective = True
+                if completed_depth == 0:
+                    mover = state.board.turn
+                    partial = tuple(
+                        sorted(
+                            interrupted.scored,
+                            key=lambda item: (
+                                -item.score if mover == chess.WHITE else item.score,
+                                item.series.machine_notation,
+                            ),
+                        )
+                    )
+                    best = partial[0]
+                    best_score = best.score
+                    best_pv = (best.series,) + best.principal_variation
+                    alternatives = partial
+                    best_proof = None
+                break
             except _Timeout:
                 timed_out = True
+                self._selective = True
+                break
+            except _WorkLimit:
+                work_limit_reached = True
                 self._selective = True
                 break
             except _AdjudicationPending:
@@ -529,6 +706,10 @@ class SeriesSearcher:
                     adjudication_status="manual-proof-required",
                     max_series_per_node=self.limits.max_series_per_node,
                     time_limit_seconds=self.limits.time_limit_seconds,
+                    engine_profile_id=self.profile.profile_id,
+                    engine_profile_name=self.profile.name,
+                    required_prefix=required_prefix,
+                    max_generation_positions=self.limits.max_generation_positions,
                 )
             best_score = score
             best_pv = pv
@@ -553,8 +734,22 @@ class SeriesSearcher:
             adjudication_status=adjudication,
             max_series_per_node=self.limits.max_series_per_node,
             time_limit_seconds=self.limits.time_limit_seconds,
+            engine_profile_id=self.profile.profile_id,
+            engine_profile_name=self.profile.name,
+            required_prefix=required_prefix,
+            work_limit_reached=work_limit_reached,
+            max_generation_positions=self.limits.max_generation_positions,
         )
 
 
-def analyze(state: ProgressiveState, limits: SearchLimits | None = None) -> SearchResult:
-    return SeriesSearcher(limits or SearchLimits()).run(state)
+def analyze(
+    state: ProgressiveState,
+    limits: SearchLimits | None = None,
+    profile: EngineProfile | None = None,
+    *,
+    required_prefix: tuple[str, ...] = (),
+) -> SearchResult:
+    return SeriesSearcher(limits or SearchLimits(), profile).run(
+        state,
+        required_prefix=required_prefix,
+    )

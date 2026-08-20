@@ -10,6 +10,7 @@ import chess
 from .database import TheoryDatabase
 from .model import ENGINE_VERSION, RULESET_VERSION, ProgressiveState
 from .notation import format_principal_variation, format_series_turn
+from .profiles import load_profile
 from .rules import GenerationStats, generate_series
 from .search import SearchLimits, analyze
 from .theory import (
@@ -113,17 +114,22 @@ def _print_series(args: argparse.Namespace) -> int:
 
 def _print_analysis(args: argparse.Namespace) -> int:
     state = _state_from_args(args)
+    profile = load_profile(args.engine_profile) if args.engine_profile else None
     result = analyze(
         state,
         SearchLimits(
             depth_series=args.depth,
             max_series_per_node=args.max_series,
+            max_generation_positions=args.max_generation_positions,
             time_limit_seconds=args.time_limit,
         ),
+        profile=profile,
     )
     payload = {
         "engine_version": result.engine_version,
         "source_fingerprint": result.source_fingerprint,
+        "engine_profile_id": result.engine_profile_id,
+        "engine_profile_name": result.engine_profile_name,
         "state": state.pfen,
         "score": result.score,
         "classification": result.classification,
@@ -243,6 +249,91 @@ def _init_database(args: argparse.Namespace) -> int:
     return 0
 
 
+def _serve_web(args: argparse.Namespace) -> int:
+    # Lazy import keeps non-web CLI startup and library imports lightweight.
+    from .webapp import serve
+
+    options: dict[str, object] = dict(
+        host=args.host,
+        port=args.port,
+        open_browser=not args.no_browser,
+        database=args.database,
+    )
+    if args.engine_profile:
+        options["engine_profile"] = args.engine_profile
+    return serve(**options)
+
+
+def _league_run(args: argparse.Namespace) -> int:
+    from .league import LeagueConfig, LeagueStore, run_league
+
+    resume_run_id = args.resume
+    if args.continue_latest:
+        with LeagueStore(args.database) as store:
+            latest = store.latest_run_id()
+            if latest is not None and store.run_row(latest)["status"] in {
+                "running",
+                "needs-resume",
+            }:
+                resume_run_id = latest
+
+    if resume_run_id:
+        config = None
+    elif args.smoke:
+        config = LeagueConfig.smoke(seed=args.seed if args.seed is not None else 7)
+    else:
+        config = LeagueConfig(
+            population_size=args.population,
+            generations=args.generations,
+            seed=args.seed if args.seed is not None else 20260820,
+            preliminary_games_per_pair=args.preliminary_games,
+            promotion_games=args.promotion_games,
+            max_replacement_games=args.max_replacement_games,
+            minimum_promotion_games=args.minimum_promotion_games,
+            search_depth=args.depth,
+            max_series_per_node=args.max_series,
+            max_generation_positions=args.max_generation_positions,
+            max_game_series=args.max_game_series,
+            requested_workers=args.workers,
+            memory_per_worker_mb=args.memory_per_worker_mb,
+            reserve_memory_mb=args.reserve_memory_mb,
+        )
+    champion_output = args.champion_output or str(
+        Path(args.database).with_suffix(".champion.json")
+    )
+    status = run_league(
+        args.database,
+        config=config,
+        resume_run_id=resume_run_id,
+        initial_champion=args.champion_profile,
+        champion_output=champion_output,
+        progress=lambda message: print(message, flush=True),
+    )
+    print(json.dumps(status, indent=2, sort_keys=True))
+    print(f"Champion profile: {Path(champion_output).resolve()}")
+    return 0
+
+
+def _league_status(args: argparse.Namespace) -> int:
+    from .league import league_status
+
+    payload = league_status(args.database, args.run_id)
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def _league_resources(args: argparse.Namespace) -> int:
+    from .resources import detect_resource_budget
+
+    budget = detect_resource_budget(
+        args.workers,
+        memory_per_worker_mb=args.memory_per_worker_mb,
+        reserve_memory_mb=args.reserve_memory_mb,
+    )
+    print(json.dumps(budget.as_dict(), indent=2, sort_keys=True))
+    return 0
+
+
 def _position_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--fen", help="standard FEN at a series boundary")
     parser.add_argument("--series", type=int, required=True, help="series number/budget")
@@ -274,9 +365,18 @@ def build_parser() -> argparse.ArgumentParser:
     _position_arguments(analysis)
     analysis.add_argument("--depth", type=int, default=1)
     analysis.add_argument("--max-series", type=int)
+    analysis.add_argument(
+        "--max-generation-positions",
+        type=int,
+        help="deterministic series-generation work budget",
+    )
     analysis.add_argument("--time-limit", type=float)
     analysis.add_argument("--alternatives", type=int, default=5)
     analysis.add_argument("--database")
+    analysis.add_argument(
+        "--engine-profile",
+        help="single promoted champion profile JSON used by the shared search core",
+    )
     analysis.add_argument("--json", action="store_true")
     analysis.set_defaults(handler=_print_analysis)
 
@@ -310,6 +410,89 @@ def build_parser() -> argparse.ArgumentParser:
     database = subparsers.add_parser("init-db", help="create the SQLite theory schema")
     database.add_argument("path")
     database.set_defaults(handler=_init_database)
+
+    web = subparsers.add_parser(
+        "web", help="run the local interactive analysis board"
+    )
+    web.add_argument(
+        "--host",
+        default="127.0.0.1",
+        choices=("127.0.0.1",),
+        help="loopback interface (remote binding is intentionally disabled)",
+    )
+    web.add_argument("--port", type=int, default=8765)
+    web.add_argument(
+        "--no-browser", action="store_true", help="do not open the board automatically"
+    )
+    web.add_argument(
+        "--database", help="SQLite theory database used when the UI requests Save"
+    )
+    web.add_argument(
+        "--engine-profile",
+        help="promoted champion JSON used as the board's single analysis engine",
+    )
+    web.set_defaults(handler=_serve_web)
+
+    league = subparsers.add_parser(
+        "league", help="run or inspect deterministic evolutionary self-play"
+    )
+    league_commands = league.add_subparsers(dest="league_command", required=True)
+
+    league_run = league_commands.add_parser(
+        "run", help="start or resume a checkpointed local league"
+    )
+    league_run.add_argument("database", help="league SQLite database")
+    resume_group = league_run.add_mutually_exclusive_group()
+    resume_group.add_argument("--resume", metavar="RUN_ID")
+    resume_group.add_argument(
+        "--continue-latest",
+        action="store_true",
+        help="resume the latest unfinished run, otherwise start a new run",
+    )
+    league_run.add_argument("--champion-profile", help="initial champion profile JSON")
+    league_run.add_argument(
+        "--champion-output",
+        help="published champion JSON (default: database name with .champion.json)",
+    )
+    league_run.add_argument("--population", type=int, default=10)
+    league_run.add_argument("--generations", type=int, default=2)
+    league_run.add_argument("--seed", type=int)
+    league_run.add_argument("--preliminary-games", type=int, default=10)
+    league_run.add_argument("--promotion-games", type=int, default=20)
+    league_run.add_argument("--max-replacement-games", type=int, default=40)
+    league_run.add_argument("--minimum-promotion-games", type=int, default=20)
+    league_run.add_argument("--depth", type=int, default=2)
+    league_run.add_argument("--max-series", type=int, default=32)
+    league_run.add_argument("--max-generation-positions", type=int, default=250000)
+    league_run.add_argument("--max-game-series", type=int, default=12)
+    league_run.add_argument(
+        "--workers",
+        type=int,
+        help="requested workers; omitted uses the detected CPU and estimated RAM envelope",
+    )
+    league_run.add_argument("--memory-per-worker-mb", type=int, default=512)
+    league_run.add_argument("--reserve-memory-mb", type=int, default=512)
+    league_run.add_argument(
+        "--smoke",
+        action="store_true",
+        help="two-bot wiring check; deliberately cannot promote a champion",
+    )
+    league_run.set_defaults(handler=_league_run)
+
+    league_status_parser = league_commands.add_parser(
+        "status", help="show persisted games, matches, and champion"
+    )
+    league_status_parser.add_argument("database")
+    league_status_parser.add_argument("--run-id")
+    league_status_parser.set_defaults(handler=_league_status)
+
+    league_resources = league_commands.add_parser(
+        "resources", help="show the detected CPU and estimated RAM envelope"
+    )
+    league_resources.add_argument("--workers", type=int)
+    league_resources.add_argument("--memory-per-worker-mb", type=int, default=512)
+    league_resources.add_argument("--reserve-memory-mb", type=int, default=512)
+    league_resources.set_defaults(handler=_league_resources)
     return parser
 
 

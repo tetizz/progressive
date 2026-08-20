@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#1b1c1a">
+    <title>Scottish Progressive Lab</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%239fc978'/%3E%3Cpath d='M9 5h14l-2 5 3 4-3 2 2.5 10H8.5L11 16l-3-2 3-4-2-5Zm4 5h6l1-2h-8l1 2Zm-.4 5h6.8l1.6-1-2-2h-6l-2 2 1.6 1Zm-.9 8h8.6l-1.5-6h-5.6l-1.5 6Z' fill='%23182111'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#workspace-tabs">Skip to analysis tools</a>
+    <div class="app-shell">
+      <header class="app-header">
+        <div class="brand" aria-label="Scottish Progressive Lab">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" role="img">
+              <path d="M9 5h14l-2 5 3 4-3 2 2.5 10H8.5L11 16l-3-2 3-4-2-5Zm4 5h6l1-2h-8l1 2Zm-.4 5h6.8l1.6-1-2-2h-6l-2 2 1.6 1Zm-.9 8h8.6l-1.5-6h-5.6l-1.5 6Z"/>
+            </svg>
+          </span>
+          <span>
+            <strong>Progressive Lab</strong>
+            <small>Scottish analysis workspace</small>
+          </span>
+        </div>
+        <div class="header-actions">
+          <span class="engine-chip" id="engine-status" role="status" aria-live="polite">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="engine-status-text">Connecting…</span>
+          </span>
+          <span class="rules-chip" id="rules-version">Scottish rules</span>
+        </div>
+      </header>
+
+      <main class="analysis-workspace">
+        <section class="board-pane" aria-label="Analysis board">
+          <div class="position-strip">
+            <div class="series-emblem" aria-hidden="true"><span id="series-number">1</span></div>
+            <div class="turn-copy">
+              <p class="eyebrow" id="turn-label">White · Series 1</p>
+              <div class="series-heading">
+                <h1 id="moves-heading">1 move remaining</h1>
+                <span class="boundary-pill is-boundary" id="boundary-pill">Exact boundary</span>
+              </div>
+              <p class="series-subtitle" id="series-status">Build the complete series one legal move at a time.</p>
+            </div>
+          </div>
+
+          <div class="series-ledger" aria-label="Moves in the current series">
+            <span class="ledger-label">This series</span>
+            <div class="move-chips" id="move-chips">
+              <span class="empty-chip">No moves yet</span>
+            </div>
+          </div>
+
+          <div class="board-layout">
+            <div class="eval-rail" id="eval-rail" aria-label="Neutral White-centric heuristic evaluation">
+              <span class="eval-side eval-black">B</span>
+              <div class="eval-fill" id="eval-fill"></div>
+              <span class="eval-marker" id="eval-marker">0</span>
+              <span class="eval-side eval-white">W</span>
+            </div>
+
+            <div class="board-shell" id="board-shell">
+              <div class="board" id="board" role="group" aria-label="Chess board. White pieces at the bottom." aria-busy="true"></div>
+              <svg class="board-arrows" id="board-arrows" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                <defs>
+                  <marker id="arrow-best" markerWidth="4" markerHeight="4" refX="3" refY="2" orient="auto" markerUnits="strokeWidth">
+                    <path d="M0,0 L4,2 L0,4 Z" fill="context-stroke"></path>
+                  </marker>
+                  <marker id="arrow-alt" markerWidth="4" markerHeight="4" refX="3" refY="2" orient="auto" markerUnits="strokeWidth">
+                    <path d="M0,0 L4,2 L0,4 Z" fill="context-stroke"></path>
+                  </marker>
+                </defs>
+              </svg>
+              <div class="board-loading" id="board-loading">
+                <span class="spinner" aria-hidden="true"></span>
+                <span>Loading legal moves</span>
+              </div>
+              <div class="drag-piece" id="drag-piece" aria-hidden="true"></div>
+            </div>
+          </div>
+
+          <div class="board-toolbar" aria-label="Board controls">
+            <button class="icon-button" id="flip-board" type="button" aria-label="Flip board">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.1 6.5A7.2 7.2 0 0 1 19 9h-2.3a5.1 5.1 0 0 0-8.1-1.1L11 10H4V3l3.1 3.5ZM16.9 17.5A7.2 7.2 0 0 1 5 15h2.3a5.1 5.1 0 0 0 8.1 1.1L13 14h7v7l-3.1-3.5Z"/></svg>
+              <span>Flip</span>
+            </button>
+            <button class="icon-button" id="undo-move" type="button" aria-label="Undo last move" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 7 4-4v3h1a7 7 0 1 1-6.7 9h2.2a5 5 0 1 0 4.5-7h-1v3L8 7Z"/></svg>
+              <span>Undo</span>
+            </button>
+            <button class="icon-button" id="reset-series" type="button" aria-label="Restart current series" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5a7 7 0 1 1-6.6 9.3l1.9-.7A5 5 0 1 0 8.1 9L11 12H4V5l2.6 2.6A7 7 0 0 1 12 5Z"/></svg>
+              <span>Restart</span>
+            </button>
+            <button class="primary compact advance-button" id="advance-series" type="button" hidden>Start next series</button>
+          </div>
+
+          <div class="boundary-notice is-ready" id="boundary-notice" role="status" aria-live="polite">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm1 15h-2v-6h2v6Zm0-8h-2V7h2v2Z"/></svg>
+            <span id="boundary-notice-text">This is an exact series boundary. Engine analysis is available.</span>
+          </div>
+        </section>
+
+        <aside class="inspector" aria-label="Analysis tools">
+          <div class="tabs" id="workspace-tabs" role="tablist" aria-label="Workspace views" tabindex="-1">
+            <button class="tab is-active" id="tab-analysis" role="tab" aria-selected="true" aria-controls="analysis-panel" tabindex="0">Analysis</button>
+            <button class="tab" id="tab-theory" role="tab" aria-selected="false" aria-controls="theory-panel" tabindex="-1">Theory</button>
+            <button class="tab" id="tab-setup" role="tab" aria-selected="false" aria-controls="setup-panel" tabindex="-1">Setup</button>
+          </div>
+
+          <section class="tab-panel analysis-panel" id="analysis-panel" role="tabpanel" aria-labelledby="tab-analysis">
+            <div class="analysis-action-row">
+              <div>
+                <p class="eyebrow">Series-level engine</p>
+                <h2>Analyze this boundary</h2>
+              </div>
+              <button class="primary analyze-button" id="analyze-button" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 4 9 8-9 8V4Z"/></svg>
+                <span>Analyze</span>
+              </button>
+            </div>
+
+            <div class="analysis-presets" aria-label="Analysis strength">
+              <span class="preset-label">Strength</span>
+              <div class="preset-switch" role="group" aria-label="Analysis strength preset">
+                <button id="preset-quick" type="button" aria-pressed="false">
+                  <strong>Quick</strong><small>Fast check</small>
+                </button>
+                <button class="is-active" id="preset-strong" type="button" aria-pressed="true">
+                  <strong>Strong</strong><small>Maximum local search</small>
+                </button>
+              </div>
+            </div>
+
+            <div class="search-controls" aria-label="Search controls">
+              <label>
+                <span>Series depth</span>
+                <input id="depth-control" type="number" inputmode="numeric" min="1" max="8" step="1" value="2">
+              </label>
+              <label>
+                <span>Branch cap</span>
+                <input id="cap-control" type="number" inputmode="numeric" min="1" max="512" step="1" value="24">
+              </label>
+              <label>
+                <span>Time limit</span>
+                <span class="input-suffix"><input id="time-control" type="number" inputmode="decimal" min="0.1" max="30" step="0.5" value="10"><small>s</small></span>
+              </label>
+              <label>
+                <span>Alternatives</span>
+                <input id="alternatives-control" type="number" inputmode="numeric" min="1" max="12" step="1" value="4">
+              </label>
+            </div>
+
+            <section class="study-tree-section" aria-labelledby="study-tree-title">
+              <div class="study-tree-heading">
+                <div>
+                  <p class="eyebrow">Saved on this device</p>
+                  <h3 id="study-tree-title">Analysis tree</h3>
+                </div>
+                <span class="study-save-state" id="study-save-state" role="status" aria-live="polite">Saved locally</span>
+              </div>
+              <div class="tree-toolbar" aria-label="Variation controls">
+                <button class="tree-tool is-primary" id="new-variation" type="button" title="Play a different move from the selected position">
+                  <span aria-hidden="true">＋</span> New line
+                </button>
+                <button class="tree-tool" id="delete-variation" type="button" disabled title="Delete the selected move and its continuations">
+                  <span aria-hidden="true">⌫</span> Delete line
+                </button>
+                <button class="tree-tool" id="clear-study" type="button" title="Remove every saved variation">
+                  Clear tree
+                </button>
+              </div>
+              <p class="tree-help" id="tree-help">Play on the board to build theory. Select any move below to return to that exact, server-checked prefix.</p>
+              <div class="analysis-tree" id="analysis-tree" role="tree" aria-label="Saved progressive analysis variations" aria-describedby="tree-help"></div>
+            </section>
+
+            <div class="analysis-empty" id="analysis-empty">
+              <span class="empty-orbit" aria-hidden="true"><i></i><i></i><i></i></span>
+              <h3>Ready at the boundary</h3>
+              <p>Search complete move series, compare alternatives, and inspect the progressive-specific evaluation.</p>
+            </div>
+
+            <div class="analysis-loading" id="analysis-loading" hidden aria-live="polite">
+              <div class="thinking-lines" aria-hidden="true"><span></span><span></span><span></span></div>
+              <h3>Searching complete series…</h3>
+              <p>Generating legal paths and merging intra-series transpositions.</p>
+            </div>
+
+            <div class="analysis-error" id="analysis-error" hidden role="alert">
+              <strong>Analysis could not finish</strong>
+              <span id="analysis-error-text"></span>
+            </div>
+
+            <div class="analysis-results" id="analysis-results" hidden>
+              <div class="result-hero">
+                <div>
+                  <span class="result-label">White-centric heuristic</span>
+                  <strong class="result-score" id="result-score">0 points</strong>
+                </div>
+                <div class="classification-block">
+                  <span class="classification" id="result-classification">Balanced</span>
+                  <span class="confidence" id="result-confidence">Depth-limited heuristic</span>
+                </div>
+              </div>
+
+              <div class="proof-strip" id="proof-strip" aria-label="Search reliability"></div>
+
+              <section class="result-section best-series-section">
+                <div class="section-heading">
+                  <h3 id="result-choice-heading">Best series</h3>
+                  <span class="side-to-move" id="result-side">White to move</span>
+                </div>
+                <div class="best-series" id="best-series"></div>
+                <p class="best-notation" id="best-notation"></p>
+              </section>
+
+              <section class="result-section">
+                <div class="section-heading">
+                  <h3>Principal variation</h3>
+                  <div class="pv-controls" id="pv-controls" hidden aria-label="Principal variation playback">
+                    <button id="pv-previous" type="button" aria-label="Previous principal variation move" title="Previous move">‹</button>
+                    <span id="pv-indicator" aria-live="polite">Start</span>
+                    <button id="pv-next" type="button" aria-label="Next principal variation move" title="Next move">›</button>
+                    <button class="pv-exit" id="pv-exit" type="button" aria-label="Exit principal variation preview">Exit</button>
+                  </div>
+                </div>
+                <div class="pv-line" id="pv-line"></div>
+              </section>
+
+              <section class="result-section">
+                <div class="section-heading"><h3>Alternatives</h3><span id="alternatives-count"></span></div>
+                <div class="alternatives-list" id="alternatives-list"></div>
+              </section>
+
+              <section class="result-section">
+                <div class="section-heading"><h3>Evaluation map</h3><span id="reach-status"></span></div>
+                <div class="breakdown" id="evaluation-breakdown"></div>
+              </section>
+
+              <section class="result-section warnings-section" id="warnings-section" hidden>
+                <div class="section-heading"><h3>Tactical warnings</h3></div>
+                <ul class="warnings-list" id="warnings-list"></ul>
+              </section>
+
+              <details class="search-details">
+                <summary>Search details</summary>
+                <dl id="search-stats"></dl>
+              </details>
+            </div>
+          </section>
+
+          <section class="tab-panel theory-panel" id="theory-panel" role="tabpanel" aria-labelledby="tab-theory" hidden>
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Stored research</p>
+                <h2>Opening explorer</h2>
+              </div>
+              <button class="subtle-button" id="refresh-openings" type="button" aria-label="Refresh opening explorer">Refresh</button>
+            </div>
+            <p class="panel-intro">These scores are dated engine evidence, not solved opening truth. Select a row to load its first move on the board.</p>
+            <div class="theory-meta" id="theory-meta"></div>
+            <div class="theory-loading" id="theory-loading"><span class="spinner" aria-hidden="true"></span> Loading opening evidence…</div>
+            <div class="theory-error" id="theory-error" hidden role="alert"></div>
+            <div class="opening-list" id="opening-list"></div>
+          </section>
+
+          <section class="tab-panel setup-panel" id="setup-panel" role="tabpanel" aria-labelledby="tab-setup" hidden>
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Exact boundary input</p>
+                <h2>Position setup</h2>
+              </div>
+            </div>
+            <p class="panel-intro">Enter the orthodox FEN plus the progressive counters. The side to move must match the series parity.</p>
+            <form id="setup-form" novalidate>
+              <label class="field-label" for="fen-input">FEN</label>
+              <textarea id="fen-input" rows="3" spellcheck="false" required></textarea>
+              <div class="setup-grid">
+                <label>
+                  <span>Series number</span>
+                  <input id="series-input" type="number" inputmode="numeric" min="1" step="1" required>
+                </label>
+                <label>
+                  <span>Quiet series</span>
+                  <input id="quiet-input" type="number" inputmode="numeric" min="0" step="1" required>
+                </label>
+              </div>
+              <label class="field-label" for="ep-input">Progressive en-passant targets</label>
+              <input id="ep-input" type="text" spellcheck="false" placeholder="e3, c6 — or leave blank">
+              <p class="field-help">Comma-separated target squares. Only legally capturable progressive targets survive validation.</p>
+              <div class="setup-actions">
+                <button class="primary" type="submit">Load position</button>
+                <button class="secondary" id="load-start" type="button">Starting position</button>
+              </div>
+              <div class="setup-error" id="setup-error" hidden role="alert"></div>
+            </form>
+            <p class="piece-credit">Cburnett chess pieces by Colin M. L. Burnett, licensed GPLv2+. <a href="/THIRD_PARTY_NOTICES.txt" target="_blank" rel="noreferrer">License notice</a></p>
+          </section>
+        </aside>
+      </main>
+    </div>
+
+    <dialog class="promotion-dialog" id="promotion-dialog" aria-labelledby="promotion-title">
+      <form method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">Pawn promotion</p>
+            <h2 id="promotion-title">Choose a piece</h2>
+          </div>
+          <button class="dialog-close" value="cancel" aria-label="Cancel promotion">×</button>
+        </div>
+        <div class="promotion-options" id="promotion-options"></div>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

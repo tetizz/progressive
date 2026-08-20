@@ -11,7 +11,7 @@ import chess
 import chess.polyglot
 
 
-ENGINE_VERSION = "spc-0.2.0-m1"
+ENGINE_VERSION = "spc-0.4.0"
 RULESET_VERSION = "scottish-modern-common-v1"
 QUIET_DRAW_POLICY = "manual-proof-required"
 MASK_64 = (1 << 64) - 1
@@ -20,8 +20,12 @@ MASK_64 = (1 << 64) - 1
 def _source_fingerprint() -> str:
     digest = hashlib.sha256()
     package = Path(__file__).resolve().parent
-    for path in sorted(package.glob("*.py"), key=lambda item: item.name):
-        digest.update(path.name.encode("utf-8"))
+    for path in sorted(
+        package.rglob("*.py"),
+        key=lambda item: item.relative_to(package).as_posix(),
+    ):
+        relative = path.relative_to(package).as_posix()
+        digest.update(relative.encode("utf-8"))
         digest.update(path.read_bytes())
     return digest.hexdigest()[:16]
 

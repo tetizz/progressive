@@ -1,7 +1,7 @@
 {
-  "generated_at": "2026-08-16T21:45:41+00:00",
-  "engine_version": "spc-0.2.0-m1",
-  "source_fingerprint": "9d2e0e58eeff4cae",
+  "generated_at": "2026-08-20T05:53:33+00:00",
+  "engine_version": "spc-0.4.0",
+  "source_fingerprint": "7b92ea2a6678d6be",
   "ruleset_version": "scottish-modern-common-v1",
   "moves": [
     "e2e4",
@@ -12,112 +12,142 @@
   "max_series_per_node": 16,
   "time_limit_per_move": null,
   "all_searches_completed": true,
-  "selection_policy": "Every legal series is generated and transposition-merged first. At each searched node, a deterministic cheap ordering retains at most max_series_per_node series for deeper evaluation.",
+  "selection_policy": "A deterministic tactical/diversity frontier retains at most max_series_per_node partial paths while a series is being built, then applies the same cap to ordered complete series. Any pruning marks the result selective.",
   "warning": "Selective results are hypotheses, not proof and not a complete ranking. A pruned reply may change the result.",
   "results": [
     {
       "move_uci": "e2e4",
       "move_san": "e4",
-      "score": 1137,
+      "score": 848,
       "classification": "Likely Win",
       "proven_result": null,
       "confidence": "selective depth-limited heuristic",
-      "best_black_series": "e7e6/e8e7",
-      "best_black_notation": "e6 / Ke7",
-      "principal_variation": "S1 White[1]: e4 | S2 Black[2]: e6 / Ke7 | S3 White[3]: Qg4 / Qxg7 / Qxf8+",
+      "best_black_series": "f7f5/e8f7",
+      "best_black_notation": "f5 / Kf7",
+      "principal_variation": "S1 White[1]: e4 | S2 Black[2]: f5 / Kf7 | S3 White[3]: Nc3 / Qg4 / Qxf5+",
       "requested_reply_depth": 2,
       "completed_reply_depth": 2,
       "exact_width": false,
       "timed_out": false,
       "nodes": 240,
-      "raw_generated_series": 417566,
-      "unique_generated_series": 97971,
-      "intra_series_transpositions": 319595,
+      "raw_generated_series": 15920,
+      "unique_generated_series": 9489,
+      "intra_series_transpositions": 6431,
       "branch_caps": 18,
-      "elapsed_seconds": 43.36184420000063,
+      "elapsed_seconds": 5.412861500000872,
       "alternatives": [
+        {
+          "black_series": "f7f5/e8f7",
+          "notation": "f5 / Kf7",
+          "score": 848
+        },
+        {
+          "black_series": "f7f6/e8f7",
+          "notation": "f6 / Kf7",
+          "score": 874
+        },
+        {
+          "black_series": "d7d6/e8d7",
+          "notation": "d6 / Kd7",
+          "score": 924
+        },
+        {
+          "black_series": "d7d5/e8d7",
+          "notation": "d5 / Kd7",
+          "score": 1003
+        },
+        {
+          "black_series": "d7d5/c8g4",
+          "notation": "d5 / Bg4",
+          "score": 1128
+        },
         {
           "black_series": "e7e6/e8e7",
           "notation": "e6 / Ke7",
           "score": 1137
         },
         {
-          "black_series": "d7d5/e8d7",
-          "notation": "d5 / Kd7",
-          "score": 1273
-        },
-        {
-          "black_series": "d7d6/e8d7",
-          "notation": "d6 / Kd7",
-          "score": 1273
-        },
-        {
-          "black_series": "f7f5/e8f7",
-          "notation": "f5 / Kf7",
-          "score": 1277
-        },
-        {
-          "black_series": "f7f6/e8f7",
-          "notation": "f6 / Kf7",
-          "score": 1535
-        },
-        {
           "black_series": "e7e5/d8h4",
           "notation": "e5 / Qh4",
-          "score": 1560
+          "score": 1153
+        },
+        {
+          "black_series": "d7d6/c8g4",
+          "notation": "d6 / Bg4",
+          "score": 1185
+        },
+        {
+          "black_series": "d7d5/d5e4",
+          "notation": "d5 / dxe4",
+          "score": 1434
         },
         {
           "black_series": "e7e6/d8g5",
           "notation": "e6 / Qg5",
           "score": 1560
-        },
-        {
-          "black_series": "e7e6/d8h4",
-          "notation": "e6 / Qh4",
-          "score": 1560
-        },
-        {
-          "black_series": "e7e6/d8f6",
-          "notation": "e6 / Qf6",
-          "score": 1719
-        },
-        {
-          "black_series": "d7d5/d5e4",
-          "notation": "d5 / dxe4",
-          "score": 1777
         }
       ]
     },
     {
       "move_uci": "d2d4",
       "move_san": "d4",
-      "score": 902,
+      "score": 752,
       "classification": "Likely Win",
       "proven_result": null,
       "confidence": "selective depth-limited heuristic",
-      "best_black_series": "e7e6/f8b4",
-      "best_black_notation": "e6 / Bb4+",
-      "principal_variation": "S1 White[1]: d4 | S2 Black[2]: e6 / Bb4+ | S3 White[3]: Qd2 / Qxb4 / Qe7+",
+      "best_black_series": "d7d6/e8d7",
+      "best_black_notation": "d6 / Kd7",
+      "principal_variation": "S1 White[1]: d4 | S2 Black[2]: d6 / Kd7 | S3 White[3]: e4 / Qh5 / Qf5+",
       "requested_reply_depth": 2,
       "completed_reply_depth": 2,
       "exact_width": false,
       "timed_out": false,
       "nodes": 272,
-      "raw_generated_series": 308973,
-      "unique_generated_series": 78552,
-      "intra_series_transpositions": 230421,
+      "raw_generated_series": 13758,
+      "unique_generated_series": 9100,
+      "intra_series_transpositions": 4658,
       "branch_caps": 18,
-      "elapsed_seconds": 30.84513499995228,
+      "elapsed_seconds": 5.822011200005363,
       "alternatives": [
         {
-          "black_series": "e7e6/f8b4",
-          "notation": "e6 / Bb4+",
-          "score": 902
+          "black_series": "d7d6/e8d7",
+          "notation": "d6 / Kd7",
+          "score": 752
+        },
+        {
+          "black_series": "e7e6/e8e7",
+          "notation": "e6 / Ke7",
+          "score": 752
+        },
+        {
+          "black_series": "c7c5/c5d4",
+          "notation": "c5 / cxd4",
+          "score": 807
+        },
+        {
+          "black_series": "f7f6/e8f7",
+          "notation": "f6 / Kf7",
+          "score": 845
+        },
+        {
+          "black_series": "d7d5/e8d7",
+          "notation": "d5 / Kd7",
+          "score": 878
+        },
+        {
+          "black_series": "f7f5/e8f7",
+          "notation": "f5 / Kf7",
+          "score": 894
         },
         {
           "black_series": "e7e5/f8b4",
           "notation": "e5 / Bb4+",
           "score": 908
+        },
+        {
+          "black_series": "e7e6/f8b4",
+          "notation": "e6 / Bb4+",
+          "score": 947
         },
         {
           "black_series": "b8c6/c6d4",
@@ -127,37 +157,7 @@
         {
           "black_series": "e7e5/e5d4",
           "notation": "e5 / exd4",
-          "score": 1247
-        },
-        {
-          "black_series": "f7f6/e8f7",
-          "notation": "f6 / Kf7",
-          "score": 1307
-        },
-        {
-          "black_series": "d7d5/e8d7",
-          "notation": "d5 / Kd7",
-          "score": 1333
-        },
-        {
-          "black_series": "e7e6/e8e7",
-          "notation": "e6 / Ke7",
-          "score": 1377
-        },
-        {
-          "black_series": "c7c5/c5d4",
-          "notation": "c5 / cxd4",
-          "score": 1391
-        },
-        {
-          "black_series": "f7f5/e8f7",
-          "notation": "f5 / Kf7",
-          "score": 1465
-        },
-        {
-          "black_series": "c7c6/d8a5",
-          "notation": "c6 / Qa5+",
-          "score": 1532
+          "score": 1079
         }
       ]
     }

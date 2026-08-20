@@ -1,10 +1,68 @@
 # Scottish Progressive Chess Research Engine
 
-This repository is the rules-and-search first milestone for a Scottish
-Progressive Chess theory project. It deliberately does not contain a web UI
-yet. The current target is a correct series generator, reproducible
-series-level search, a CLI, a small SQLite theory store, and an evidence-bound
-ranking of the 20 initial moves.
+This repository combines a rules-correct Scottish Progressive Chess engine
+with a local analysis board, reproducible series-level search, a CLI, a small
+SQLite theory store, and evidence-bound opening reports. The browser board is
+designed around progressive series rather than ordinary alternating chess: a
+player keeps moving until the series budget is used or check ends it.
+
+## Analysis board
+
+On Windows, double-click `launch-analysis-board.cmd`. It prepares the local
+environment when needed, loads the latest gated champion when one exists,
+starts a loopback-only server, and opens the board in your browser. The same
+launch is available from PowerShell:
+
+```powershell
+.\.venv\Scripts\spc web
+```
+
+The board supports click-to-move and dragging, legal-target highlighting,
+promotion choice, castling, progressive en passant, board flipping, series
+undo/reset, arbitrary boundary positions, opening-report browsing, and real
+engine analysis. Every micro-move appears separately inside its progressive
+series. The local analysis tree can branch from any checked prefix, survives a
+reload, and replays every saved path through the server instead of trusting an
+intermediate client FEN. Mid-series analysis preserves the played prefix and
+searches only its legal completions.
+
+Search results expose depth, timeout, deterministic work limits, width
+selectivity, proof/adjudication status, principal variations, alternatives,
+and evaluation components. Quick and Strong presets are real search limits,
+not cosmetic labels. Move-quality badges are shown only when comparable engine
+evidence is deep and complete enough; otherwise the honest label is `Not
+rated`. Scores are explicitly White-centric heuristic points, not pawns or
+centipawns.
+
+The web service binds only to `127.0.0.1`. Analysis is time-, depth-, body-,
+branch-, and concurrency-bounded; database writes are disabled unless a fixed
+database path is supplied when launching the server.
+
+## Engine training league
+
+Double-click `train-engine.cmd` to start or continue a checkpointed 10-engine
+league. With no `--workers` override, training uses the smaller of the detected
+logical-CPU limit and an available-memory planning estimate. It never spawns
+beyond that recorded worker envelope. CPU affinity is enforced by the operating
+system; the RAM figure is a conservative estimate, not a per-process hard
+memory limit. On this machine that means it may use all available logical
+processors while the league is running.
+
+The ten engines share one rules/search implementation and vary a bounded,
+versioned progressive-evaluation genome. Matches use the same deterministic
+depth, branch, and generation-work limits for both engines. Each default
+promotion match uses ten unique opening boundaries in color-swapped pairs.
+Unfinished max-series games are recorded as inconclusive, not silently called
+draws. A challenger becomes the one board champion only after the tactical
+gate passes, at least ten unique pairs finish, it wins at least nine pairs,
+loses no pair, and its pair score is above 50%. This is deliberately labeled
+fixed-suite evidence, not a general-strength confidence claim.
+
+Training data is stored in `data\evolution.sqlite3`; the currently trusted
+profile is atomically published to `profiles\champion.json`. Closing the
+training window does not erase completed games: run `train-engine.cmd` again
+to resume the latest unfinished run. Full design and evidence boundaries are
+in [`docs/engine-evolution.md`](docs/engine-evolution.md).
 
 ## Rules contract
 
@@ -34,9 +92,16 @@ python -m venv .venv
 .\.venv\Scripts\python -m pip install -e ".[dev]"
 .\.venv\Scripts\spc rules
 .\.venv\Scripts\python -m pytest
+.\.venv\Scripts\spc web
 ```
 
 ## CLI examples
+
+Start the local analysis board without automatically opening a browser:
+
+```powershell
+spc web --no-browser --port 8765
+```
 
 List every unique legal Black two-move series after `1.e4`:
 
@@ -49,6 +114,13 @@ series:
 
 ```powershell
 spc analyze --fen "<standard FEN>" --series 5 --depth 2
+```
+
+Inspect the detected training envelope or start the same league manually:
+
+```powershell
+spc league resources
+spc league run data\evolution.sqlite3 --continue-latest --champion-output profiles\champion.json
 ```
 
 Persist the result, including the exact search limits and source fingerprint,
@@ -78,15 +150,16 @@ spc compare-replies --output-dir reports
   covers all 20 first moves and every unique Black two-move reply. This is an
   exhaustive two-series horizon, not an objective opening ranking.
 - [`reports/selective-opening-deepening.md`](reports/selective-opening-deepening.md)
-  adds White's three-move response for `1.e4` and `1.d4`, retaining 16 ordered
-  series per searched node after full generation and transposition merging.
+  adds White's three-move response for `1.e4` and `1.d4`, retaining at most 16
+  tactically/diversely ordered partial paths and complete series per searched
+  node. Any such pruning is labeled selective.
 - [`reports/published-reply-comparison.md`](reports/published-reply-comparison.md)
   tests named historical and engine reply hypotheses with a 64-finalist White
   response screen.
 
-The shallow run ranks `1.e3` and `1.Nf3` first, but that ordering collapses an
+The shallow run ranks `1.g3` and `1.c3` first, but that ordering collapses an
 important horizon: White has not yet received the three-move series. In the
-selective three-series extension, `1.e4` scores `+1137` and `1.d4` `+902` under
+selective three-series extension, `1.e4` scores `+848` and `1.d4` `+752` under
 the current heuristic. Those are useful hypotheses only; branch pruning and
 uncalibrated evaluation weights make neither a proof nor an objective answer.
 

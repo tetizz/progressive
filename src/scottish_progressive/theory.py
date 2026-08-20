@@ -199,10 +199,16 @@ def ranking_markdown(ranking: OpeningRanking) -> str:
         lines.append(
             "- Every requested Black reply search completed to the stated series depth."
         )
-        lines.append(
-            "- Every complete Black two-move series (including legal early checks) "
-            "was generated before any optional high-level branch cap."
-        )
+        if ranking.all_reply_searches_exact:
+            lines.append(
+                "- Every complete Black two-move series (including legal early checks) "
+                "was generated at this exact-width horizon."
+            )
+        else:
+            lines.append(
+                "- The configured frontier/branch cap pruned partial or complete "
+                "series candidates; the completed depth is selective."
+            )
     else:
         lines.append(
             "- One or more Black reply searches timed out or stopped before the "
@@ -324,9 +330,10 @@ def deepen_initial_moves(
         "time_limit_per_move": time_limit_per_move,
         "all_searches_completed": all_searches_completed,
         "selection_policy": (
-            "Every legal series is generated and transposition-merged first. "
-            "At each searched node, a deterministic cheap ordering retains at "
-            "most max_series_per_node series for deeper evaluation."
+            "A deterministic tactical/diversity frontier retains at most "
+            "max_series_per_node partial paths while a series is being built, "
+            "then applies the same cap to ordered complete series. Any pruning "
+            "marks the result selective."
         ),
         "warning": (
             "Selective results are hypotheses, not proof and not a complete "
@@ -366,7 +373,7 @@ def write_deepening(
         "",
         f"> {payload['warning']}",
         "",
-        "The cap is applied only after every legal series at that node has been generated and full-state transpositions have been merged.",
+        "The cap bounds intermediate series frontiers as well as complete candidates. This prevents high-budget series from materializing an unbounded tree, and it makes the result explicitly selective whenever pruning occurs.",
         "",
         "| Move | Score | Classification | Best tested Black series | PV | Depth | Status | Generated unique / raw | Time |",
         "|:---|---:|:---|:---|:---|---:|:---|---:|---:|",
@@ -494,9 +501,9 @@ def compare_published_replies() -> dict[str, object]:
         "ruleset_version": RULESET_VERSION,
         "series_horizon": 3,
         "white_response_search": (
-            "all legal White series generated and transposition-merged; "
-            f"deterministic fast screen retains {REPLY_SCREEN_LIMIT} finalists "
-            "for full progressive evaluation"
+            f"deterministic tactical/diversity frontier and final screen retain "
+            f"at most {REPLY_SCREEN_LIMIT} candidates per layer/node for full "
+            "progressive evaluation; any pruning is selective"
         ),
         "white_response_screen_limit": REPLY_SCREEN_LIMIT,
         "warning": (
@@ -535,7 +542,7 @@ def write_reply_comparison(
             [
                 f"## 1.{opening['first_move_san']}",
                 "",
-                f"Lower scores are better for Black. Every legal White series is generated; the top {payload['white_response_screen_limit']} deterministic screening finalists receive the full evaluation.",
+                f"Lower scores are better for Black. A deterministic tactical/diversity frontier retains at most {payload['white_response_screen_limit']} White candidates per layer/node; this response search is selective when pruning occurs.",
                 "",
                 "| Black series | Source | Score after White's best response | Best White series | Unique / raw White series |",
                 "|:---|:---|---:|:---|---:|",
@@ -554,7 +561,7 @@ def write_reply_comparison(
         [
             "## Interpretation limit",
             "",
-            "The comparison is stronger than the two-series baseline because it generates White's entire immediate tactical series set for each named reply. It still cannot establish the best Black reply: unlisted Black series remain possible, the White finalist screen is selective, and leaf values are heuristic.",
+            "The comparison extends the two-series baseline with a searched White tactical series for each named reply. It still cannot establish the best Black reply: unlisted Black series remain possible, the White frontier is selective, and leaf values are heuristic.",
             "",
         ]
     )

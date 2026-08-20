@@ -4,7 +4,12 @@ import chess
 import pytest
 
 from scottish_progressive.model import Outcome, ProgressiveState
-from scottish_progressive.rules import GenerationStats, generate_series, play_series
+from scottish_progressive.rules import (
+    GenerationStats,
+    SeriesLegalityError,
+    generate_series,
+    play_series,
+)
 
 
 def find_series(results, *moves: str):
@@ -267,6 +272,35 @@ def test_dynamic_transposition_generation_matches_raw_enumeration() -> None:
     } == raw_counts
     assert stats.raw_series == len(raw) == 446
     assert stats.unique_series == len(merged)
+
+
+@pytest.mark.parametrize("merge_transpositions", [True, False])
+def test_required_prefix_is_replayed_before_move_order_merging(
+    merge_transpositions: bool,
+) -> None:
+    state = ProgressiveState.from_fen(chess.STARTING_FEN, 3)
+    stats = GenerationStats()
+    results = generate_series(
+        state,
+        merge_transpositions=merge_transpositions,
+        required_prefix=("h2h3",),
+        stats=stats,
+    )
+
+    assert results
+    assert all(result.moves[0] == "h2h3" for result in results)
+    assert any(
+        result.moves == ("h2h3", "a2a3", "b2b3") for result in results
+    )
+    assert stats.required_prefix_moves == 1
+
+
+def test_required_prefix_cannot_continue_after_check() -> None:
+    state = ProgressiveState.from_fen(
+        "4k3/q3R3/8/8/8/8/8/4K3 b - - 0 1", 2
+    )
+    with pytest.raises(SeriesLegalityError, match="continues after check"):
+        generate_series(state, required_prefix=("a7e7", "e7e1"))
 
 
 def test_full_progressive_hash_distinguishes_series_budget() -> None:
