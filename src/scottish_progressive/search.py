@@ -911,6 +911,15 @@ class SeriesSearcher:
                     self._root_scores_complete = False
                 break
             except _AdjudicationPending:
+                if completed_depth > 0:
+                    # The deeper iteration is unknown, but the last fully
+                    # completed iteration remains a legal search result. Keep
+                    # its score, PV, alternatives, and proof while making the
+                    # incomplete requested horizon explicit. This is not a
+                    # quiet-draw adjudication and must never manufacture one.
+                    self._selective = True
+                    adjudication = "manual-proof-required"
+                    break
                 return SearchResult(
                     score=0,
                     best_series=None,

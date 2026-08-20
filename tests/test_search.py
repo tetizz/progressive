@@ -463,6 +463,46 @@ def test_timeout_keeps_best_fully_scored_root_candidate(monkeypatch) -> None:
     assert result.confidence == "partial root candidates only; incomplete/selective"
 
 
+def test_deeper_pending_adjudication_keeps_last_completed_iteration(
+    monkeypatch,
+) -> None:
+    state = ProgressiveState.initial()
+    selected = play_series(state, ("e2e4",))
+    scored = search_module.ScoredSeries(
+        selected,
+        321,
+        (),
+        (1, 1),
+    )
+
+    def complete_then_pending(self, state, depth, required_prefix):
+        if depth == 1:
+            self._root_scores_complete = True
+            return 321, (selected,), (scored,), "white"
+        raise search_module._AdjudicationPending
+
+    monkeypatch.setattr(
+        search_module.SeriesSearcher,
+        "_search_root",
+        complete_then_pending,
+    )
+    result = analyze(state, SearchLimits(depth_series=2))
+
+    assert result.score == 321
+    assert result.best_series == selected
+    assert result.principal_variation == (selected,)
+    assert result.alternatives == (scored,)
+    assert result.proof == "white"
+    assert result.completed_depth == 1
+    assert result.requested_depth == 2
+    assert result.adjudication_status == "manual-proof-required"
+    assert not result.exact_width
+    assert not result.timed_out
+    assert not result.work_limit_reached
+    assert result.root_scores_complete
+    assert result.forced is None
+
+
 def test_generation_work_limit_is_distinct_from_wall_clock_timeout() -> None:
     state = ProgressiveState.from_fen(
         "rnbqkb1r/ppp1pppp/5n2/1B1P4/8/5N2/PPPP1PPP/RNBQK2R b KQkq - 1 3",
@@ -682,6 +722,83 @@ def test_unresolved_quiet_draw_at_child_aborts_ordinary_minimax_score() -> None:
     assert result.classification == "Adjudication Pending"
     assert result.adjudication_status == "manual-proof-required"
     assert result.best_series is None
+
+
+def test_quiet_adjudication_in_deeper_pass_keeps_fast_kqk_fallback() -> None:
+    state = ProgressiveState.from_fen(
+        "7k/8/8/8/8/8/6Q1/K7 w - - 0 1",
+        1,
+        quiet_series=8,
+    )
+    shallow = analyze(
+        state,
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=8,
+            max_generation_positions=20_000,
+            collect_all_root_scores=False,
+        ),
+    )
+    result = analyze(
+        state,
+        SearchLimits(
+            depth_series=2,
+            max_series_per_node=8,
+            max_generation_positions=20_000,
+            collect_all_root_scores=False,
+        ),
+    )
+
+    assert shallow.best_series is not None
+    assert shallow.best_series.moves == ("g2h2",)
+    assert result.score == shallow.score
+    assert result.best_series == shallow.best_series
+    assert result.principal_variation == shallow.principal_variation
+    assert result.alternatives == shallow.alternatives
+    assert result.proof == shallow.proof
+    assert result.completed_depth == 1
+    assert result.adjudication_status == "manual-proof-required"
+    assert not result.exact_width
+    assert result.forced is None
+
+
+def test_live_series_22_kqk_pending_pass_keeps_production_fallback() -> None:
+    state = ProgressiveState.from_fen(
+        "8/8/8/8/6Q1/2K5/6k1/8 b - - 144 109",
+        22,
+        quiet_series=8,
+    )
+    production_limits = {
+        "max_series_per_node": 32,
+        "max_generation_positions": 250_000,
+        "collect_all_root_scores": False,
+    }
+    shallow = analyze(
+        state,
+        SearchLimits(depth_series=1, **production_limits),
+    )
+    result = analyze(
+        state,
+        SearchLimits(depth_series=2, **production_limits),
+    )
+
+    assert shallow.best_series is not None
+    assert shallow.best_series.machine_notation == (
+        "g2f1/f1e1/e1f1/f1e1/e1f1/f1e1/e1f1/f1e1/e1f1/f1e1/e1f1/"
+        "f1e1/e1f1/f1e1/e1f1/f1e1/e1f1/f1e1/e1f1/f1e1/e1f2/f2e3"
+    )
+    assert result.score == shallow.score == 1_411
+    assert result.best_series == shallow.best_series
+    assert result.principal_variation == shallow.principal_variation
+    assert result.alternatives == shallow.alternatives
+    assert result.proof == shallow.proof
+    assert result.completed_depth == 1
+    assert result.adjudication_status == "manual-proof-required"
+    assert not result.exact_width
+    assert not result.timed_out
+    assert not result.work_limit_reached
+    assert result.root_scores_complete == shallow.root_scores_complete
+    assert result.forced is None
 
 
 @pytest.mark.parametrize(("quiet_series", "depth"), [(8, 2), (7, 3)])
