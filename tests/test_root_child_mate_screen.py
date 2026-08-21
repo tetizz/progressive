@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import os
 import time
 
 import pytest
 
 import scottish_progressive.search as search_module
-from scottish_progressive.model import Outcome, ProgressiveState
+from scottish_progressive.model import Outcome, ProgressiveState, SeriesResult
 from scottish_progressive.profiles import load_profile
 from scottish_progressive.rules import play_series
 from scottish_progressive.search import (
@@ -64,6 +65,14 @@ BLUNDERING_S16 = (
     "a4a5",
 )
 HUMAN_S17_MATE = ("h8b2", "f8a8")
+EARLY_S4_HISTORY = (
+    ("e2e4",),
+    ("f7f6", "e8f7"),
+    ("d2d4", "e1d2", "g1f3"),
+)
+BLUNDERING_S4 = ("f6f5", "f5e4", "c7c5", "d8b6")
+HUMAN_S5_MATE = ("b1c3", "c3e4", "f1b5", "b5d7", "f3e5")
+SAFE_S4 = ("d7d5", "d5e4", "d8d6", "g8h6")
 
 
 def _play_limits() -> SearchLimits:
@@ -83,6 +92,52 @@ def _live_searcher() -> SeriesSearcher:
     return searcher
 
 
+def _early_s4_state() -> ProgressiveState:
+    state = ProgressiveState.initial()
+    for series in EARLY_S4_HISTORY:
+        state = play_series(state, series).final_state
+    return state
+
+
+def _ordinary_cap832_reply_mate(
+    state: ProgressiveState,
+) -> tuple[SeriesResult | None, int]:
+    """Returns a replay-proven mate from the historical ordinary wide beam."""
+
+    verifier = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=832,
+            max_generation_positions=250_000,
+            time_limit_seconds=30.0,
+            collect_all_root_scores=False,
+            native_threads=16,
+        ),
+        PROFILE,
+    )
+    verifier._deadline = time.perf_counter() + 30.0
+    generated, _width_complete = verifier._generate(
+        state,
+        ply_from_root=2,
+        tactical_protection=False,
+    )
+    candidates = (
+        generated.references()
+        if hasattr(generated, "references")
+        else generated
+    )
+    for candidate in candidates:
+        if (
+            candidate.outcome != Outcome.CHECKMATE
+            or not candidate.ended_by_check
+        ):
+            continue
+        replayed = play_series(state, candidate.moves)
+        if replayed.outcome == Outcome.CHECKMATE and replayed.ended_by_check:
+            return replayed, verifier.stats.work_positions
+    return None, verifier.stats.work_positions
+
+
 def test_wide_native_child_screen_replays_the_human_mate() -> None:
     blunder = play_series(S7_STATE, BLUNDERING_S7)
     human_mate = play_series(blunder.final_state, HUMAN_S8_MATE)
@@ -100,6 +155,30 @@ def test_wide_native_child_screen_replays_the_human_mate() -> None:
     charged_work = searcher.stats.work_positions
     assert searcher._root_child_immediate_mate(blunder.final_state) == mate
     assert searcher.stats.work_positions == charged_work
+
+
+def test_early_s4_child_screen_replays_the_exact_s5_mate() -> None:
+    """A concrete early mate must not be hidden by the Series-7 risk gate."""
+
+    root = _early_s4_state()
+    blunder = play_series(root, BLUNDERING_S4)
+    human_mate = play_series(blunder.final_state, HUMAN_S5_MATE)
+    assert blunder.final_state.series_number == 5
+    assert human_mate.outcome == Outcome.CHECKMATE
+    assert human_mate.ended_by_check
+    assert not search_module._tactical_frontier_protection_eligible(
+        blunder.final_state
+    )
+
+    searcher = _live_searcher()
+    screened = searcher._root_child_immediate_mate(blunder.final_state)
+
+    assert screened is not None
+    assert (
+        play_series(blunder.final_state, screened.moves).outcome
+        == Outcome.CHECKMATE
+    )
+    assert searcher.stats.work_positions < 10_000
 
 
 def test_cap32_generation_retains_the_human_promotion_mate_for_minimax() -> None:
@@ -152,25 +231,27 @@ def test_cap32_generation_retains_the_human_promotion_mate_for_minimax() -> None
     assert searcher.stats.tactical_frontier_reserve_drops > 0
 
 
-def test_ordinary_early_search_never_starts_the_wide_screen(
+def test_ordinary_opening_screen_is_staged_and_keeps_the_canonical_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     original = search_module._native_complete_series_batch
+    cheap_calls = 0
     wide_calls = 0
 
     def counted(*args: object, **kwargs: object) -> object:
+        nonlocal cheap_calls
         nonlocal wide_calls
-        if kwargs.get("max_frontier_states") == 832:
+        frontier = kwargs.get("max_frontier_states")
+        score = kwargs.get("frontier_score")
+        if frontier == 32 and getattr(score, "tactical_protection", False):
+            cheap_calls += 1
+        if frontier == 832:
             wide_calls += 1
         return original(*args, **kwargs)
 
     monkeypatch.setattr(search_module, "_native_complete_series_batch", counted)
-    state = ProgressiveState.from_fen(
-        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-        3,
-    )
     result = analyze(
-        state,
+        ProgressiveState.initial(),
         SearchLimits(
             depth_series=2,
             max_series_per_node=32,
@@ -181,11 +262,47 @@ def test_ordinary_early_search_never_starts_the_wide_screen(
     )
 
     assert result.best_series is not None
+    assert result.best_series.moves == ("g2g3",)
+    assert result.score == -150
+    # The screen is called only for successive exact root contenders. At S2,
+    # each protected width-32 probe is tiny; the entire opening stays under the
+    # prior 30k deterministic-work envelope without widening to 832.
+    assert 0 < cheap_calls <= 8
     assert wide_calls == 0
+    assert result.stats.work_positions < 30_000
     assert result.stats.tactical_frontier_states_retained == 0
     assert result.stats.tactical_frontier_reserve_drops == 0
     assert result.stats.tactical_final_series_retained == 0
     assert result.stats.tactical_final_reserve_drops == 0
+
+
+@pytest.mark.parametrize("requested_depth", (4, 5))
+def test_early_s4_play_avoids_every_cap832_replay_mate(
+    requested_depth: int,
+) -> None:
+    """Opt-in live-strength gate for the 10m-work, 16-thread play profile."""
+
+    if os.environ.get("SPC_RUN_EARLY_S4_GATE") != "1":
+        pytest.skip("set SPC_RUN_EARLY_S4_GATE=1 for the early S4 strength gate")
+
+    root = _early_s4_state()
+    limits = SearchLimits(
+        depth_series=requested_depth,
+        max_series_per_node=32,
+        max_generation_positions=10_000_000,
+        time_limit_seconds=30.0,
+        collect_all_root_scores=False,
+        native_threads=16,
+    )
+    result = analyze(root, limits, PROFILE)
+
+    assert result.best_series is not None
+    assert result.best_series.moves == SAFE_S4
+    assert result.completed_depth == 4
+    selected_child = play_series(root, result.best_series.moves).final_state
+    reply_mate, verifier_work = _ordinary_cap832_reply_mate(selected_child)
+    assert reply_mate is None
+    assert 0 < verifier_work < 50_000
 
 
 def test_depth_four_play_avoids_every_cap832_replay_mate() -> None:
