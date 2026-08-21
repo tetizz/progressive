@@ -58,9 +58,16 @@ SERIES_GENERATION_CACHE_CAPACITY = 4_096
 # fully scored root candidate can become the new choice, so early positions pay
 # for successive contenders rather than a blanket wide/tactical search.
 ROOT_CHILD_MATE_SCREEN_FRONTIER = 832
+ROOT_CHILD_EARLY_MATE_SCREEN_FRONTIER = 4_096
 ROOT_CHILD_MATE_SCREEN_CHEAP_FRONTIER = 32
 ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT = 1_600_000
 ROOT_CHILD_MATE_SCREEN_MIN_SERIES = 7
+# Five- and six-move reply series can hide mating routes behind several quiet
+# prefixes. Keep this range local to successive root-contender safety
+# screens: lowering the general tactical-frontier threshold would widen every
+# descendant and erase a completed search depth in early play.
+ROOT_CHILD_ADAPTIVE_MATE_SCREEN_MIN_SERIES = 5
+ROOT_CHILD_ADAPTIVE_MATE_SCREEN_MAX_SERIES = 6
 # A low-risk root may still expose a concrete promotion tactic in the
 # opponent's immediately following series.  Protect that one-series safety
 # horizon, but do not let broad structural promotion eligibility at distant
@@ -824,7 +831,11 @@ class SeriesSearcher:
         has one search-wide budget shared by every root child and iteration.
         Every contender first pays for a protected width-32 probe; only a late
         or promotion-risk child with no retained mate falls through to the
-        historical ordinary width-832 probe.
+        adaptive ordinary wide probe. Series 5-6 use width 4096 because their
+        first quiet prefixes can hide a mate before the existing late-series
+        tactical policy begins; later replies retain the historical width 832.
+        Both stages remain confined to successive root contenders and share
+        one fixed search-wide budget.
         """
 
         if (
@@ -845,13 +856,20 @@ class SeriesSearcher:
         if mate is not None or not completed:
             self._root_child_mate_screen_cache[key] = mate
             return mate
-        if not _tactical_frontier_protection_eligible(state):
+        if (
+            ROOT_CHILD_ADAPTIVE_MATE_SCREEN_MIN_SERIES
+            <= state.series_number
+            <= ROOT_CHILD_ADAPTIVE_MATE_SCREEN_MAX_SERIES
+        ):
+            frontier = ROOT_CHILD_EARLY_MATE_SCREEN_FRONTIER
+        elif _tactical_frontier_protection_eligible(state):
+            frontier = ROOT_CHILD_MATE_SCREEN_FRONTIER
+        else:
             self._root_child_mate_screen_cache[key] = None
             return None
-
         mate, _completed = self._root_child_mate_screen_stage(
             state,
-            frontier=ROOT_CHILD_MATE_SCREEN_FRONTIER,
+            frontier=frontier,
             tactical_protection=False,
         )
         self._root_child_mate_screen_cache[key] = mate
