@@ -5,6 +5,7 @@ import time
 
 import pytest
 
+import scottish_progressive.evaluation as evaluation_module
 import scottish_progressive.search as search_module
 from scottish_progressive.model import Outcome, ProgressiveState, SeriesResult
 from scottish_progressive.profiles import baseline_profile
@@ -244,6 +245,44 @@ def test_adaptive_early_s5_screen_rejects_the_second_live_loss() -> None:
     assert screened is not None
     assert play_series(blunder.final_state, screened.moves).outcome == Outcome.CHECKMATE
     assert 0 < searcher.stats.work_positions <= ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT
+
+
+def test_wide_reply_screen_does_not_materialize_without_native(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing native ABI must not turn the safety screen into a huge Python job."""
+
+    def unexpected_python_generation(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("wide reply screen entered the Python generator")
+
+    monkeypatch.setattr(evaluation_module, "_native_eval", None)
+    monkeypatch.setattr(search_module, "generate_series", unexpected_python_generation)
+    monkeypatch.setattr(
+        search_module,
+        "_native_complete_series_generation",
+        unexpected_python_generation,
+    )
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=2,
+            max_series_per_node=32,
+            max_generation_positions=10_000_000,
+            time_limit_seconds=30.0,
+            collect_all_root_scores=False,
+            native_threads=1,
+        ),
+        PROFILE,
+    )
+
+    mate, completed = searcher._root_child_mate_screen_stage(
+        _live_loss_s4_state(),
+        frontier=4096,
+        tactical_protection=False,
+    )
+
+    assert mate is None
+    assert not completed
+    assert searcher.stats.root_safety_screen_positions == 0
 
 
 def test_early_promotion_risk_keeps_the_historical_width832_route(

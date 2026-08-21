@@ -518,6 +518,124 @@ class _V08NativeSurface:
         return getattr(self._native, name)
 
 
+def _wide_reply_screen_signature(
+    monkeypatch: pytest.MonkeyPatch,
+    surface: object,
+    state: ProgressiveState,
+) -> tuple[bool, str | None, dict[str, object]]:
+    monkeypatch.setattr(evaluation, "_native_eval", surface)
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=2,
+            max_series_per_node=32,
+            max_generation_positions=10_000_000,
+            collect_all_root_scores=False,
+            native_threads=1,
+        ),
+        baseline_profile(),
+    )
+    mate, completed = searcher._root_child_mate_screen_stage(
+        state,
+        frontier=4_096,
+        tactical_protection=False,
+    )
+    return (
+        completed,
+        mate.machine_notation if mate is not None else None,
+        asdict(searcher.stats),
+    )
+
+
+def test_v08_wide_s5_screen_matches_n2_result_and_all_work_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native = _require_n2_native()
+    state = ProgressiveState.initial()
+    for moves in (
+        ("e2e4",),
+        ("f7f6", "e8f7"),
+        ("d2d4", "b1c3", "f1d3"),
+        ("d7d5", "c8g4", "d5e4", "g4d1"),
+    ):
+        state = play_series(state, moves).final_state
+
+    legacy = _wide_reply_screen_signature(
+        monkeypatch,
+        _V08NativeSurface(native),
+        state,
+    )
+    accelerated = _wide_reply_screen_signature(monkeypatch, native, state)
+
+    assert accelerated == legacy
+    assert legacy[0]
+    assert legacy[1] == "c3d5/d3e4/d5f4/e4h7/h7g6"
+    assert legacy[2]["root_safety_screen_positions"] == 75_245
+
+
+def test_v08_wide_s6_screen_matches_n2_result_and_all_work_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native = _require_n2_native()
+    state = ProgressiveState.from_fen(
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1",
+        6,
+    )
+
+    legacy = _wide_reply_screen_signature(
+        monkeypatch,
+        _V08NativeSurface(native),
+        state,
+    )
+    accelerated = _wide_reply_screen_signature(monkeypatch, native, state)
+
+    assert accelerated == legacy
+    assert legacy[0]
+    assert legacy[1] == "a7a5/a5a4/e7e5/d8h4/f8c5/c5f2"
+    assert legacy[2]["root_safety_screen_positions"] == 118_763
+
+
+def test_v08_wide_screen_with_deadline_does_not_run_untimed_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native = _require_n2_native()
+    state = ProgressiveState.from_fen(
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1",
+        6,
+    )
+
+    def unexpected_untimed_generation(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("timed screen entered the untimed legacy ABI")
+
+    monkeypatch.setattr(evaluation, "_native_eval", _V08NativeSurface(native))
+    monkeypatch.setattr(
+        search_module,
+        "_native_complete_series_generation",
+        unexpected_untimed_generation,
+    )
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=2,
+            max_series_per_node=32,
+            max_generation_positions=10_000_000,
+            time_limit_seconds=30.0,
+            collect_all_root_scores=False,
+            native_threads=1,
+        ),
+        baseline_profile(),
+    )
+    searcher._deadline = time.perf_counter() + 30.0
+
+    mate, completed = searcher._root_child_mate_screen_stage(
+        state,
+        frontier=4_096,
+        tactical_protection=False,
+    )
+
+    assert mate is None
+    assert not completed
+    assert searcher.stats.root_safety_screen_positions == 0
+
+
 def test_integrated_n2_search_matches_v08_output_and_all_work_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

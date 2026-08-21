@@ -32,6 +32,7 @@ from .rules import (
     _NativeSeriesBatch,
     _NativeSeriesReference,
     _native_complete_series_batch,
+    _native_complete_series_generation,
     _series_tactical_provenance,
     generate_series,
     play_series,
@@ -946,7 +947,7 @@ class SeriesSearcher:
         )
         exhausted = False
         cancelled = False
-        batch: _NativeSeriesBatch | None = None
+        candidates: list[SeriesResult | _NativeSeriesReference] = []
         try:
             batch = _native_complete_series_batch(
                 state,
@@ -960,6 +961,37 @@ class SeriesSearcher:
                 native_time_budget_ns=native_time_budget_ns,
                 native_threads=self.limits.native_threads,
             )
+            if batch is not None:
+                candidates = batch.references()
+            else:
+                from . import evaluation as evaluation_module
+
+                legacy_native = evaluation_module._native_eval
+                if (
+                    legacy_native is None
+                    or hasattr(legacy_native, "complete_series_candidate")
+                    or not hasattr(legacy_native, "generate_complete_series")
+                    or should_stop is not None
+                ):
+                    return None, False
+                # The safety contract cannot disappear merely because the
+                # lazy N2 batch ABI is unavailable in an untimed analysis.
+                # Invoke only the older source-matched native surface here;
+                # never let this 4096-wide screen spill into Python or ignore
+                # a real deadline that the older ABI cannot enforce.
+                legacy_results = _native_complete_series_generation(
+                    state,
+                    generation,
+                    required_prefix=(),
+                    max_frontier_states=frontier,
+                    max_positions=remaining,
+                    frontier_score=frontier_score,
+                    native_final_score=final_score,
+                    should_stop=None,
+                )
+                if legacy_results is None:
+                    return None, False
+                candidates = legacy_results
         except GenerationWorkLimit:
             # This screen's ceiling is not the whole search ceiling. An
             # incomplete screen is unknown, so continue with minimax.
@@ -978,11 +1010,11 @@ class SeriesSearcher:
         if cancelled:
             self._check_deadline()
             raise _Timeout
-        if exhausted or batch is None:
+        if exhausted:
             return None, False
 
         mate: SeriesResult | None = None
-        for candidate in batch.references():
+        for candidate in candidates:
             self._check_deadline()
             if (
                 candidate.outcome != Outcome.CHECKMATE
