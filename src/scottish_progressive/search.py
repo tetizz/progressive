@@ -66,6 +66,11 @@ ROOT_CHILD_MATE_SCREEN_MIN_SERIES = 7
 # horizon, but do not let broad structural promotion eligibility at distant
 # Series-7 descendants inflate an otherwise ordinary depth-five search.
 TACTICAL_DESCENDANT_PROMOTION_MAX_PLY = 2
+# Tactical final capping must not replace every static-evaluation leader. Keep
+# at least half of each capped beam for the ordinary order; terminal mates are
+# seeded first and may consume more when they alone fill the cap. Keep this
+# ratio synchronized with FINAL_ORDINARY_QUOTA_DENOMINATOR in _native_eval.cpp.
+TACTICAL_FINAL_ORDINARY_QUOTA_DENOMINATOR = 2
 
 
 def _tactical_frontier_protection_eligible(
@@ -1079,6 +1084,37 @@ class SeriesSearcher:
                 for _rank, item in representatives.values()
             }
             selected_notation: set[str] = set()
+            tactically_selected: set[str] = set()
+            # A delivered terminal mate is never traded away for a quota. In
+            # ordinary positions, reserve half the cap for the static leaders
+            # before tactical representatives compete for the other half.
+            for item in ordered:
+                if (
+                    item.outcome == Outcome.CHECKMATE
+                    and item.ended_by_check
+                ):
+                    selected_notation.add(item.machine_notation)
+                    if item.machine_notation in tactical_candidates:
+                        tactically_selected.add(item.machine_notation)
+                    if len(selected_notation) == cap:
+                        break
+            ordinary_quota = min(
+                cap,
+                max(
+                    1,
+                    (
+                        cap
+                        + TACTICAL_FINAL_ORDINARY_QUOTA_DENOMINATOR
+                        - 1
+                    )
+                    // TACTICAL_FINAL_ORDINARY_QUOTA_DENOMINATOR,
+                ),
+            )
+            if len(selected_notation) < cap:
+                for item in ordered[:ordinary_quota]:
+                    selected_notation.add(item.machine_notation)
+                    if len(selected_notation) == cap:
+                        break
             for _opportunity, (_rank, item) in sorted(
                 representatives.items(),
                 key=lambda entry: (
@@ -1088,10 +1124,10 @@ class SeriesSearcher:
                     entry[1][1].machine_notation,
                 ),
             ):
-                selected_notation.add(item.machine_notation)
                 if len(selected_notation) == cap:
                     break
-            tactically_selected = set(selected_notation)
+                selected_notation.add(item.machine_notation)
+                tactically_selected.add(item.machine_notation)
             for item in ordered:
                 if len(selected_notation) == cap:
                     break

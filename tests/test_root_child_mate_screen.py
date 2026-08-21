@@ -74,7 +74,7 @@ BLUNDERING_S4 = ("f6f5", "f5e4", "c7c5", "d8b6")
 HUMAN_S5_MATE = ("b1c3", "c3e4", "f1b5", "b5d7", "f3e5")
 PRIOR_SAFE_S4 = ("d7d5", "d5e4", "d8d6", "g8h6")
 ROOT_TACTICAL_S4 = ("e7e5", "f6f5", "f5e4", "f8b4")
-HOSTED_SHALLOW_S4 = ("g8h6", "h6f5", "f5h4", "h4f3")
+HOSTED_SHALLOW_S4 = ("d7d5", "d5e4", "c8g4", "g4f3")
 
 
 def _play_limits() -> SearchLimits:

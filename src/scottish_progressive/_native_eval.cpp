@@ -2430,6 +2430,9 @@ void update_pending_ep_targets(
 }
 
 constexpr std::size_t TACTICAL_FRONTIER_RESERVE_MAX = 64;
+// Keep synchronized with TACTICAL_FINAL_ORDINARY_QUOTA_DENOMINATOR in
+// search.py. Delivered terminal mates are seeded before this quota.
+constexpr std::size_t FINAL_ORDINARY_QUOTA_DENOMINATOR = 2;
 
 bool bound_frontier(
     NativeGenerationContext& context,
@@ -2935,14 +2938,48 @@ bool merge_complete_series(NativeGenerationContext& context) {
             );
             std::vector<bool> selected(ranked.size(), false);
             std::size_t selected_count = 0;
+            // Delivered terminal mates remain authoritative even when a
+            // deliberately inverted heuristic ranks them below quiet lines.
+            for (
+                std::size_t rank = 0;
+                rank < ranked.size() && selected_count < final_cap;
+                ++rank
+            ) {
+                const auto& candidate = ranked[rank].series.representative;
+                if (
+                    candidate.outcome != NativeSeriesOutcome::Checkmate
+                    || !candidate.ended_by_check
+                ) {
+                    continue;
+                }
+                selected[rank] = true;
+                ++selected_count;
+            }
+            const std::size_t ordinary_quota = std::min(
+                final_cap,
+                final_cap / FINAL_ORDINARY_QUOTA_DENOMINATOR
+                    + final_cap % FINAL_ORDINARY_QUOTA_DENOMINATOR
+            );
+            for (
+                std::size_t rank = 0;
+                rank < ordinary_quota && selected_count < final_cap;
+                ++rank
+            ) {
+                if (selected[rank]) {
+                    continue;
+                }
+                selected[rank] = true;
+                ++selected_count;
+            }
             for (const auto& representative : protected_series) {
+                if (selected_count == final_cap) {
+                    break;
+                }
                 if (selected[representative.rank]) {
                     continue;
                 }
                 selected[representative.rank] = true;
-                if (++selected_count == final_cap) {
-                    break;
-                }
+                ++selected_count;
             }
             for (
                 std::size_t rank = 0;
