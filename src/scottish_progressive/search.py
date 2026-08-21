@@ -154,6 +154,9 @@ class SearchStats:
     intra_series_transpositions: int = 0
     tt_hits: int = 0
     alpha_beta_cutoffs: int = 0
+    pvs_zero_window_searches: int = 0
+    pvs_researches: int = 0
+    pvs_tt_writes_rolled_back: int = 0
     root_bound_candidates: int = 0
     root_safety_passes: int = 0
     root_safety_retries: int = 0
@@ -383,6 +386,18 @@ class SeriesSearcher:
         # This is the progressive-series equivalent of Stockfish's hash-move
         # ordering: it changes visit order, never the generated legal set.
         self._tt: dict[tuple[int, str, int, int], _TTEntry] = {}
+        # A PVS null-window probe is deliberately speculative.  Every TT write
+        # made below that probe is journaled, including repeated writes to one
+        # key.  Nested probes own nested journals and always restore their
+        # caller's view before returning or propagating an interruption.
+        self._tt_transaction_stack: list[
+            list[
+                tuple[
+                    tuple[int, str, int, int],
+                    _TTEntry | None,
+                ]
+            ]
+        ] = []
         self._eval_cache: dict[tuple[int, str, int, int], EvaluationBreakdown] = {}
         self._quiet_adjudication_cache: dict[
             tuple[int, str, int, int], str | None
@@ -1376,6 +1391,115 @@ class SeriesSearcher:
                     series.insert(0, series.pop(index))
                 return
 
+    def _begin_tt_transaction(
+        self,
+    ) -> list[tuple[tuple[int, str, int, int], _TTEntry | None]]:
+        journal: list[
+            tuple[tuple[int, str, int, int], _TTEntry | None]
+        ] = []
+        self._tt_transaction_stack.append(journal)
+        return journal
+
+    def _write_tt(
+        self,
+        key: tuple[int, str, int, int],
+        entry: _TTEntry,
+    ) -> None:
+        if self._tt_transaction_stack:
+            # None is an unambiguous missing sentinel: TT values are always
+            # concrete frozen _TTEntry instances.
+            self._tt_transaction_stack[-1].append((key, self._tt.get(key)))
+        self._tt[key] = entry
+
+    def _rollback_tt_transaction(
+        self,
+        journal: list[tuple[tuple[int, str, int, int], _TTEntry | None]],
+    ) -> int:
+        if (
+            not self._tt_transaction_stack
+            or self._tt_transaction_stack[-1] is not journal
+        ):
+            raise RuntimeError("TT transactions must roll back in nested LIFO order")
+        self._tt_transaction_stack.pop()
+        for key, previous in reversed(journal):
+            if previous is None:
+                self._tt.pop(key, None)
+            else:
+                self._tt[key] = previous
+        return len(journal)
+
+    def _search_child_with_pvs(
+        self,
+        state: ProgressiveState,
+        depth: int,
+        alpha: int,
+        beta: int,
+        ply_from_root: int,
+        *,
+        parent_mover: chess.Color,
+        has_prior_child: bool,
+    ) -> tuple[int, tuple[SeriesResult, ...], tuple[int, int]]:
+        """Search a later child with a transactional one-point PV window.
+
+        Scores are integral, so a one-point window cannot contain an unknown
+        exact score.  A result inside the caller's full window is re-searched
+        exactly.  The speculative probe never leaves TT state behind: that is
+        required for canonical PV, alternative, and proof parity with ordinary
+        alpha-beta, including when the probe is interrupted.
+        """
+
+        if (
+            not has_prior_child
+            # A depth-one child has already paid for its complete-series
+            # frontier and searches only static leaves. Probing it twice adds
+            # work on sparse positions without reducing generation.
+            or depth < 2
+            or beta - alpha <= 1
+        ):
+            return self._minimax(
+                state,
+                depth,
+                alpha,
+                beta,
+                ply_from_root,
+            )
+
+        self.stats.pvs_zero_window_searches += 1
+        journal = self._begin_tt_transaction()
+        try:
+            if parent_mover == chess.WHITE:
+                score, pv, proof_bounds = self._minimax(
+                    state,
+                    depth,
+                    alpha,
+                    alpha + 1,
+                    ply_from_root,
+                )
+            else:
+                score, pv, proof_bounds = self._minimax(
+                    state,
+                    depth,
+                    beta - 1,
+                    beta,
+                    ply_from_root,
+                )
+            needs_research = alpha < score < beta
+        finally:
+            self.stats.pvs_tt_writes_rolled_back += self._rollback_tt_transaction(
+                journal
+            )
+
+        if needs_research:
+            self.stats.pvs_researches += 1
+            return self._minimax(
+                state,
+                depth,
+                alpha,
+                beta,
+                ply_from_root,
+            )
+        return score, pv, proof_bounds
+
     def _minimax(
         self,
         state: ProgressiveState,
@@ -1515,12 +1639,14 @@ class SeriesSearcher:
                 self._check_deadline()
                 terminal = self._terminal_score(result, mover, ply_from_root + 1)
                 if terminal is None:
-                    score, child_pv, proof_bounds = self._minimax(
+                    score, child_pv, proof_bounds = self._search_child_with_pvs(
                         result.final_state,
                         depth - 1,
                         alpha,
                         beta,
                         ply_from_root + 1,
+                        parent_mover=mover,
+                        has_prior_child=best_candidate is not None,
                     )
                 else:
                     score, child_pv = terminal, ()
@@ -1585,7 +1711,7 @@ class SeriesSearcher:
                 and entry.bound != Bound.EXACT
             )
         ):
-            self._tt[key] = replacement
+            self._write_tt(key, replacement)
         return best_score, best_pv, proof_bounds
 
     def _search_root_pass(
