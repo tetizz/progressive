@@ -119,10 +119,17 @@ jobs:
                   f"Render did not publish engine fingerprint {expected} within 15 minutes; last={last}"
               )
 
+      - name: Build commit-addressed Pages artifact
+        run: >-
+          python scripts/build_pages_site.py
+          --source src/scottish_progressive/web/static
+          --output _site
+          --version "$GITHUB_SHA"
+
       - name: Upload static site
         uses: actions/upload-pages-artifact@v4
         with:
-          path: src/scottish_progressive/web/static
+          path: _site
 
       - name: Deploy
         id: deployment

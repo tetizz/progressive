@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -52,6 +53,46 @@ def test_deployment_manifests_keep_pages_and_render_on_the_same_commit() -> None
     assert "actions/deploy-pages@v4" in workflow
     assert "Wait for matching deployed engine" in workflow
     assert "actual == expected" in workflow
+    assert "Build commit-addressed Pages artifact" in workflow
+    assert "python scripts/build_pages_site.py" in workflow
+    assert '--version "$GITHUB_SHA"' in workflow
+    assert "path: _site" in workflow
+
+
+def test_pages_artifact_versions_every_executable_asset(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "_site"
+    version = "0123456789abcdef0123456789abcdef01234567"
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "build_pages_site.py"),
+            "--source",
+            str(STATIC),
+            "--output",
+            str(output),
+            "--version",
+            version,
+        ],
+        check=True,
+    )
+
+    source_index = (STATIC / "index.html").read_text(encoding="utf-8")
+    deployed_index = (output / "index.html").read_text(encoding="utf-8")
+    assets = (
+        ("href", "styles.css"),
+        ("src", "study-safety.js"),
+        ("src", "evaluation-format.js"),
+        ("src", "play-handoff.js"),
+        ("src", "play-timeline.js"),
+        ("src", "app.js"),
+    )
+    for attribute, asset in assets:
+        assert f'{attribute}="./{asset}"' in source_index
+        assert f'{attribute}="./{asset}?v={version}"' in deployed_index
+    assert deployed_index.count(f"?v={version}") == len(assets)
+    assert (output / "app.js").read_bytes() == (STATIC / "app.js").read_bytes()
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js is required for browser asset tests")
