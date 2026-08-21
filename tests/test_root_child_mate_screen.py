@@ -75,6 +75,22 @@ HUMAN_S5_MATE = ("b1c3", "c3e4", "f1b5", "b5d7", "f3e5")
 PRIOR_SAFE_S4 = ("d7d5", "d5e4", "d8d6", "g8h6")
 ROOT_TACTICAL_S4 = ("e7e5", "f6f5", "f5e4", "f8b4")
 HOSTED_SHALLOW_S4 = ("d7d5", "d5e4", "c8g4", "g4f3")
+LIVE_LOSS_S4_HISTORY = (
+    ("e2e4",),
+    ("f7f6", "e8f7"),
+    ("d2d4", "b1c3", "f1d3"),
+)
+LIVE_LOSS_S4 = ("d7d5", "c8g4", "d5e4", "g4d1")
+LIVE_LOSS_S5_MATE = ("d3e4", "e4h7", "f2f4", "f4f5", "h7g6")
+LIVE_LOSS_PUBLIC_EVIDENCE = {
+    "source_fingerprint": "70f4e529539a7241",
+    "runtime": "0.15 CPU / native1",
+    "requested_depth": 5,
+    "completed_depth": 2,
+    "branch_cap": 32,
+    "time_limit_seconds": 30.0,
+    "max_generation_positions": 10_000_000,
+}
 
 
 def _play_limits() -> SearchLimits:
@@ -97,6 +113,13 @@ def _live_searcher() -> SeriesSearcher:
 def _early_s4_state() -> ProgressiveState:
     state = ProgressiveState.initial()
     for series in EARLY_S4_HISTORY:
+        state = play_series(state, series).final_state
+    return state
+
+
+def _live_loss_s4_state() -> ProgressiveState:
+    state = ProgressiveState.initial()
+    for series in LIVE_LOSS_S4_HISTORY:
         state = play_series(state, series).final_state
     return state
 
@@ -183,6 +206,124 @@ def test_early_s4_child_screen_replays_the_exact_s5_mate() -> None:
         == Outcome.CHECKMATE
     )
     assert searcher.stats.work_positions < 10_000
+
+
+def test_adaptive_early_s5_screen_rejects_the_second_live_loss() -> None:
+    """A quiet-prefix mate must survive beyond the old width-832 screen."""
+
+    root = _live_loss_s4_state()
+    assert root.pfen == (
+        "rnbq1bnr/pppppkpp/5p2/8/3PP3/2NB4/PPP2PPP/R1BQK1NR "
+        "b KQ - 2 3 | series=4 quiet=0 progressive_ep=- "
+        "rules=scottish-modern-common-v1 quiet_draw=manual-proof-required"
+    )
+    blunder = play_series(root, LIVE_LOSS_S4)
+    human_mate = play_series(blunder.final_state, LIVE_LOSS_S5_MATE)
+    assert human_mate.machine_notation == "/".join(LIVE_LOSS_S5_MATE)
+    assert human_mate.outcome == Outcome.CHECKMATE
+    assert human_mate.ended_by_check
+
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=2,
+            max_series_per_node=32,
+            max_generation_positions=10_000_000,
+            time_limit_seconds=30.0,
+            collect_all_root_scores=False,
+            native_threads=1,
+        ),
+        PROFILE,
+    )
+    searcher._deadline = time.perf_counter() + 30.0
+    screened = searcher._root_child_immediate_mate(blunder.final_state)
+
+    assert screened is not None
+    assert play_series(blunder.final_state, screened.moves).outcome == Outcome.CHECKMATE
+    assert 0 < searcher.stats.work_positions <= ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT
+
+
+def test_early_promotion_risk_keeps_the_historical_width832_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = play_series(
+        play_series(ProgressiveState.initial(), ("e2e4",)).final_state,
+        ("f7f6", "e8f7"),
+    ).final_state
+    assert state.series_number == 3
+    calls: list[tuple[int, bool]] = []
+
+    def fake_stage(
+        _searcher: SeriesSearcher,
+        _state: ProgressiveState,
+        *,
+        frontier: int,
+        tactical_protection: bool,
+    ) -> tuple[None, bool]:
+        calls.append((frontier, tactical_protection))
+        return None, True
+
+    monkeypatch.setattr(
+        search_module,
+        "_tactical_frontier_protection_eligible",
+        lambda _state: True,
+    )
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_root_child_mate_screen_stage",
+        fake_stage,
+    )
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            collect_all_root_scores=False,
+        ),
+        PROFILE,
+    )
+
+    assert searcher._root_child_immediate_mate(state) is None
+    assert calls == [(32, True), (832, False)]
+
+
+def test_hosted_depth_two_selects_a_screened_reply_to_the_second_live_loss() -> None:
+    assert LIVE_LOSS_PUBLIC_EVIDENCE["source_fingerprint"] == "70f4e529539a7241"
+    assert LIVE_LOSS_PUBLIC_EVIDENCE["requested_depth"] == 5
+    assert LIVE_LOSS_PUBLIC_EVIDENCE["completed_depth"] == 2
+    root = _live_loss_s4_state()
+    result = analyze(
+        root,
+        SearchLimits(
+            depth_series=2,
+            max_series_per_node=32,
+            max_generation_positions=10_000_000,
+            time_limit_seconds=30.0,
+            collect_all_root_scores=False,
+            native_threads=1,
+        ),
+        PROFILE,
+    )
+
+    assert result.best_series is not None
+    assert result.best_series.moves == ("f6f5", "f5e4", "e4d3", "d3d2")
+    assert result.best_series.moves != LIVE_LOSS_S4
+    assert result.completed_depth == 2
+    assert result.score == 639
+    assert result.stats.work_positions < 500_000
+    selected_child = play_series(root, result.best_series.moves).final_state
+    verifier = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            max_generation_positions=10_000_000,
+            time_limit_seconds=30.0,
+            collect_all_root_scores=False,
+            native_threads=1,
+        ),
+        PROFILE,
+    )
+    verifier._deadline = time.perf_counter() + 30.0
+    assert verifier._root_child_immediate_mate(selected_child) is None
+    assert 0 < verifier.stats.work_positions <= ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT
 
 
 def test_cap32_generation_retains_the_human_promotion_mate_for_minimax() -> None:
