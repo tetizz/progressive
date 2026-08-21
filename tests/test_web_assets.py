@@ -30,6 +30,12 @@ def test_public_assets_are_project_pages_safe_and_keep_local_same_origin() -> No
     assert 'const API_ORIGIN = isPublicPagesSite ? configuredApiOrigin : ""' in app
     assert 'fetch(`${API_ORIGIN}${path}`' in app
     assert 'if (options.body !== undefined' in app
+    assert 'error.code = "invalid-api-response"' in app
+    assert 'const PUBLIC_HEALTH_TIMEOUT_MS = 20_000' in app
+    assert 'const PUBLIC_HEALTH_WAKE_DELAYS_MS = [' in app
+    assert 'dom.engine_status_text.textContent = "Waking engine…"' in app
+    assert 'isPublicServiceWakeError(error, { includeAbort: true })' in app
+    assert 'PUBLIC_ENGINE_RECONNECT_DELAYS_MS[reconnectAttempt]' in app
 
 
 def test_deployment_manifests_keep_pages_and_render_on_the_same_commit() -> None:
@@ -44,6 +50,8 @@ def test_deployment_manifests_keep_pages_and_render_on_the_same_commit() -> None
     assert "branches: [main]" in workflow
     assert "src/scottish_progressive/web/static" in workflow
     assert "actions/deploy-pages@v4" in workflow
+    assert "Wait for matching deployed engine" in workflow
+    assert "actual == expected" in workflow
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js is required for browser asset tests")

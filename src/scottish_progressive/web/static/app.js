@@ -12,6 +12,9 @@
   const AUTO_ANALYSIS_DEBOUNCE_MS = 260;
   const AUTO_ANALYSIS_RETRY_MS = 700;
   const ENGINE_MOVE_ANIMATION_MS = 145;
+  const PUBLIC_HEALTH_TIMEOUT_MS = 20_000;
+  const PUBLIC_HEALTH_WAKE_DELAYS_MS = [1_500, 3_000, 5_000, 8_000, 12_000, 16_000, 20_000];
+  const PUBLIC_ENGINE_RECONNECT_DELAYS_MS = [1_000, 2_500, 5_000];
   const EVALUATION = globalThis.ScottishProgressiveEvaluation;
   const PLAY_HANDOFF = globalThis.ScottishProgressivePlayHandoff.createGate();
   const PLAY_TIMELINE = globalThis.ScottishProgressivePlayTimeline;
@@ -211,9 +214,30 @@
       headers,
     });
     const type = response.headers.get("content-type") || "";
-    const payload = type.includes("application/json")
-      ? await response.json()
-      : { detail: await response.text() };
+    if (!type.includes("application/json")) {
+      await response.text();
+      const error = new Error(response.ok
+        ? "The engine service returned a non-API response."
+        : `${response.status} ${response.statusText}`);
+      error.status = response.status;
+      error.code = "invalid-api-response";
+      throw error;
+    }
+    let payload;
+    try {
+      payload = await response.json();
+    } catch {
+      const error = new Error("The engine service returned invalid JSON.");
+      error.status = response.status;
+      error.code = "invalid-api-response";
+      throw error;
+    }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      const error = new Error("The engine service returned an invalid API payload.");
+      error.status = response.status;
+      error.code = "invalid-api-response";
+      throw error;
+    }
     if (!response.ok) {
       const detail = first(
         payload.detail,
@@ -228,6 +252,18 @@
       throw error;
     }
     return payload;
+  }
+
+  function isPublicServiceWakeError(error, { includeAbort = false } = {}) {
+    if (!isPublicPagesSite) return false;
+    return [502, 503, 504].includes(Number(error?.status))
+      || error?.code === "invalid-api-response"
+      || error?.name === "TypeError"
+      || (includeAbort && ["AbortError", "TimeoutError"].includes(error?.name));
+  }
+
+  function waitForRetry(milliseconds) {
+    return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
   }
 
   function boundaryPayload() {
@@ -2031,6 +2067,7 @@
   }
 
   async function requestEngineAnalysis(body, controller, sequence) {
+    let reconnectAttempt = 0;
     while (sequence === state.play.sequence && state.mode === "play") {
       try {
         return await requestJson("/api/analyze", {
@@ -2040,9 +2077,21 @@
         });
       } catch (error) {
         if (error.name === "AbortError") throw error;
-        if (error.status !== 429) throw error;
-        dom.play_status_detail.textContent = "The engine is busy; your game is first in the retry queue.";
-        await new Promise((resolve) => window.setTimeout(resolve, AUTO_ANALYSIS_RETRY_MS));
+        if (error.status === 429) {
+          dom.play_status_detail.textContent = "The engine is busy; your game is first in the retry queue.";
+          await waitForRetry(AUTO_ANALYSIS_RETRY_MS);
+          continue;
+        }
+        if (
+          isPublicServiceWakeError(error)
+          && reconnectAttempt < PUBLIC_ENGINE_RECONNECT_DELAYS_MS.length
+        ) {
+          dom.play_status_detail.textContent = "Reconnecting to the engine…";
+          await waitForRetry(PUBLIC_ENGINE_RECONNECT_DELAYS_MS[reconnectAttempt]);
+          reconnectAttempt += 1;
+          continue;
+        }
+        throw error;
       }
     }
     throw new DOMException("Engine turn cancelled", "AbortError");
@@ -3376,7 +3425,39 @@
 
   async function checkHealth() {
     try {
-      const health = await requestJson("/api/health");
+      if (isPublicPagesSite) {
+        dom.engine_status.classList.remove("is-online", "is-offline");
+        dom.engine_status_text.textContent = "Waking engine…";
+      }
+      let health;
+      let wakeAttempt = 0;
+      while (true) {
+        const controller = new AbortController();
+        const timeout = isPublicPagesSite
+          ? window.setTimeout(() => controller.abort(), PUBLIC_HEALTH_TIMEOUT_MS)
+          : null;
+        try {
+          health = await requestJson("/api/health", { signal: controller.signal });
+          if (health.ok !== true || !health.source_fingerprint) {
+            const error = new Error("The engine health response is incomplete.");
+            error.code = "invalid-api-response";
+            throw error;
+          }
+          break;
+        } catch (error) {
+          if (
+            !isPublicServiceWakeError(error, { includeAbort: true })
+            || wakeAttempt >= PUBLIC_HEALTH_WAKE_DELAYS_MS.length
+          ) throw error;
+          const delay = PUBLIC_HEALTH_WAKE_DELAYS_MS[wakeAttempt];
+          wakeAttempt += 1;
+          dom.engine_status_text.textContent = "Waking engine…";
+          dom.engine_status.title = `Hosted engine is starting · retry ${wakeAttempt}`;
+          await waitForRetry(delay);
+        } finally {
+          if (timeout !== null) window.clearTimeout(timeout);
+        }
+      }
       dom.engine_status.classList.add("is-online");
       dom.engine_status.classList.remove("is-offline");
       const profileName = first(health.engine_profile_name, health.profile_name);

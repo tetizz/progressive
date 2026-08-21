@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   deploy:
+    timeout-minutes: 20
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -55,6 +56,68 @@ jobs:
               raise SystemExit("public API routing is not enabled")
           if 'src="/' in index or 'href="/styles.css"' in index:
               raise SystemExit("root-relative assets would break the project Pages path")
+
+      - name: Wait for matching deployed engine
+        shell: python
+        run: |
+          import hashlib
+          import json
+          from pathlib import Path
+          import time
+          from urllib.error import HTTPError, URLError
+          from urllib.request import Request, urlopen
+
+          package = Path("src/scottish_progressive")
+          digest = hashlib.sha256()
+          paths = (
+              path
+              for pattern in ("*.py", "*.cpp", "*.hpp", "*.h")
+              for path in package.rglob(pattern)
+          )
+          for path in sorted(paths, key=lambda item: item.relative_to(package).as_posix()):
+              digest.update(path.relative_to(package).as_posix().encode("utf-8"))
+              digest.update(path.read_bytes())
+          expected = digest.hexdigest()[:16]
+          deadline = time.monotonic() + 15 * 60
+          attempt = 0
+          last = "no response"
+          while time.monotonic() < deadline:
+              attempt += 1
+              try:
+                  request = Request(
+                      "https://progressive-ui9q.onrender.com/api/health",
+                      headers={
+                          "Accept": "application/json",
+                          "Origin": "https://tetizz.github.io",
+                          "User-Agent": "Progressive-Pages-readiness/1",
+                      },
+                  )
+                  with urlopen(request, timeout=30) as response:
+                      content_type = response.headers.get("Content-Type", "")
+                      allowed_origin = response.headers.get("Access-Control-Allow-Origin")
+                      if "application/json" not in content_type:
+                          raise ValueError(f"non-JSON response: {content_type!r}")
+                      health = json.load(response)
+                  actual = health.get("source_fingerprint")
+                  if (
+                      health.get("ok") is True
+                      and actual == expected
+                      and allowed_origin == "https://tetizz.github.io"
+                  ):
+                      print(f"Render engine ready: fingerprint {actual} (attempt {attempt})")
+                      break
+                  last = (
+                      f"fingerprint={actual!r}, ok={health.get('ok')!r}, "
+                      f"cors={allowed_origin!r}"
+                  )
+              except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError) as error:
+                  last = f"{type(error).__name__}: {error}"
+              print(f"Render not ready (attempt {attempt}): {last}")
+              time.sleep(10)
+          else:
+              raise SystemExit(
+                  f"Render did not publish engine fingerprint {expected} within 15 minutes; last={last}"
+              )
 
       - name: Upload static site
         uses: actions/upload-pages-artifact@v4
