@@ -7,7 +7,7 @@ import pytest
 
 import scottish_progressive.search as search_module
 from scottish_progressive.model import Outcome, ProgressiveState, SeriesResult
-from scottish_progressive.profiles import load_profile
+from scottish_progressive.profiles import baseline_profile
 from scottish_progressive.rules import play_series
 from scottish_progressive.search import (
     MATE_SCORE,
@@ -41,7 +41,7 @@ HUMAN_S8_MATE = (
     "g8e8",
     "b2c1q",
 )
-PROFILE = load_profile("profiles/champion.json")
+PROFILE = baseline_profile()
 S16_STATE = ProgressiveState.from_fen(
     "5Q1Q/8/3k4/8/8/8/4K3/8 b - - 0 57",
     16,
@@ -101,6 +101,8 @@ def _early_s4_state() -> ProgressiveState:
 
 def _ordinary_cap832_reply_mate(
     state: ProgressiveState,
+    *,
+    native_threads: int = 1,
 ) -> tuple[SeriesResult | None, int]:
     """Returns a replay-proven mate from the historical ordinary wide beam."""
 
@@ -111,7 +113,7 @@ def _ordinary_cap832_reply_mate(
             max_generation_positions=250_000,
             time_limit_seconds=30.0,
             collect_all_root_scores=False,
-            native_threads=16,
+            native_threads=native_threads,
         ),
         PROFILE,
     )
@@ -276,6 +278,32 @@ def test_ordinary_opening_screen_is_staged_and_keeps_the_canonical_result(
     assert result.stats.tactical_final_reserve_drops == 0
 
 
+def test_hosted_shallow_s4_selection_avoids_cap832_reply_mate() -> None:
+    """The single-thread hosted fast path must reject the live blunder."""
+
+    root = _early_s4_state()
+    result = analyze(
+        root,
+        SearchLimits(
+            depth_series=2,
+            max_series_per_node=32,
+            max_generation_positions=250_000,
+            time_limit_seconds=10.0,
+            collect_all_root_scores=False,
+            native_threads=1,
+        ),
+        PROFILE,
+    )
+
+    assert result.best_series is not None
+    assert result.best_series.moves == SAFE_S4
+    assert result.completed_depth == 2
+    selected_child = play_series(root, result.best_series.moves).final_state
+    reply_mate, verifier_work = _ordinary_cap832_reply_mate(selected_child)
+    assert reply_mate is None
+    assert 0 < verifier_work < 50_000
+
+
 @pytest.mark.parametrize("requested_depth", (4, 5))
 def test_early_s4_play_avoids_every_cap832_replay_mate(
     requested_depth: int,
@@ -300,7 +328,10 @@ def test_early_s4_play_avoids_every_cap832_replay_mate(
     assert result.best_series.moves == SAFE_S4
     assert result.completed_depth == 4
     selected_child = play_series(root, result.best_series.moves).final_state
-    reply_mate, verifier_work = _ordinary_cap832_reply_mate(selected_child)
+    reply_mate, verifier_work = _ordinary_cap832_reply_mate(
+        selected_child,
+        native_threads=16,
+    )
     assert reply_mate is None
     assert 0 < verifier_work < 50_000
 
