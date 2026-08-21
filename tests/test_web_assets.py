@@ -220,6 +220,8 @@ def test_play_strength_is_explicit_and_reports_completed_not_claimed_depth() -> 
 
     assert 'id="play-strength-strong"' in index
     assert 'id="play-strength-faster"' in index
+    assert "Deeper · up to 30s" not in index
+    assert index.count("Checking server limits…") == 2
     assert 'id="play-search-depth"' in index
     assert 'id="play-search-status"' in index
     assert 'strong: { label: "Strong", minimumDepth: 5, seconds: 30' in app
@@ -236,6 +238,11 @@ def test_play_strength_is_explicit_and_reports_completed_not_claimed_depth() -> 
     assert "Time limit reached" in evidence
     assert "Work limit reached" in evidence
     assert "Best-move alpha-beta across up to ${evidence.maxSeries} retained series per node" in evidence
+    assert 'renderStrengthOption(dom.play_strength_strong, playSearchLimits("strong"))' in evidence
+    assert 'detail.textContent = `Depth ${optionLimits.depth} · up to ${seconds}s`' in evidence
+    assert "on this server.`" in evidence
+    assert "state.play.healthReady" in evidence
+    assert "state.play.healthReady = true;" in app
     assert 'if (state.play.thinking) cancelEngineTurn();' in app
 
 

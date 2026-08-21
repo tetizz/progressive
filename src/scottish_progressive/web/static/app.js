@@ -151,6 +151,7 @@
       engineProfileId: null,
       engineVersion: null,
       engineFingerprint: null,
+      healthReady: false,
       recommendedDepth: 2,
       recommendedBranchCap: 32,
       timeLimitSeconds: 5,
@@ -547,6 +548,19 @@
 
   function renderPlaySearchEvidence() {
     const limits = playSearchLimits();
+    const renderStrengthOption = (node, optionLimits) => {
+      const detail = node.querySelector("small");
+      if (!state.play.healthReady) {
+        if (detail) detail.textContent = "Checking server limits…";
+        node.title = "Checking this server's search limits.";
+        return;
+      }
+      const seconds = optionLimits.seconds.toLocaleString();
+      if (detail) detail.textContent = `Depth ${optionLimits.depth} · up to ${seconds}s`;
+      node.title = `Searches toward depth ${optionLimits.depth} for up to ${seconds} ${optionLimits.seconds === 1 ? "second" : "seconds"} on this server.`;
+    };
+    renderStrengthOption(dom.play_strength_strong, playSearchLimits("strong"));
+    renderStrengthOption(dom.play_strength_faster, playSearchLimits("faster"));
     dom.play_strength_strong.classList.toggle("is-active", state.play.strength === "strong");
     dom.play_strength_faster.classList.toggle("is-active", state.play.strength === "faster");
     dom.play_strength_strong.setAttribute("aria-pressed", String(state.play.strength === "strong"));
@@ -3535,6 +3549,7 @@
           500_000,
         )),
       ));
+      state.play.healthReady = true;
       dom.engine_status.title = [profileName, first(health.engine_version, health.version), first(health.source_fingerprint, health.fingerprint)].filter(Boolean).join(" · ");
       renderPlaySurface();
     } catch (error) {
