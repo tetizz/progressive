@@ -179,9 +179,13 @@ def test_wide_native_child_screen_replays_the_human_mate() -> None:
     assert mate.ended_by_check
     assert play_series(blunder.final_state, mate.moves).outcome == Outcome.CHECKMATE
     assert searcher.stats.work_positions <= ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT
+    assert searcher.stats.root_safety_screen_calls == 1
+    assert searcher.stats.root_safety_screen_cache_hits == 0
     charged_work = searcher.stats.work_positions
     assert searcher._root_child_immediate_mate(blunder.final_state) == mate
     assert searcher.stats.work_positions == charged_work
+    assert searcher.stats.root_safety_screen_calls == 1
+    assert searcher.stats.root_safety_screen_cache_hits == 1
 
 
 def test_early_s4_child_screen_replays_the_exact_s5_mate() -> None:
@@ -285,6 +289,221 @@ def test_early_promotion_risk_keeps_the_historical_width832_route(
     assert calls == [(32, True), (832, False)]
 
 
+def test_interrupted_safety_retry_keeps_the_last_completed_root_depth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _live_loss_s4_state()
+    safe = play_series(root, ("f6f5", "f5e4", "e4d3", "d3d2"))
+    unsafe = play_series(root, LIVE_LOSS_S4)
+    reply_mate = play_series(unsafe.final_state, LIVE_LOSS_S5_MATE)
+    safe_scored = search_module.ScoredSeries(safe, 100)
+    unsafe_scored = search_module.ScoredSeries(unsafe, 243)
+
+    def fake_pass(
+        _searcher: SeriesSearcher,
+        _state: ProgressiveState,
+        depth: int,
+        _required_prefix: tuple[str, ...],
+        overrides: object,
+    ) -> tuple[
+        int,
+        tuple[SeriesResult, ...],
+        tuple[search_module.ScoredSeries, ...],
+        None,
+    ]:
+        if depth == 1:
+            return 100, (safe,), (safe_scored,), None
+        if not overrides:
+            return 243, (unsafe,), (unsafe_scored,), None
+        raise search_module._RootInterrupted(
+            (unsafe_scored,),
+            search_module._Timeout(),
+            unsafe,
+        )
+
+    def fake_screen(
+        _searcher: SeriesSearcher,
+        state: ProgressiveState,
+    ) -> SeriesResult | None:
+        return (
+            reply_mate
+            if state.position_hash == unsafe.final_state.position_hash
+            else None
+        )
+
+    monkeypatch.setattr(SeriesSearcher, "_search_root_pass", fake_pass)
+    monkeypatch.setattr(SeriesSearcher, "_root_child_immediate_mate", fake_screen)
+    result = SeriesSearcher(
+        SearchLimits(
+            depth_series=2,
+            max_series_per_node=32,
+            time_limit_seconds=30.0,
+            collect_all_root_scores=False,
+        ),
+        PROFILE,
+    ).run(root)
+
+    assert result.completed_depth == 1
+    assert result.timed_out
+    assert result.best_series == safe
+    assert result.score == 100
+    assert result.alternatives == (safe_scored,)
+    assert result.stats.root_safety_passes == 3
+    assert result.stats.root_safety_retries == 1
+
+
+@pytest.mark.parametrize(
+    ("cause_type", "timed_out", "work_limit_reached"),
+    (
+        (search_module._Timeout, True, False),
+        (search_module._WorkLimit, False, True),
+    ),
+)
+def test_raw_retry_interruption_at_depth_zero_keeps_only_a_legal_move_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    cause_type: type[Exception],
+    timed_out: bool,
+    work_limit_reached: bool,
+) -> None:
+    root = _live_loss_s4_state()
+    unsafe = play_series(root, LIVE_LOSS_S4)
+    reply_mate = play_series(unsafe.final_state, LIVE_LOSS_S5_MATE)
+    unsafe_scored = search_module.ScoredSeries(
+        unsafe,
+        243,
+        (reply_mate,),
+        (1, 1),
+    )
+    calls = 0
+
+    def complete_then_interrupt_raw(
+        searcher: SeriesSearcher,
+        _state: ProgressiveState,
+        _depth: int,
+        _required_prefix: tuple[str, ...],
+        _overrides: object,
+    ) -> tuple[
+        int,
+        tuple[SeriesResult, ...],
+        tuple[search_module.ScoredSeries, ...],
+        str | None,
+    ]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            searcher._root_scores_complete = True
+            return 243, (unsafe,), (unsafe_scored,), "white"
+        searcher._root_scores_complete = False
+        raise cause_type()
+
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_search_root_pass",
+        complete_then_interrupt_raw,
+    )
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_root_child_immediate_mate",
+        lambda _searcher, state: (
+            reply_mate
+            if state.transposition_key == unsafe.final_state.transposition_key
+            else None
+        ),
+    )
+    result = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            time_limit_seconds=30.0,
+            collect_all_root_scores=False,
+        ),
+        PROFILE,
+    ).run(root)
+
+    assert calls == 2
+    assert result.completed_depth == 0
+    assert result.best_series == unsafe
+    assert result.principal_variation == (unsafe,)
+    assert result.score == result.root_evaluation.total
+    assert result.alternatives == ()
+    assert result.proof is None
+    assert not result.root_scores_complete
+    assert result.timed_out is timed_out
+    assert result.work_limit_reached is work_limit_reached
+    assert result.stats.root_safety_passes == 2
+    assert result.stats.root_safety_retries == 1
+
+
+def test_raw_retry_timeout_restores_last_completed_root_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _live_loss_s4_state()
+    safe = play_series(root, ("f6f5", "f5e4", "e4d3", "d3d2"))
+    unsafe = play_series(root, LIVE_LOSS_S4)
+    reply_mate = play_series(unsafe.final_state, LIVE_LOSS_S5_MATE)
+    safe_scored = search_module.ScoredSeries(safe, 100, (), (-1, 1))
+    unsafe_scored = search_module.ScoredSeries(
+        unsafe,
+        243,
+        (reply_mate,),
+        (1, 1),
+    )
+
+    def complete_then_interrupt_raw(
+        searcher: SeriesSearcher,
+        _state: ProgressiveState,
+        depth: int,
+        _required_prefix: tuple[str, ...],
+        overrides: object,
+    ) -> tuple[
+        int,
+        tuple[SeriesResult, ...],
+        tuple[search_module.ScoredSeries, ...],
+        str | None,
+    ]:
+        if depth == 1:
+            searcher._root_scores_complete = True
+            return 100, (safe,), (safe_scored,), None
+        searcher._root_scores_complete = False
+        if not overrides:
+            return 243, (unsafe,), (unsafe_scored,), "white"
+        raise search_module._Timeout()
+
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_search_root_pass",
+        complete_then_interrupt_raw,
+    )
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_root_child_immediate_mate",
+        lambda _searcher, state: (
+            reply_mate
+            if state.transposition_key == unsafe.final_state.transposition_key
+            else None
+        ),
+    )
+    result = SeriesSearcher(
+        SearchLimits(
+            depth_series=2,
+            max_series_per_node=32,
+            time_limit_seconds=30.0,
+            collect_all_root_scores=False,
+        ),
+        PROFILE,
+    ).run(root)
+
+    assert result.completed_depth == 1
+    assert result.timed_out
+    assert result.best_series == safe
+    assert result.score == 100
+    assert result.alternatives == (safe_scored,)
+    assert result.proof is None
+    assert result.root_scores_complete
+    assert result.stats.root_safety_passes == 3
+    assert result.stats.root_safety_retries == 1
+
+
 def test_hosted_depth_two_selects_a_screened_reply_to_the_second_live_loss() -> None:
     assert LIVE_LOSS_PUBLIC_EVIDENCE["source_fingerprint"] == "70f4e529539a7241"
     assert LIVE_LOSS_PUBLIC_EVIDENCE["requested_depth"] == 5
@@ -308,7 +527,19 @@ def test_hosted_depth_two_selects_a_screened_reply_to_the_second_live_loss() -> 
     assert result.best_series.moves != LIVE_LOSS_S4
     assert result.completed_depth == 2
     assert result.score == 639
-    assert result.stats.work_positions < 500_000
+    assert result.stats.work_positions < 300_000
+    assert result.stats.root_safety_passes == 4
+    assert result.stats.root_safety_retries == 2
+    assert result.stats.root_safety_screen_calls == 4
+    assert result.stats.root_safety_screen_stages == 7
+    assert result.stats.root_safety_screen_positions < 175_000
+    rejected = next(
+        item for item in result.alternatives if item.series.moves == LIVE_LOSS_S4
+    )
+    assert rejected.score == MATE_SCORE - 2
+    assert rejected.proof == "white"
+    assert rejected.principal_variation
+    assert rejected.principal_variation[0].outcome == Outcome.CHECKMATE
     selected_child = play_series(root, result.best_series.moves).final_state
     verifier = SeriesSearcher(
         SearchLimits(
@@ -462,7 +693,7 @@ def test_root_tactical_protection_keeps_depth_three_opening_result() -> None:
     assert result.best_series.moves == ("e2e4",)
     assert result.score == 848
     assert result.completed_depth == 3
-    assert result.stats.work_positions == 341_943
+    assert result.stats.work_positions == 341_820
     assert result.stats.tactical_frontier_states_retained == 0
     assert result.stats.tactical_frontier_reserve_drops == 0
 

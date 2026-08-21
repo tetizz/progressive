@@ -4,7 +4,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 import time
-from typing import Protocol
+from typing import Mapping, Protocol
 
 import chess
 
@@ -155,6 +155,12 @@ class SearchStats:
     tt_hits: int = 0
     alpha_beta_cutoffs: int = 0
     root_bound_candidates: int = 0
+    root_safety_passes: int = 0
+    root_safety_retries: int = 0
+    root_safety_screen_calls: int = 0
+    root_safety_screen_cache_hits: int = 0
+    root_safety_screen_stages: int = 0
+    root_safety_screen_positions: int = 0
     branch_caps: int = 0
     series_generation_positions: int = 0
     frontier_score_positions: int = 0
@@ -846,7 +852,9 @@ class SeriesSearcher:
 
         key = state.transposition_key
         if key in self._root_child_mate_screen_cache:
+            self.stats.root_safety_screen_cache_hits += 1
             return self._root_child_mate_screen_cache[key]
+        self.stats.root_safety_screen_calls += 1
 
         mate, completed = self._root_child_mate_screen_stage(
             state,
@@ -883,6 +891,8 @@ class SeriesSearcher:
         tactical_protection: bool,
     ) -> tuple[SeriesResult | None, bool]:
         """Runs one native screen stage; the boolean means the batch completed."""
+
+        self.stats.root_safety_screen_stages += 1
 
         remaining = (
             self._root_child_mate_screen_budget
@@ -947,6 +957,7 @@ class SeriesSearcher:
                 + generation.frontier_score_positions
             )
             self._root_child_mate_screen_work += work
+            self.stats.root_safety_screen_positions += work
             self._record_generation_stats(generation)
 
         if cancelled:
@@ -1577,11 +1588,15 @@ class SeriesSearcher:
             self._tt[key] = replacement
         return best_score, best_pv, proof_bounds
 
-    def _search_root(
+    def _search_root_pass(
         self,
         state: ProgressiveState,
         depth: int,
         required_prefix: tuple[str, ...],
+        root_mate_overrides: Mapping[
+            tuple[int, str, int, int],
+            SeriesResult,
+        ],
     ) -> tuple[
         int,
         tuple[SeriesResult, ...],
@@ -1622,6 +1637,35 @@ class SeriesSearcher:
                 terminal = self._terminal_score(result, mover, 1)
                 if terminal is None:
                     child_state = result.final_state
+                    reply_override = root_mate_overrides.get(
+                        child_state.transposition_key
+                    )
+                    if reply_override is not None:
+                        score = self._terminal_score(
+                            reply_override,
+                            child_state.board.turn,
+                            2,
+                        )
+                        if score is None:  # pragma: no cover
+                            raise RuntimeError(
+                                "replay-proven mate override has no terminal score"
+                            )
+                        scored.append(
+                            ScoredSeries(
+                                self._materialize_series(result),
+                                score,
+                                (reply_override,),
+                                self._terminal_proof_bounds(
+                                    reply_override,
+                                    child_state.board.turn,
+                                ),
+                            )
+                        )
+                        if mover == chess.WHITE:
+                            root_alpha = max(root_alpha, score)
+                        else:
+                            root_beta = min(root_beta, score)
+                        continue
                     child_alpha = (
                         -MATE_SCORE * 2
                         if self.limits.collect_all_root_scores
@@ -1672,60 +1716,6 @@ class SeriesSearcher:
                             )
                             score_is_exact = True
 
-                    # Rejected candidates pay no wide-frontier cost. Every
-                    # candidate that could become the root choice is screened
-                    # before it is allowed to tighten the root window.
-                    contender = (
-                        not self.limits.collect_all_root_scores
-                        and score_is_exact
-                        and (
-                            not scored
-                            or (
-                                -score if mover == chess.WHITE else score,
-                                result.machine_notation,
-                            )
-                            < min(
-                                (
-                                    -item.score
-                                    if mover == chess.WHITE
-                                    else item.score,
-                                    item.series.machine_notation,
-                                )
-                                for item in scored
-                            )
-                        )
-                    )
-                    if contender:
-                        reply_mate = self._root_child_immediate_mate(child_state)
-                        if reply_mate is not None:
-                            if (
-                                child_pv
-                                and child_pv[0].moves == reply_mate.moves
-                                and child_pv[0].outcome == Outcome.CHECKMATE
-                                and child_pv[0].ended_by_check
-                            ):
-                                # The ordinary minimax frontier already owns
-                                # the same authoritative mate. Keep its stable
-                                # transposition metadata instead of replacing
-                                # it with the wider screen's representative.
-                                reply_mate = child_pv[0]
-                            child_mover = child_state.board.turn
-                            screened_score = self._terminal_score(
-                                reply_mate,
-                                child_mover,
-                                2,
-                            )
-                            if screened_score is None:  # pragma: no cover
-                                raise RuntimeError(
-                                    "replay-proven mate has no terminal score"
-                                )
-                            score = screened_score
-                            child_pv = (reply_mate,)
-                            proof_bounds = self._terminal_proof_bounds(
-                                reply_mate,
-                                child_mover,
-                            )
-                            score_is_exact = True
                 else:
                     score, child_pv = terminal, ()
                     proof_bounds = self._terminal_proof_bounds(result, mover)
@@ -1802,6 +1792,103 @@ class SeriesSearcher:
             tuple(scored),
             _proof_from_bounds(proof_bounds),
         )
+
+    def _search_root(
+        self,
+        state: ProgressiveState,
+        depth: int,
+        required_prefix: tuple[str, ...],
+    ) -> tuple[
+        int,
+        tuple[SeriesResult, ...],
+        tuple[ScoredSeries, ...],
+        str | None,
+    ]:
+        """Screens only provisional root winners, then deterministically retries.
+
+        A wide immediate-reply probe is safety verification, not move ordering.
+        Running it on every successive alpha contender made hosted depth two
+        spend most of its budget on moves that could never become the final
+        choice.  Each pass now completes ordinary root selection first.  An
+        unsafe provisional winner is assigned its authoritative replay-mate
+        override by child position, and the cached root/minimax pass is
+        repeated with a reset root window until a screened winner survives.
+        """
+
+        if self.limits.collect_all_root_scores:
+            return self._search_root_pass(
+                state,
+                depth,
+                required_prefix,
+                {},
+            )
+
+        overrides: dict[tuple[int, str, int, int], SeriesResult] = {}
+        last_provisional: SeriesResult | None = None
+
+        while True:
+            try:
+                self.stats.root_safety_passes += 1
+                score, pv, alternatives, proof = self._search_root_pass(
+                    state,
+                    depth,
+                    required_prefix,
+                    overrides,
+                )
+            except _RootInterrupted as interrupted:
+                # A retry has reset alpha/beta around new authoritative evidence.
+                # Partial scores from any pass cannot certify the iteration, so
+                # expose only the last fully legal provisional as a move fallback.
+                raise _RootInterrupted(
+                    (),
+                    interrupted.cause,
+                    last_provisional or interrupted.fallback,
+                ) from interrupted
+            except (_Timeout, _WorkLimit) as error:
+                # Root generation can be interrupted before _search_root_pass has
+                # materialized a frontier and wrapped the cancellation. A retry
+                # still has the previous completed pass's legal provisional; keep
+                # only that move, never its now-discarded score, alternatives, or
+                # proof. A first-pass raw cancellation has no such fallback and
+                # retains the historical no-move result handled by run().
+                if last_provisional is None:
+                    raise
+                raise _RootInterrupted((), error, last_provisional) from error
+            if not pv:
+                return score, pv, alternatives, proof
+
+            provisional = pv[0]
+            last_provisional = provisional
+            if provisional.outcome is not None:
+                return score, pv, alternatives, proof
+            child_state = provisional.final_state
+            child_key = child_state.transposition_key
+            if child_key in overrides:
+                # The best root choice still loses after every root bound was
+                # repaired around its authoritative reply mate. Returning it
+                # now describes the loss honestly rather than looping.
+                return score, pv, alternatives, proof
+            reply_mate = (
+                pv[1]
+                if (
+                    len(pv) > 1
+                    and pv[1].outcome == Outcome.CHECKMATE
+                    and pv[1].ended_by_check
+                )
+                else None
+            )
+            try:
+                if reply_mate is None:
+                    reply_mate = self._root_child_immediate_mate(child_state)
+            except (_Timeout, _WorkLimit) as error:
+                # No incomplete safety probe may certify an unscreened score.
+                # The iterative-deepening caller will retain its last complete
+                # depth; at depth zero this is explicitly a move-only fallback.
+                raise _RootInterrupted((), error, provisional) from error
+            if reply_mate is None:
+                return score, pv, alternatives, proof
+            overrides[child_key] = reply_mate
+            self.stats.root_safety_retries += 1
 
     def run(
         self,
@@ -1893,6 +1980,7 @@ class SeriesSearcher:
         best_pv: tuple[SeriesResult, ...] = ()
         alternatives: tuple[ScoredSeries, ...] = ()
         best_proof: str | None = None
+        completed_root_scores_complete = False
         for depth in range(1, self.limits.depth_series + 1):
             try:
                 score, pv, root_alternatives, proof = self._search_root(
@@ -1931,18 +2019,24 @@ class SeriesSearcher:
                         best_pv = (interrupted.fallback,)
                         alternatives = ()
                     best_proof = None
+                else:
+                    self._root_scores_complete = completed_root_scores_complete
                 break
             except _Timeout:
                 timed_out = True
                 self._selective = True
                 if completed_depth == 0:
                     self._root_scores_complete = False
+                else:
+                    self._root_scores_complete = completed_root_scores_complete
                 break
             except _WorkLimit:
                 work_limit_reached = True
                 self._selective = True
                 if completed_depth == 0:
                     self._root_scores_complete = False
+                else:
+                    self._root_scores_complete = completed_root_scores_complete
                 break
             except _AdjudicationPending as pending:
                 if completed_depth > 0:
@@ -1952,6 +2046,7 @@ class SeriesSearcher:
                     # incomplete requested horizon explicit. This is not a
                     # quiet-draw adjudication and must never manufacture one.
                     self._selective = True
+                    self._root_scores_complete = completed_root_scores_complete
                     adjudication = "manual-proof-required"
                     break
                 if isinstance(pending, _RootAdjudicationPending):
@@ -1998,6 +2093,7 @@ class SeriesSearcher:
             alternatives = root_alternatives
             best_proof = proof
             completed_depth = depth
+            completed_root_scores_complete = self._root_scores_complete
             self._preferred_root_series = (
                 best_pv[0].machine_notation if best_pv else None
             )
