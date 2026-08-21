@@ -7,7 +7,11 @@ from scottish_progressive.model import Outcome, ProgressiveState, boundary_fen
 from scottish_progressive.rules import (
     GenerationStats,
     SeriesLegalityError,
+    _FrontierState,
     _board_position_key,
+    _bound_frontier,
+    _merge_frontier_states,
+    _merged_series_generation,
     generate_series,
     play_series,
 )
@@ -327,6 +331,230 @@ def test_frontier_scorer_charges_each_distinct_partial_state_once() -> None:
     assert stats.frontier_score_positions == len(scored_keys)
     assert stats.frontier_score_positions > 0
     assert len(scored_keys) == len(set(scored_keys))
+
+
+def test_tactical_frontier_reserve_is_bounded_and_mate_check_first() -> None:
+    moves = (
+        "a2a3",
+        "b2b3",
+        "c2c3",
+        "d2d3",
+        "e2e3",
+        "f2f3",
+        "g2g3",
+        "h2h3",
+    )
+    frontier: dict[tuple[int], _FrontierState] = {}
+    for index, move in enumerate(moves):
+        board = chess.Board()
+        board.fullmove_number = index + 1
+        frontier[(index,)] = _FrontierState(
+            board,
+            (move,),
+            (move,),
+            {},
+            False,
+        )
+
+    # The first four are the static/quiet leaders.  The last four expose one
+    # distinct tactical class each but are intentionally scored last.
+    opportunities = {
+        5: ((0, "a1a8"),),  # mate
+        6: ((1, "b1b8"),),  # non-mating early check
+        7: ((2, "c7c8q"),),  # promotion
+        8: ((3, "d4e5"),),  # capture
+    }
+
+    def score(board: chess.Board) -> int:
+        return 100 - board.fullmove_number
+
+    def tactical(board: chess.Board) -> tuple[tuple[int, str], ...]:
+        return opportunities.get(board.fullmove_number, ())
+
+    narrow_stats = GenerationStats()
+    narrow = _bound_frontier(
+        frontier,
+        mover=chess.WHITE,
+        prefix_length=0,
+        max_frontier_states=1,
+        frontier_score=score,
+        tactical_opportunities=tactical,
+        counters=narrow_stats,
+    )
+    narrow_moves = {item.moves[0] for item in narrow}
+
+    assert len(narrow) == 3  # cap 1 plus at most 2 tactical extras
+    assert "a2a3" in narrow_moves
+    assert {"e2e3", "f2f3"} <= narrow_moves  # mate and check win reserve ties
+    assert "b2b3" not in narrow_moves
+    assert "g2g3" not in narrow_moves
+    assert "h2h3" not in narrow_moves
+    assert narrow_stats.frontier_prunes == 1
+    assert narrow_stats.frontier_states_pruned == 5
+    assert narrow_stats.tactical_frontier_states_retained == 2
+    assert narrow_stats.tactical_frontier_reserve_drops == 2
+
+    full_stats = GenerationStats()
+    full = _bound_frontier(
+        frontier,
+        mover=chess.WHITE,
+        prefix_length=0,
+        max_frontier_states=4,
+        frontier_score=score,
+        tactical_opportunities=tactical,
+        counters=full_stats,
+    )
+    assert len(full) == 8  # cap 4 plus all 4 tactical representatives
+    assert full_stats.frontier_prunes == 1
+    assert full_stats.frontier_states_pruned == 0
+    assert full_stats.tactical_frontier_states_retained == 4
+    assert full_stats.tactical_frontier_reserve_drops == 0
+
+
+def test_tactical_frontier_key_is_immediate_move_uci_not_path_identity() -> None:
+    frontier: dict[tuple[int], _FrontierState] = {}
+    for index, move in enumerate(("a2a3", "b2b3", "c2c3")):
+        board = chess.Board()
+        board.fullmove_number = index + 1
+        frontier[(index,)] = _FrontierState(
+            board,
+            (move,),
+            (move,),
+            {},
+            False,
+        )
+
+    def tactical(board: chess.Board) -> tuple[tuple[int, str], ...]:
+        # Two different paths expose the same immediately legal capture.  The
+        # reserve keeps only the better-scored representative for that UCI at
+        # this layer; it does not treat whole path notation as a distinct key.
+        return ((3, "d4e5"),) if board.fullmove_number >= 2 else ()
+
+    stats = GenerationStats()
+    selected = _bound_frontier(
+        frontier,
+        mover=chess.WHITE,
+        prefix_length=0,
+        max_frontier_states=1,
+        frontier_score=lambda board: 10 - board.fullmove_number,
+        tactical_opportunities=tactical,
+        counters=stats,
+    )
+
+    assert [item.moves[0] for item in selected] == ["a2a3", "b2b3"]
+    assert stats.tactical_frontier_states_retained == 1
+    assert stats.tactical_frontier_reserve_drops == 0
+
+
+def test_played_capture_provenance_survives_a_later_quiet_prune() -> None:
+    quiet_board = chess.Board()
+    quiet_board.fullmove_number = 1
+    capture_then_quiet_board = chess.Board()
+    capture_then_quiet_board.fullmove_number = 20
+    frontier = {
+        (0,): _FrontierState(
+            quiet_board,
+            ("a2a3", "a3a4"),
+            ("a3", "a4"),
+            {},
+            False,
+        ),
+        (1,): _FrontierState(
+            capture_then_quiet_board,
+            ("a4b5", "b5b6"),
+            ("axb5", "b6"),
+            {},
+            True,
+            1,
+            ((3, "1:a4b5"),),
+        ),
+    }
+    stats = GenerationStats()
+
+    selected = _bound_frontier(
+        frontier,
+        mover=chess.WHITE,
+        prefix_length=0,
+        max_frontier_states=1,
+        frontier_score=lambda board: 100 - board.fullmove_number,
+        tactical_opportunities=lambda _board: (),
+        counters=stats,
+    )
+
+    assert [item.moves for item in selected] == [
+        ("a2a3", "a3a4"),
+        ("a4b5", "b5b6"),
+    ]
+    assert stats.tactical_frontier_states_retained == 1
+
+
+def test_partial_transposition_unions_tactical_provenance() -> None:
+    board = chess.Board()
+    canonical = _FrontierState(
+        board,
+        ("a2a3", "b2b3"),
+        ("a3", "b3"),
+        {},
+        True,
+        2,
+        ((3, "1:a2b3"),),
+    )
+    alternate = _FrontierState(
+        board.copy(stack=False),
+        ("b2b3", "a2a3"),
+        ("b3", "a3"),
+        {},
+        True,
+        3,
+        ((2, "1:b7b8q"),),
+    )
+
+    merged = _merge_frontier_states(canonical, alternate)
+
+    assert merged.moves == canonical.moves
+    assert merged.path_count == 5
+    assert merged.tactical_provenance == (
+        (2, "1:b7b8q"),
+        (3, "1:a2b3"),
+    )
+
+
+def test_completed_transposition_unions_noncanonical_capture_orders() -> None:
+    state = ProgressiveState.from_fen(
+        "7k/8/8/8/8/1n4n1/8/1R1K2R1 w - - 0 1",
+        3,
+    )
+    stats = GenerationStats()
+    results = _merged_series_generation(
+        state,
+        stats,
+        required_prefix=(),
+        max_frontier_states=None,
+        max_positions=None,
+        frontier_score=None,
+        # A non-None tactical inspector opts this Python oracle generation
+        # into provenance tracking. Immediate opportunities are irrelevant to
+        # this uncapped fixture; the played captures are recorded directly.
+        tactical_opportunities=lambda _board: (),
+        should_stop=None,
+    )
+    representative = find_series(
+        results,
+        "b1b3",
+        "d1e1",
+        "g1g3",
+    )
+    provenance = results.tactical_provenance_by_notation[
+        representative.machine_notation
+    ]
+
+    assert representative.transposition_count == 6
+    assert (3, "1:g1g3") in provenance
+    assert (3, "2:b1b3") in provenance
+    assert (3, "3:b1b3") in provenance
+    assert (3, "1:b1b3") in provenance
+    assert (3, "2:g1g3") in provenance
+    assert (3, "3:g1g3") in provenance
 
 
 @pytest.mark.parametrize("merge_transpositions", [True, False])

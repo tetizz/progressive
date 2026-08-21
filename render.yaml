@@ -15,3 +15,5 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.14.3
+      - key: SPC_OMIT_STALE_OPENING_REPORTS
+        value: "1"

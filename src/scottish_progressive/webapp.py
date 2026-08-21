@@ -6,6 +6,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import mimetypes
+import os
 from pathlib import Path
 import sqlite3
 import threading
@@ -32,7 +33,7 @@ from .rules import (
     _legal_move_variants,
     _stuck_result,
 )
-from .search import SearchLimits, SearchResult, analyze
+from .search import MATE_SCORE, SearchLimits, SearchResult, analyze
 
 
 MAX_REQUEST_BYTES = 256 * 1024
@@ -44,12 +45,13 @@ MAX_ANALYSIS_DEPTH = 8
 MAX_ALTERNATIVES = 32
 MAX_SERIES_NUMBER = 512
 DEFAULT_GENERATION_POSITIONS = 500_000
-MAX_GENERATION_POSITIONS = 5_000_000
+MAX_GENERATION_POSITIONS = 10_000_000
 
 PUBLIC_MAX_ANALYSIS_SECONDS = 5.0
 PUBLIC_MAX_SERIES_CAP = 96
 PUBLIC_MAX_ANALYSIS_DEPTH = 4
 PUBLIC_MAX_GENERATION_POSITIONS = 250_000
+LOCAL_NATIVE_THREADS = min(16, os.cpu_count() or 1)
 
 REPORT_FILES = {
     "initial_ranking": "initial-opening-ranking.json",
@@ -84,6 +86,7 @@ class AnalysisRequestLimits:
     default_generation_positions: int = DEFAULT_GENERATION_POSITIONS
     maximum_generation_positions: int = MAX_GENERATION_POSITIONS
     maximum_alternatives: int = MAX_ALTERNATIVES
+    native_threads: int = LOCAL_NATIVE_THREADS
 
 
 LOCAL_ANALYSIS_LIMITS = AnalysisRequestLimits()
@@ -96,6 +99,7 @@ PUBLIC_ANALYSIS_LIMITS = AnalysisRequestLimits(
     default_generation_positions=100_000,
     maximum_generation_positions=PUBLIC_MAX_GENERATION_POSITIONS,
     maximum_alternatives=4,
+    native_threads=1,
 )
 
 
@@ -393,6 +397,7 @@ def inspect_prefix(
     made_progress = False
     played: tuple[str, ...] = ()
     sans: tuple[str, ...] = ()
+    frames: list[dict[str, object]] = []
     result: SeriesResult | None = None
 
     for index, uci in enumerate(requested):
@@ -431,6 +436,15 @@ def inspect_prefix(
         board.push(move)
         played += (move.uci(),)
         sans += (san,)
+        frames.append(
+            {
+                "index": len(played),
+                "uci": move.uci(),
+                "san": san,
+                "board_fen": board.fen(en_passant="fen"),
+                "gives_check": board.is_check(),
+            }
+        )
         made_progress = made_progress or is_pawn_move or is_capture
         delivered_check = board.is_check()
         if delivered_check or len(played) == state.moves_available:
@@ -481,6 +495,7 @@ def inspect_prefix(
         "current_prefix": list(played),
         "san": list(sans),
         "notation": " / ".join(sans),
+        "frames": frames,
         "remaining": remaining,
         "moves_remaining": remaining,
         "complete": complete,
@@ -525,6 +540,7 @@ def _analysis_payload(
     request_time_limit_seconds: float | None = None,
     request_max_generation_positions: int | None = None,
     analysis_searches: int = 1,
+    best_move_only: bool = False,
 ) -> dict[str, object]:
     evaluation = result.root_evaluation.as_dict()
     root_terminal = bool(
@@ -556,6 +572,10 @@ def _analysis_payload(
         "engine_profile_name": result.engine_profile_name,
         "ruleset_version": RULESET_VERSION,
         "analysis_scope": analysis_scope,
+        "root_search_mode": (
+            "best-move" if best_move_only else "all-retained-alternatives"
+        ),
+        "root_scores_complete": result.root_scores_complete,
         "fixed_prefix": list(fixed_prefix),
         "required_prefix": list(result.required_prefix),
         "prefix_complete": prefix_complete,
@@ -564,6 +584,7 @@ def _analysis_payload(
         "score_heuristic_points": result.score,
         "score_unit": "heuristic-points",
         "score_is_centipawns": False,
+        "mate_score": MATE_SCORE,
         "classification": result.classification,
         "confidence": result.confidence,
         "proof": result.proof,
@@ -761,6 +782,21 @@ def analyze_payload(
     rate_move = payload.get("rate_move", False)
     if not isinstance(rate_move, bool):
         raise APIError(422, "invalid-field", "rate_move must be a boolean")
+    best_move_only = payload.get("best_move_only", False)
+    if not isinstance(best_move_only, bool):
+        raise APIError(422, "invalid-field", "best_move_only must be a boolean")
+    if best_move_only and rate_move:
+        raise APIError(
+            422,
+            "invalid-field",
+            "best_move_only cannot be combined with move grading",
+        )
+    if best_move_only and alternatives:
+        raise APIError(
+            422,
+            "invalid-field",
+            "best_move_only requires alternatives to be zero",
+        )
 
     analysis_searches = 1
     if prefix and rate_move:
@@ -779,6 +815,8 @@ def analyze_payload(
         max_series_per_node=max_series,
         time_limit_seconds=per_search_time_limit,
         max_generation_positions=per_search_generation_positions,
+        collect_all_root_scores=not best_move_only,
+        native_threads=request_limits.native_threads,
     )
 
     result = analyze(
@@ -844,6 +882,7 @@ def analyze_payload(
         request_time_limit_seconds=time_limit,
         request_max_generation_positions=max_generation_positions,
         analysis_searches=analysis_searches,
+        best_move_only=best_move_only,
     )
 
 
@@ -980,6 +1019,12 @@ class AnalysisBoardHandler(BaseHTTPRequestHandler):
                         "ruleset_version": RULESET_VERSION,
                         "engine_profile_id": self.app_server.config.engine_profile.profile_id,
                         "engine_profile_name": self.app_server.config.engine_profile.name,
+                        "engine_profile_recommended_depth": (
+                            self.app_server.config.engine_profile.recommended_depth
+                        ),
+                        "engine_profile_recommended_branch_cap": (
+                            self.app_server.config.engine_profile.recommended_branch_cap
+                        ),
                         "deployment_mode": (
                             "public-bounded"
                             if self.app_server.config.public_origin is not None
@@ -994,6 +1039,7 @@ class AnalysisBoardHandler(BaseHTTPRequestHandler):
                             "default_generation_positions": limits.default_generation_positions,
                             "maximum_generation_positions": limits.maximum_generation_positions,
                             "maximum_alternatives": limits.maximum_alternatives,
+                            "native_threads": limits.native_threads,
                         },
                         "database_configured": self.app_server.config.database_path
                         is not None,

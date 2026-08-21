@@ -14,6 +14,191 @@ NODE = shutil.which("node")
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js is required for browser asset tests")
+def test_player_evaluations_use_pawns_sides_and_sound_mate_notation() -> None:
+    script = r"""
+require(process.argv[1]);
+const evaluation = globalThis.ScottishProgressiveEvaluation;
+const values = {
+  white: evaluation.describe(84),
+  black: evaluation.describe(-152),
+  equal: evaluation.describe(0),
+  whiteMate: evaluation.describe(999999, { proof: "white", mate_score: 1000000 }),
+  blackMate: evaluation.describe(-999997, { proven_result: "black", mate_score: 1000000 }),
+  mismatchedProof: evaluation.describe(999999, { proof: "black", mate_score: 1000000 }),
+  noProof: evaluation.describe(-999997, { mate_score: 1000000 }),
+  loss: evaluation.loss(35),
+};
+process.stdout.write(JSON.stringify(values));
+"""
+    completed = subprocess.run(
+        [str(NODE), "-e", script, str(STATIC / "evaluation-format.js")],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    values = json.loads(completed.stdout)
+
+    assert values["white"]["label"] == "White +0.84"
+    assert values["black"]["label"] == "Black +1.52"
+    assert values["equal"]["label"] == "Equal"
+    assert values["whiteMate"]["label"] == "Mate for White (M1)"
+    assert values["whiteMate"]["spoken"] == "White mates in 1 complete series"
+    assert values["blackMate"]["label"] == "Mate for Black (M3)"
+    assert values["blackMate"]["spoken"] == "Black mates in 3 complete series"
+    assert values["mismatchedProof"]["mate"] is False
+    assert values["mismatchedProof"]["label"] == "White +9999.99"
+    assert values["noProof"]["mate"] is False
+    assert values["noProof"]["label"] == "Black +9999.97"
+    assert values["loss"] == "0.35 pawn-equivalent Progressive loss"
+
+
+def test_visible_evaluation_surfaces_share_the_human_formatter() -> None:
+    index = (STATIC / "index.html").read_text(encoding="utf-8")
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+
+    assert index.index('src="/evaluation-format.js"') < index.index(
+        'src="/app.js"'
+    )
+    assert "About 100 evaluation points equals one pawn" in index
+    assert "not calibrated Stockfish centipawns" in index
+    assert 'id="result-score">Equal<' in index
+    assert "formatPoints(" not in app
+    assert "dom.result_score.textContent = evaluation.label" in app
+    assert "dom.eval_marker.textContent = evaluation.compact" in app
+    assert "score.textContent = evaluation.label" in app
+    assert "value.textContent = evaluation.label" in app
+    assert "number.textContent = evaluation.label" in app
+    assert 'aria-label", evaluation.spoken' in app
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is required for browser asset tests")
+def test_completed_s6_handoff_opens_s7_once_with_seven_moves() -> None:
+    script = r"""
+require(process.argv[1]);
+const handoff = globalThis.ScottishProgressivePlayHandoff;
+const completed = {
+  boundary: {
+    fen: "s6-boundary",
+    series: 6,
+    quiet_series: 0,
+    ep_targets: [],
+  },
+  nextState: {
+    fen: "s7-boundary",
+    series: 7,
+    quiet_series: 0,
+    ep_targets: [],
+  },
+  prefix: ["d7d6", "d6e5", "e5e4", "f8d6", "b8c6", "e4e3"],
+  prefixSan: ["d6", "dxe5", "e4", "Bd6", "Nc6", "e3+"],
+};
+const plan = handoff.prepareCompletedSeries(completed);
+const gate = handoff.createGate();
+let starts = 0;
+let release;
+const blocked = new Promise((resolve) => { release = resolve; });
+const first = gate.run(plan.key, async () => { starts += 1; await blocked; return plan; });
+const duplicate = gate.run(plan.key, async () => { starts += 100; return null; });
+release();
+Promise.all([first, duplicate]).then(([left, right]) => {
+  process.stdout.write(JSON.stringify({
+    plan,
+    starts,
+    sameResult: left === right,
+    active: gate.isActive(),
+  }));
+});
+"""
+    completed = subprocess.run(
+        [str(NODE), "-e", script, str(STATIC / "play-handoff.js")],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(completed.stdout)
+
+    assert payload["plan"]["historyEntry"]["prefix"] == [
+        "d7d6",
+        "d6e5",
+        "e5e4",
+        "f8d6",
+        "b8c6",
+        "e4e3",
+    ]
+    assert payload["plan"]["nextBoundary"]["series"] == 7
+    assert payload["plan"]["movesRemaining"] == 7
+    assert payload["starts"] == 1
+    assert payload["sameResult"] is True
+    assert payload["active"] is False
+
+
+def test_play_flow_guards_completed_series_and_stale_handoffs() -> None:
+    index = (STATIC / "index.html").read_text(encoding="utf-8")
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    engine_turn = app[
+        app.index("async function maybeRunEngineTurn") : app.index(
+            "async function startNewPlayGame"
+        )
+    ]
+    submit_move = app[
+        app.index("async function submitMove") : app.index("function endDrag")
+    ]
+    handoff = app[
+        app.index("async function performSeriesHandoff") : app.index(
+            "async function undoMove"
+        )
+    ]
+
+    assert index.index('src="/play-handoff.js"') < index.index('src="/app.js"')
+    assert "PLAY_HANDOFF.isActive()" in engine_turn
+    assert "state.complete" in engine_turn
+    assert "state.nextState" in engine_turn
+    assert "state.nextState = normalizeNextState(payload.next_state)" in app
+    assert "normalizeNextState(first(payload.next_state, payload.boundary_state))" not in app
+    assert "state.movesRemaining = plan.movesRemaining" in handoff
+    assert "state.history.at(-1)?.handoffKey !== plan.key" in handoff
+    assert "state.prefixSequence === firstAttemptSequence" in handoff
+    assert "PLAY_HANDOFF.run(plan.key" in handoff
+    assert "void continuePlayFlow()" in handoff
+    assert "void maybeRunEngineTurn()" not in submit_move
+
+
+def test_play_strength_is_explicit_and_reports_completed_not_claimed_depth() -> None:
+    index = (STATIC / "index.html").read_text(encoding="utf-8")
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    engine_turn = app[
+        app.index("async function maybeRunEngineTurn") : app.index(
+            "async function startNewPlayGame"
+        )
+    ]
+    evidence = app[
+        app.index("function renderPlaySearchEvidence") : app.index(
+            "function selectPlayStrength"
+        )
+    ]
+
+    assert 'id="play-strength-strong"' in index
+    assert 'id="play-strength-faster"' in index
+    assert 'id="play-search-depth"' in index
+    assert 'id="play-search-status"' in index
+    assert 'strong: { label: "Strong", minimumDepth: 5, seconds: 30' in app
+    assert 'faster: { label: "Faster", minimumDepth: 1, seconds: 5' in app
+    assert 'strength: "strong"' in app
+    assert "depth: search.depth" in engine_turn
+    assert "max_series: search.maxSeries" in engine_turn
+    assert "time_limit: search.seconds" in engine_turn
+    assert "max_generation_positions: search.generationPositions" in engine_turn
+    assert "best_move_only: true" in engine_turn
+    assert "state.play.lastSearch = playSearchEvidence(analysis, search)" in engine_turn
+    assert "Depth ${evidence.completedDepth} complete · requested ${evidence.requestedDepth}" in evidence
+    assert "Selective width" in evidence
+    assert "Time limit reached" in evidence
+    assert "Work limit reached" in evidence
+    assert "Best-move alpha-beta across up to ${evidence.maxSeries} retained series per node" in evidence
+    assert 'if (state.play.thinking) cancelEngineTurn();' in app
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is required for browser asset tests")
 def test_saved_position_load_plan_preserves_or_confirms_current_study() -> None:
     script = r"""
 require(process.argv[1]);
@@ -110,3 +295,154 @@ def test_saved_position_guard_loads_before_the_board_application() -> None:
         "if (!loadPlan.preserveStudy) rebuildStudyFromValidatedPrefix"
         in load_saved_position
     )
+
+
+def test_play_mode_uses_the_loaded_engine_and_server_replays_its_series() -> None:
+    index = (STATIC / "index.html").read_text(encoding="utf-8")
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC / "styles.css").read_text(encoding="utf-8")
+    engine_turn = app[
+        app.index("async function maybeRunEngineTurn") : app.index(
+            "async function startNewPlayGame"
+        )
+    ]
+
+    for required_id in (
+        'id="mode-play"',
+        'id="mode-analyze"',
+        'id="play-as-white"',
+        'id="play-as-black"',
+        'id="play-top-player"',
+        'id="play-bottom-player"',
+        'id="play-analyze-position"',
+    ):
+        assert required_id in index
+
+    assert 'requestEngineAnalysis({' in engine_turn
+    assert 'requestJson("/api/prefix"' in engine_turn
+    assert engine_turn.index('requestEngineAnalysis({') < engine_turn.index(
+        'requestJson("/api/prefix"'
+    )
+    assert engine_turn.index('requestJson("/api/prefix"') < engine_turn.index(
+        "applyPrefixPayload(checked"
+    )
+    assert "analysis.engine_profile_id !== state.play.engineProfileId" in engine_turn
+    assert "analysis.source_fingerprint !== state.play.engineFingerprint" in engine_turn
+    assert 'state.mode !== "analyze"' in app
+    assert 'seriesColor() === state.play.humanColor' in app
+    assert "@media (max-width: 560px)" in styles
+    assert "@media (max-width: 370px)" in styles
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is required for browser asset tests")
+def test_play_timeline_contains_initial_position_and_every_micro_move() -> None:
+    script = r"""
+require(process.argv[1]);
+const timelineApi = globalThis.ScottishProgressivePlayTimeline;
+const timeline = timelineApi.build({
+  history: [
+    {
+      boundary: { fen: "fen-0", series: 1, quiet_series: 0, ep_targets: [] },
+      prefix: ["e2e4"],
+      prefixSan: ["e4"],
+      frames: [{ board_fen: "fen-1", uci: "e2e4", san: "e4" }],
+    },
+    {
+      boundary: { fen: "fen-1", series: 2, quiet_series: 0, ep_targets: [] },
+      prefix: ["a7a6", "h7h6"],
+      prefixSan: ["a6", "h6"],
+      frames: [
+        { board_fen: "fen-2", uci: "a7a6", san: "a6" },
+        { board_fen: "fen-3", uci: "h7h6", san: "h6" },
+      ],
+    },
+  ],
+  boundary: { fen: "fen-3", series: 3, quiet_series: 0, ep_targets: [] },
+  prefix: ["g1f3", "d2d4"],
+  prefixSan: ["Nf3", "d4"],
+  prefixFrames: [
+    { board_fen: "fen-4", uci: "g1f3", san: "Nf3" },
+    { board_fen: "fen-5", uci: "d2d4", san: "d4" },
+  ],
+  complete: false,
+  outcome: null,
+});
+process.stdout.write(JSON.stringify({
+  timeline,
+  latest: timelineApi.cursorIndex(timeline, null),
+  clampedLow: timelineApi.cursorIndex(timeline, -20),
+  clampedHigh: timelineApi.cursorIndex(timeline, 200),
+}));
+"""
+    completed = subprocess.run(
+        [str(NODE), "-e", script, str(STATIC / "play-timeline.js")],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(completed.stdout)
+    timeline = payload["timeline"]
+
+    assert len(timeline) == 6
+    assert [position["boardFen"] for position in timeline] == [
+        "fen-0",
+        "fen-1",
+        "fen-2",
+        "fen-3",
+        "fen-4",
+        "fen-5",
+    ]
+    assert [position["lastMove"] for position in timeline] == [
+        None,
+        "e2e4",
+        "a7a6",
+        "h7h6",
+        "g1f3",
+        "d2d4",
+    ]
+    assert timeline[2]["series"] == 2
+    assert timeline[2]["seriesMove"] == 1
+    assert timeline[2]["prefixSan"] == ["a6"]
+    assert timeline[3]["complete"] is True
+    assert timeline[-1]["isLatest"] is True
+    assert payload["latest"] == 5
+    assert payload["clampedLow"] == 0
+    assert payload["clampedHigh"] == 5
+
+
+def test_play_history_navigation_is_accessible_and_locks_live_play() -> None:
+    index = (STATIC / "index.html").read_text(encoding="utf-8")
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC / "styles.css").read_text(encoding="utf-8")
+    engine_turn = app[
+        app.index("async function maybeRunEngineTurn") : app.index(
+            "async function startNewPlayGame"
+        )
+    ]
+    new_game = app[
+        app.index("async function startNewPlayGame") : app.index(
+            "async function selectPlayColor"
+        )
+    ]
+    handoff = app[
+        app.index("async function performSeriesHandoff") : app.index(
+            "function advanceSeries"
+        )
+    ]
+
+    assert index.index('src="/play-timeline.js"') < index.index('src="/app.js"')
+    assert 'id="play-history-previous"' in index
+    assert 'aria-label="Previous move"' in index
+    assert 'id="play-history-next"' in index
+    assert 'aria-label="Next move"' in index
+    assert 'id="play-history-position"' in index
+    assert "state.prefixFrames = prefixFramesFromPayload" in app
+    assert "frames: clonePlain(state.prefixFrames, [])" in handoff
+    assert "playReviewActive()" in engine_turn
+    assert "&& !playReviewActive()" in app
+    assert 'state.play.timelineIndex = null;' in new_game
+    assert "state.prefixFrames = [];" in new_game
+    assert 'event.key === "ArrowLeft" || event.key === "ArrowRight"' in app
+    assert "stepPlayTimeline(event.key === \"ArrowLeft\" ? -1 : 1)" in app
+    assert ".play-history-navigation" in styles
+    assert ".board-shell.is-reviewing" in styles

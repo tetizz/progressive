@@ -18,6 +18,8 @@ REPORT_FILES = (
 NATIVE_SOURCE_FILES = (
     "_native_eval.cpp",
     "native_eval.hpp",
+    "native_selfplay.cpp",
+    "native_selfplay.hpp",
 )
 
 
@@ -61,12 +63,22 @@ class BuildPyWithOpeningReports(build_py):
         target = package / "reports"
         target.mkdir(parents=True, exist_ok=True)
         fingerprint = engine_source_fingerprint(package)
+        omit_stale_reports = (
+            os.environ.get("SPC_OMIT_STALE_OPENING_REPORTS") == "1"
+        )
         for filename in REPORT_FILES:
             source = reports / filename
             if not source.is_file():
                 raise FileNotFoundError(f"required opening report is missing: {source}")
             payload = json.loads(source.read_text(encoding="utf-8"))
             if payload.get("source_fingerprint") != fingerprint:
+                if omit_stale_reports:
+                    # Hosted play does not depend on optional theory reports.
+                    # Never package stale evidence as though it described the
+                    # deployed engine; omit it explicitly instead. Normal
+                    # release builds remain fail-closed and require freshly
+                    # generated reports.
+                    continue
                 raise RuntimeError(
                     f"opening report is stale for source {fingerprint}: {source}"
                 )
@@ -85,8 +97,14 @@ setup(
     ext_modules=[
         Extension(
             "scottish_progressive._native_eval",
-            sources=["src/scottish_progressive/_native_eval.cpp"],
-            depends=["src/scottish_progressive/native_eval.hpp"],
+            sources=[
+                "src/scottish_progressive/_native_eval.cpp",
+                "src/scottish_progressive/native_selfplay.cpp",
+            ],
+            depends=[
+                "src/scottish_progressive/native_eval.hpp",
+                "src/scottish_progressive/native_selfplay.hpp",
+            ],
             language="c++",
             optional=True,
             define_macros=[("SPC_NATIVE_SOURCE_IDENTITY", f'"{native_identity}"')],

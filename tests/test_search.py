@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import os
 
 import chess
 import pytest
@@ -170,6 +171,57 @@ def test_shallow_tt_entry_cannot_answer_a_deeper_search() -> None:
     assert deep_after_shallow[0] != shallow[0]
 
 
+@pytest.mark.parametrize(
+    ("requested_depth", "expected_parent_generation_calls"),
+    ((3, 1), (4, 0)),
+)
+def test_depth_four_hash_series_can_cut_before_parent_generation(
+    monkeypatch: pytest.MonkeyPatch,
+    requested_depth: int,
+    expected_parent_generation_calls: int,
+) -> None:
+    state = play_series(ProgressiveState.initial(), ("e2e4",)).final_state
+    full_window = (-2 * MATE_SCORE, 2 * MATE_SCORE)
+    cutoff_window = (MATE_SCORE, 2 * MATE_SCORE)
+
+    # Depth three is the canonical no-presearch oracle. It still uses the
+    # existing TT/PV ordering after generating the retained frontier.
+    oracle = SeriesSearcher(
+        SearchLimits(depth_series=3, max_series_per_node=4)
+    )
+    oracle._minimax(state, 1, *full_window, 1)
+    expected = oracle._minimax(state, 2, *cutoff_window, 1)
+
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=requested_depth,
+            max_series_per_node=4,
+        )
+    )
+    searcher._minimax(state, 1, *full_window, 1)
+    original = searcher._ordered_generated
+    parent_generation_calls = 0
+
+    def counted_generation(
+        generated_state: ProgressiveState,
+        **kwargs: object,
+    ) -> object:
+        nonlocal parent_generation_calls
+        if generated_state.transposition_key == state.transposition_key:
+            parent_generation_calls += 1
+        return original(generated_state, **kwargs)
+
+    monkeypatch.setattr(searcher, "_ordered_generated", counted_generation)
+    actual = searcher._minimax(state, 2, *cutoff_window, 1)
+
+    assert actual == expected
+    assert parent_generation_calls == expected_parent_generation_calls
+    assert searcher.stats.nodes == oracle.stats.nodes
+    assert searcher.stats.leaf_evaluations == oracle.stats.leaf_evaluations
+    assert searcher.stats.alpha_beta_cutoffs == oracle.stats.alpha_beta_cutoffs
+    assert searcher.stats.tt_hits == oracle.stats.tt_hits
+
+
 def test_iterative_pv_ordering_preserves_result_with_less_work(monkeypatch) -> None:
     state = ProgressiveState.initial()
     limits = SearchLimits(
@@ -273,6 +325,33 @@ def test_best_only_black_root_preserves_minimizing_result_and_exact_evidence() -
         )
 
 
+def test_best_only_root_matches_full_root_after_risk_gated_selection() -> None:
+    state = play_series(ProgressiveState.initial(), ("g1f3",)).final_state
+    state = play_series(state, ("e7e6", "d8f6")).final_state
+    limits = {
+        "depth_series": 2,
+        "max_series_per_node": 32,
+    }
+
+    full = analyze(
+        state,
+        SearchLimits(**limits, collect_all_root_scores=True),
+    )
+    best_only = analyze(
+        state,
+        SearchLimits(**limits, collect_all_root_scores=False),
+    )
+
+    assert full.best_series is not None and best_only.best_series is not None
+    assert full.best_series.moves == ("b1a3", "a3b5", "b5c7")
+    assert best_only.score == full.score
+    assert best_only.best_series.moves == full.best_series.moves
+    assert best_only.principal_variation == full.principal_variation
+    assert best_only.proof == full.proof
+    assert best_only.forced == full.forced
+    assert not best_only.root_scores_complete
+
+
 def test_incomplete_reach_probe_does_not_create_na3_scoring_artifact() -> None:
     initial = ProgressiveState.initial()
     na3 = play_series(initial, ("b1a3",)).final_state
@@ -338,6 +417,10 @@ def test_frontier_cap_finds_known_series_four_mate_before_full_materialization()
     assert result.stats.series_generation_positions <= (
         1 + cap * (state.moves_available - 1)
     )
+    assert result.stats.tactical_frontier_states_retained == 0
+    assert result.stats.tactical_frontier_reserve_drops == 0
+    assert result.stats.tactical_final_series_retained == 0
+    assert result.stats.tactical_final_reserve_drops == 0
     assert result.stats.generation_positions == (
         result.stats.series_generation_positions
         + result.stats.frontier_score_positions
@@ -593,6 +676,103 @@ def test_first_root_interruption_keeps_unscored_legal_fallback(
     assert result.forced is None
     assert not result.exact_width
     assert not result.root_scores_complete
+
+
+def test_tactical_frontier_risk_gate_is_late_or_promotion_structural() -> None:
+    ordinary = ProgressiveState.from_fen(chess.STARTING_FEN, 3)
+    hard_s4 = ProgressiveState.from_fen(
+        "rnbqkb1r/ppp1pppp/5n2/1B1P4/8/5N2/PPPP1PPP/RNBQK2R b KQkq - 1 3",
+        4,
+    )
+    late = ProgressiveState.from_fen(chess.STARTING_FEN, 7)
+    promotion = ProgressiveState.from_fen(
+        "7k/5P2/8/8/8/8/8/K7 w - - 0 1",
+        3,
+    )
+
+    assert not search_module._tactical_frontier_protection_eligible(ordinary)
+    assert not search_module._tactical_frontier_protection_eligible(hard_s4)
+    assert search_module._tactical_frontier_protection_eligible(late)
+    assert search_module._tactical_frontier_protection_eligible(promotion)
+
+
+def test_tactical_frontier_policy_is_root_stable_across_late_descendants() -> None:
+    hard_s4 = ProgressiveState.from_fen(
+        "rnbqkb1r/ppp1pppp/5n2/1B1P4/8/5N2/PPPP1PPP/RNBQK2R b KQkq - 1 3",
+        4,
+    )
+    late = ProgressiveState.from_fen(chess.STARTING_FEN, 7)
+    promotion = ProgressiveState.from_fen(
+        "7k/5P2/8/8/8/8/8/K7 w - - 0 1",
+        5,
+    )
+
+    early_root = SeriesSearcher(
+        SearchLimits(depth_series=5, max_series_per_node=32)
+    )
+    assert not early_root._tactical_frontier_protection_enabled(hard_s4)
+    # Merely reaching the late-series threshold no longer changes the beam
+    # policy selected by the Series-4 root.
+    assert not early_root._tactical_frontier_protection_enabled(
+        late,
+        ply_from_root=4,
+    )
+    # A concrete promotion risk is protected only through the immediate
+    # opponent-series safety horizon of a low-risk root.
+    assert early_root._tactical_frontier_protection_enabled(
+        promotion,
+        ply_from_root=2,
+    )
+    assert not early_root._tactical_frontier_protection_enabled(
+        promotion,
+        ply_from_root=3,
+    )
+
+    late_root = SeriesSearcher(
+        SearchLimits(depth_series=1, max_series_per_node=32)
+    )
+    assert late_root._tactical_frontier_protection_enabled(late)
+    # A late root keeps protection throughout its minimax descendants.
+    assert late_root._tactical_frontier_protection_enabled(
+        hard_s4,
+        ply_from_root=5,
+    )
+
+
+def test_hard_s4_depth_five_keeps_late_only_tactical_reserve_off() -> None:
+    """Opt-in merged-native performance/correctness regression.
+
+    The deterministic ten-million-work gate takes roughly 17 seconds on the
+    reference workstation, so routine unit runs skip it. Release/source-freeze
+    gates enable it with ``SPC_RUN_HARD_S4_D5_GATE=1``.
+    """
+
+    if os.environ.get("SPC_RUN_HARD_S4_D5_GATE") != "1":
+        pytest.skip("set SPC_RUN_HARD_S4_D5_GATE=1 for the hard native gate")
+
+    state = ProgressiveState.initial()
+    state = play_series(state, ("g1f3",)).final_state
+    state = play_series(state, ("e7e6", "d8f6")).final_state
+    state = play_series(state, ("d2d4", "c1g5", "g5f6")).final_state
+    result = analyze(
+        state,
+        SearchLimits(
+            depth_series=5,
+            max_series_per_node=32,
+            time_limit_seconds=180.0,
+            max_generation_positions=10_000_000,
+            collect_all_root_scores=False,
+            native_threads=16,
+        ),
+    )
+
+    assert result.completed_depth == 5
+    assert not result.work_limit_reached
+    assert result.stats.work_positions <= 10_000_000
+    assert result.stats.tactical_frontier_states_retained == 0
+    assert result.stats.tactical_frontier_reserve_drops == 0
+    assert result.stats.tactical_final_series_retained == 0
+    assert result.stats.tactical_final_reserve_drops == 0
 
 
 def test_deeper_pending_adjudication_keeps_last_completed_iteration(
@@ -992,7 +1172,7 @@ def test_live_series_24_pending_first_pass_keeps_legal_root_fallback() -> None:
     assert not result.timed_out
     assert not result.work_limit_reached
     assert not result.root_scores_complete
-    assert result.stats.series_generation_positions == 736
+    assert result.stats.series_generation_positions == 859
     assert result.stats.quiet_adjudication_positions == 4_096
     assert result.stats.work_positions <= 250_000
 

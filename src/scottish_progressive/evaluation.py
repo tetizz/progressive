@@ -13,7 +13,12 @@ from .profiles import EngineProfile, EvaluationWeights
 from .rules import _board_position_key, _legal_move_variants
 
 
-_NATIVE_SOURCE_FILES = ("_native_eval.cpp", "native_eval.hpp")
+_NATIVE_SOURCE_FILES = (
+    "_native_eval.cpp",
+    "native_eval.hpp",
+    "native_selfplay.cpp",
+    "native_selfplay.hpp",
+)
 
 
 def _native_source_identity() -> str | None:

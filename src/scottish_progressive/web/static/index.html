@@ -10,16 +10,20 @@
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
-    <a class="skip-link" href="#workspace-tabs">Skip to analysis</a>
+    <a class="skip-link" href="#workspace">Skip to board</a>
     <header class="app-header">
-      <a class="brand" href="/" aria-label="Scottish Progressive home">Scottish Progressive</a>
+      <a class="brand" href="/" aria-label="Scottish Progressive home"><span class="brand-long">Scottish Progressive</span><span class="brand-short">Progressive</span></a>
+      <nav class="mode-switch" aria-label="Workspace mode">
+        <button class="mode-button is-active" id="mode-play" type="button" aria-pressed="true">Play</button>
+        <button class="mode-button" id="mode-analyze" type="button" aria-pressed="false">Analyze</button>
+      </nav>
       <div class="header-actions">
         <span class="rules-label" id="rules-version">Scottish rules</span>
         <span class="engine-status" id="engine-status" role="status" aria-live="polite"><span class="status-dot" aria-hidden="true"></span><span id="engine-status-text">Connecting…</span></span>
       </div>
     </header>
 
-    <main class="analysis-workspace">
+    <main class="analysis-workspace is-play-mode" id="workspace">
       <section class="board-pane" aria-label="Analysis board">
         <div class="position-strip">
           <div class="turn-copy">
@@ -34,8 +38,14 @@
           <div class="move-chips" id="move-chips"><span class="empty-chip">No moves yet</span></div>
         </div>
 
+        <div class="play-player-strip play-top-player" id="play-top-player" aria-label="Opponent">
+          <span class="player-color" id="play-top-color" aria-hidden="true"></span>
+          <span class="player-identity"><strong id="play-top-name">Current champion</strong><small id="play-top-meta">Engine profile</small></span>
+          <span class="player-clock" id="play-top-turn">Waiting</span>
+        </div>
+
         <div class="board-layout">
-          <div class="eval-rail" id="eval-rail" aria-label="White-centric heuristic evaluation">
+          <div class="eval-rail" id="eval-rail" aria-label="Progressive evaluation not reported" aria-describedby="evaluation-scale-help" title="About 100 evaluation points equals one pawn. This is a heuristic Progressive evaluation, not calibrated Stockfish centipawns.">
             <span class="eval-side eval-black">B</span><div class="eval-fill" id="eval-fill"></div><span class="eval-marker" id="eval-marker">?</span><span class="eval-side eval-white">W</span>
           </div>
           <div class="board-shell" id="board-shell">
@@ -51,6 +61,12 @@
           </div>
         </div>
 
+        <div class="play-player-strip play-bottom-player" id="play-bottom-player" aria-label="Player">
+          <span class="player-color" id="play-bottom-color" aria-hidden="true"></span>
+          <span class="player-identity"><strong id="play-bottom-name">You</strong><small id="play-bottom-meta">White</small></span>
+          <span class="player-clock" id="play-bottom-turn">Your series</span>
+        </div>
+
         <div class="board-toolbar" aria-label="Board controls">
           <button class="tool-button" id="undo-move" type="button" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 7 4-4v3h1a7 7 0 1 1-6.7 9h2.2a5 5 0 1 0 4.5-7h-1v3L8 7Z"/></svg><span>Undo</span></button>
           <button class="tool-button" id="reset-series" type="button" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5a7 7 0 1 1-6.6 9.3l1.9-.7A5 5 0 1 0 8.1 9L11 12H4V5l2.6 2.6A7 7 0 0 1 12 5Z"/></svg><span>Restart series</span></button>
@@ -64,12 +80,72 @@
       </section>
 
       <aside class="inspector" aria-label="Analysis tools">
-        <div class="tabs" id="workspace-tabs" role="tablist" aria-label="Workspace views" tabindex="-1">
+        <section class="play-panel" id="play-panel" aria-labelledby="play-panel-title">
+          <div class="play-heading">
+            <p class="section-kicker">SCOTTISH PROGRESSIVE</p>
+            <h1 id="play-panel-title">Play the champion</h1>
+            <p>One move in Series 1, two in Series 2, then 3, 4, 5 and onward. A check ends the series immediately.</p>
+          </div>
+
+          <fieldset class="side-picker">
+            <legend>Play as</legend>
+            <div class="side-options">
+              <button class="side-option is-active" id="play-as-white" type="button" aria-pressed="true"><span class="side-piece is-white" aria-hidden="true">♔</span><span><strong>White</strong><small>Move first</small></span></button>
+              <button class="side-option" id="play-as-black" type="button" aria-pressed="false"><span class="side-piece is-black" aria-hidden="true">♚</span><span><strong>Black</strong><small>Champion starts</small></span></button>
+            </div>
+          </fieldset>
+
+          <fieldset class="play-strength-picker">
+            <legend>Engine strength</legend>
+            <div class="play-strength-options">
+              <button class="play-strength-option is-active" id="play-strength-strong" type="button" aria-pressed="true" title="Searches toward depth 5 for up to 30 seconds when this server allows it."><span class="strength-mark" aria-hidden="true">◆</span><span><strong>Strong</strong><small>Deeper · up to 30s</small></span></button>
+              <button class="play-strength-option" id="play-strength-faster" type="button" aria-pressed="false" title="Uses the champion profile depth for a faster reply, normally up to 5 seconds."><span class="strength-mark" aria-hidden="true">›</span><span><strong>Faster</strong><small>Quicker replies</small></span></button>
+            </div>
+          </fieldset>
+
+          <div class="play-live" id="play-live" role="status" aria-live="polite">
+            <span class="play-live-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span><strong id="play-status-title">Your series</strong><small id="play-status-detail">Play White's one legal move.</small></span>
+          </div>
+
+          <section class="play-series-card" aria-labelledby="play-series-title">
+            <div><span class="section-kicker">CURRENT TURN</span><h2 id="play-series-title">Series 1</h2></div>
+            <strong class="play-series-count" id="play-series-count">1</strong>
+            <p id="play-series-copy">1 move remaining</p>
+          </section>
+
+          <section class="play-history-section" aria-labelledby="play-history-title">
+            <div class="play-section-heading"><h2 id="play-history-title">Game</h2><span id="play-history-count">Series 1</span></div>
+            <div class="play-history" id="play-history" role="log" aria-live="polite"></div>
+            <div class="play-history-navigation" role="group" aria-label="Game position navigation">
+              <button class="play-history-step" id="play-history-previous" type="button" aria-label="Previous move" disabled><span aria-hidden="true">←</span><span>Previous</span></button>
+              <output class="play-history-position" id="play-history-position" aria-live="polite">Position 1 of 1</output>
+              <button class="play-history-step" id="play-history-next" type="button" aria-label="Next move" disabled><span>Next</span><span aria-hidden="true">→</span></button>
+            </div>
+          </section>
+
+          <div class="play-actions">
+            <button class="primary play-new-game" id="play-new-game" type="button">New game as White</button>
+            <button class="secondary" id="play-analyze-position" type="button">Analyze position</button>
+            <button class="secondary play-resign" id="play-resign" type="button">Resign</button>
+          </div>
+
+          <dl class="engine-proof" aria-label="Engine provenance">
+            <div><dt>Opponent</dt><dd id="play-engine-name">Connecting…</dd></div>
+            <div><dt>Profile</dt><dd id="play-engine-id">—</dd></div>
+            <div><dt>Engine</dt><dd id="play-engine-version">—</dd></div>
+            <div><dt>Strength</dt><dd id="play-strength-status">Strong · target depth 5</dd></div>
+            <div><dt>Last search</dt><dd id="play-search-depth" aria-live="polite">No engine move yet</dd></div>
+            <div><dt>Search status</dt><dd id="play-search-status">Waiting for the champion</dd></div>
+          </dl>
+        </section>
+
+        <div class="tabs" id="workspace-tabs" role="tablist" aria-label="Workspace views" tabindex="-1" hidden>
           <button class="tab is-active" id="tab-analysis" role="tab" aria-selected="true" aria-controls="analysis-panel" tabindex="0">Analysis</button>
           <button class="tab" id="tab-theory" role="tab" aria-selected="false" aria-controls="theory-panel" tabindex="-1">Theory</button>
           <button class="tab" id="tab-setup" role="tab" aria-selected="false" aria-controls="setup-panel" tabindex="-1">Setup</button>
         </div>
-        <section class="tab-panel analysis-panel" id="analysis-panel" role="tabpanel" aria-labelledby="tab-analysis">
+        <section class="tab-panel analysis-panel" id="analysis-panel" role="tabpanel" aria-labelledby="tab-analysis" hidden>
           <div class="auto-analysis-bar">
             <div class="auto-analysis-copy"><span class="analysis-live-dot" aria-hidden="true"></span><div><h2>Automatic analysis</h2><p id="analysis-progress-text" role="status" aria-live="polite">Waiting for the position…</p></div></div>
             <button class="analysis-toggle" id="analyze-button" type="button" aria-pressed="false"><svg class="pause-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h4v14H7V5Zm6 0h4v14h-4V5Z"/></svg><span>Pause</span></button>
@@ -96,7 +172,8 @@
           <div class="analysis-error" id="analysis-error" hidden role="alert"><strong>Automatic analysis stopped</strong><span id="analysis-error-text"></span></div>
 
           <div class="analysis-results" id="analysis-results" hidden>
-            <div class="result-hero"><div><span class="result-label">White-centric heuristic</span><strong class="result-score" id="result-score">0</strong></div><div class="classification-block"><span class="classification" id="result-classification">Balanced</span><span class="confidence" id="result-confidence">Depth-limited</span></div></div>
+            <div class="result-hero"><div><span class="result-label">Progressive evaluation</span><strong class="result-score" id="result-score">Equal</strong></div><div class="classification-block"><span class="classification" id="result-classification">Balanced</span><span class="confidence" id="result-confidence">Depth-limited</span></div></div>
+            <p class="evaluation-help" id="evaluation-scale-help">About 100 evaluation points equals one pawn. This is a heuristic Progressive evaluation, not calibrated Stockfish centipawns.</p>
             <div class="proof-strip" id="proof-strip" aria-label="Search reliability"></div>
             <section class="result-section best-series-section"><div class="section-heading"><h3 id="result-choice-heading">Best series</h3><span class="side-to-move" id="result-side">White to move</span></div><div class="best-series" id="best-series"></div><p class="best-notation" id="best-notation"></p></section>
             <section class="result-section">
@@ -147,6 +224,9 @@
     <dialog class="promotion-dialog" id="promotion-dialog" aria-labelledby="promotion-title"><form method="dialog"><div class="dialog-heading"><div><p class="section-kicker">PROMOTION</p><h2 id="promotion-title">Choose a piece</h2></div><button class="dialog-close" value="cancel" aria-label="Cancel promotion">×</button></div><div class="promotion-options" id="promotion-options"></div></form></dialog>
     <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
     <script src="/study-safety.js" defer></script>
+    <script src="/evaluation-format.js" defer></script>
+    <script src="/play-handoff.js" defer></script>
+    <script src="/play-timeline.js" defer></script>
     <script src="/app.js" defer></script>
   </body>
 </html>

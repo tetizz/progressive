@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -100,6 +101,12 @@ enum class SeriesGenerationStatus : std::uint8_t {
     WorkLimit = 1,
     InvalidPrefix = 2,
     Unsupported = 3,
+    Deadline = 4,
+};
+
+enum class PathCountOverflowMode : std::uint8_t {
+    Reject = 0,
+    Saturate = 1,
 };
 
 struct SeriesGenerationStats {
@@ -114,8 +121,13 @@ struct SeriesGenerationStats {
     std::uint64_t frontier_prunes = 0;
     std::uint64_t frontier_states_pruned = 0;
     std::uint64_t frontier_paths_pruned = 0;
+    std::uint64_t tactical_frontier_states_retained = 0;
+    std::uint64_t tactical_frontier_reserve_drops = 0;
+    std::uint64_t tactical_final_series_retained = 0;
+    std::uint64_t tactical_final_reserve_drops = 0;
     std::uint64_t peak_frontier_states = 0;
     std::uint64_t required_prefix_moves = 0;
+    std::uint64_t path_count_saturations = 0;
     bool work_limit_reached = false;
 };
 
@@ -155,6 +167,20 @@ struct CompleteSeriesRequest {
     std::optional<std::uint64_t> max_positions;
     std::optional<FastWeights> frontier_weights;
     std::optional<FinalSeriesScore> final_series_score;
+    // Exact public complete-series calls retain the historical reject behavior.
+    // The full-game v2 exploration kernel opts into saturation because path
+    // multiplicity is evidence only and is not consumed by its move selector.
+    PathCountOverflowMode path_count_overflow_mode = PathCountOverflowMode::Reject;
+    // The binding converts a relative Python request budget to this process's
+    // own steady-clock epoch. No cross-runtime clock-epoch assumption leaks
+    // into the generation kernel.
+    std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt;
+    // Execution-only parallelism. Search/tournament callers default to one so
+    // existing worker-level parallelism never oversubscribes implicitly.
+    std::uint32_t worker_threads = 1;
+    // Opt-in selective-search lane. Full-game corpus exploration keeps its
+    // historical fixed-width policy unless it explicitly requests this.
+    bool tactical_protection = false;
 };
 
 struct CompleteSeriesResponse {

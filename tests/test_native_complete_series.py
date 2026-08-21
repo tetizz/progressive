@@ -115,7 +115,11 @@ def _paired_native_final_cap(
 ):
     native = _require_native_complete_series()
     profile = baseline_profile()
-    frontier_score = NativeFrontierScoreConfig.from_profile(state, profile)
+    frontier_score = NativeFrontierScoreConfig.from_profile(
+        state,
+        profile,
+        tactical_protection=True,
+    )
     final_score = NativeFinalSeriesScoreConfig.from_profile(
         profile,
         max_returned_series=final_cap,
@@ -163,10 +167,22 @@ def _paired_native_final_cap(
         frontier_score=frontier_score,
         native_final_score=final_score,
     )
-    expected = SeriesSearcher(
+    oracle_searcher = SeriesSearcher(
         SearchLimits(depth_series=1, max_series_per_node=final_cap),
         profile,
-    )._ordered(oracle_results, state.board.turn, ply_from_root)
+    )
+    expected = oracle_searcher._ordered(
+        state,
+        oracle_results,
+        state.board.turn,
+        ply_from_root,
+    )
+    oracle_stats.tactical_final_series_retained = (
+        oracle_searcher.stats.tactical_final_series_retained
+    )
+    oracle_stats.tactical_final_reserve_drops = (
+        oracle_searcher.stats.tactical_final_reserve_drops
+    )
     monkeypatch.setattr(evaluation, "_native_eval", native)
 
     assert _series_signature(native_results) == _series_signature(expected)
@@ -418,6 +434,7 @@ def test_native_final_pre_cap_matches_white_and_black_search_order(
 ) -> None:
     white = ProgressiveState.from_fen(chess.STARTING_FEN, 3)
     black = play_series(ProgressiveState.initial(), ("e2e4",)).final_state
+    final_counter_pairs = []
 
     for state in (white, black):
         selected, stats, oracle = _paired_native_final_cap(
@@ -428,6 +445,15 @@ def test_native_final_pre_cap_matches_white_and_black_search_order(
         )
         assert len(selected) == 5
         assert stats.unique_series == len(oracle) > len(selected)
+        final_counter_pairs.append(
+            (
+                stats.tactical_final_series_retained,
+                stats.tactical_final_reserve_drops,
+            )
+        )
+
+    assert any(retained > 0 for retained, _drops in final_counter_pairs)
+    assert any(drops > 0 for _retained, drops in final_counter_pairs)
 
 
 def test_native_final_pre_cap_terminal_ties_and_mate_distance(
@@ -486,7 +512,9 @@ def test_native_final_pre_cap_terminal_ties_and_mate_distance(
         max_frontier_states=8,
     )
     assert all(result.outcome == Outcome.CHECKMATE for result in ordinary)
-    assert all(result.outcome is None for result in delayed)
+    # The tactical lane is authoritative over the deliberately inverted
+    # mate-distance score: forcing mates remain protected at final capping.
+    assert all(result.outcome == Outcome.CHECKMATE for result in delayed)
 
 
 def test_native_final_cap_preserves_prefix_representative_without_pruning(
@@ -507,6 +535,61 @@ def test_native_final_cap_preserves_prefix_representative_without_pruning(
         if result.moves == ("h2h3", "a2a3", "b2b3")
     )
     assert representative.transposition_count == 2
+
+
+def test_tactical_native_parallel_matches_serial_order_stats_and_states() -> None:
+    _require_native_complete_series()
+    state = ProgressiveState.from_fen(
+        "rnbqkb1r/ppp1pppp/5n2/1B1P4/8/5N2/PPPP1PPP/RNBQK2R b KQkq - 1 3",
+        4,
+    )
+    profile = baseline_profile()
+    frontier_score = NativeFrontierScoreConfig.from_profile(
+        state,
+        profile,
+        tactical_protection=True,
+    )
+    final_score = NativeFinalSeriesScoreConfig.from_profile(
+        profile,
+        max_returned_series=32,
+        ply_from_root=1,
+        mate_score=MATE_SCORE,
+    )
+
+    batches = []
+    stats = []
+    for native_threads in (1, 4):
+        counters = GenerationStats()
+        batch = rules._native_complete_series_batch(
+            state,
+            counters,
+            required_prefix=(),
+            max_frontier_states=32,
+            max_positions=100_000,
+            frontier_score=frontier_score,
+            native_final_score=final_score,
+            should_stop=None,
+            native_time_budget_ns=10_000_000_000,
+            native_threads=native_threads,
+        )
+        assert batch is not None
+        batches.append(batch)
+        stats.append(asdict(counters))
+
+    def signature(batch) -> tuple[tuple[object, ...], ...]:
+        return tuple(
+            (
+                item.moves,
+                item.transposition_count,
+                item.final_state.pfen,
+                item.outcome,
+                item.ended_by_check,
+            )
+            for item in batch.references()
+        )
+
+    assert signature(batches[1]) == signature(batches[0])
+    assert stats[1] == stats[0]
 
 
 def test_bulk_quiet_draw_and_nonlex_transposition_representative(

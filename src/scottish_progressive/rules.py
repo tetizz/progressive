@@ -21,6 +21,10 @@ class GenerationStats:
     frontier_prunes: int = 0
     frontier_states_pruned: int = 0
     frontier_paths_pruned: int = 0
+    tactical_frontier_states_retained: int = 0
+    tactical_frontier_reserve_drops: int = 0
+    tactical_final_series_retained: int = 0
+    tactical_final_reserve_drops: int = 0
     peak_frontier_states: int = 0
     required_prefix_moves: int = 0
     work_limit_reached: bool = False
@@ -77,6 +81,20 @@ def _progressive_position_key(state: ProgressiveState) -> tuple[object, ...]:
 
 
 FrontierScore = Callable[[chess.Board], int]
+TacticalOpportunity = tuple[int, str]
+
+_TACTICAL_MATE = 0
+_TACTICAL_CHECK = 1
+_TACTICAL_PROMOTION = 2
+_TACTICAL_CAPTURE = 3
+# The configured frontier cap remains the ordinary/quiet beam.  Search may
+# retain at most twice the ordinary cap, up to this many additional visible
+# tactical opportunity representatives. Thus cap-32 search has a hard
+# intermediate width of 96; cap 1 can grow only to 3, and larger caps add at
+# most 64. If more
+# distinct opportunity representatives exist, the ordinary pruning counters
+# remain nonzero and proof bounds stay UNKNOWN/selective.
+TACTICAL_FRONTIER_RESERVE_MAX = 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,9 +113,16 @@ class NativeFrontierScoreConfig:
     promotion_corridors: int
     immediate_vulnerability: int
     boundary_check: int
+    tactical_protection: bool = False
 
     @classmethod
-    def from_profile(cls, state: ProgressiveState, profile: object) -> "NativeFrontierScoreConfig":
+    def from_profile(
+        cls,
+        state: ProgressiveState,
+        profile: object,
+        *,
+        tactical_protection: bool = False,
+    ) -> "NativeFrontierScoreConfig":
         weights = getattr(profile, "weights")
         return cls(
             state.series_number,
@@ -107,9 +132,24 @@ class NativeFrontierScoreConfig:
             weights.promotion_corridors,
             weights.immediate_vulnerability,
             weights.boundary_check,
+            tactical_protection,
         )
 
-    def __call__(self, board: chess.Board) -> int:
+    def inspect(
+        self,
+        board: chess.Board,
+    ) -> tuple[int, tuple[TacticalOpportunity, ...]]:
+        """Returns the ordering score and visible forcing opportunities.
+
+        Opportunity keys deliberately include the move UCI.  A global
+        ``has-capture`` bit is too coarse in Progressive Chess: hundreds of
+        partial positions can all attack the same loose piece while the one
+        pawn capture that opens a promotion route sits outside a width-32
+        static beam.  Keeping one deterministic representative per visible
+        tactical move gives those distinct routes a bounded lane without
+        pretending that the selective search became exhaustive.
+        """
+
         from .evaluation import fast_evaluate
         from .profiles import EvaluationWeights
 
@@ -130,17 +170,35 @@ class NativeFrontierScoreConfig:
         immediate_mates = 0
         captures = 0
         promotions = 0
-        for move, required_ep in _legal_move_variants(board):
-            board.ep_square = required_ep
-            gives_check = board.gives_check(move)
-            checks += int(gives_check)
-            captures += int(board.is_capture(move))
-            promotions += int(move.promotion is not None)
-            if gives_check:
-                child = board.copy(stack=False)
-                child.push(move)
-                immediate_mates += int(child.is_checkmate())
-        board.ep_square = None
+        opportunities: set[TacticalOpportunity] = set()
+        saved_ep = board.ep_square
+        try:
+            for move, required_ep in _legal_move_variants(board):
+                board.ep_square = required_ep
+                uci = move.uci()
+                gives_check = board.gives_check(move)
+                is_capture = board.is_capture(move)
+                is_promotion = move.promotion is not None
+                checks += int(gives_check)
+                captures += int(is_capture)
+                promotions += int(is_promotion)
+                if gives_check:
+                    child = board.copy(stack=False)
+                    child.push(move)
+                    is_mate = child.is_checkmate()
+                    immediate_mates += int(is_mate)
+                    opportunities.add(
+                        (
+                            _TACTICAL_MATE if is_mate else _TACTICAL_CHECK,
+                            uci,
+                        )
+                    )
+                if is_promotion:
+                    opportunities.add((_TACTICAL_PROMOTION, uci))
+                if is_capture:
+                    opportunities.add((_TACTICAL_CAPTURE, uci))
+        finally:
+            board.ep_square = saved_ep
         tactical = (
             immediate_mates * 5_000_000
             + checks * 50_000
@@ -148,7 +206,10 @@ class NativeFrontierScoreConfig:
             + captures * 100
         )
         score += tactical if board.turn == chess.WHITE else -tactical
-        return score
+        return score, tuple(sorted(opportunities))
+
+    def __call__(self, board: chess.Board) -> int:
+        return self.inspect(board)[0]
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +268,52 @@ class _FrontierState:
     ep_candidates: dict[int, int]
     made_progress: bool
     path_count: int = 1
+    # Capture/promotion opportunities remain protected after they are played,
+    # through the rest of the same series.  The signature is category plus
+    # one-based micro-ply and UCI (for example ``(3, "4:a4b3")``).
+    tactical_provenance: tuple[TacticalOpportunity, ...] = ()
+
+
+class _TacticalSeriesResults(list[SeriesResult]):
+    """Merged results plus path-unioned tactical evidence for final capping."""
+
+    __slots__ = ("tactical_provenance_by_notation",)
+
+    def __init__(
+        self,
+        values: list[SeriesResult],
+        tactical_provenance_by_notation: dict[
+            str,
+            tuple[TacticalOpportunity, ...],
+        ],
+    ) -> None:
+        super().__init__(values)
+        self.tactical_provenance_by_notation = tactical_provenance_by_notation
+
+
+def _merge_frontier_states(
+    incumbent: _FrontierState,
+    candidate: _FrontierState,
+) -> _FrontierState:
+    """Merges a partial transposition without losing path tactical evidence."""
+
+    total_paths = incumbent.path_count + candidate.path_count
+    chosen = candidate if candidate.moves < incumbent.moves else incumbent
+    combined_tactical_provenance = tuple(
+        sorted(
+            set(incumbent.tactical_provenance)
+            | set(candidate.tactical_provenance)
+        )
+    )
+    return _FrontierState(
+        chosen.board,
+        chosen.moves,
+        chosen.sans,
+        chosen.ep_candidates,
+        chosen.made_progress,
+        total_paths,
+        combined_tactical_provenance,
+    )
 
 
 @dataclass(slots=True)
@@ -264,6 +371,9 @@ def _bound_frontier(
     prefix_length: int,
     max_frontier_states: int | None,
     frontier_score: FrontierScore | None,
+    tactical_opportunities: (
+        Callable[[chess.Board], tuple[TacticalOpportunity, ...]] | None
+    ),
     counters: GenerationStats,
 ) -> list[_FrontierState]:
     counters.peak_frontier_states = max(
@@ -305,6 +415,58 @@ def _bound_frontier(
             selected_moves.add(item.moves)
             if len(selected) == max_frontier_states:
                 break
+
+    # The static beam is an ordering heuristic, not tactical authority.  Give
+    # one best-scored position exposing each distinct mate/check/promotion/
+    # capture move a small deterministic reserve.  The reserve is bounded and
+    # does not claim a no-tactic proof when it fills: discarded states still
+    # increment the ordinary pruning counters below.
+    if tactical_opportunities is not None:
+        ranked_representatives: dict[
+            TacticalOpportunity,
+            tuple[int, _FrontierState],
+        ] = {}
+        for rank, item in enumerate(ordered):
+            opportunities = set(item.tactical_provenance)
+            next_ply = len(item.moves) + 1
+            opportunities.update(
+                (kind, f"{next_ply}:{uci}")
+                for kind, uci in tactical_opportunities(item.board)
+            )
+            for opportunity in sorted(opportunities):
+                ranked_representatives.setdefault(opportunity, (rank, item))
+        reserve_limit = min(
+            max_frontier_states * 2,
+            TACTICAL_FRONTIER_RESERVE_MAX,
+        )
+        extras = 0
+        reserve_candidates: set[tuple[str, ...]] = set()
+        protected = sorted(
+            ranked_representatives.items(),
+            key=lambda entry: (
+                entry[0][0],
+                entry[1][0],
+                entry[0][1],
+                entry[1][1].moves,
+            ),
+        )
+        for _opportunity, (_rank, item) in protected:
+            if item.moves in selected_moves:
+                continue
+            reserve_candidates.add(item.moves)
+        for _opportunity, (_rank, item) in protected:
+            if item.moves in selected_moves:
+                continue
+            selected.append(item)
+            selected_moves.add(item.moves)
+            extras += 1
+            if extras == reserve_limit:
+                break
+        counters.tactical_frontier_states_retained += extras
+        counters.tactical_frontier_reserve_drops += max(
+            0,
+            len(reserve_candidates) - extras,
+        )
     selected.sort(key=lambda item: _frontier_order_key(item, mover, frontier_score))
     discarded = [item for item in ordered if item.moves not in selected_moves]
     counters.frontier_prunes += 1
@@ -646,6 +808,7 @@ def _replay_required_prefix(
     *,
     max_positions: int | None,
     should_stop: Callable[[], bool] | None,
+    track_tactical_provenance: bool = False,
 ) -> tuple[_FrontierState | None, SeriesResult | None]:
     """Replays a fixed move-order prefix before any transposition merging.
 
@@ -668,6 +831,7 @@ def _replay_required_prefix(
     sans: tuple[str, ...] = ()
     ep_candidates: dict[int, int] = {}
     made_progress = False
+    tactical_provenance: set[TacticalOpportunity] = set()
 
     for index, uci in enumerate(required_prefix):
         if should_stop is not None and should_stop():
@@ -692,6 +856,14 @@ def _replay_required_prefix(
         piece = board.piece_at(move.from_square)
         is_pawn_move = piece is not None and piece.piece_type == chess.PAWN
         is_capture = board.is_capture(move)
+        if track_tactical_provenance and move.promotion is not None:
+            tactical_provenance.add(
+                (_TACTICAL_PROMOTION, f"{index + 1}:{move.uci()}")
+            )
+        if track_tactical_provenance and is_capture:
+            tactical_provenance.add(
+                (_TACTICAL_CAPTURE, f"{index + 1}:{move.uci()}")
+            )
         if move.from_square in ep_candidates:
             del ep_candidates[move.from_square]
         if is_pawn_move and abs(move.to_square - move.from_square) == 16:
@@ -736,6 +908,7 @@ def _replay_required_prefix(
             sans=sans,
             ep_candidates=ep_candidates,
             made_progress=made_progress,
+            tactical_provenance=tuple(sorted(tactical_provenance)),
         ),
         None,
     )
@@ -749,22 +922,33 @@ def _merged_series_generation(
     max_frontier_states: int | None,
     max_positions: int | None,
     frontier_score: FrontierScore | None,
+    tactical_opportunities: (
+        Callable[[chess.Board], tuple[TacticalOpportunity, ...]] | None
+    ),
     should_stop: Callable[[], bool] | None,
 ) -> list[SeriesResult]:
     """Dynamic-programming generator that merges intra-series states early."""
 
     mover = state.board.turn
+    protect_tactics = tactical_opportunities is not None
     root, prefix_result = _replay_required_prefix(
         state,
         required_prefix,
         counters,
         max_positions=max_positions,
         should_stop=should_stop,
+        track_tactical_provenance=protect_tactics,
     )
     frontier = [root] if root is not None else []
-    completed: list[SeriesResult] = []
+    completed: list[
+        tuple[SeriesResult, tuple[TacticalOpportunity, ...]]
+    ] = []
 
-    def record(result: SeriesResult, path_count: int) -> None:
+    def record(
+        result: SeriesResult,
+        path_count: int,
+        tactical_provenance: tuple[TacticalOpportunity, ...] = (),
+    ) -> None:
         weighted = result.with_transposition_count(path_count)
         counters.raw_series += path_count
         if result.ended_by_check:
@@ -773,10 +957,28 @@ def _merged_series_generation(
             counters.checkmates += path_count
         elif result.outcome == Outcome.STALEMATE:
             counters.stalemates += path_count
-        completed.append(weighted)
+        combined = set(tactical_provenance)
+        if protect_tactics and result.ended_by_check and result.moves:
+            combined.add(
+                (
+                    _TACTICAL_MATE
+                    if result.outcome == Outcome.CHECKMATE
+                    else _TACTICAL_CHECK,
+                    f"{len(result.moves)}:{result.moves[-1]}",
+                )
+            )
+        completed.append((weighted, tuple(sorted(combined))))
 
     if prefix_result is not None:
-        record(prefix_result, 1)
+        record(
+            prefix_result,
+            1,
+            (
+                _series_tactical_provenance(state, prefix_result)
+                if protect_tactics
+                else ()
+            ),
+        )
 
     while frontier:
         if should_stop is not None and should_stop():
@@ -798,6 +1000,7 @@ def _merged_series_generation(
                         item.sans,
                     ),
                     item.path_count,
+                    item.tactical_provenance,
                 )
                 continue
 
@@ -820,6 +1023,21 @@ def _merged_series_generation(
                 next_moves = item.moves + (move.uci(),)
                 next_sans = item.sans + (san,)
                 next_progress = item.made_progress or is_pawn_move or is_capture
+                next_tactical_provenance = set(item.tactical_provenance)
+                if protect_tactics and move.promotion is not None:
+                    next_tactical_provenance.add(
+                        (
+                            _TACTICAL_PROMOTION,
+                            f"{len(next_moves)}:{move.uci()}",
+                        )
+                    )
+                if protect_tactics and is_capture:
+                    next_tactical_provenance.add(
+                        (
+                            _TACTICAL_CAPTURE,
+                            f"{len(next_moves)}:{move.uci()}",
+                        )
+                    )
                 if delivered_check or len(next_moves) == state.moves_available:
                     record(
                         _finish_series(
@@ -832,6 +1050,7 @@ def _merged_series_generation(
                             delivered_check=delivered_check,
                         ),
                         item.path_count,
+                        tuple(sorted(next_tactical_provenance)),
                     )
                     continue
 
@@ -849,39 +1068,40 @@ def _merged_series_generation(
                     next_candidates,
                     next_progress,
                     item.path_count,
+                    tuple(sorted(next_tactical_provenance)),
                 )
                 incumbent = following.get(key)
                 if incumbent is None:
                     following[key] = candidate
                     continue
-                total_paths = incumbent.path_count + candidate.path_count
-                chosen = candidate if candidate.moves < incumbent.moves else incumbent
-                following[key] = _FrontierState(
-                    chosen.board,
-                    chosen.moves,
-                    chosen.sans,
-                    chosen.ep_candidates,
-                    chosen.made_progress,
-                    total_paths,
-                )
+                following[key] = _merge_frontier_states(incumbent, candidate)
         frontier = _bound_frontier(
             following,
             mover=mover,
             prefix_length=len(required_prefix),
             max_frontier_states=max_frontier_states,
             frontier_score=frontier_score,
+            tactical_opportunities=tactical_opportunities,
             counters=counters,
         )
 
     merged: dict[tuple[object, ...], SeriesResult] = {}
     counts: dict[tuple[object, ...], int] = {}
-    for result in completed:
+    merged_tactical_provenance: dict[
+        tuple[object, ...],
+        set[TacticalOpportunity],
+    ] = {}
+    for result, tactical_provenance in completed:
         key = (
             _progressive_position_key(result.final_state),
             result.outcome,
             result.ended_by_check,
         )
         counts[key] = counts.get(key, 0) + result.transposition_count
+        if protect_tactics:
+            merged_tactical_provenance.setdefault(key, set()).update(
+                tactical_provenance
+            )
         incumbent = merged.get(key)
         candidate_rank = (-result.used_moves, result.machine_notation)
         incumbent_rank = (
@@ -892,10 +1112,25 @@ def _merged_series_generation(
         if incumbent is None or candidate_rank < incumbent_rank:
             merged[key] = result
 
-    unique = [result.with_transposition_count(counts[key]) for key, result in merged.items()]
+    keyed_unique = [
+        (key, result.with_transposition_count(counts[key]))
+        for key, result in merged.items()
+    ]
+    keyed_unique.sort(key=lambda item: item[1].machine_notation)
+    unique = [result for _key, result in keyed_unique]
     counters.unique_series = len(unique)
     counters.transpositions_merged = counters.raw_series - len(unique)
-    return sorted(unique, key=lambda result: result.machine_notation)
+    if not protect_tactics:
+        return unique
+    return _TacticalSeriesResults(
+        unique,
+        {
+            result.machine_notation: tuple(
+                sorted(merged_tactical_provenance.get(key, set()))
+            )
+            for key, result in keyed_unique
+        },
+    )
 
 
 _NATIVE_SIGNED_MAX = (1 << 63) - 1
@@ -914,6 +1149,10 @@ _NATIVE_GENERATION_STATS_FIELDS = (
     "frontier_prunes",
     "frontier_states_pruned",
     "frontier_paths_pruned",
+    "tactical_frontier_states_retained",
+    "tactical_frontier_reserve_drops",
+    "tactical_final_series_retained",
+    "tactical_final_reserve_drops",
     "peak_frontier_states",
     "required_prefix_moves",
     "work_limit_reached",
@@ -956,13 +1195,22 @@ def _native_complete_series_call(
     native_final_score: NativeFinalSeriesScoreConfig | None,
     should_stop: Callable[[], bool] | None,
     symbols: tuple[str, ...],
+    native_time_budget_ns: int | None = None,
+    native_threads: int = 1,
 ) -> tuple[object, tuple[object, ...]] | None:
     """Builds one strictly gated source-matched native generation call."""
 
     if (
         state.series_number == 1
         or state.board.chess960
-        or should_stop is not None
+        or (should_stop is not None and native_time_budget_ns is None)
+        or (
+            native_time_budget_ns is not None
+            and (type(native_time_budget_ns) is not int or native_time_budget_ns < 0)
+        )
+        or type(native_threads) is not int
+        or not 1 <= native_threads <= 64
+        or (native_threads > 1 and native_time_budget_ns is None)
         or any(type(move) is not str for move in required_prefix)
     ):
         return None
@@ -1005,7 +1253,7 @@ def _native_complete_series_call(
     if frontier_score is not None or native_final_score is not None:
         from .profiles import EvaluationWeights
 
-    native_weights: tuple[int, int, int, int, int] | None = None
+    native_weights: tuple[int, int, int, int, int, int] | None = None
     if frontier_score is not None:
         if type(frontier_score) is not NativeFrontierScoreConfig:
             return None
@@ -1032,6 +1280,7 @@ def _native_complete_series_call(
             weights.promotion_corridors,
             weights.immediate_vulnerability,
             weights.boundary_check,
+            int(frontier_score.tactical_protection),
         )
 
     native_final: tuple[int, int, int, int, int, int, int, int] | None = None
@@ -1073,7 +1322,7 @@ def _native_complete_series_call(
             final_weights.boundary_check,
         )
 
-    return native, (
+    arguments: tuple[object, ...] = (
         state.board.pawns,
         state.board.knights,
         state.board.bishops,
@@ -1096,6 +1345,11 @@ def _native_complete_series_call(
         native_weights,
         native_final,
     )
+    if native_time_budget_ns is not None:
+        arguments += (native_time_budget_ns,)
+    if native_threads > 1:
+        arguments += (native_threads,)
+    return native, arguments
 
 
 def _native_complete_series_generation(
@@ -1308,6 +1562,8 @@ def _native_complete_series_batch(
     frontier_score: FrontierScore | None,
     native_final_score: NativeFinalSeriesScoreConfig | None,
     should_stop: Callable[[], bool] | None,
+    native_time_budget_ns: int | None = None,
+    native_threads: int = 1,
 ) -> _NativeSeriesBatch | None:
     """Prepares a native batch without replaying any retained series."""
 
@@ -1320,15 +1576,28 @@ def _native_complete_series_batch(
         frontier_score=frontier_score,
         native_final_score=native_final_score,
         should_stop=should_stop,
-        symbols=("prepare_complete_series", "complete_series_candidate"),
+        symbols=(
+            ("prepare_complete_series_timed_parallel", "complete_series_candidate")
+            if native_threads > 1
+            else ("prepare_complete_series_timed", "complete_series_candidate")
+            if native_time_budget_ns is not None
+            else ("prepare_complete_series", "complete_series_candidate")
+        ),
+        native_time_budget_ns=native_time_budget_ns,
+        native_threads=native_threads,
     )
     if call is None:
         return None
     native, arguments = call
     try:
-        status, _message, raw_stats, raw_series, capsule = (
-            native.prepare_complete_series(*arguments)
+        prepare = (
+            native.prepare_complete_series_timed_parallel
+            if native_threads > 1
+            else native.prepare_complete_series_timed
+            if native_time_budget_ns is not None
+            else native.prepare_complete_series
         )
+        status, _message, raw_stats, raw_series, capsule = prepare(*arguments)
     except (OverflowError, TypeError, ValueError):
         return None
 
@@ -1338,6 +1607,9 @@ def _native_complete_series_batch(
     if status == 1:
         _apply_native_generation_stats(counters, tuple(raw_stats))
         raise GenerationWorkLimit
+    if status == 4:
+        _apply_native_generation_stats(counters, tuple(raw_stats))
+        raise GenerationCancelled
     if status != 0:
         raise RuntimeError(f"unknown native complete-series status {status}")
     try:
@@ -1400,18 +1672,47 @@ def generate_series(
         if native_results is not None:
             return native_results
         metered_frontier_score = frontier_score
+        metered_tactical_opportunities: (
+            Callable[[chess.Board], tuple[TacticalOpportunity, ...]] | None
+        ) = None
         if frontier_score is not None:
-            cached_frontier_scores: dict[str, int] = {}
+            cached_frontier_inspections: dict[
+                tuple[object, ...],
+                tuple[int, tuple[TacticalOpportunity, ...]],
+            ] = {}
 
-            def metered_frontier_score(board: chess.Board) -> int:
-                key = board.fen(en_passant="fen")
-                cached = cached_frontier_scores.get(key)
+            def inspect_frontier(
+                board: chess.Board,
+            ) -> tuple[int, tuple[TacticalOpportunity, ...]]:
+                key = (
+                    _board_position_key(board),
+                    board.halfmove_clock,
+                    board.fullmove_number,
+                )
+                cached = cached_frontier_inspections.get(key)
                 if cached is not None:
                     return cached
                 _visit_frontier_score_position(counters, max_positions)
-                score = frontier_score(board)
-                cached_frontier_scores[key] = score
-                return score
+                inspected = (
+                    frontier_score.inspect(board)
+                    if isinstance(frontier_score, NativeFrontierScoreConfig)
+                    else (frontier_score(board), ())
+                )
+                cached_frontier_inspections[key] = inspected
+                return inspected
+
+            def metered_frontier_score(board: chess.Board) -> int:
+                return inspect_frontier(board)[0]
+
+            if (
+                isinstance(frontier_score, NativeFrontierScoreConfig)
+                and frontier_score.tactical_protection
+            ):
+
+                def metered_tactical_opportunities(
+                    board: chess.Board,
+                ) -> tuple[TacticalOpportunity, ...]:
+                    return inspect_frontier(board)[1]
 
         return _merged_series_generation(
             state,
@@ -1420,6 +1721,7 @@ def generate_series(
             max_frontier_states=max_frontier_states,
             max_positions=max_positions,
             frontier_score=metered_frontier_score,
+            tactical_opportunities=metered_tactical_opportunities,
             should_stop=should_stop,
         )
     if max_frontier_states is not None:
@@ -1537,6 +1839,54 @@ def generate_series(
 
     counters.unique_series = len(results)
     return sorted(results, key=lambda result: result.machine_notation)
+
+
+def _series_tactical_provenance(
+    state: ProgressiveState,
+    result: SeriesResult,
+) -> tuple[TacticalOpportunity, ...]:
+    """Classifies already-played tactics using the same per-ply UCI keys.
+
+    This is the Python final-selection oracle.  Native generation carries the
+    same provenance while expanding, avoiding a second replay in production.
+    """
+
+    mover = state.board.turn
+    board = state.board.copy(stack=False)
+    provenance: set[TacticalOpportunity] = set()
+    for index, uci in enumerate(result.moves):
+        variants = {
+            move.uci(): (move, required_ep)
+            for move, required_ep in _legal_move_variants(
+                board,
+                state.ep_targets if index == 0 else (),
+            )
+        }
+        selected = variants.get(uci)
+        if selected is None:  # pragma: no cover - generated evidence is legal
+            raise RuntimeError("generated series cannot be replayed tactically")
+        move, required_ep = selected
+        board.ep_square = required_ep
+        signature = f"{index + 1}:{uci}"
+        if move.promotion is not None:
+            provenance.add((_TACTICAL_PROMOTION, signature))
+        if board.is_capture(move):
+            provenance.add((_TACTICAL_CAPTURE, signature))
+        board.push(move)
+        if index + 1 != len(result.moves):
+            board.turn = mover
+            board.ep_square = None
+
+    if result.ended_by_check and result.moves:
+        provenance.add(
+            (
+                _TACTICAL_MATE
+                if result.outcome == Outcome.CHECKMATE
+                else _TACTICAL_CHECK,
+                f"{len(result.moves)}:{result.moves[-1]}",
+            )
+        )
+    return tuple(sorted(provenance))
 
 
 def play_series(

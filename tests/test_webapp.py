@@ -15,6 +15,7 @@ from scottish_progressive.cli import main
 from scottish_progressive.model import ProgressiveState
 from scottish_progressive.webapp import (
     APIError,
+    LOCAL_ANALYSIS_LIMITS,
     MAX_ANALYSIS_SECONDS,
     PUBLIC_ANALYSIS_LIMITS,
     PUBLIC_MAX_ANALYSIS_DEPTH,
@@ -56,6 +57,56 @@ def test_prefix_replays_from_boundary_and_completes_without_full_generation() ->
     assert payload["next_state"]["series"] == 2
     assert payload["side_to_move"] == "black"
     assert payload["active_series_side"] == "white"
+    assert payload["frames"] == [
+        {
+            "index": 1,
+            "uci": "e2e4",
+            "san": "e4",
+            "board_fen": payload["frames"][0]["board_fen"],
+            "gives_check": False,
+        }
+    ]
+    frame = chess.Board(payload["frames"][0]["board_fen"])
+    assert frame.piece_at(chess.E4) == chess.Piece(chess.PAWN, chess.WHITE)
+
+
+def test_screenshot_line_opens_playable_s7_after_champion_s6() -> None:
+    state = ProgressiveState.initial()
+    series = (
+        ("e2e4",),
+        ("f7f5", "e8f7"),
+        ("d2d4", "g1f3", "e1d2"),
+        ("e7e5", "d8h4", "f5e4", "h4f2"),
+        ("d1e2", "e2f2", "f2e3", "e3e4", "e4e5"),
+        ("d7d6", "d6e5", "e5e4", "f8d6", "b8c6", "e4e3"),
+    )
+    for expected_series, moves in enumerate(series, 1):
+        assert state.series_number == expected_series
+        completed = inspect_prefix(state, moves)
+        assert completed["complete"] is True
+        assert completed["next_state"] is not None
+        next_state = completed["next_state"]
+        state = ProgressiveState.from_fen(
+            next_state["fen"],
+            next_state["series"],
+            quiet_series=next_state["quiet_series"],
+            ep_targets=tuple(
+                chess.parse_square(square) for square in next_state["ep_targets"]
+            ),
+        )
+
+    s7 = inspect_prefix(state, ())
+    assert s7["complete"] is False
+    assert s7["moves_remaining"] == 7
+    assert s7["in_check"] is True
+    assert {move["san"] for move in s7["legal_moves"]} == {
+        "Kc3",
+        "Kd1",
+        "Kd3",
+        "Ke1",
+        "Ke2",
+        "Kxe3",
+    }
 
 
 def test_prefix_countercheck_ends_series_early() -> None:
@@ -122,6 +173,7 @@ def test_analysis_is_real_bounded_search_and_labels_score_unit() -> None:
     assert result["score_unit"] == "heuristic-points"
     assert result["score_is_centipawns"] is False
     assert result["score"] == result["score_heuristic_points"]
+    assert result["mate_score"] == 1_000_000
     assert isinstance(result["reach_complete"], bool)
     assert result["requested_depth"] == 1
     assert result["completed_depth"] == 1
@@ -138,6 +190,110 @@ def test_analysis_is_real_bounded_search_and_labels_score_unit() -> None:
         "promotion_mate_replay_rejects",
         "promotion_mate_mates",
     } <= result["stats"].keys()
+
+
+def test_deeper_play_request_reports_the_depth_it_actually_completed() -> None:
+    result = analyze_payload(
+        {
+            "fen": chess.STARTING_FEN,
+            "series": 1,
+            "prefix": [],
+            "depth": 3,
+            "max_series": 32,
+            "time_limit": 0.1,
+            "max_generation_positions": 5_000_000,
+            "alternatives": 0,
+            "best_move_only": True,
+        }
+    )
+
+    assert result["requested_depth"] == 3
+    assert 1 <= result["completed_depth"] < result["requested_depth"]
+    assert result["completed_depth"] < result["requested_depth"]
+    assert result["timed_out"] is True
+    assert result["exact_width"] is False
+    assert result["best_full_series"]
+    assert result["root_search_mode"] == "best-move"
+    assert result["root_scores_complete"] is False
+
+
+@pytest.mark.parametrize(
+    "payload_update",
+    (
+        {"best_move_only": "yes", "alternatives": 0},
+        {"best_move_only": True, "alternatives": 1},
+        {"best_move_only": True, "alternatives": 0, "rate_move": True},
+    ),
+)
+def test_best_move_mode_rejects_ambiguous_analysis_contracts(
+    payload_update: dict[str, object],
+) -> None:
+    payload: dict[str, object] = {
+        "fen": chess.STARTING_FEN,
+        "series": 1,
+        "depth": 1,
+        "time_limit": 0.1,
+        "max_generation_positions": 10_000,
+    }
+    payload.update(payload_update)
+
+    with pytest.raises(APIError) as rejected:
+        analyze_payload(payload)
+
+    assert rejected.value.status == 422
+    assert rejected.value.code == "invalid-field"
+
+
+def test_loaded_profile_returns_server_replayable_complete_series_for_play() -> None:
+    white = analyze_payload(
+        {
+            "fen": chess.STARTING_FEN,
+            "series": 1,
+            "prefix": [],
+            "depth": 1,
+            "max_series": 24,
+            "time_limit": 2,
+            "alternatives": 0,
+        }
+    )
+    white_moves = tuple(white["best_full_series"])
+    checked_white = inspect_prefix(ProgressiveState.initial(), white_moves)
+
+    assert white["engine_profile_id"].startswith("spc-")
+    assert white["source_fingerprint"]
+    assert len(white_moves) == 1
+    assert checked_white["complete"] is True
+    assert checked_white["prefix"] == list(white_moves)
+    assert len(checked_white["frames"]) == len(white_moves)
+
+    black_state = ProgressiveState.from_fen(
+        checked_white["next_state"]["fen"],
+        checked_white["next_state"]["series"],
+        quiet_series=checked_white["next_state"]["quiet_series"],
+        ep_targets=tuple(
+            chess.parse_square(square)
+            for square in checked_white["next_state"]["ep_targets"]
+        ),
+    )
+    black = analyze_payload(
+        {
+            **checked_white["next_state"],
+            "prefix": [],
+            "depth": 1,
+            "max_series": 24,
+            "time_limit": 2,
+            "alternatives": 0,
+        }
+    )
+    black_moves = tuple(black["best_full_series"])
+    checked_black = inspect_prefix(black_state, black_moves)
+
+    assert black["engine_profile_id"] == white["engine_profile_id"]
+    assert black["source_fingerprint"] == white["source_fingerprint"]
+    assert len(black_moves) == 2
+    assert checked_black["complete"] is True
+    assert checked_black["prefix"] == list(black_moves)
+    assert len(checked_black["frames"]) == len(black_moves)
 
 
 def test_analysis_exposes_nonzero_promotion_mate_evidence() -> None:
@@ -410,6 +566,12 @@ def test_http_health_prefix_static_and_traversal(tmp_path: Path) -> None:
         assert status == 200
         assert health["ok"] is True
         assert health["analysis_limits"]["maximum_seconds"] == MAX_ANALYSIS_SECONDS
+        assert (
+            health["analysis_limits"]["native_threads"]
+            == LOCAL_ANALYSIS_LIMITS.native_threads
+        )
+        assert health["engine_profile_recommended_depth"] == 2
+        assert health["engine_profile_recommended_branch_cap"] == 32
         assert len(health["ui_source_fingerprint"]) == 16
 
         status, prefix = post_json(
@@ -531,6 +693,7 @@ def test_public_server_requires_explicit_origin_and_enforces_bounded_mode(
     assert server.config.request_limit == 64 * 1024
     assert server.config.analysis_limits.maximum_seconds == PUBLIC_MAX_ANALYSIS_SECONDS
     assert server.config.analysis_limits.maximum_depth == PUBLIC_MAX_ANALYSIS_DEPTH
+    assert server.config.analysis_limits.native_threads == 1
     assert (
         server.config.analysis_limits.maximum_generation_positions
         == PUBLIC_MAX_GENERATION_POSITIONS
@@ -590,6 +753,7 @@ def test_public_server_validates_host_origin_and_reports_public_limits(
         assert health["database_configured"] is False
         assert health["analysis_limits"]["maximum_seconds"] == PUBLIC_MAX_ANALYSIS_SECONDS
         assert health["analysis_limits"]["maximum_depth"] == PUBLIC_MAX_ANALYSIS_DEPTH
+        assert health["analysis_limits"]["native_threads"] == 1
 
         body = json.dumps(
             {"fen": chess.STARTING_FEN, "series": 1, "prefix": []}

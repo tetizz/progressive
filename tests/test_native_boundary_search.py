@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 import gc
 import importlib.util
 import os
 from pathlib import Path
 import sys
+import time
 
 import chess
 import pytest
@@ -219,6 +221,81 @@ def _batch_arguments(state: ProgressiveState) -> tuple[object, ...]:
     )
 
 
+def _user_refutation_states() -> tuple[ProgressiveState, ProgressiveState]:
+    state = play_series(ProgressiveState.initial(), ("g1f3",)).final_state
+    s2 = state
+    state = play_series(state, ("e7e6", "d8f6")).final_state
+    s4 = play_series(
+        state,
+        ("d2d4", "c1g5", "g5f6"),
+    ).final_state
+    return s2, s4
+
+
+class _TimedNativeWitness:
+    def __init__(self, native: object) -> None:
+        self.native = native
+        self.statuses: list[int] = []
+        self.calls = 0
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.native, name)
+
+    def prepare_complete_series_timed(self, *args: object) -> object:
+        self.calls += 1
+        result = self.native.prepare_complete_series_timed(*args)
+        self.statuses.append(int(result[0]))
+        return result
+
+
+class _ParallelNativeWitness(_TimedNativeWitness):
+    def __init__(self, native: object) -> None:
+        super().__init__(native)
+        self.parallel_calls = 0
+
+    def prepare_complete_series_timed_parallel(
+        self,
+        *args: object,
+    ) -> object:
+        self.parallel_calls += 1
+        result = self.native.prepare_complete_series_timed_parallel(*args)
+        self.statuses.append(int(result[0]))
+        return result
+
+
+def _prepared_batch_signature(
+    native: object,
+    prepared: object,
+) -> tuple[object, ...]:
+    status, message, raw_stats, raw_series, capsule = prepared
+    canonical_series = tuple(raw_series)
+    candidates = tuple(
+        tuple(native.complete_series_candidate(capsule, index))
+        for index in range(len(canonical_series))
+    )
+    return (
+        int(status),
+        str(message),
+        tuple(raw_stats),
+        canonical_series,
+        candidates,
+    )
+
+
+def _heavy_s7_state() -> ProgressiveState:
+    return ProgressiveState.from_fen(chess.STARTING_FEN, 7)
+
+
+def _wide_batch_arguments(state: ProgressiveState) -> tuple[object, ...]:
+    arguments = list(_batch_arguments(state))
+    arguments[17] = None
+    arguments[18] = 5_000_000
+    final_score = list(arguments[20])
+    final_score[0] = 32
+    arguments[20] = tuple(final_score)
+    return tuple(arguments)
+
+
 def test_direct_native_batch_keeps_paths_stats_and_final_states_exact() -> None:
     native = _require_n2_native()
     state = ProgressiveState.from_fen(chess.STARTING_FEN, 3)
@@ -262,6 +339,83 @@ def test_direct_native_batch_keeps_paths_stats_and_final_states_exact() -> None:
 
     with pytest.raises(IndexError):
         native.complete_series_candidate(capsule, len(prepared[3]))
+
+
+def test_direct_timed_native_batch_has_explicit_immediate_deadline_status() -> None:
+    native = _require_n2_native()
+    if not hasattr(native, "prepare_complete_series_timed"):
+        pytest.skip("source-matched timed native boundary API is not built")
+    state = _user_refutation_states()[1]
+    status, message, raw_stats, raw_series, _capsule = (
+        native.prepare_complete_series_timed(*_batch_arguments(state), 0)
+    )
+    assert int(status) == 4
+    assert message == "native complete-series deadline reached"
+    assert tuple(raw_series) == ()
+    assert sum(int(value) for value in raw_stats) == 0
+
+
+def test_direct_parallel_batch_matches_serial_payload_stats_and_states() -> None:
+    native = _require_n2_native()
+    if not hasattr(native, "prepare_complete_series_timed_parallel"):
+        pytest.skip("source-matched parallel native boundary API is not built")
+    state = _user_refutation_states()[1]
+    arguments = _batch_arguments(state)
+    serial = native.prepare_complete_series_timed(
+        *arguments,
+        10_000_000_000,
+    )
+    parallel = native.prepare_complete_series_timed_parallel(
+        *arguments,
+        10_000_000_000,
+        16,
+    )
+    assert _prepared_batch_signature(
+        native,
+        parallel,
+    ) == _prepared_batch_signature(native, serial)
+
+
+@pytest.mark.parametrize(
+    "remaining_nanoseconds",
+    [1_000_000, 10_000_000, 100_000_000],
+)
+def test_parallel_native_deadline_is_explicit_and_responsive(
+    remaining_nanoseconds: int,
+) -> None:
+    native = _require_n2_native()
+    if not hasattr(native, "prepare_complete_series_timed_parallel"):
+        pytest.skip("source-matched parallel native boundary API is not built")
+    started = time.perf_counter()
+    status, message, _stats, raw_series, _capsule = (
+        native.prepare_complete_series_timed_parallel(
+            *_wide_batch_arguments(_heavy_s7_state()),
+            remaining_nanoseconds,
+            16,
+        )
+    )
+    wall = time.perf_counter() - started
+    assert int(status) == 4
+    assert message == "native complete-series deadline reached"
+    assert tuple(raw_series) == ()
+    assert wall < remaining_nanoseconds / 1_000_000_000 + 0.5
+
+
+@pytest.mark.parametrize("native_threads", [True, 0, 65, 1.5])
+def test_search_limits_reject_invalid_native_thread_counts(
+    native_threads: object,
+) -> None:
+    with pytest.raises(ValueError, match="native_threads"):
+        SearchLimits(native_threads=native_threads)  # type: ignore[arg-type]
+
+
+def test_parallel_native_threads_require_a_search_deadline() -> None:
+    with pytest.raises(ValueError, match="require time_limit_seconds"):
+        SearchLimits(native_threads=2)
+    assert SearchLimits(
+        native_threads=2,
+        time_limit_seconds=1.0,
+    ).native_threads == 2
 
 
 def test_batch_capsule_releases_by_refcount_with_cyclic_gc_disabled() -> None:
@@ -380,6 +534,187 @@ def test_integrated_n2_search_matches_v08_output_and_all_work_fields(
     monkeypatch.setattr(evaluation, "_native_eval", native)
     accelerated = analyze(state, limits, baseline_profile())
     assert _search_signature(accelerated) == _search_signature(oracle)
+
+
+def test_timed_native_search_matches_untimed_result_and_all_work_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native = _require_n2_native()
+    if not hasattr(native, "prepare_complete_series_timed"):
+        pytest.skip("source-matched timed native boundary API is not built")
+    state = _user_refutation_states()[1]
+    base = dict(
+        depth_series=3,
+        max_series_per_node=32,
+        max_generation_positions=250_000,
+    )
+    monkeypatch.setattr(evaluation, "_native_eval", native)
+    untimed = analyze(state, SearchLimits(**base), baseline_profile())
+    witness = _TimedNativeWitness(native)
+    monkeypatch.setattr(evaluation, "_native_eval", witness)
+    timed = analyze(
+        state,
+        SearchLimits(**base, time_limit_seconds=5.0),
+        baseline_profile(),
+    )
+    assert witness.calls > 0
+    assert set(witness.statuses) <= {0, 1}
+    assert _search_signature(timed) == _search_signature(untimed)
+    assert timed.completed_depth >= 2
+    assert timed.best_series is not None
+    assert timed.best_series.machine_notation != "c7c5/c5d4/d4d3/d3c2"
+    assert timed.elapsed_seconds < 5.0
+
+
+def test_default_search_uses_serial_native_surface_without_pool_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native = _require_n2_native()
+    if not hasattr(native, "prepare_complete_series_timed_parallel"):
+        pytest.skip("source-matched parallel native boundary API is not built")
+    witness = _ParallelNativeWitness(native)
+    monkeypatch.setattr(evaluation, "_native_eval", witness)
+    result = analyze(
+        _user_refutation_states()[1],
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=16,
+            time_limit_seconds=10.0,
+            max_generation_positions=1_000_000,
+        ),
+        baseline_profile(),
+    )
+    assert result.completed_depth == 1
+    assert SearchLimits().native_threads == 1
+    assert witness.calls > 0
+    assert witness.parallel_calls == 0
+
+
+def test_parallel_search_matches_serial_and_shares_one_contention_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native = _require_n2_native()
+    if not hasattr(native, "prepare_complete_series_timed_parallel"):
+        pytest.skip("source-matched parallel native boundary API is not built")
+    monkeypatch.setattr(evaluation, "_native_eval", native)
+    state = _user_refutation_states()[1]
+    common = dict(
+        depth_series=2,
+        max_series_per_node=16,
+        time_limit_seconds=10.0,
+        max_generation_positions=1_000_000,
+    )
+    serial = analyze(
+        state,
+        SearchLimits(**common, native_threads=1),
+        baseline_profile(),
+    )
+
+    def parallel_search() -> object:
+        return analyze(
+            state,
+            SearchLimits(**common, native_threads=16),
+            baseline_profile(),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(parallel_search) for _ in range(2)]
+        parallel = [future.result() for future in futures]
+    assert serial.completed_depth == 2
+    assert all(
+        _search_signature(result) == _search_signature(serial)
+        for result in parallel
+    )
+
+
+def test_user_refutation_boundaries_complete_d2_with_timed_native(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native = _require_n2_native()
+    if not hasattr(native, "prepare_complete_series_timed"):
+        pytest.skip("source-matched timed native boundary API is not built")
+    s2, s4 = _user_refutation_states()
+    repeated_losing_series = {
+        2: "e7e6/d8f6",
+        4: "c7c5/c5d4/d4d3/d3c2",
+    }
+    for state in (s2, s4):
+        witness = _TimedNativeWitness(native)
+        monkeypatch.setattr(evaluation, "_native_eval", witness)
+        result = analyze(
+            state,
+            SearchLimits(
+                depth_series=3,
+                max_series_per_node=32,
+                time_limit_seconds=5.0,
+                max_generation_positions=250_000,
+            ),
+            baseline_profile(),
+        )
+        assert witness.calls > 0
+        assert result.completed_depth >= 2
+        assert result.best_series is not None
+        assert (
+            result.best_series.machine_notation
+            != repeated_losing_series[state.series_number]
+        )
+        assert result.elapsed_seconds < 5.0
+
+
+def test_timed_native_search_keeps_last_completed_iteration_on_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native = _require_n2_native()
+    if not hasattr(native, "prepare_complete_series_timed"):
+        pytest.skip("source-matched timed native boundary API is not built")
+    state = _user_refutation_states()[1]
+    witness = _TimedNativeWitness(native)
+    monkeypatch.setattr(evaluation, "_native_eval", witness)
+    started = time.perf_counter()
+    result = analyze(
+        state,
+        SearchLimits(
+            depth_series=3,
+            max_series_per_node=32,
+            time_limit_seconds=0.5,
+            max_generation_positions=5_000_000,
+        ),
+        baseline_profile(),
+    )
+    wall = time.perf_counter() - started
+    assert result.timed_out
+    assert result.completed_depth >= 1
+
+    # Faster native kernels may finish another complete iteration inside the
+    # same deadline. Compare the published result to an untimed oracle at the
+    # depth actually completed instead of hard-coding the old depth-one timing.
+    monkeypatch.setattr(evaluation, "_native_eval", native)
+    completed = analyze(
+        state,
+        SearchLimits(
+            depth_series=result.completed_depth,
+            max_series_per_node=32,
+            max_generation_positions=5_000_000,
+        ),
+        baseline_profile(),
+    )
+    assert result.score == completed.score
+    assert result.best_series == completed.best_series
+    assert result.principal_variation == completed.principal_variation
+    assert result.alternatives == completed.alternatives
+    assert result.proof == completed.proof
+    assert result.forced == completed.forced
+    assert result.exact_width == completed.exact_width
+    assert result.root_scores_complete == completed.root_scores_complete
+    # The timed search also accounts for work in the interrupted next
+    # iteration, so it must cover (not equal) the completed-depth oracle work.
+    assert (
+        result.stats.generation_positions
+        >= completed.stats.generation_positions
+    )
+    assert witness.calls >= 1
+    assert 4 in witness.statuses
+    assert wall < 1.0
 
 
 def test_integrated_batch_replays_only_returned_search_evidence(

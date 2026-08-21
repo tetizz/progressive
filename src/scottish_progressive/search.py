@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 import time
+from typing import Protocol
 
 import chess
 
@@ -31,6 +32,7 @@ from .rules import (
     _NativeSeriesBatch,
     _NativeSeriesReference,
     _native_complete_series_batch,
+    _series_tactical_provenance,
     generate_series,
     play_series,
     quiet_adjudication_status,
@@ -50,6 +52,44 @@ QUIET_ADJUDICATION_POSITION_LIMIT = 4_096
 # retaining every frontier would multiply memory across league workers. Bound
 # reuse by the number of retained SeriesResult objects, not by node count.
 SERIES_GENERATION_CACHE_CAPACITY = 4_096
+# Best-only play may otherwise accept a root series whose opponent reply mate
+# was discarded by the ordinary width-32 child beam. This second, tactical
+# beam is deliberately much wider, globally bounded, and late-series or
+# promotion-gated so ordinary opening positions pay only the cheap scan.
+ROOT_CHILD_MATE_SCREEN_FRONTIER = 832
+ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT = 1_600_000
+ROOT_CHILD_MATE_SCREEN_MIN_SERIES = 7
+# A low-risk root may still expose a concrete promotion tactic in the
+# opponent's immediately following series.  Protect that one-series safety
+# horizon, but do not let broad structural promotion eligibility at distant
+# Series-7 descendants inflate an otherwise ordinary depth-five search.
+TACTICAL_DESCENDANT_PROMOTION_MAX_PLY = 2
+
+
+def _tactical_frontier_protection_eligible(
+    state: ProgressiveState,
+    *,
+    required_prefix: tuple[str, ...] = (),
+) -> bool:
+    """Activates the wider tactical reserve only at deterministic risk nodes."""
+
+    return (
+        state.series_number >= ROOT_CHILD_MATE_SCREEN_MIN_SERIES
+        or promotion_mate_eligible(
+            state,
+            required_prefix=required_prefix,
+        )
+    )
+
+
+class EvaluationOverlay(Protocol):
+    """Optional leaf-score layer sharing the ordinary rules/search core."""
+
+    base_profile_id: str
+    variant_id: str
+    name: str
+
+    def score(self, state: ProgressiveState, hand_score: int) -> int: ...
 
 
 def _proof_from_bounds(bounds: tuple[int, int]) -> str | None:
@@ -71,6 +111,7 @@ class SearchLimits:
     time_limit_seconds: float | None = None
     max_generation_positions: int | None = None
     collect_all_root_scores: bool = True
+    native_threads: int = 1
 
     def __post_init__(self) -> None:
         if self.depth_series < 1:
@@ -84,6 +125,10 @@ class SearchLimits:
             and self.max_generation_positions < 1
         ):
             raise ValueError("max_generation_positions must be positive")
+        if type(self.native_threads) is not int or not 1 <= self.native_threads <= 64:
+            raise ValueError("native_threads must be an integer from 1 through 64")
+        if self.native_threads > 1 and self.time_limit_seconds is None:
+            raise ValueError("parallel native_threads require time_limit_seconds")
 
 
 @dataclass(slots=True)
@@ -106,6 +151,10 @@ class SearchStats:
     frontier_prunes: int = 0
     frontier_states_pruned: int = 0
     frontier_paths_pruned: int = 0
+    tactical_frontier_states_retained: int = 0
+    tactical_frontier_reserve_drops: int = 0
+    tactical_final_series_retained: int = 0
+    tactical_final_reserve_drops: int = 0
     peak_frontier_states: int = 0
     generation_work_limit_hits: int = 0
     quiet_adjudication_positions: int = 0
@@ -286,10 +335,27 @@ class SeriesSearcher:
     """Deterministic alpha-beta search where one ply is one complete series."""
 
     def __init__(
-        self, limits: SearchLimits, profile: EngineProfile | None = None
+        self,
+        limits: SearchLimits,
+        profile: EngineProfile | None = None,
+        evaluation_overlay: EvaluationOverlay | None = None,
     ) -> None:
         self.limits = limits
         self.profile = profile or baseline_profile()
+        self.evaluation_overlay = evaluation_overlay
+        if (
+            evaluation_overlay is not None
+            and evaluation_overlay.base_profile_id != self.profile.profile_id
+        ):
+            raise ValueError("evaluation overlay is bound to a different base profile")
+        self.engine_profile_id = (
+            self.profile.profile_id
+            if evaluation_overlay is None
+            else evaluation_overlay.variant_id
+        )
+        self.engine_profile_name = (
+            self.profile.name if evaluation_overlay is None else evaluation_overlay.name
+        )
         self.stats = SearchStats()
         # Keep the deepest result per boundary. Iterative deepening can then
         # use a shallower principal variation as a hash-series ordering hint,
@@ -302,7 +368,7 @@ class SeriesSearcher:
             tuple[int, str, int, int], str | None
         ] = {}
         self._series_generation_cache: OrderedDict[
-            tuple[tuple[int, str, int, int], tuple[str, ...], int],
+            tuple[tuple[int, str, int, int], tuple[str, ...], int, bool],
             _SeriesCacheEntry,
         ] = OrderedDict()
         self._series_generation_cache_weight = 0
@@ -314,6 +380,58 @@ class SeriesSearcher:
         self._preferred_root_series: str | None = None
         self._promotion_mate_checked = False
         self._promotion_mate_series: SeriesResult | None = None
+        # Tactical beam protection is selected from the search root, not from
+        # the deepest descendant reached by iterative minimax.  Otherwise an
+        # ordinary Series-4 root silently switches to the much wider reserve
+        # after descending to Series 7 and can lose an entire completed depth
+        # to beam work.  ``None`` keeps direct private-generation probes useful:
+        # their first state is treated as their root.
+        self._root_tactical_frontier_protection: bool | None = None
+        self._root_child_mate_screen_cache: dict[
+            tuple[int, str, int, int], SeriesResult | None
+        ] = {}
+        configured_work = self.limits.max_generation_positions
+        self._root_child_mate_screen_budget = (
+            ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT
+            if configured_work is None
+            else min(
+                ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT,
+                configured_work // 5,
+            )
+        )
+        self._root_child_mate_screen_work = 0
+
+    def _tactical_frontier_protection_enabled(
+        self,
+        state: ProgressiveState,
+        *,
+        ply_from_root: int = 1,
+        required_prefix: tuple[str, ...] = (),
+    ) -> bool:
+        """Returns the root-stable tactical policy for one generated node.
+
+        A late or promotion-risk root protects every descendant in the search.
+        An earlier ordinary root remains on the fixed-width fast path even if
+        minimax eventually reaches Series 7; only a concrete promotion risk in
+        the immediate opponent-series safety horizon may opt its node in.
+        """
+
+        if self._root_tactical_frontier_protection is None:
+            self._root_tactical_frontier_protection = (
+                _tactical_frontier_protection_eligible(
+                    state,
+                    required_prefix=required_prefix,
+                )
+            )
+        if self._root_tactical_frontier_protection:
+            return True
+        return (
+            ply_from_root <= TACTICAL_DESCENDANT_PROMOTION_MAX_PLY
+            and promotion_mate_eligible(
+                state,
+                required_prefix=required_prefix,
+            )
+        )
 
     def _check_deadline(self) -> None:
         if self._deadline is not None and time.perf_counter() >= self._deadline:
@@ -415,6 +533,11 @@ class SeriesSearcher:
                         self.stats.generation_work_limit_hits += 1
                     self._evaluation_work_limit_reached = True
                     self._selective = True
+            if self.evaluation_overlay is not None:
+                blended_total = self.evaluation_overlay.score(state, cached.total)
+                if type(blended_total) is not int:
+                    raise TypeError("evaluation overlay score must be an exact integer")
+                cached = replace(cached, total=blended_total)
             self._eval_cache[key] = cached
             self.stats.leaf_evaluations += 1
         return cached
@@ -431,6 +554,18 @@ class SeriesSearcher:
         self.stats.frontier_prunes += generation.frontier_prunes
         self.stats.frontier_states_pruned += generation.frontier_states_pruned
         self.stats.frontier_paths_pruned += generation.frontier_paths_pruned
+        self.stats.tactical_frontier_states_retained += (
+            generation.tactical_frontier_states_retained
+        )
+        self.stats.tactical_frontier_reserve_drops += (
+            generation.tactical_frontier_reserve_drops
+        )
+        self.stats.tactical_final_series_retained += (
+            generation.tactical_final_series_retained
+        )
+        self.stats.tactical_final_reserve_drops += (
+            generation.tactical_final_reserve_drops
+        )
         self.stats.peak_frontier_states = max(
             self.stats.peak_frontier_states,
             generation.peak_frontier_states,
@@ -516,6 +651,7 @@ class SeriesSearcher:
         ply_from_root: int,
         required_prefix: tuple[str, ...] = (),
         reserve_positions: int = 0,
+        tactical_protection: bool | None = None,
     ) -> tuple[list[SeriesResult] | _NativeSeriesBatch, bool]:
         generation = GenerationStats()
         remaining_positions: int | None = None
@@ -536,6 +672,15 @@ class SeriesSearcher:
         frontier_score = NativeFrontierScoreConfig.from_profile(
             state,
             self.profile,
+            tactical_protection=(
+                self._tactical_frontier_protection_enabled(
+                    state,
+                    ply_from_root=ply_from_root,
+                    required_prefix=required_prefix,
+                )
+                if tactical_protection is None
+                else tactical_protection
+            ),
         )
         native_final_score = (
             NativeFinalSeriesScoreConfig.from_profile(
@@ -553,6 +698,11 @@ class SeriesSearcher:
             if self._deadline is not None
             else None
         )
+        native_time_budget_ns = (
+            max(0, int((self._deadline - time.perf_counter()) * 1_000_000_000))
+            if self._deadline is not None
+            else None
+        )
         try:
             series = (
                 _native_complete_series_batch(
@@ -564,6 +714,8 @@ class SeriesSearcher:
                     frontier_score=frontier_score,
                     native_final_score=native_final_score,
                     should_stop=should_stop,
+                    native_time_budget_ns=native_time_budget_ns,
+                    native_threads=self.limits.native_threads,
                 )
                 if native_final_score is not None
                 else None
@@ -649,6 +801,119 @@ class SeriesSearcher:
             raise _WorkLimit
         return series[0]
 
+    def _root_child_immediate_mate(
+        self,
+        state: ProgressiveState,
+    ) -> SeriesResult | None:
+        """Returns one replay-proven reply mate from a wide native screen.
+
+        This is an existential tactical check, never a no-mate proof. A
+        missing native kernel, a selective miss, or exhaustion therefore
+        returns ``None`` and ordinary minimax remains authoritative. Work is
+        charged to the search's normal deterministic counter and the screen
+        has one search-wide budget shared by every root child and iteration.
+        """
+
+        if (
+            self.limits.collect_all_root_scores
+            or self.limits.max_series_per_node is None
+            or not _tactical_frontier_protection_eligible(state)
+        ):
+            return None
+
+        key = state.transposition_key
+        if key in self._root_child_mate_screen_cache:
+            return self._root_child_mate_screen_cache[key]
+
+        remaining = (
+            self._root_child_mate_screen_budget
+            - self._root_child_mate_screen_work
+        )
+        if self.limits.max_generation_positions is not None:
+            remaining = min(
+                remaining,
+                self.limits.max_generation_positions
+                - self.stats.generation_positions,
+            )
+        if remaining <= 0:
+            return None
+
+        generation = GenerationStats()
+        frontier_score = NativeFrontierScoreConfig.from_profile(
+            state,
+            self.profile,
+        )
+        final_score = NativeFinalSeriesScoreConfig.from_profile(
+            self.profile,
+            max_returned_series=ROOT_CHILD_MATE_SCREEN_FRONTIER,
+            ply_from_root=2,
+            mate_score=MATE_SCORE,
+        )
+        should_stop = (
+            (lambda: time.perf_counter() >= self._deadline)
+            if self._deadline is not None
+            else None
+        )
+        native_time_budget_ns = (
+            max(0, int((self._deadline - time.perf_counter()) * 1_000_000_000))
+            if self._deadline is not None
+            else None
+        )
+        exhausted = False
+        cancelled = False
+        batch: _NativeSeriesBatch | None = None
+        try:
+            batch = _native_complete_series_batch(
+                state,
+                generation,
+                required_prefix=(),
+                max_frontier_states=ROOT_CHILD_MATE_SCREEN_FRONTIER,
+                max_positions=remaining,
+                frontier_score=frontier_score,
+                native_final_score=final_score,
+                should_stop=should_stop,
+                native_time_budget_ns=native_time_budget_ns,
+                native_threads=self.limits.native_threads,
+            )
+        except GenerationWorkLimit:
+            # This screen's ceiling is not the whole search ceiling. An
+            # incomplete screen is unknown, so continue with minimax.
+            exhausted = True
+        except GenerationCancelled:
+            cancelled = True
+        finally:
+            work = (
+                generation.positions_visited
+                + generation.frontier_score_positions
+            )
+            self._root_child_mate_screen_work += work
+            self._record_generation_stats(generation)
+
+        if cancelled:
+            self._check_deadline()
+            raise _Timeout
+        if exhausted or batch is None:
+            self._root_child_mate_screen_cache[key] = None
+            return None
+
+        mate: SeriesResult | None = None
+        for candidate in batch.references():
+            self._check_deadline()
+            if (
+                candidate.outcome != Outcome.CHECKMATE
+                or not candidate.ended_by_check
+            ):
+                continue
+            try:
+                replayed = play_series(state, candidate.moves)
+            except ValueError:
+                continue
+            if replayed.outcome == Outcome.CHECKMATE and replayed.ended_by_check:
+                mate = replayed
+                break
+        self._root_child_mate_screen_cache[key] = mate
+        return mate
+
     @staticmethod
     def _terminal_score(
         result: SeriesResult | _NativeSeriesReference,
@@ -730,9 +995,12 @@ class SeriesSearcher:
 
     def _ordered(
         self,
+        state: ProgressiveState,
         series: list[SeriesResult],
         mover: chess.Color,
         ply_from_root: int,
+        *,
+        tactical_protection: bool = True,
     ) -> list[SeriesResult]:
         def order_key(item: SeriesResult) -> tuple[int, str]:
             self._check_deadline()
@@ -753,7 +1021,61 @@ class SeriesSearcher:
         if cap is not None and len(ordered) > cap:
             self.stats.branch_caps += 1
             self._selective = True
-            return ordered[:cap]
+            if not tactical_protection:
+                return ordered[:cap]
+            representatives: dict[
+                tuple[int, str],
+                tuple[int, SeriesResult],
+            ] = {}
+            aggregated_provenance = getattr(
+                series,
+                "tactical_provenance_by_notation",
+                {},
+            )
+            for rank, item in enumerate(ordered):
+                self._check_deadline()
+                provenance = aggregated_provenance.get(item.machine_notation)
+                if provenance is None:
+                    provenance = _series_tactical_provenance(state, item)
+                for opportunity in provenance:
+                    representatives.setdefault(opportunity, (rank, item))
+            tactical_candidates = {
+                item.machine_notation
+                for _rank, item in representatives.values()
+            }
+            selected_notation: set[str] = set()
+            for _opportunity, (_rank, item) in sorted(
+                representatives.items(),
+                key=lambda entry: (
+                    entry[0][0],
+                    entry[1][0],
+                    entry[0][1],
+                    entry[1][1].machine_notation,
+                ),
+            ):
+                selected_notation.add(item.machine_notation)
+                if len(selected_notation) == cap:
+                    break
+            tactically_selected = set(selected_notation)
+            for item in ordered:
+                if len(selected_notation) == cap:
+                    break
+                selected_notation.add(item.machine_notation)
+            ordinary_top = {
+                item.machine_notation
+                for item in ordered[:cap]
+            }
+            self.stats.tactical_final_series_retained += len(
+                tactically_selected - ordinary_top
+            )
+            self.stats.tactical_final_reserve_drops += len(
+                tactical_candidates - selected_notation
+            )
+            return [
+                item
+                for item in ordered
+                if item.machine_notation in selected_notation
+            ]
         return ordered
 
     def _apply_root_promotion_mate_lane(
@@ -836,7 +1158,17 @@ class SeriesSearcher:
         """
 
         self._check_deadline()
-        key = (state.transposition_key, required_prefix, ply_from_root)
+        tactical_protection = self._tactical_frontier_protection_enabled(
+            state,
+            ply_from_root=ply_from_root,
+            required_prefix=required_prefix,
+        )
+        key = (
+            state.transposition_key,
+            required_prefix,
+            ply_from_root,
+            tactical_protection,
+        )
         cached = self._series_generation_cache.get(key)
         if cached is not None:
             self._series_generation_cache.move_to_end(key)
@@ -863,6 +1195,7 @@ class SeriesSearcher:
             ply_from_root=ply_from_root,
             required_prefix=required_prefix,
             reserve_positions=reserve_positions,
+            tactical_protection=tactical_protection,
         )
         if isinstance(generated, _NativeSeriesBatch):
             ordered = generated.references()
@@ -870,9 +1203,11 @@ class SeriesSearcher:
         else:
             generated_count = len(generated)
             ordered = self._ordered(
+                state,
                 generated,
                 state.board.turn,
                 ply_from_root,
+                tactical_protection=tactical_protection,
             )
             width_complete = width_complete and len(ordered) == generated_count
             collection = tuple(ordered)
@@ -974,29 +1309,39 @@ class SeriesSearcher:
                 return entry.score, entry.pv, entry.proof_bounds
 
         mover = state.board.turn
-        series = self._ordered_generated(
-            state,
-            ply_from_root=ply_from_root + 1,
-            preferred_series=(
-                entry.pv[0].machine_notation
-                if entry is not None and entry.pv
-                else None
-            ),
+        preferred_candidate = (
+            entry.pv[0]
+            if (
+                self.limits.depth_series >= 4
+                and entry is not None
+                and entry.depth < depth
+                and entry.pv
+            )
+            else None
         )
-        width_complete = series.width_complete
-        if not series:
-            return 0, (), UNKNOWN_PROOF_BOUNDS
-
+        preferred_series = (
+            entry.pv[0].machine_notation
+            if entry is not None and entry.pv
+            else None
+        )
+        search_alpha, search_beta = alpha, beta
         best_score = -MATE_SCORE * 2 if mover == chess.WHITE else MATE_SCORE * 2
         best_candidate: SeriesResult | _NativeSeriesReference | None = None
         best_child_pv: tuple[SeriesResult, ...] = ()
         child_bounds: list[tuple[int, int]] = []
-        for result in series:
+        cutoff_before_generation = False
+        previsited_series: str | None = None
+
+        if preferred_candidate is not None:
             self._check_deadline()
-            terminal = self._terminal_score(result, mover, ply_from_root + 1)
+            terminal = self._terminal_score(
+                preferred_candidate,
+                mover,
+                ply_from_root + 1,
+            )
             if terminal is None:
                 score, child_pv, proof_bounds = self._minimax(
-                    result.final_state,
+                    preferred_candidate.final_state,
                     depth - 1,
                     alpha,
                     beta,
@@ -1004,18 +1349,15 @@ class SeriesSearcher:
                 )
             else:
                 score, child_pv = terminal, ()
-                proof_bounds = self._terminal_proof_bounds(result, mover)
+                proof_bounds = self._terminal_proof_bounds(
+                    preferred_candidate,
+                    mover,
+                )
             child_bounds.append(proof_bounds)
-
-            if (
-                mover == chess.WHITE
-                and score > best_score
-                or mover == chess.BLACK
-                and score < best_score
-            ):
-                best_score = score
-                best_candidate = result
-                best_child_pv = child_pv
+            best_score = score
+            best_candidate = preferred_candidate
+            best_child_pv = child_pv
+            previsited_series = preferred_series
 
             immediate_mate_score = MATE_SCORE - (ply_from_root + 1)
             if (
@@ -1027,15 +1369,90 @@ class SeriesSearcher:
                 # Nothing can improve on checkmate in the current series.
                 # This also prevents an irrelevant unresolved quiet-draw claim
                 # in a losing sibling from masking the proven mate.
-                break
-
-            if mover == chess.WHITE:
-                alpha = max(alpha, best_score)
+                cutoff_before_generation = True
             else:
-                beta = min(beta, best_score)
-            if alpha >= beta:
-                self.stats.alpha_beta_cutoffs += 1
-                break
+                if mover == chess.WHITE:
+                    alpha = max(alpha, best_score)
+                else:
+                    beta = min(beta, best_score)
+                if alpha >= beta:
+                    self.stats.alpha_beta_cutoffs += 1
+                    cutoff_before_generation = True
+
+        width_complete = False
+        series_count = 0
+        if not cutoff_before_generation:
+            series = self._ordered_generated(
+                state,
+                ply_from_root=ply_from_root + 1,
+                preferred_series=preferred_series,
+            )
+            width_complete = series.width_complete
+            series_count = len(series)
+            if not series:
+                return 0, (), UNKNOWN_PROOF_BOUNDS
+            if previsited_series is not None and not any(
+                result.machine_notation == previsited_series for result in series
+            ):
+                # A TT path created by this searcher should remain in the same
+                # deterministic retained frontier. If that invariant ever
+                # changes, discard the probe instead of changing cap semantics.
+                previsited_series = None
+                alpha, beta = search_alpha, search_beta
+                best_score = (
+                    -MATE_SCORE * 2 if mover == chess.WHITE else MATE_SCORE * 2
+                )
+                best_candidate = None
+                best_child_pv = ()
+                child_bounds = []
+
+            for result in series:
+                if (
+                    previsited_series is not None
+                    and result.machine_notation == previsited_series
+                ):
+                    continue
+                self._check_deadline()
+                terminal = self._terminal_score(result, mover, ply_from_root + 1)
+                if terminal is None:
+                    score, child_pv, proof_bounds = self._minimax(
+                        result.final_state,
+                        depth - 1,
+                        alpha,
+                        beta,
+                        ply_from_root + 1,
+                    )
+                else:
+                    score, child_pv = terminal, ()
+                    proof_bounds = self._terminal_proof_bounds(result, mover)
+                child_bounds.append(proof_bounds)
+
+                if (
+                    mover == chess.WHITE
+                    and score > best_score
+                    or mover == chess.BLACK
+                    and score < best_score
+                ):
+                    best_score = score
+                    best_candidate = result
+                    best_child_pv = child_pv
+
+                immediate_mate_score = MATE_SCORE - (ply_from_root + 1)
+                if (
+                    mover == chess.WHITE
+                    and best_score == immediate_mate_score
+                    or mover == chess.BLACK
+                    and best_score == -immediate_mate_score
+                ):
+                    break
+
+                if mover == chess.WHITE:
+                    alpha = max(alpha, best_score)
+                else:
+                    beta = min(beta, best_score)
+                if alpha >= beta:
+                    self.stats.alpha_beta_cutoffs += 1
+                    break
 
         best_pv = (
             (self._materialize_series(best_candidate),) + best_child_pv
@@ -1053,7 +1470,9 @@ class SeriesSearcher:
             mover,
             child_bounds,
             all_branches_visited=(
-                width_complete and len(child_bounds) == len(series)
+                not cutoff_before_generation
+                and width_complete
+                and len(child_bounds) == series_count
             ),
         )
         replacement = _TTEntry(depth, best_score, bound, best_pv, proof_bounds)
@@ -1113,6 +1532,7 @@ class SeriesSearcher:
                 self._check_deadline()
                 terminal = self._terminal_score(result, mover, 1)
                 if terminal is None:
+                    child_state = result.final_state
                     child_alpha = (
                         -MATE_SCORE * 2
                         if self.limits.collect_all_root_scores
@@ -1124,7 +1544,7 @@ class SeriesSearcher:
                         else root_beta
                     )
                     score, child_pv, proof_bounds = self._minimax(
-                        result.final_state,
+                        child_state,
                         depth - 1,
                         child_alpha,
                         child_beta,
@@ -1134,6 +1554,78 @@ class SeriesSearcher:
                         self.limits.collect_all_root_scores
                         or child_alpha < score < child_beta
                     )
+                    if not score_is_exact and scored:
+                        exact_best = min(
+                            scored,
+                            key=lambda item: (
+                                -item.score
+                                if mover == chess.WHITE
+                                else item.score,
+                                item.series.machine_notation,
+                            ),
+                        )
+                        if (
+                            score == exact_best.score
+                            and result.machine_notation
+                            < exact_best.series.machine_notation
+                        ):
+                            # A root bound equal to the current best can hide an
+                            # equal, lexicographically earlier canonical move.
+                            # Re-search only that candidate at a full window;
+                            # ordinary later ties and clear non-improvements
+                            # retain the fast best-only path.
+                            score, child_pv, proof_bounds = self._minimax(
+                                child_state,
+                                depth - 1,
+                                -MATE_SCORE * 2,
+                                MATE_SCORE * 2,
+                                1,
+                            )
+                            score_is_exact = True
+
+                    # Rejected candidates pay no wide-frontier cost. Every
+                    # candidate that could become the root choice is screened
+                    # before it is allowed to tighten the root window.
+                    contender = (
+                        not self.limits.collect_all_root_scores
+                        and score_is_exact
+                        and (
+                            not scored
+                            or (
+                                -score if mover == chess.WHITE else score,
+                                result.machine_notation,
+                            )
+                            < min(
+                                (
+                                    -item.score
+                                    if mover == chess.WHITE
+                                    else item.score,
+                                    item.series.machine_notation,
+                                )
+                                for item in scored
+                            )
+                        )
+                    )
+                    if contender:
+                        reply_mate = self._root_child_immediate_mate(child_state)
+                        if reply_mate is not None:
+                            child_mover = child_state.board.turn
+                            screened_score = self._terminal_score(
+                                reply_mate,
+                                child_mover,
+                                2,
+                            )
+                            if screened_score is None:  # pragma: no cover
+                                raise RuntimeError(
+                                    "replay-proven mate has no terminal score"
+                                )
+                            score = screened_score
+                            child_pv = (reply_mate,)
+                            proof_bounds = self._terminal_proof_bounds(
+                                reply_mate,
+                                child_mover,
+                            )
+                            score_is_exact = True
                 else:
                     score, child_pv = terminal, ()
                     proof_bounds = self._terminal_proof_bounds(result, mover)
@@ -1220,6 +1712,12 @@ class SeriesSearcher:
         required_prefix = tuple(required_prefix)
         started = time.perf_counter()
         self._preferred_root_series = None
+        self._root_tactical_frontier_protection = (
+            _tactical_frontier_protection_eligible(
+                state,
+                required_prefix=required_prefix,
+            )
+        )
         if self.limits.time_limit_seconds is not None:
             self._deadline = started + self.limits.time_limit_seconds
         root_evaluation = self._evaluate(state)
@@ -1241,8 +1739,8 @@ class SeriesSearcher:
                 proof=None,
                 max_series_per_node=self.limits.max_series_per_node,
                 time_limit_seconds=self.limits.time_limit_seconds,
-                engine_profile_id=self.profile.profile_id,
-                engine_profile_name=self.profile.name,
+                engine_profile_id=self.engine_profile_id,
+                engine_profile_name=self.engine_profile_name,
                 required_prefix=required_prefix,
                 work_limit_reached=(
                     self._quiet_work_limit_reached
@@ -1275,8 +1773,8 @@ class SeriesSearcher:
                 adjudication_status=adjudication,
                 max_series_per_node=self.limits.max_series_per_node,
                 time_limit_seconds=self.limits.time_limit_seconds,
-                engine_profile_id=self.profile.profile_id,
-                engine_profile_name=self.profile.name,
+                engine_profile_id=self.engine_profile_id,
+                engine_profile_name=self.engine_profile_name,
                 required_prefix=required_prefix,
                 work_limit_reached=(
                     self._quiet_work_limit_reached
@@ -1386,8 +1884,8 @@ class SeriesSearcher:
                     adjudication_status="manual-proof-required",
                     max_series_per_node=self.limits.max_series_per_node,
                     time_limit_seconds=self.limits.time_limit_seconds,
-                    engine_profile_id=self.profile.profile_id,
-                    engine_profile_name=self.profile.name,
+                    engine_profile_id=self.engine_profile_id,
+                    engine_profile_name=self.engine_profile_name,
                     required_prefix=required_prefix,
                     work_limit_reached=(
                         self._quiet_work_limit_reached
@@ -1426,8 +1924,8 @@ class SeriesSearcher:
             adjudication_status=adjudication,
             max_series_per_node=self.limits.max_series_per_node,
             time_limit_seconds=self.limits.time_limit_seconds,
-            engine_profile_id=self.profile.profile_id,
-            engine_profile_name=self.profile.name,
+            engine_profile_id=self.engine_profile_id,
+            engine_profile_name=self.engine_profile_name,
             required_prefix=required_prefix,
             work_limit_reached=work_limit_reached,
             max_generation_positions=self.limits.max_generation_positions,
@@ -1441,8 +1939,13 @@ def analyze(
     profile: EngineProfile | None = None,
     *,
     required_prefix: tuple[str, ...] = (),
+    evaluation_overlay: EvaluationOverlay | None = None,
 ) -> SearchResult:
-    return SeriesSearcher(limits or SearchLimits(), profile).run(
+    return SeriesSearcher(
+        limits or SearchLimits(),
+        profile,
+        evaluation_overlay,
+    ).run(
         state,
         required_prefix=required_prefix,
     )

@@ -11,9 +11,18 @@
   const MAX_SAVED_POSITIONS = 50;
   const AUTO_ANALYSIS_DEBOUNCE_MS = 260;
   const AUTO_ANALYSIS_RETRY_MS = 700;
+  const ENGINE_MOVE_ANIMATION_MS = 145;
+  const EVALUATION = globalThis.ScottishProgressiveEvaluation;
+  const PLAY_HANDOFF = globalThis.ScottishProgressivePlayHandoff.createGate();
+  const PLAY_TIMELINE = globalThis.ScottishProgressivePlayTimeline;
+  const EVALUATION_SCALE_HELP = "About 100 evaluation points equals one pawn. This is a heuristic Progressive evaluation, not calibrated Stockfish centipawns.";
   const ANALYSIS_PRESETS = {
     quick: { depth: 4, cap: 48, seconds: 1.25, alternatives: 2, generationPositions: 150_000 },
     strong: { depth: 8, cap: 256, seconds: 5, alternatives: 3, generationPositions: 5_000_000 },
+  };
+  const PLAY_STRENGTHS = {
+    strong: { label: "Strong", minimumDepth: 5, seconds: 30, generationPositions: 10_000_000 },
+    faster: { label: "Faster", minimumDepth: 1, seconds: 5, generationPositions: 500_000 },
   };
   const PIECE_NAMES = {
     p: "pawn", n: "knight", b: "bishop", r: "rook", q: "queen", k: "king",
@@ -42,6 +51,15 @@
     "save-position-form", "saved-name", "save-current-position",
     "saved-position-status", "saved-positions-list",
     "promotion-dialog", "promotion-options", "toast",
+    "workspace", "mode-play", "mode-analyze", "play-panel",
+    "play-top-player", "play-top-color", "play-top-name", "play-top-meta", "play-top-turn",
+    "play-bottom-player", "play-bottom-color", "play-bottom-name", "play-bottom-meta", "play-bottom-turn",
+    "play-as-white", "play-as-black", "play-live", "play-status-title", "play-status-detail",
+    "play-series-title", "play-series-count", "play-series-copy", "play-history", "play-history-count",
+    "play-history-previous", "play-history-next", "play-history-position",
+    "play-new-game", "play-analyze-position", "play-resign", "play-engine-name", "play-engine-id",
+    "play-engine-version", "play-strength-strong", "play-strength-faster", "play-strength-status",
+    "play-search-depth", "play-search-status", "workspace-tabs", "analysis-panel", "theory-panel", "setup-panel",
   ].map((id) => [id.replaceAll("-", "_"), document.getElementById(id)]));
 
   const state = {
@@ -63,6 +81,7 @@
     unusedMoves: 0,
     completionReason: null,
     history: [],
+    prefixFrames: [],
     pvFrames: [],
     previewIndex: null,
     selected: null,
@@ -100,6 +119,32 @@
     analysisPreset: "strong",
     maximumGenerationPositions: 5_000_000,
     savedPositions: [],
+    mode: "play",
+    analysisWorkspace: null,
+    playWorkspace: null,
+    play: {
+      active: false,
+      humanColor: "white",
+      thinking: false,
+      animating: false,
+      resigned: false,
+      error: null,
+      sequence: 0,
+      engineAbort: null,
+      engineName: "Current champion",
+      engineProfileId: null,
+      engineVersion: null,
+      engineFingerprint: null,
+      recommendedDepth: 2,
+      recommendedBranchCap: 32,
+      timeLimitSeconds: 5,
+      generationPositions: 500_000,
+      lastEngineSeries: null,
+      strength: "strong",
+      activeSearch: null,
+      lastSearch: null,
+      timelineIndex: null,
+    },
   };
 
   function first(...values) {
@@ -131,12 +176,8 @@
     return Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(number);
   }
 
-  function formatPoints(value, includeUnit = true) {
-    const number = Number(value);
-    if (!Number.isFinite(number)) return "Not reported";
-    const sign = number > 0 ? "+" : number < 0 ? "−" : "";
-    const formatted = `${sign}${Math.abs(Math.round(number)).toLocaleString()}`;
-    return includeUnit ? `${formatted} heuristic points` : formatted;
+  function describeEvaluation(value, evidence = {}) {
+    return EVALUATION.describe(value, evidence);
   }
 
   function displayError(error) {
@@ -208,7 +249,7 @@
   }
 
   function activeBoardFen() {
-    if (state.previewIndex === null) return state.boardFen;
+    if (state.previewIndex === null) return playReviewPosition()?.boardFen || state.boardFen;
     return state.pvFrames[state.previewIndex]?.fen || state.boardFen;
   }
 
@@ -271,6 +312,253 @@
       quiet_series: Math.max(0, Math.floor(asNumber(boundary?.quiet_series, 0))),
       ep_targets: normalizeEpTargets(boundary?.ep_targets).map((square) => square.toLowerCase()),
     };
+  }
+
+  function clonePlain(value, fallback) {
+    try {
+      return JSON.parse(JSON.stringify(value));
+    } catch {
+      return fallback;
+    }
+  }
+
+  function prefixFramesFromPayload(payload, prefix, prefixSan) {
+    const frames = Array.isArray(payload?.frames) ? payload.frames : [];
+    return prefix.map((uci, index) => ({
+      board_fen: String(first(frames[index]?.board_fen, frames[index]?.fen, state.boardFen)),
+      uci: String(first(frames[index]?.uci, uci)),
+      san: String(first(frames[index]?.san, prefixSan[index], uci)),
+    }));
+  }
+
+  function playTimeline() {
+    return PLAY_TIMELINE.build({
+      history: state.history,
+      boundary: state.boundary,
+      prefix: state.prefix,
+      prefixSan: state.prefixSan,
+      prefixFrames: state.prefixFrames,
+      complete: state.complete,
+      check: state.check,
+      unusedMoves: state.unusedMoves,
+      completionReason: state.completionReason,
+      outcome: state.outcome,
+      resigned: state.play.resigned,
+    });
+  }
+
+  function playTimelineCursor(timeline = playTimeline()) {
+    return PLAY_TIMELINE.cursorIndex(timeline, state.play.timelineIndex);
+  }
+
+  function playReviewActive(timeline = playTimeline()) {
+    return state.mode === "play"
+      && Number.isInteger(state.play.timelineIndex)
+      && playTimelineCursor(timeline) < timeline.length - 1;
+  }
+
+  function playReviewPosition(timeline = playTimeline()) {
+    return playReviewActive(timeline) ? timeline[playTimelineCursor(timeline)] : null;
+  }
+
+  function stepPlayTimeline(delta) {
+    if (state.mode !== "play" || state.play.animating) return;
+    const timeline = playTimeline();
+    const current = playTimelineCursor(timeline);
+    const target = Math.max(0, Math.min(timeline.length - 1, current + delta));
+    if (target === current) return;
+    if (target < timeline.length - 1) {
+      if (state.play.thinking) cancelEngineTurn();
+      state.play.timelineIndex = target;
+      state.selected = null;
+      renderAll();
+      return;
+    }
+    state.play.timelineIndex = null;
+    state.selected = null;
+    renderAll();
+    void continuePlayFlow();
+  }
+
+  function captureWorkspace() {
+    return {
+      boundary: cloneBoundary(state.boundary),
+      prefix: [...state.prefix],
+      prefixSan: [...state.prefixSan],
+      boardFen: state.boardFen,
+      legalMoves: state.legalMoves.map((move) => ({ ...move })),
+      movesRemaining: state.movesRemaining,
+      complete: state.complete,
+      nextState: state.nextState ? cloneBoundary(state.nextState) : null,
+      outcome: state.outcome,
+      check: state.check,
+      unusedMoves: state.unusedMoves,
+      completionReason: state.completionReason,
+      history: clonePlain(state.history, []),
+      prefixFrames: clonePlain(state.prefixFrames, []),
+      lastMove: state.lastMove,
+      flipped: state.flipped,
+      focusSquare: state.focusSquare,
+      positionReady: state.positionReady,
+      study: clonePlain(state.study, createStudy(state.boundary)),
+      currentTreeNodeId: state.currentTreeNodeId,
+      seriesParentNodeId: state.seriesParentNodeId,
+      branching: state.branching,
+      viewingHistorical: state.viewingHistorical,
+      handoffNotice: state.handoffNotice,
+      analysisPaused: state.analysisPaused,
+    };
+  }
+
+  function restoreWorkspace(snapshot) {
+    if (!snapshot) return false;
+    state.boundary = cloneBoundary(snapshot.boundary);
+    state.prefix = [...(snapshot.prefix || [])];
+    state.prefixSan = [...(snapshot.prefixSan || [])];
+    state.boardFen = String(snapshot.boardFen || state.boundary.fen);
+    state.legalMoves = (snapshot.legalMoves || []).map((move) => ({ ...move }));
+    state.movesRemaining = Math.max(0, asNumber(snapshot.movesRemaining, state.boundary.series));
+    state.complete = Boolean(snapshot.complete);
+    state.nextState = snapshot.nextState ? cloneBoundary(snapshot.nextState) : null;
+    state.outcome = snapshot.outcome || null;
+    state.check = Boolean(snapshot.check);
+    state.unusedMoves = Math.max(0, asNumber(snapshot.unusedMoves, 0));
+    state.completionReason = snapshot.completionReason || null;
+    state.history = clonePlain(snapshot.history, []);
+    state.prefixFrames = clonePlain(snapshot.prefixFrames, []);
+    state.lastMove = snapshot.lastMove || null;
+    state.flipped = Boolean(snapshot.flipped);
+    state.focusSquare = snapshot.focusSquare || (state.flipped ? "e7" : "e2");
+    state.positionReady = Boolean(snapshot.positionReady);
+    state.study = clonePlain(snapshot.study, createStudy(state.boundary));
+    state.currentTreeNodeId = snapshot.currentTreeNodeId || null;
+    state.seriesParentNodeId = snapshot.seriesParentNodeId || null;
+    state.branching = Boolean(snapshot.branching);
+    state.viewingHistorical = Boolean(snapshot.viewingHistorical);
+    state.handoffNotice = snapshot.handoffNotice || null;
+    state.analysisPaused = Boolean(snapshot.analysisPaused);
+    state.selected = null;
+    state.previewIndex = null;
+    state.pvFrames = [];
+    state.analysis = null;
+    state.arrowSelection = null;
+    return true;
+  }
+
+  function seriesColor(series = state.boundary.series) {
+    return Number(series) % 2 === 1 ? "white" : "black";
+  }
+
+  function playSearchLimits(strength = state.play.strength) {
+    const setting = PLAY_STRENGTHS[strength] || PLAY_STRENGTHS.strong;
+    const profileDepth = Math.max(1, Math.floor(state.play.recommendedDepth));
+    const desiredDepth = strength === "strong"
+      ? Math.max(setting.minimumDepth, profileDepth)
+      : profileDepth;
+    return {
+      strength,
+      label: setting.label,
+      depth: Math.max(1, Math.min(state.maximumAnalysisDepth, desiredDepth)),
+      maxSeries: Math.max(1, Math.min(state.maximumBranchCap, state.play.recommendedBranchCap)),
+      seconds: Math.max(0.1, Math.min(state.maximumAnalysisSeconds, setting.seconds)),
+      generationPositions: Math.max(1_000, Math.min(
+        state.maximumGenerationPositions,
+        setting.generationPositions,
+      )),
+    };
+  }
+
+  function playSearchEvidence(result, requested) {
+    const stats = result?.stats || {};
+    const completedRaw = first(result?.completed_depth, stats.completed_depth);
+    const requestedRaw = first(result?.requested_depth, stats.requested_depth, requested.depth);
+    const elapsedRaw = first(result?.elapsed_seconds, stats.elapsed_seconds);
+    return {
+      strength: requested.strength,
+      maxSeries: requested.maxSeries,
+      requestedDepth: Math.max(1, Math.floor(asNumber(requestedRaw, requested.depth))),
+      completedDepth: Number.isFinite(Number(completedRaw))
+        ? Math.max(0, Math.floor(Number(completedRaw)))
+        : null,
+      exactWidth: asBoolean(first(result?.exact_width, stats.exact_width)),
+      timedOut: asBoolean(first(result?.timed_out, stats.timed_out)),
+      workLimitReached: asBoolean(first(result?.work_limit_reached, stats.work_limit_reached)),
+      rootSearchMode: String(first(result?.root_search_mode, "")),
+      rootScoresComplete: asBoolean(first(result?.root_scores_complete, stats.root_scores_complete)),
+      elapsedSeconds: Number.isFinite(Number(elapsedRaw)) ? Number(elapsedRaw) : null,
+    };
+  }
+
+  function renderPlaySearchEvidence() {
+    const limits = playSearchLimits();
+    dom.play_strength_strong.classList.toggle("is-active", state.play.strength === "strong");
+    dom.play_strength_faster.classList.toggle("is-active", state.play.strength === "faster");
+    dom.play_strength_strong.setAttribute("aria-pressed", String(state.play.strength === "strong"));
+    dom.play_strength_faster.setAttribute("aria-pressed", String(state.play.strength === "faster"));
+    dom.play_strength_status.textContent = `${limits.label} · target depth ${limits.depth} · up to ${limits.seconds.toLocaleString()}s`;
+    if (state.play.activeSearch) {
+      const active = state.play.activeSearch;
+      dom.play_search_depth.textContent = `Searching · requested depth ${active.depth}`;
+      dom.play_search_status.textContent = `Best-move alpha-beta across up to ${active.maxSeries} retained series per node · up to ${active.seconds.toLocaleString()}s · ${compactNumber(active.generationPositions)} position work cap`;
+      return;
+    }
+    const evidence = state.play.lastSearch;
+    if (!evidence) {
+      dom.play_search_depth.textContent = "No engine move yet";
+      dom.play_search_status.textContent = "Waiting for the champion";
+      return;
+    }
+    dom.play_search_depth.textContent = evidence.completedDepth === null
+      ? `Requested depth ${evidence.requestedDepth} · completion not reported`
+      : `Depth ${evidence.completedDepth} complete · requested ${evidence.requestedDepth}`;
+    const status = [
+      evidence.rootSearchMode === "best-move"
+        ? `Best-move alpha-beta across up to ${evidence.maxSeries} retained series per node`
+        : "All retained alternatives scored",
+      evidence.exactWidth === true ? "Exact width" : evidence.exactWidth === false ? "Selective width" : "Width not reported",
+      evidence.timedOut === true ? "Time limit reached" : evidence.timedOut === false ? "Within time limit" : "Time status not reported",
+    ];
+    if (evidence.workLimitReached === true) status.push("Work limit reached");
+    if (evidence.elapsedSeconds !== null) status.push(`${evidence.elapsedSeconds.toFixed(1)}s elapsed`);
+    dom.play_search_status.textContent = status.join(" · ");
+  }
+
+  function selectPlayStrength(strength) {
+    if (!PLAY_STRENGTHS[strength] || state.play.strength === strength) return;
+    state.play.strength = strength;
+    if (state.play.thinking) cancelEngineTurn();
+    renderPlaySurface();
+    void continuePlayFlow();
+  }
+
+  function playPositionKey() {
+    return `${boundaryKey(state.boundary)}|${state.prefix.join(",")}|${state.history.length}`;
+  }
+
+  function playGameEnded() {
+    return Boolean(state.outcome || state.play.resigned);
+  }
+
+  function boardInputAllowed() {
+    if (state.mode !== "play") return true;
+    return Boolean(
+      state.play.active
+      && !playReviewActive()
+      && !state.play.thinking
+      && !state.play.animating
+      && !state.play.error
+      && !playGameEnded()
+      && seriesColor() === state.play.humanColor
+    );
+  }
+
+  function cancelEngineTurn() {
+    state.play.engineAbort?.abort();
+    state.play.engineAbort = null;
+    state.play.sequence += 1;
+    state.play.thinking = false;
+    state.play.animating = false;
+    state.play.activeSearch = null;
   }
 
   function safeBoundary(value) {
@@ -640,7 +928,7 @@
   function queueAutoAnalysis(delay = AUTO_ANALYSIS_DEBOUNCE_MS) {
     window.clearTimeout(state.analysisTimer);
     state.analysisTimer = null;
-    if (state.analysisPaused || state.outcome || !state.positionReady || state.positionBusy) {
+    if (state.mode !== "analyze" || state.analysisPaused || state.outcome || !state.positionReady || state.positionBusy) {
       updateAnalysisProgress();
       return;
     }
@@ -689,6 +977,7 @@
     if (
       sequence !== state.analysisSequence
       || key !== analysisPositionKey()
+      || state.mode !== "analyze"
       || state.analysisPaused
       || state.outcome
       || !state.positionReady
@@ -813,6 +1102,7 @@
       payload.current_state?.fen,
       state.boundary.fen,
     ));
+    state.prefixFrames = prefixFramesFromPayload(payload, state.prefix, state.prefixSan);
     state.legalMoves = (first(payload.legal_moves, payload.legal_next, payload.moves, []) || []).map(normalizeMove);
     state.movesRemaining = Math.max(0, asNumber(first(
       payload.moves_remaining,
@@ -820,7 +1110,7 @@
       state.boundary.series - state.prefix.length,
     )));
     state.complete = Boolean(first(payload.complete, payload.series_complete, false));
-    state.nextState = normalizeNextState(first(payload.next_state, payload.boundary_state));
+    state.nextState = normalizeNextState(payload.next_state);
     state.outcome = first(payload.outcome, payload.terminal, null);
     state.check = Boolean(first(payload.check, payload.ended_by_check, false));
     state.unusedMoves = Math.max(0, asNumber(first(payload.unused_moves, 0)));
@@ -895,8 +1185,12 @@
   function renderBoard() {
     const boardHadFocus = dom.board.contains(document.activeElement);
     const previewing = state.previewIndex !== null;
+    const timeline = state.mode === "play" ? playTimeline() : [];
+    const review = state.mode === "play" ? playReviewPosition(timeline) : null;
+    const reviewing = Boolean(review);
+    const interactive = !previewing && !reviewing && boardInputAllowed();
     const { pieces } = parseFen(activeBoardFen());
-    const sources = previewing ? new Set() : currentLegalSources();
+    const sources = interactive ? currentLegalSources() : new Set();
     const destinations = new Set(
       state.selected && !previewing
         ? state.legalMoves.filter((move) => move.from === state.selected).map((move) => move.to)
@@ -904,8 +1198,9 @@
     );
     const rankOrder = state.flipped ? [0, 1, 2, 3, 4, 5, 6, 7] : [7, 6, 5, 4, 3, 2, 1, 0];
     const fileOrder = state.flipped ? [7, 6, 5, 4, 3, 2, 1, 0] : [0, 1, 2, 3, 4, 5, 6, 7];
-    const lastFrom = previewing ? null : state.lastMove?.slice(0, 2);
-    const lastTo = previewing ? null : state.lastMove?.slice(2, 4);
+    const visibleLastMove = review?.lastMove || state.lastMove;
+    const lastFrom = previewing ? null : visibleLastMove?.slice(0, 2);
+    const lastTo = previewing ? null : visibleLastMove?.slice(2, 4);
     const fragment = document.createDocumentFragment();
 
     rankOrder.forEach((rank, rowIndex) => {
@@ -917,7 +1212,8 @@
         button.type = "button";
         button.className = `square ${light ? "light" : "dark"}`;
         button.dataset.square = name;
-        button.tabIndex = name === state.focusSquare ? 0 : -1;
+        button.tabIndex = interactive && name === state.focusSquare ? 0 : -1;
+        button.setAttribute("aria-disabled", String(!interactive));
         if (piece) button.classList.add("has-piece");
         if (sources.has(name)) button.classList.add("is-legal-from");
         if (name === state.selected) button.classList.add("is-selected");
@@ -960,9 +1256,12 @@
       "aria-label",
       previewing
         ? `Principal variation preview, series ${state.previewIndex + 1} of ${state.pvFrames.length}. ${state.flipped ? "Black" : "White"} pieces at the bottom.`
-        : `Chess board. ${state.flipped ? "Black" : "White"} pieces at the bottom.`,
+        : reviewing
+          ? `Game history review, position ${review.index + 1} of ${timeline.length}, after ${review.lastSan || "the initial setup"}. ${state.flipped ? "Black" : "White"} pieces at the bottom. Input is locked.`
+        : `Chess board. ${state.flipped ? "Black" : "White"} pieces at the bottom.${interactive ? " Ready for input." : " Input is locked."}`,
     );
     dom.board_shell.classList.toggle("is-previewing", previewing);
+    dom.board_shell.classList.toggle("is-reviewing", reviewing);
     if (boardHadFocus) {
       dom.board.querySelector(`[data-square="${state.focusSquare}"]`)?.focus({ preventScroll: true });
     }
@@ -1027,19 +1326,22 @@
   }
 
   function renderSeriesLedger() {
-    if (!state.prefix.length) {
+    const review = state.mode === "play" ? playReviewPosition() : null;
+    const prefix = review?.prefix || state.prefix;
+    const prefixSan = review?.prefixSan || state.prefixSan;
+    if (!prefix.length) {
       const empty = document.createElement("span");
       empty.className = "empty-chip";
       empty.textContent = "No moves yet";
       dom.move_chips.replaceChildren(empty);
       return;
     }
-    const nodes = state.prefix.map((uci, index) => {
+    const nodes = prefix.map((uci, index) => {
       const chip = document.createElement("span");
       chip.className = "move-chip";
       const number = document.createElement("b");
       number.textContent = String(index + 1);
-      chip.append(number, document.createTextNode(state.prefixSan[index] || uci));
+      chip.append(number, document.createTextNode(prefixSan[index] || uci));
       chip.title = uci;
       return chip;
     });
@@ -1124,7 +1426,7 @@
     return {
       label,
       tone: qualityTone(label),
-      reason: `${Math.round(loss)} White-centric heuristic-point loss against the best returned complete series`,
+      reason: `${EVALUATION.loss(loss)} against the best returned complete series`,
     };
   }
 
@@ -1147,7 +1449,7 @@
         reason: Array.isArray(verdict.reasons) && verdict.reasons.length
           ? verdict.reasons.map(humanize).join(" · ")
           : verdict.rated
-            ? `${Math.round(asNumber(verdict.score?.effective_loss, 0))} White-centric heuristic-point loss for this micro-move`
+            ? `${EVALUATION.loss(asNumber(verdict.score?.effective_loss, 0))} for this micro-move`
             : "Comparable engine evidence was not available",
       };
       persistStudy();
@@ -1400,23 +1702,44 @@
   }
 
   function renderPositionStatus() {
-    const side = state.boundary.series % 2 === 1 ? "White" : "Black";
-    dom.series_number.textContent = String(state.boundary.series);
-    dom.turn_label.textContent = `${side} · Series ${state.boundary.series}`;
-    dom.moves_heading.textContent = `${state.movesRemaining} move${state.movesRemaining === 1 ? "" : "s"} remaining`;
-    const gameOver = Boolean(state.outcome);
-    dom.undo_move.disabled = state.prefix.length === 0 && state.history.length === 0;
-    dom.reset_series.disabled = state.prefix.length === 0;
+    const review = state.mode === "play" ? playReviewPosition() : null;
+    const series = review?.series || state.boundary.series;
+    const movesRemaining = review?.movesRemaining ?? state.movesRemaining;
+    const side = series % 2 === 1 ? "White" : "Black";
+    dom.series_number.textContent = String(series);
+    dom.turn_label.textContent = `${side} · Series ${series}`;
+    dom.moves_heading.textContent = `${movesRemaining} move${movesRemaining === 1 ? "" : "s"} remaining`;
+    const gameOver = state.mode === "play" ? playGameEnded() : Boolean(state.outcome);
+    dom.undo_move.disabled = state.mode === "play" || (state.prefix.length === 0 && state.history.length === 0);
+    dom.reset_series.disabled = state.mode === "play" || state.prefix.length === 0;
     dom.advance_series.hidden = !(state.complete && state.nextState && !gameOver && state.viewingHistorical);
 
     dom.boundary_pill.className = "boundary-pill";
     dom.boundary_notice.className = "boundary-notice";
+    if (review) {
+      dom.boundary_pill.classList.add("is-mid-series");
+      dom.boundary_pill.textContent = "Review";
+      dom.boundary_notice.classList.add("is-warning");
+      dom.boundary_notice_text.textContent = `Reviewing position ${review.index + 1} of ${review.totalPositions}. Return to the latest position to play.`;
+      dom.moves_heading.textContent = review.seriesMove
+        ? `Move ${review.seriesMove} of Series ${review.series}`
+        : `Before Series ${review.series}`;
+      dom.series_status.textContent = review.lastSan
+        ? `Last move: ${review.lastSan}. Board input and engine replies are paused.`
+        : "Initial position. Board input and engine replies are paused.";
+      updateAnalysisProgress();
+      return;
+    }
     if (gameOver) {
       dom.boundary_pill.classList.add("is-mid-series");
       dom.boundary_pill.textContent = "Game over";
       dom.boundary_notice.classList.add("is-game-over");
-      dom.boundary_notice_text.textContent = `${humanize(state.outcome)} ends the game. Undo or select an earlier tree move to continue studying.`;
-      dom.moves_heading.textContent = humanize(state.outcome);
+      dom.boundary_notice_text.textContent = state.play.resigned && state.mode === "play"
+        ? "You resigned. Start a new game whenever you're ready."
+        : state.mode === "play"
+          ? `${humanize(state.outcome)} ends the game.`
+          : `${humanize(state.outcome)} ends the game. Undo or select an earlier tree move to continue studying.`;
+      dom.moves_heading.textContent = state.play.resigned && state.mode === "play" ? "Resigned" : humanize(state.outcome);
       dom.series_status.textContent = `Final series: ${state.prefixSan.join(" / ") || "no legal move"}.`;
     } else if (state.complete) {
       dom.boundary_pill.classList.add("is-complete");
@@ -1435,13 +1758,19 @@
       dom.boundary_pill.classList.add("is-mid-series");
       dom.boundary_pill.textContent = "Mid-series";
       dom.boundary_notice.classList.add("is-warning");
-      dom.boundary_notice_text.textContent = "Keep playing the same side. Automatic analysis is searching only legal completions of this prefix.";
-      dom.series_status.textContent = "Every micro-move is retained in the local move tree.";
+      dom.boundary_notice_text.textContent = state.mode === "play"
+        ? `${side} keeps moving until the series is complete or gives check.`
+        : "Keep playing the same side. Automatic analysis is searching only legal completions of this prefix.";
+      dom.series_status.textContent = state.mode === "play"
+        ? `${state.prefix.length} of ${state.boundary.series} micro-moves played.`
+        : "Every micro-move is retained in the local move tree.";
     } else {
       dom.boundary_pill.classList.add("is-boundary");
       dom.boundary_pill.textContent = "Exact boundary";
       dom.boundary_notice.classList.add("is-ready");
-      dom.boundary_notice_text.textContent = state.handoffNotice || "Play on the board; automatic analysis is already running.";
+      dom.boundary_notice_text.textContent = state.handoffNotice || (state.mode === "play"
+        ? (seriesColor() === state.play.humanColor ? "Your series. Play on the board." : "The champion is choosing a complete series.")
+        : "Play on the board; automatic analysis is already running.");
       dom.series_status.textContent = state.handoffNotice || `Play ${state.boundary.series} legal move${state.boundary.series === 1 ? "" : "s"}.`;
     }
     updateAnalysisProgress();
@@ -1453,6 +1782,448 @@
     renderPositionStatus();
     renderStudyTree();
     syncSetupFields();
+    renderPlaySurface();
+  }
+
+  function setPlayerColor(node, color) {
+    node.className = `player-color is-${color}`;
+  }
+
+  function renderPlayHistory() {
+    if (!dom.play_history) return;
+    const review = playReviewPosition();
+    const rows = state.history.map((entry) => ({
+      series: entry.boundary.series,
+      side: seriesColor(entry.boundary.series),
+      moves: [...(entry.prefixSan || entry.prefix || [])],
+      complete: true,
+    }));
+    if (state.prefix.length || state.outcome) {
+      rows.push({
+        series: state.boundary.series,
+        side: seriesColor(),
+        moves: [...(state.prefixSan.length ? state.prefixSan : state.prefix)],
+        complete: Boolean(state.complete || state.outcome),
+      });
+    }
+    if (!rows.length) {
+      const empty = document.createElement("p");
+      empty.className = "play-history-empty";
+      empty.textContent = "The game starts here.";
+      dom.play_history.replaceChildren(empty);
+      return;
+    }
+    dom.play_history.replaceChildren(...rows.map((entry) => {
+      const row = document.createElement("div");
+      const human = entry.side === state.play.humanColor;
+      row.className = `play-history-row ${human ? "is-human" : "is-engine"}`;
+      if (review?.series === entry.series) {
+        row.classList.add("is-current");
+        row.setAttribute("aria-current", "step");
+      }
+      const label = document.createElement("span");
+      label.className = "play-history-series";
+      label.textContent = `S${entry.series}`;
+      const copy = document.createElement("span");
+      copy.className = "play-history-moves";
+      const title = document.createElement("strong");
+      title.textContent = human ? "You" : "Champion";
+      const moves = document.createElement("small");
+      moves.textContent = entry.moves.length ? entry.moves.join(" / ") : "No legal move";
+      copy.append(title, moves);
+      const color = document.createElement("span");
+      color.className = `history-color is-${entry.side}`;
+      color.textContent = entry.side === "white" ? "W" : "B";
+      row.append(label, copy, color);
+      return row;
+    }));
+  }
+
+  function renderPlayNavigation(timeline = playTimeline()) {
+    const cursor = playTimelineCursor(timeline);
+    const busy = state.play.animating;
+    dom.play_history_previous.disabled = busy || cursor <= 0;
+    dom.play_history_next.disabled = busy || cursor >= timeline.length - 1;
+    dom.play_history_position.textContent = `Position ${cursor + 1} of ${timeline.length}`;
+    dom.play_history_previous.title = "Previous move (Left Arrow)";
+    dom.play_history_next.title = "Next move (Right Arrow)";
+  }
+
+  function playOutcomeStatus() {
+    if (state.play.resigned) {
+      return { title: "You resigned", detail: "Start a new game to play again.", kind: "finished" };
+    }
+    if (!state.outcome) return null;
+    const outcome = String(state.outcome);
+    if (outcome === "checkmate") {
+      const winner = seriesColor();
+      return {
+        title: winner === state.play.humanColor ? "You won" : "Champion won",
+        detail: `${winner === "white" ? "White" : "Black"} delivered checkmate in Series ${state.boundary.series}.`,
+        kind: winner === state.play.humanColor ? "won" : "finished",
+      };
+    }
+    if (outcome.includes("draw") || outcome === "stalemate") {
+      return { title: "Draw", detail: `${humanize(outcome)} ended the game.`, kind: "finished" };
+    }
+    return { title: "Game over", detail: `${humanize(outcome)} ended the game.`, kind: "finished" };
+  }
+
+  function renderPlaySurface() {
+    if (!dom.workspace) return;
+    const playMode = state.mode === "play";
+    document.querySelector(".board-pane")?.setAttribute("aria-label", playMode ? "Game board" : "Analysis board");
+    document.querySelector(".inspector")?.setAttribute("aria-label", playMode ? "Game controls" : "Analysis tools");
+    dom.workspace.classList.toggle("is-play-mode", playMode);
+    dom.workspace.classList.toggle("is-analyze-mode", !playMode);
+    dom.mode_play.classList.toggle("is-active", playMode);
+    dom.mode_analyze.classList.toggle("is-active", !playMode);
+    dom.mode_play.setAttribute("aria-pressed", String(playMode));
+    dom.mode_analyze.setAttribute("aria-pressed", String(!playMode));
+    dom.play_panel.hidden = !playMode;
+    dom.play_top_player.hidden = !playMode;
+    dom.play_bottom_player.hidden = !playMode;
+    dom.workspace_tabs.hidden = playMode;
+    if (playMode) {
+      document.querySelectorAll(".tab-panel").forEach((panel) => { panel.hidden = true; });
+    } else {
+      return;
+    }
+
+    const humanColor = state.play.humanColor;
+    const engineColor = humanColor === "white" ? "black" : "white";
+    const timeline = playTimeline();
+    const review = playReviewPosition(timeline);
+    const reviewing = Boolean(review);
+    const activeColor = review?.side || seriesColor();
+    setPlayerColor(dom.play_top_color, engineColor);
+    setPlayerColor(dom.play_bottom_color, humanColor);
+    dom.play_top_player.classList.toggle("is-active", !reviewing && activeColor === engineColor && !playGameEnded());
+    dom.play_bottom_player.classList.toggle("is-active", !reviewing && activeColor === humanColor && !playGameEnded());
+    dom.play_top_name.textContent = "Current champion";
+    dom.play_top_meta.textContent = `${state.play.engineName} · ${engineColor === "white" ? "White" : "Black"}`;
+    dom.play_bottom_meta.textContent = humanColor === "white" ? "White" : "Black";
+    dom.play_top_turn.textContent = reviewing
+      ? "Review"
+      : playGameEnded()
+      ? "Game over"
+      : activeColor === engineColor
+        ? state.play.thinking ? "Thinking…" : "To move"
+        : "Waiting";
+    dom.play_bottom_turn.textContent = reviewing
+      ? "Review"
+      : playGameEnded()
+      ? "Game over"
+      : activeColor === humanColor ? "Your series" : "Waiting";
+
+    dom.play_as_white.classList.toggle("is-active", humanColor === "white");
+    dom.play_as_black.classList.toggle("is-active", humanColor === "black");
+    dom.play_as_white.setAttribute("aria-pressed", String(humanColor === "white"));
+    dom.play_as_black.setAttribute("aria-pressed", String(humanColor === "black"));
+    dom.play_new_game.textContent = `New game as ${humanColor === "white" ? "White" : "Black"}`;
+    dom.play_resign.disabled = reviewing || !state.play.active || playGameEnded();
+    dom.play_analyze_position.disabled = reviewing || !state.positionReady || state.positionBusy || state.play.thinking || state.play.animating;
+
+    const outcome = reviewing ? null : playOutcomeStatus();
+    let status = reviewing ? {
+      title: "Reviewing game",
+      detail: review.lastSan
+        ? `Position ${review.index + 1} of ${timeline.length} · after ${review.lastSan}. Return to the latest position to continue.`
+        : `Position 1 of ${timeline.length} · initial setup. Return to the latest position to continue.`,
+      kind: "review",
+    } : outcome;
+    if (!status && state.play.error) {
+      status = { title: "Engine reply stopped", detail: state.play.error, kind: "error" };
+    } else if (!status && (state.play.thinking || state.play.animating)) {
+      const search = state.play.activeSearch || playSearchLimits();
+      status = {
+        title: "Champion is thinking",
+        detail: state.play.animating
+          ? `Playing a server-checked Series ${state.boundary.series}.`
+          : `${search.label} search requested depth ${search.depth}, up to ${search.seconds.toLocaleString()}s.`,
+        kind: "thinking",
+      };
+    } else if (!status && activeColor === humanColor) {
+      status = {
+        title: "Your series",
+        detail: `Play ${state.movesRemaining} more legal move${state.movesRemaining === 1 ? "" : "s"} as ${humanColor === "white" ? "White" : "Black"}.`,
+        kind: "ready",
+      };
+    } else if (!status) {
+      status = { title: "Champion's series", detail: "The engine reply starts automatically.", kind: "thinking" };
+    }
+    dom.play_live.className = `play-live is-${status.kind}`;
+    dom.play_status_title.textContent = status.title;
+    dom.play_status_detail.textContent = status.detail;
+    const visibleSeries = review?.series || state.boundary.series;
+    const visibleRemaining = review?.movesRemaining ?? state.movesRemaining;
+    dom.play_series_title.textContent = `Series ${visibleSeries}`;
+    dom.play_series_count.textContent = String(visibleRemaining);
+    dom.play_series_copy.textContent = reviewing
+      ? review.seriesMove
+        ? `Move ${review.seriesMove} of Series ${review.series}${review.complete ? " · series complete" : ""}`
+        : `Position before Series ${review.series}`
+      : playGameEnded()
+      ? humanize(state.play.resigned ? "resigned" : state.outcome)
+      : `${state.movesRemaining} move${state.movesRemaining === 1 ? "" : "s"} remaining`;
+    dom.play_history_count.textContent = reviewing
+      ? `Series ${review.series} · move ${review.seriesMove}`
+      : `Series ${state.boundary.series}`;
+    dom.play_engine_name.textContent = `Current champion · ${state.play.engineName}`;
+    dom.play_engine_id.textContent = state.play.engineProfileId || "—";
+    dom.play_engine_version.textContent = [state.play.engineVersion, state.play.engineFingerprint].filter(Boolean).join(" · ") || "—";
+    renderPlaySearchEvidence();
+    renderPlayHistory();
+    renderPlayNavigation(timeline);
+  }
+
+  function engineSeriesFromAnalysis(payload) {
+    const raw = first(payload.best_full_series, payload.best_series?.moves);
+    if (!Array.isArray(raw)) return [];
+    return raw.map(String).filter((move) => /^[a-h][1-8][a-h][1-8][qrbn]?$/.test(move));
+  }
+
+  function pauseForEngineFrame() {
+    return new Promise((resolve) => window.setTimeout(resolve, ENGINE_MOVE_ANIMATION_MS));
+  }
+
+  async function animateCheckedEngineSeries(payload, sequence) {
+    const frames = Array.isArray(payload.frames) ? payload.frames : [];
+    if (frames.length < 2 || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    state.play.animating = true;
+    for (let index = 0; index < frames.length; index += 1) {
+      if (sequence !== state.play.sequence || state.mode !== "play") return;
+      const frame = frames[index];
+      state.prefix = payload.prefix.slice(0, index + 1);
+      state.prefixSan = payload.san.slice(0, index + 1);
+      state.boardFen = String(frame.board_fen || state.boardFen);
+      state.prefixFrames = prefixFramesFromPayload(
+        { frames: frames.slice(0, index + 1) },
+        state.prefix,
+        state.prefixSan,
+      );
+      state.lastMove = String(frame.uci || state.prefix.at(-1) || "") || null;
+      state.movesRemaining = Math.max(0, state.boundary.series - state.prefix.length);
+      state.legalMoves = [];
+      renderAll();
+      await pauseForEngineFrame();
+    }
+  }
+
+  async function requestEngineAnalysis(body, controller, sequence) {
+    while (sequence === state.play.sequence && state.mode === "play") {
+      try {
+        return await requestJson("/api/analyze", {
+          method: "POST",
+          signal: controller.signal,
+          body: JSON.stringify(body),
+        });
+      } catch (error) {
+        if (error.name === "AbortError") throw error;
+        if (error.status !== 429) throw error;
+        dom.play_status_detail.textContent = "The engine is busy; your game is first in the retry queue.";
+        await new Promise((resolve) => window.setTimeout(resolve, AUTO_ANALYSIS_RETRY_MS));
+      }
+    }
+    throw new DOMException("Engine turn cancelled", "AbortError");
+  }
+
+  async function maybeRunEngineTurn() {
+    if (
+      state.mode !== "play"
+      || !state.play.active
+      || state.play.thinking
+      || state.play.animating
+      || playReviewActive()
+      || PLAY_HANDOFF.isActive()
+      || state.positionBusy
+      || !state.positionReady
+      || playGameEnded()
+      || state.complete
+      || state.nextState
+      || seriesColor() === state.play.humanColor
+    ) return;
+    cancelAutoAnalysis(true);
+    state.play.engineAbort?.abort();
+    const controller = new AbortController();
+    state.play.engineAbort = controller;
+    const sequence = ++state.play.sequence;
+    const key = playPositionKey();
+    const search = playSearchLimits();
+    state.play.thinking = true;
+    state.play.activeSearch = search;
+    state.play.error = null;
+    renderAll();
+    try {
+      const analysis = await requestEngineAnalysis({
+        ...boundaryPayload(),
+        prefix: [],
+        depth: search.depth,
+        max_series: search.maxSeries,
+        time_limit: search.seconds,
+        max_generation_positions: search.generationPositions,
+        alternatives: 0,
+        best_move_only: true,
+        rate_move: false,
+        save: false,
+      }, controller, sequence);
+      if (sequence !== state.play.sequence || key !== playPositionKey() || state.mode !== "play") return;
+      state.play.lastSearch = playSearchEvidence(analysis, search);
+      state.play.activeSearch = null;
+      if (state.play.engineProfileId && analysis.engine_profile_id !== state.play.engineProfileId) {
+        throw new Error("The reply came from a different engine profile than the loaded champion.");
+      }
+      if (state.play.engineFingerprint && analysis.source_fingerprint !== state.play.engineFingerprint) {
+        throw new Error("The reply engine fingerprint changed during the game.");
+      }
+      const moves = engineSeriesFromAnalysis(analysis);
+      if (!moves.length) throw new Error("The engine returned no legal series for this non-terminal position.");
+      const checked = await requestJson("/api/prefix", {
+        method: "POST",
+        signal: controller.signal,
+        body: JSON.stringify({ ...boundaryPayload(), prefix: moves }),
+      });
+      if (sequence !== state.play.sequence || key !== playPositionKey() || state.mode !== "play") return;
+      const canonical = Array.isArray(checked.prefix) ? checked.prefix.map(String) : [];
+      if (canonical.length !== moves.length || canonical.some((move, index) => move !== moves[index])) {
+        throw new Error("The server replay did not match the engine's proposed series.");
+      }
+      if (!checked.complete && !checked.outcome) {
+        throw new Error("The engine reply did not complete the required progressive series.");
+      }
+      await animateCheckedEngineSeries(checked, sequence);
+      if (sequence !== state.play.sequence || state.mode !== "play") return;
+      applyPrefixPayload(checked, canonical, checked.san || canonical);
+      state.play.lastEngineSeries = {
+        series: state.boundary.series,
+        moves: canonical,
+        profileId: analysis.engine_profile_id,
+        sourceFingerprint: analysis.source_fingerprint,
+      };
+      state.play.thinking = false;
+      state.play.animating = false;
+      if (checked.complete && checked.next_state && !checked.outcome) await advanceSeries(true);
+      state.playWorkspace = captureWorkspace();
+    } catch (error) {
+      if (error.name === "AbortError" || sequence !== state.play.sequence) return;
+      state.play.error = displayError(error);
+    } finally {
+      if (state.play.engineAbort === controller) state.play.engineAbort = null;
+      if (sequence === state.play.sequence) {
+        state.play.thinking = false;
+        state.play.animating = false;
+        state.play.activeSearch = null;
+        renderAll();
+      }
+    }
+  }
+
+  async function startNewPlayGame({ announce = true } = {}) {
+    cancelEngineTurn();
+    cancelAutoAnalysis(true);
+    state.prefixAbort?.abort();
+    await PLAY_HANDOFF.wait().catch(() => null);
+    const sequence = state.play.sequence;
+    state.mode = "play";
+    state.play.active = true;
+    state.play.resigned = false;
+    state.play.error = null;
+    state.play.lastEngineSeries = null;
+    state.play.activeSearch = null;
+    state.play.lastSearch = null;
+    state.play.timelineIndex = null;
+    state.boundary = { fen: START_FEN, series: 1, quiet_series: 0, ep_targets: [] };
+    state.prefix = [];
+    state.prefixSan = [];
+    state.prefixFrames = [];
+    state.boardFen = START_FEN;
+    state.legalMoves = [];
+    state.movesRemaining = 1;
+    state.complete = false;
+    state.nextState = null;
+    state.outcome = null;
+    state.check = false;
+    state.unusedMoves = 0;
+    state.completionReason = null;
+    state.history = [];
+    state.lastMove = null;
+    state.flipped = state.play.humanColor === "black";
+    state.focusSquare = state.flipped ? "e7" : "e2";
+    state.study = createStudy(state.boundary);
+    state.currentTreeNodeId = null;
+    state.seriesParentNodeId = null;
+    state.branching = false;
+    state.viewingHistorical = false;
+    state.handoffNotice = null;
+    clearAnalysisDisplay();
+    renderAll();
+    const payload = await refreshPrefix([], []);
+    if (!payload || sequence !== state.play.sequence || state.mode !== "play") return;
+    state.playWorkspace = captureWorkspace();
+    if (announce) showToast(`New game as ${state.play.humanColor === "white" ? "White" : "Black"}`);
+    renderAll();
+    void continuePlayFlow();
+  }
+
+  async function selectPlayColor(color) {
+    if (!new Set(["white", "black"]).has(color)) return;
+    state.play.humanColor = color;
+    await startNewPlayGame();
+  }
+
+  function resignPlayGame() {
+    if (state.mode !== "play" || !state.play.active || playReviewActive() || playGameEnded()) return;
+    cancelEngineTurn();
+    state.play.resigned = true;
+    state.selected = null;
+    renderAll();
+  }
+
+  async function switchWorkspaceMode(mode, { importPlayPosition = false } = {}) {
+    if (!new Set(["play", "analyze"]).has(mode)) return;
+    state.prefixAbort?.abort();
+    state.prefixAbort = null;
+    if (mode === "analyze") {
+      if (state.mode === "play") {
+        if (importPlayPosition && (state.play.thinking || state.play.animating || state.positionBusy)) return;
+        const stablePlay = state.play.animating || state.positionBusy
+          ? state.playWorkspace
+          : captureWorkspace();
+        state.playWorkspace = stablePlay;
+        const imported = importPlayPosition ? stablePlay : null;
+        cancelEngineTurn();
+        if (imported) {
+          imported.study = createStudy(imported.boundary);
+          imported.currentTreeNodeId = null;
+          imported.seriesParentNodeId = null;
+          imported.branching = false;
+          imported.viewingHistorical = false;
+          imported.analysisPaused = false;
+          state.analysisWorkspace = imported;
+        }
+      }
+      state.mode = "analyze";
+      restoreWorkspace(state.analysisWorkspace);
+      clearAnalysisDisplay();
+      dom.workspace_tabs.hidden = false;
+      switchTab("analysis");
+      renderAll();
+      persistStudy();
+      queueAutoAnalysis(80);
+      return;
+    }
+
+    if (state.mode === "analyze") {
+      state.analysisWorkspace = captureWorkspace();
+      cancelAutoAnalysis(true);
+    }
+    state.mode = "play";
+    if (!restoreWorkspace(state.playWorkspace)) {
+      await startNewPlayGame();
+      return;
+    }
+    renderAll();
+    void continuePlayFlow();
   }
 
   function legalMovesFrom(square) {
@@ -1460,7 +2231,7 @@
   }
 
   function chooseSquare(square) {
-    if (state.previewIndex !== null || state.positionBusy || state.outcome || state.complete) return;
+    if (!boardInputAllowed() || state.previewIndex !== null || state.positionBusy || state.outcome || state.complete) return;
     const candidates = state.selected
       ? state.legalMoves.filter((move) => move.from === state.selected && move.to === square)
       : [];
@@ -1514,7 +2285,7 @@
   }
 
   async function submitMove(move) {
-    if (state.positionBusy || state.outcome || state.complete || state.previewIndex !== null) return;
+    if (!boardInputAllowed() || state.positionBusy || state.outcome || state.complete || state.previewIndex !== null) return;
     const boundaryAtMove = cloneBoundary(state.boundary);
     const parentId = state.currentTreeNodeId;
     const seriesParentId = state.seriesParentNodeId;
@@ -1526,9 +2297,13 @@
     state.handoffNotice = null;
     const payload = await refreshPrefix(nextPrefix, nextSan);
     if (!payload) return;
-    attachMoveToStudy(move, payload, boundaryAtMove, parentId, seriesParentId);
-    if (payload.complete && payload.next_state && !payload.outcome) {
-      await advanceSeries(true);
+    if (state.mode === "analyze") {
+      attachMoveToStudy(move, payload, boundaryAtMove, parentId, seriesParentId);
+    }
+    if (payload.complete && payload.next_state && !payload.outcome) await advanceSeries(true);
+    if (state.mode === "play") {
+      state.playWorkspace = captureWorkspace();
+      renderPlaySurface();
     }
   }
 
@@ -1539,7 +2314,7 @@
   }
 
   function onPointerDown(event) {
-    if (state.previewIndex !== null || state.positionBusy || state.outcome || state.complete) return;
+    if (!boardInputAllowed() || state.previewIndex !== null || state.positionBusy || state.outcome || state.complete) return;
     if (event.button !== 0 && event.pointerType !== "touch") return;
     const square = event.target.closest(".square")?.dataset.square;
     if (!square || !legalMovesFrom(square).length) return;
@@ -1597,8 +2372,14 @@
   }
 
   function onBoardKeydown(event) {
+    if (!boardInputAllowed()) return;
     const square = event.target.closest(".square")?.dataset.square;
     if (!square) return;
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      chooseSquare(square);
+      return;
+    }
     if (event.key === "Escape") {
       state.selected = null;
       renderBoard();
@@ -1883,11 +2664,17 @@
         alternative.uci,
       ));
       const detail = document.createElement("small");
-      detail.textContent = displayLine(first(alternative.classification, alternative.confidence, extractUci(alternative), "Candidate series"));
+      const evaluation = describeEvaluation(alternativeScore(alternative), {
+        ...alternative,
+        mate_score: result.mate_score,
+      });
+      detail.textContent = displayLine(first(alternative.classification, alternative.confidence, evaluation.plain, extractUci(alternative), "Candidate series"));
       line.append(title, detail);
       const score = document.createElement("span");
       score.className = "alt-score";
-      score.textContent = alternativeScore(alternative) === undefined ? "—" : formatPoints(alternativeScore(alternative), false);
+      score.textContent = evaluation.label;
+      score.title = `${evaluation.spoken}. ${EVALUATION_SCALE_HELP}`;
+      score.setAttribute("aria-label", evaluation.spoken);
       row.append(rank, line, score);
       row.title = "Show this line's first move on the board";
       row.addEventListener("click", () => {
@@ -1907,7 +2694,7 @@
     const skip = new Set(["score", "total", "reach_complete", "warnings", "tactical_warnings"]);
     const entries = [];
     Object.entries(evaluation).forEach(([key, value]) => {
-      if (skip.has(key) || /distance$/i.test(key)) return;
+      if (skip.has(key) || /(?:distance|nodes)$/i.test(key)) return;
       if (typeof value === "number" && Number.isFinite(value)) {
         entries.push([key, value]);
       } else if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -1943,8 +2730,9 @@
       track.append(bar);
       const number = document.createElement("span");
       number.className = "breakdown-value";
-      number.textContent = formatPoints(value, false);
-      number.title = `${formatPoints(value)} (White-centric)`;
+      const evaluation = describeEvaluation(value);
+      number.textContent = evaluation.label;
+      number.title = `${evaluation.spoken}. Component contribution; ${EVALUATION_SCALE_HELP}`;
       row.append(label, track, number);
       return row;
     });
@@ -1995,16 +2783,17 @@
     dom.search_stats.replaceChildren(...nodes);
   }
 
-  function updateEvalBar(score) {
+  function updateEvalBar(score, evidence = {}) {
     const number = Number(score);
     const percent = Number.isFinite(number) ? 50 + 46 * Math.tanh(number / 900) : 50;
     const bounded = Math.max(4, Math.min(96, percent));
+    const evaluation = describeEvaluation(score, evidence);
     dom.eval_fill.style.height = `${bounded}%`;
     dom.eval_marker.style.bottom = `${bounded}%`;
-    dom.eval_marker.textContent = Number.isFinite(number) ? formatPoints(number, false) : "?";
-    dom.eval_rail.setAttribute("aria-label", Number.isFinite(number)
-      ? `${formatPoints(number)}, White-centric`
-      : "White-centric heuristic evaluation not reported");
+    dom.eval_marker.textContent = evaluation.compact;
+    dom.eval_marker.title = evaluation.spoken;
+    dom.eval_rail.setAttribute("aria-label", `${evaluation.spoken}. ${EVALUATION_SCALE_HELP}`);
+    dom.eval_rail.title = `${evaluation.spoken}. ${EVALUATION_SCALE_HELP}`;
   }
 
   function renderAnalysis(result) {
@@ -2014,7 +2803,10 @@
     dom.analysis_error.hidden = true;
     dom.analysis_results.hidden = false;
     const score = first(result.score, result.evaluation?.score, result.value);
-    dom.result_score.textContent = formatPoints(score);
+    const evaluation = describeEvaluation(score, result);
+    dom.result_score.textContent = evaluation.label;
+    dom.result_score.title = `${evaluation.spoken}. ${EVALUATION_SCALE_HELP}`;
+    dom.result_score.setAttribute("aria-label", evaluation.spoken);
     dom.result_classification.textContent = String(first(result.classification, "Unclassified"));
     dom.result_confidence.textContent = String(first(result.confidence, "Confidence not reported"));
     const analyzedSeries = Math.floor(asNumber(
@@ -2029,7 +2821,7 @@
     renderEvaluation(result);
     renderWarnings(result);
     renderStats(result);
-    updateEvalBar(score);
+    updateEvalBar(score, result);
     renderArrows();
   }
 
@@ -2131,14 +2923,16 @@
       const score = document.createElement("span");
       score.className = "opening-score";
       const value = document.createElement("strong");
-      value.textContent = formatPoints(first(opening.score, opening.value), false);
+      const evaluation = describeEvaluation(first(opening.score, opening.value), opening);
+      value.textContent = evaluation.label;
+      value.title = `${evaluation.spoken}. ${EVALUATION_SCALE_HELP}`;
       const unit = document.createElement("small");
-      unit.textContent = "heuristic points";
+      unit.textContent = evaluation.plain;
       score.append(value, unit);
       row.append(rank, main, score);
       const uci = first(opening.move_uci, opening.uci, extractUci(opening.move));
       row.disabled = !uci;
-      row.setAttribute("aria-label", `Load ${title.textContent}, ${formatPoints(opening.score)}`);
+      row.setAttribute("aria-label", `Load ${title.textContent}, ${evaluation.spoken}`);
       row.addEventListener("click", () => loadOpeningMove(String(uci)));
       return row;
     });
@@ -2329,41 +3123,118 @@
     }
   }
 
-  async function advanceSeries(automatic = false) {
-    if (!state.nextState || state.outcome) return;
-    const completedSeries = state.boundary.series;
-    const completedByCheck = state.check;
-    const unusedMoves = state.unusedMoves;
+  async function performSeriesHandoff(plan, automatic, context) {
+    const { completedSeries, completedByCheck, unusedMoves, playSequence } = context;
     const historyEntry = {
-      boundary: {
-        ...state.boundary,
-        ep_targets: [...state.boundary.ep_targets],
-      },
-      prefix: [...state.prefix],
-      prefixSan: [...state.prefixSan],
+      ...plan.historyEntry,
+      frames: clonePlain(state.prefixFrames, []),
+      check: state.check,
+      unusedMoves: state.unusedMoves,
+      completionReason: state.completionReason,
       treeNodeId: state.currentTreeNodeId,
       seriesParentNodeId: state.seriesParentNodeId,
+      handoffKey: plan.key,
     };
-    state.history.push(historyEntry);
-    state.boundary = { ...state.nextState, ep_targets: [...state.nextState.ep_targets] };
+    if (state.history.at(-1)?.handoffKey !== plan.key) state.history.push(historyEntry);
+    state.boundary = cloneBoundary(plan.nextBoundary);
     state.prefix = [];
     state.prefixSan = [];
+    state.prefixFrames = [];
     state.seriesParentNodeId = state.currentTreeNodeId;
     state.boardFen = state.boundary.fen;
+    state.legalMoves = [];
+    state.movesRemaining = plan.movesRemaining;
     state.complete = false;
     state.nextState = null;
+    state.check = false;
+    state.unusedMoves = 0;
+    state.completionReason = null;
     state.viewingHistorical = false;
+    state.positionReady = false;
     state.handoffNotice = completedByCheck && unusedMoves > 0
       ? `Series ${completedSeries} ended by check; ${unusedMoves} unused move${unusedMoves === 1 ? "" : "s"} were forfeited.`
       : `Series ${completedSeries} complete. Series ${state.boundary.series} started automatically.`;
-    const payload = await refreshPrefix([], []);
-    if (payload) {
+    renderAll();
+
+    const expectedBoundaryKey = boundaryKey(plan.nextBoundary);
+    const firstAttemptSequence = state.prefixSequence + 1;
+    let payload = await refreshPrefix([], []);
+    const retryablePlayHandoff = !payload
+      && state.mode === "play"
+      && state.play.sequence === playSequence
+      && state.prefixSequence === firstAttemptSequence
+      && boundaryKey(state.boundary) === expectedBoundaryKey
+      && !state.positionBusy
+      && !playGameEnded();
+    if (retryablePlayHandoff) payload = await refreshPrefix([], []);
+    if (!payload) {
+      if (
+        state.mode === "play"
+        && state.play.sequence === playSequence
+        && boundaryKey(state.boundary) === expectedBoundaryKey
+      ) {
+        state.play.error = `Series ${state.boundary.series} could not start. Start a new game or retry the position.`;
+        renderAll();
+      }
+      return false;
+    }
+
+    if (state.mode === "analyze") {
       persistStudy();
       renderStudyTree();
-      showToast(completedByCheck && unusedMoves > 0
-        ? `Check ended Series ${completedSeries} early · ${unusedMoves} unused move${unusedMoves === 1 ? "" : "s"}`
-        : automatic ? `Series ${state.boundary.series} started` : `Continued to Series ${state.boundary.series}`);
+    } else {
+      state.play.error = null;
+      state.playWorkspace = captureWorkspace();
     }
+    showToast(completedByCheck && unusedMoves > 0
+      ? `Check ended Series ${completedSeries} early · ${unusedMoves} unused move${unusedMoves === 1 ? "" : "s"}`
+      : automatic ? `Series ${state.boundary.series} started` : `Continued to Series ${state.boundary.series}`);
+    return true;
+  }
+
+  function advanceSeries(automatic = false) {
+    if (!state.complete || !state.nextState || state.outcome) return Promise.resolve(false);
+    if (PLAY_HANDOFF.isActive()) return PLAY_HANDOFF.wait();
+    const completedSeries = state.boundary.series;
+    const completedByCheck = state.check;
+    const unusedMoves = state.unusedMoves;
+    const playSequence = state.play.sequence;
+    let plan;
+    try {
+      plan = globalThis.ScottishProgressivePlayHandoff.prepareCompletedSeries({
+        boundary: state.boundary,
+        nextState: state.nextState,
+        prefix: state.prefix,
+        prefixSan: state.prefixSan,
+      });
+    } catch (error) {
+      if (state.mode === "play") {
+        state.play.error = displayError(error);
+        renderAll();
+      }
+      return Promise.resolve(false);
+    }
+    const handoff = PLAY_HANDOFF.run(plan.key, () => performSeriesHandoff(plan, automatic, {
+      completedSeries,
+      completedByCheck,
+      unusedMoves,
+      playSequence,
+    }));
+    if (state.mode === "play") {
+      void handoff.then((advanced) => {
+        if (advanced && state.mode === "play") void continuePlayFlow();
+      });
+    }
+    return handoff;
+  }
+
+  async function continuePlayFlow() {
+    if (state.mode !== "play" || !state.play.active || playReviewActive() || playGameEnded()) return;
+    if (state.complete && state.nextState) {
+      await advanceSeries(true);
+      return;
+    }
+    await maybeRunEngineTurn();
   }
 
   async function undoMove() {
@@ -2489,6 +3360,18 @@
       dom.engine_status.classList.add("is-online");
       dom.engine_status.classList.remove("is-offline");
       const profileName = first(health.engine_profile_name, health.profile_name);
+      state.play.engineName = String(profileName || "Current champion");
+      state.play.engineProfileId = first(health.engine_profile_id, null);
+      state.play.engineVersion = first(health.engine_version, health.version, null);
+      state.play.engineFingerprint = first(health.source_fingerprint, health.fingerprint, null);
+      state.play.recommendedDepth = Math.max(1, Math.floor(asNumber(
+        health.engine_profile_recommended_depth,
+        state.play.recommendedDepth,
+      )));
+      state.play.recommendedBranchCap = Math.max(1, Math.floor(asNumber(
+        health.engine_profile_recommended_branch_cap,
+        state.play.recommendedBranchCap,
+      )));
       dom.engine_status_text.textContent = first(health.status, "ok") === "ok"
         ? "Engine online"
         : String(first(health.status, "Engine online"));
@@ -2537,10 +3420,22 @@
       }
       const maximumGenerationPositions = health.analysis_limits?.maximum_generation_positions;
       if (maximumGenerationPositions !== undefined) {
-        state.maximumGenerationPositions = Math.max(1_000, Math.floor(asNumber(maximumGenerationPositions, 5_000_000)));
+        state.maximumGenerationPositions = Math.max(1_000, Math.floor(asNumber(maximumGenerationPositions, 10_000_000)));
         ANALYSIS_PRESETS.strong.generationPositions = state.maximumGenerationPositions;
       }
+      state.play.timeLimitSeconds = Math.max(0.1, Math.min(
+        state.maximumAnalysisSeconds,
+        asNumber(health.analysis_limits?.default_seconds, 5),
+      ));
+      state.play.generationPositions = Math.max(1_000, Math.min(
+        state.maximumGenerationPositions,
+        Math.floor(asNumber(
+          health.analysis_limits?.default_generation_positions,
+          500_000,
+        )),
+      ));
       dom.engine_status.title = [profileName, first(health.engine_version, health.version), first(health.source_fingerprint, health.fingerprint)].filter(Boolean).join(" · ");
+      renderPlaySurface();
     } catch (error) {
       dom.engine_status.classList.add("is-offline");
       dom.engine_status.classList.remove("is-online");
@@ -2556,6 +3451,18 @@
     window.addEventListener("pointermove", onPointerMove, { passive: false });
     window.addEventListener("pointerup", onPointerUp);
     window.addEventListener("pointercancel", endDrag);
+
+    dom.mode_play.addEventListener("click", () => { void switchWorkspaceMode("play"); });
+    dom.mode_analyze.addEventListener("click", () => { void switchWorkspaceMode("analyze"); });
+    dom.play_as_white.addEventListener("click", () => { void selectPlayColor("white"); });
+    dom.play_as_black.addEventListener("click", () => { void selectPlayColor("black"); });
+    dom.play_strength_strong.addEventListener("click", () => selectPlayStrength("strong"));
+    dom.play_strength_faster.addEventListener("click", () => selectPlayStrength("faster"));
+    dom.play_new_game.addEventListener("click", () => { void startNewPlayGame(); });
+    dom.play_analyze_position.addEventListener("click", () => { void switchWorkspaceMode("analyze", { importPlayPosition: true }); });
+    dom.play_resign.addEventListener("click", resignPlayGame);
+    dom.play_history_previous.addEventListener("click", () => stepPlayTimeline(-1));
+    dom.play_history_next.addEventListener("click", () => stepPlayTimeline(1));
 
     dom.flip_board.addEventListener("click", () => {
       state.flipped = !state.flipped;
@@ -2617,7 +3524,22 @@
       });
     });
     document.addEventListener("keydown", (event) => {
-      if (event.key.toLowerCase() === "f" && !event.target.matches("input, textarea")) {
+      const editing = event.target?.matches?.("input, textarea, select, [contenteditable='true']");
+      const boardNavigation = event.target?.closest?.("#board");
+      if (
+        state.mode === "play"
+        && !editing
+        && !boardNavigation
+        && !event.altKey
+        && !event.ctrlKey
+        && !event.metaKey
+        && (event.key === "ArrowLeft" || event.key === "ArrowRight")
+      ) {
+        event.preventDefault();
+        stepPlayTimeline(event.key === "ArrowLeft" ? -1 : 1);
+        return;
+      }
+      if (state.mode === "analyze" && event.key.toLowerCase() === "f" && !event.target.matches("input, textarea")) {
         state.flipped = !state.flipped;
         renderBoard();
       }
@@ -2670,6 +3592,8 @@
       persistStudy();
       renderStudyTree();
     }
+    state.analysisWorkspace = captureWorkspace();
+    await startNewPlayGame({ announce: false });
   }
 
   void initialize();

@@ -2,6 +2,7 @@
 #include <Python.h>
 
 #include "native_eval.hpp"
+#include "native_selfplay.hpp"
 
 #ifndef SPC_NATIVE_SOURCE_IDENTITY
 #define SPC_NATIVE_SOURCE_IDENTITY "unconfigured"
@@ -9,15 +10,22 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
+#include <functional>
 #include <limits>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -34,6 +42,155 @@ constexpr int BISHOP = 3;
 constexpr int ROOK = 4;
 constexpr int QUEEN = 5;
 constexpr int KING = 6;
+
+class BoundedNativePool {
+public:
+    BoundedNativePool(const BoundedNativePool&) = delete;
+    BoundedNativePool& operator=(const BoundedNativePool&) = delete;
+
+    static BoundedNativePool& instance() {
+        static BoundedNativePool pool;
+        return pool;
+    }
+
+    void run(
+        std::size_t count,
+        std::uint32_t requested_threads,
+        const std::function<void(std::size_t)>& task
+    ) {
+        if (count == 0) {
+            return;
+        }
+        if (requested_threads <= 1 || workers_.empty()) {
+            for (std::size_t index = 0; index < count; ++index) {
+                task(index);
+            }
+            return;
+        }
+
+        // Only one opt-in parallel native request owns the bounded pool at a
+        // time. Default-one tournament/full-game calls bypass it completely,
+        // preventing nested worker oversubscription.
+        std::unique_lock<std::mutex> execution_lock(execution_mutex_);
+        {
+            std::lock_guard<std::mutex> state_lock(state_mutex_);
+            task_ = task;
+            count_ = count;
+            next_index_.store(0, std::memory_order_relaxed);
+            failed_.store(false, std::memory_order_relaxed);
+            failure_ = nullptr;
+            active_workers_ = std::min<std::size_t>(
+                static_cast<std::size_t>(requested_threads - 1),
+                workers_.size()
+            );
+            remaining_workers_ = active_workers_;
+            ++generation_;
+        }
+        start_cv_.notify_all();
+
+        execute_job();
+        {
+            std::unique_lock<std::mutex> state_lock(state_mutex_);
+            finish_cv_.wait(state_lock, [this]() {
+                return remaining_workers_ == 0;
+            });
+            task_ = {};
+        }
+        if (failure_ != nullptr) {
+            std::rethrow_exception(failure_);
+        }
+    }
+
+private:
+    BoundedNativePool() {
+        const auto hardware = std::max(1U, std::thread::hardware_concurrency());
+        const auto worker_count = std::min<unsigned int>(hardware - 1, 63U);
+        workers_.reserve(worker_count);
+        for (unsigned int index = 0; index < worker_count; ++index) {
+            workers_.emplace_back([this, index]() { worker_loop(index); });
+        }
+    }
+
+    ~BoundedNativePool() {
+        {
+            std::lock_guard<std::mutex> state_lock(state_mutex_);
+            stopping_ = true;
+            ++generation_;
+        }
+        start_cv_.notify_all();
+        for (auto& worker : workers_) {
+            if (worker.joinable()) {
+                worker.join();
+            }
+        }
+    }
+
+    void execute_job() noexcept {
+        while (!failed_.load(std::memory_order_relaxed)) {
+            const std::size_t index = next_index_.fetch_add(
+                1,
+                std::memory_order_relaxed
+            );
+            if (index >= count_) {
+                return;
+            }
+            try {
+                task_(index);
+            } catch (...) {
+                bool expected = false;
+                if (failed_.compare_exchange_strong(
+                        expected,
+                        true,
+                        std::memory_order_relaxed
+                    )) {
+                    std::lock_guard<std::mutex> failure_lock(failure_mutex_);
+                    failure_ = std::current_exception();
+                }
+                return;
+            }
+        }
+    }
+
+    void worker_loop(std::size_t worker_index) noexcept {
+        std::uint64_t observed_generation = 0;
+        while (true) {
+            std::unique_lock<std::mutex> state_lock(state_mutex_);
+            start_cv_.wait(state_lock, [this, observed_generation]() {
+                return stopping_ || generation_ != observed_generation;
+            });
+            if (stopping_) {
+                return;
+            }
+            observed_generation = generation_;
+            const bool active = worker_index < active_workers_;
+            state_lock.unlock();
+            if (!active) {
+                continue;
+            }
+            execute_job();
+            state_lock.lock();
+            if (--remaining_workers_ == 0) {
+                finish_cv_.notify_one();
+            }
+        }
+    }
+
+    std::mutex execution_mutex_;
+    std::mutex state_mutex_;
+    std::mutex failure_mutex_;
+    std::condition_variable start_cv_;
+    std::condition_variable finish_cv_;
+    std::vector<std::thread> workers_;
+    std::function<void(std::size_t)> task_;
+    std::atomic<std::size_t> next_index_{0};
+    std::atomic<bool> failed_{false};
+    std::exception_ptr failure_;
+    std::size_t count_ = 0;
+    std::size_t active_workers_ = 0;
+    std::size_t remaining_workers_ = 0;
+    std::uint64_t generation_ = 0;
+    bool stopping_ = false;
+};
 
 struct Move {
     int from;
@@ -70,6 +227,94 @@ constexpr std::array<std::array<int, 2>, 4> DIAGONAL = {{
 [[nodiscard]] constexpr Bitboard bit(int square_index) noexcept {
     return Bitboard{1} << square_index;
 }
+
+[[nodiscard]] constexpr auto knight_attack_masks() noexcept {
+    std::array<Bitboard, 64> masks{};
+    for (int target = 0; target < 64; ++target) {
+        const int target_file = target & 7;
+        const int target_rank = target >> 3;
+        for (const auto& delta : KNIGHT_DELTAS) {
+            const int file = target_file + delta[0];
+            const int rank = target_rank + delta[1];
+            if (inside(file, rank)) {
+                masks[static_cast<std::size_t>(target)]
+                    |= bit(square(file, rank));
+            }
+        }
+    }
+    return masks;
+}
+
+[[nodiscard]] constexpr auto king_attack_masks() noexcept {
+    std::array<Bitboard, 64> masks{};
+    for (int target = 0; target < 64; ++target) {
+        const int target_file = target & 7;
+        const int target_rank = target >> 3;
+        for (const auto& delta : KING_DELTAS) {
+            const int file = target_file + delta[0];
+            const int rank = target_rank + delta[1];
+            if (inside(file, rank)) {
+                masks[static_cast<std::size_t>(target)]
+                    |= bit(square(file, rank));
+            }
+        }
+    }
+    return masks;
+}
+
+[[nodiscard]] constexpr auto pawn_attacker_masks() noexcept {
+    std::array<std::array<Bitboard, 64>, 2> masks{};
+    for (int color = 0; color < 2; ++color) {
+        const bool attacker = color == 1;
+        for (int target = 0; target < 64; ++target) {
+            const int target_file = target & 7;
+            const int target_rank = target >> 3;
+            const int source_rank = target_rank + (attacker == WHITE ? -1 : 1);
+            for (const int file_delta : {-1, 1}) {
+                const int source_file = target_file + file_delta;
+                if (inside(source_file, source_rank)) {
+                    masks[static_cast<std::size_t>(color)]
+                        [static_cast<std::size_t>(target)]
+                        |= bit(square(source_file, source_rank));
+                }
+            }
+        }
+    }
+    return masks;
+}
+
+constexpr std::array<std::array<int, 2>, 8> RAY_DELTAS = {{
+    {{-1, 0}}, {{1, 0}}, {{0, -1}}, {{0, 1}},
+    {{-1, -1}}, {{-1, 1}}, {{1, -1}}, {{1, 1}},
+}};
+constexpr std::array<bool, 8> RAY_ASCENDING = {{
+    false, true, false, true, false, true, false, true,
+}};
+
+[[nodiscard]] constexpr auto ray_masks() noexcept {
+    std::array<std::array<Bitboard, 8>, 64> masks{};
+    for (int target = 0; target < 64; ++target) {
+        const int target_file = target & 7;
+        const int target_rank = target >> 3;
+        for (std::size_t direction = 0; direction < RAY_DELTAS.size(); ++direction) {
+            const auto& delta = RAY_DELTAS[direction];
+            int file = target_file + delta[0];
+            int rank = target_rank + delta[1];
+            while (inside(file, rank)) {
+                masks[static_cast<std::size_t>(target)][direction]
+                    |= bit(square(file, rank));
+                file += delta[0];
+                rank += delta[1];
+            }
+        }
+    }
+    return masks;
+}
+
+constexpr auto KNIGHT_ATTACK_MASKS = knight_attack_masks();
+constexpr auto KING_ATTACK_MASKS = king_attack_masks();
+constexpr auto PAWN_ATTACKER_MASKS = pawn_attacker_masks();
+constexpr auto RAY_MASKS = ray_masks();
 
 [[nodiscard]] int piece_type_at(
     const Position& position,
@@ -112,74 +357,47 @@ constexpr std::array<std::array<int, 2>, 4> DIAGONAL = {{
     Bitboard occupancy,
     Bitboard attacker_occupancy
 ) noexcept {
-    const int target_file = target & 7;
-    const int target_rank = target >> 3;
     const Bitboard pawns = position.pawns & attacker_occupancy;
-    const int pawn_source_rank = target_rank + (attacker == WHITE ? -1 : 1);
-    if (inside(target_file - 1, pawn_source_rank)
-        && (pawns & bit(square(target_file - 1, pawn_source_rank))) != 0) {
-        return true;
-    }
-    if (inside(target_file + 1, pawn_source_rank)
-        && (pawns & bit(square(target_file + 1, pawn_source_rank))) != 0) {
+    const std::size_t target_index = static_cast<std::size_t>(target);
+    if (
+        (pawns & PAWN_ATTACKER_MASKS[attacker ? 1 : 0][target_index])
+        != 0
+    ) {
         return true;
     }
 
     const Bitboard knights = position.knights & attacker_occupancy;
-    for (const auto& delta : KNIGHT_DELTAS) {
-        const int file = target_file + delta[0];
-        const int rank = target_rank + delta[1];
-        if (inside(file, rank) && (knights & bit(square(file, rank))) != 0) {
-            return true;
-        }
+    if ((knights & KNIGHT_ATTACK_MASKS[target_index]) != 0) {
+        return true;
     }
 
     const Bitboard kings = position.kings & attacker_occupancy;
-    for (const auto& delta : KING_DELTAS) {
-        const int file = target_file + delta[0];
-        const int rank = target_rank + delta[1];
-        if (inside(file, rank) && (kings & bit(square(file, rank))) != 0) {
+    if ((kings & KING_ATTACK_MASKS[target_index]) != 0) {
+        return true;
+    }
+
+    const Bitboard rook_attackers = attacker_occupancy
+        & (position.rooks | position.queens);
+    const Bitboard bishop_attackers = attacker_occupancy
+        & (position.bishops | position.queens);
+    for (
+        std::size_t direction = 0;
+        direction < RAY_MASKS[target_index].size();
+        ++direction
+    ) {
+        const Bitboard blockers = occupancy
+            & RAY_MASKS[target_index][direction];
+        if (blockers == 0) {
+            continue;
+        }
+        const int source = RAY_ASCENDING[direction]
+            ? static_cast<int>(std::countr_zero(blockers))
+            : 63 - static_cast<int>(std::countl_zero(blockers));
+        const Bitboard attackers = direction < 4
+            ? rook_attackers
+            : bishop_attackers;
+        if ((attackers & bit(source)) != 0) {
             return true;
-        }
-    }
-
-    for (const auto& delta : ORTHOGONAL) {
-        int file = target_file + delta[0];
-        int rank = target_rank + delta[1];
-        while (inside(file, rank)) {
-            const int source = square(file, rank);
-            const Bitboard source_mask = bit(source);
-            if ((occupancy & source_mask) != 0) {
-                if ((attacker_occupancy & source_mask) != 0) {
-                    const int type = piece_type_at(position, source);
-                    if (type == ROOK || type == QUEEN) {
-                        return true;
-                    }
-                }
-                break;
-            }
-            file += delta[0];
-            rank += delta[1];
-        }
-    }
-
-    for (const auto& delta : DIAGONAL) {
-        int file = target_file + delta[0];
-        int rank = target_rank + delta[1];
-        while (inside(file, rank)) {
-            const int source = square(file, rank);
-            const Bitboard source_mask = bit(source);
-            if ((occupancy & source_mask) != 0) {
-                if ((attacker_occupancy & source_mask) != 0) {
-                    const int type = piece_type_at(position, source);
-                    if (type == BISHOP || type == QUEEN) {
-                        return true;
-                    }
-                }
-                break;
-            }
-            file += delta[0];
-            rank += delta[1];
         }
     }
     return false;
@@ -1197,37 +1415,47 @@ std::vector<ExpandedMove> expand_legal_move_variants(
     const Bitboard enemy = position.occupied[(!mover) ? 1 : 0];
     const Position evaluation = evaluation_position(position);
     for (const Move& move : pseudo_moves(position, ep_targets)) {
-        if (legal_after_move(position, move)) {
-            const int moving_piece = piece_type_at(evaluation, move.from);
-            const bool en_passant = move.required_ep_square >= 0
-                && moving_piece == PAWN
-                && move.to == move.required_ep_square
-                && (position.occupied[0] & bit(move.to)) == 0
-                && (position.occupied[1] & bit(move.to)) == 0;
-            const bool is_capture = en_passant || (enemy & bit(move.to)) != 0;
-            BoardState child = apply_move(position, move);
-            const Bitboard opponent_king = child.kings
-                & child.occupied[(!mover) ? 1 : 0];
-            const bool delivered_check = opponent_king != 0
-                && board_attacked_by(
-                    child,
-                    static_cast<int>(std::countr_zero(opponent_king)),
-                    mover
-                );
-            legal.push_back(ExpandedMove{
-                LegalMove{
-                    move_uci(move),
-                    move.from,
-                    move.to,
-                    move.promotion,
-                    move.required_ep_square,
-                },
+        BoardState child = apply_move(position, move);
+        const Bitboard own_king = child.kings
+            & child.occupied[mover ? 1 : 0];
+        if (
+            own_king == 0
+            || board_attacked_by(
                 child,
-                moving_piece == PAWN,
-                is_capture,
-                delivered_check,
-            });
+                static_cast<int>(std::countr_zero(own_king)),
+                !mover
+            )
+        ) {
+            continue;
         }
+        const int moving_piece = piece_type_at(evaluation, move.from);
+        const bool en_passant = move.required_ep_square >= 0
+            && moving_piece == PAWN
+            && move.to == move.required_ep_square
+            && (position.occupied[0] & bit(move.to)) == 0
+            && (position.occupied[1] & bit(move.to)) == 0;
+        const bool is_capture = en_passant || (enemy & bit(move.to)) != 0;
+        const Bitboard opponent_king = child.kings
+            & child.occupied[(!mover) ? 1 : 0];
+        const bool delivered_check = opponent_king != 0
+            && board_attacked_by(
+                child,
+                static_cast<int>(std::countr_zero(opponent_king)),
+                mover
+            );
+        legal.push_back(ExpandedMove{
+            LegalMove{
+                move_uci(move),
+                move.from,
+                move.to,
+                move.promotion,
+                move.required_ep_square,
+            },
+            child,
+            moving_piece == PAWN,
+            is_capture,
+            delivered_check,
+        });
     }
     std::sort(
         legal.begin(),
@@ -1277,6 +1505,118 @@ bool has_legal_move(
 namespace {
 
 using NativeSeriesOutcome = CompleteSeriesOutcome;
+
+enum class TacticalKind : std::uint8_t {
+    Mate = 0,
+    Check = 1,
+    Promotion = 2,
+    Capture = 3,
+};
+
+struct TacticalOpportunity {
+    TacticalKind kind;
+    std::string signature;
+
+    bool operator==(const TacticalOpportunity&) const = default;
+
+    bool operator<(const TacticalOpportunity& other) const noexcept {
+        if (kind != other.kind) {
+            return kind < other.kind;
+        }
+        return signature < other.signature;
+    }
+};
+
+struct TacticalMoveSummary {
+    std::int64_t checks = 0;
+    std::int64_t immediate_mates = 0;
+    std::int64_t captures = 0;
+    std::int64_t promotions = 0;
+    std::vector<TacticalOpportunity> opportunities;
+};
+
+[[nodiscard]] TacticalMoveSummary summarize_tactical_moves(
+    const BoardState& board,
+    bool collect_opportunities
+) {
+    TacticalMoveSummary summary;
+    const bool mover = board.white_to_move;
+    const Bitboard enemy = board.occupied[(!mover) ? 1 : 0];
+    const Position evaluation = evaluation_position(board);
+    for (const Move& move : pseudo_moves(board, {})) {
+        BoardState child = apply_move(board, move);
+        const Bitboard own_king = child.kings
+            & child.occupied[mover ? 1 : 0];
+        if (
+            own_king == 0
+            || board_attacked_by(
+                child,
+                static_cast<int>(std::countr_zero(own_king)),
+                !mover
+            )
+        ) {
+            continue;
+        }
+
+        const int moving_piece = piece_type_at(evaluation, move.from);
+        const bool is_pawn_move = moving_piece == PAWN;
+        const bool en_passant = move.required_ep_square >= 0
+            && is_pawn_move
+            && move.to == move.required_ep_square
+            && (board.occupied[0] & bit(move.to)) == 0
+            && (board.occupied[1] & bit(move.to)) == 0;
+        const bool is_capture = en_passant || (enemy & bit(move.to)) != 0;
+        summary.captures += is_capture ? 1 : 0;
+        summary.promotions += move.promotion != 0 ? 1 : 0;
+
+        std::string signature;
+        bool signature_ready = false;
+        const auto add_opportunity = [&](TacticalKind kind) {
+            if (!collect_opportunities) {
+                return;
+            }
+            if (!signature_ready) {
+                signature = move_uci(move);
+                signature_ready = true;
+            }
+            summary.opportunities.push_back(TacticalOpportunity{
+                kind,
+                signature,
+            });
+        };
+
+        const Bitboard opponent_king = child.kings
+            & child.occupied[(!mover) ? 1 : 0];
+        const bool delivered_check = opponent_king != 0
+            && board_attacked_by(
+                child,
+                static_cast<int>(std::countr_zero(opponent_king)),
+                mover
+            );
+        if (delivered_check) {
+            ++summary.checks;
+            std::vector<int> child_ep_targets;
+            if (is_pawn_move && std::abs(move.to - move.from) == 16) {
+                child_ep_targets.push_back((move.from + move.to) / 2);
+            }
+            const bool mate = !has_legal_move(child, child_ep_targets);
+            summary.immediate_mates += mate ? 1 : 0;
+            add_opportunity(mate ? TacticalKind::Mate : TacticalKind::Check);
+        }
+        if (move.promotion != 0) {
+            add_opportunity(TacticalKind::Promotion);
+        }
+        if (is_capture) {
+            add_opportunity(TacticalKind::Capture);
+        }
+    }
+    return summary;
+}
+
+struct FrontierInspection {
+    std::int64_t score = 0;
+    std::vector<TacticalOpportunity> opportunities;
+};
 
 struct BoardIdentity {
     std::array<Bitboard, 9> words;
@@ -1369,6 +1709,7 @@ struct NativeFrontierState {
     std::uint64_t path_count = 1;
     std::int64_t halfmove_clock = 0;
     std::int64_t fullmove_number = 1;
+    std::vector<TacticalOpportunity> tactical_provenance;
 };
 
 struct NativeCompletedSeries {
@@ -1382,6 +1723,7 @@ struct NativeCompletedSeries {
     NativeSeriesOutcome outcome = NativeSeriesOutcome::None;
     bool ended_by_check = false;
     std::uint64_t path_count = 1;
+    std::vector<TacticalOpportunity> tactical_provenance;
 };
 
 struct NativeMergedSeries {
@@ -1395,9 +1737,32 @@ struct NativeGenerationContext {
     std::vector<NativeCompletedSeries> completed;
     std::unordered_map<
         FrontierScoreIdentity,
-        std::int64_t,
+        FrontierInspection,
         FrontierScoreIdentityHash
     > frontier_score_cache;
+    std::uint64_t deadline_poll_counter = 0;
+
+    bool deadline_reached(bool force = false) {
+        if (!request.deadline.has_value()) {
+            return false;
+        }
+        // A clock read per generated chess position is measurable at the
+        // smallest series. Poll every 16 safe expansion boundaries instead;
+        // force is used before and after whole-kernel phases.
+        ++deadline_poll_counter;
+        if (
+            !force
+            && (deadline_poll_counter & static_cast<std::uint64_t>(15)) != 0
+        ) {
+            return false;
+        }
+        if (std::chrono::steady_clock::now() < *request.deadline) {
+            return false;
+        }
+        response.status = SeriesGenerationStatus::Deadline;
+        response.message = "native complete-series deadline reached";
+        return true;
+    }
 
     bool unsupported(const char* message) {
         response.status = SeriesGenerationStatus::Unsupported;
@@ -1413,7 +1778,31 @@ struct NativeGenerationContext {
         return true;
     }
 
+    bool add_path_count(std::uint64_t& target, std::uint64_t amount) {
+        if (target <= std::numeric_limits<std::uint64_t>::max() - amount) {
+            target += amount;
+            return true;
+        }
+        if (
+            request.path_count_overflow_mode
+            != PathCountOverflowMode::Saturate
+        ) {
+            return unsupported("native series path counter overflow");
+        }
+        target = std::numeric_limits<std::uint64_t>::max();
+        if (
+            response.stats.path_count_saturations
+            != std::numeric_limits<std::uint64_t>::max()
+        ) {
+            ++response.stats.path_count_saturations;
+        }
+        return true;
+    }
+
     bool charge_position() {
+        if (deadline_reached()) {
+            return false;
+        }
         auto& stats = response.stats;
         if (
             request.max_positions.has_value()
@@ -1431,6 +1820,9 @@ struct NativeGenerationContext {
     }
 
     bool charge_frontier_score() {
+        if (deadline_reached()) {
+            return false;
+        }
         auto& stats = response.stats;
         if (
             request.max_positions.has_value()
@@ -1503,12 +1895,12 @@ bool update_frontier_clocks(
     return true;
 }
 
-[[nodiscard]] std::optional<std::int64_t> calculate_frontier_score(
+[[nodiscard]] std::optional<FrontierInspection> calculate_frontier_inspection(
     const CompleteSeriesRequest& request,
     const NativeFrontierState& state
 ) {
     if (!request.frontier_weights.has_value()) {
-        return 0;
+        return FrontierInspection{};
     }
     const BoardState& board = state.board;
     const Position position{
@@ -1527,43 +1919,21 @@ bool update_frontier_clocks(
         return std::nullopt;
     }
 
-    std::int64_t checks = 0;
-    std::int64_t immediate_mates = 0;
-    std::int64_t captures = 0;
-    std::int64_t promotions = 0;
-    for (const auto& expanded : expand_legal_move_variants(board, {})) {
-        checks += expanded.delivered_check ? 1 : 0;
-        captures += expanded.is_capture ? 1 : 0;
-        promotions += expanded.move.promotion != 0 ? 1 : 0;
-        if (expanded.delivered_check) {
-            std::vector<int> child_ep_targets;
-            if (
-                expanded.is_pawn_move
-                && std::abs(
-                    expanded.move.to_square - expanded.move.from_square
-                ) == 16
-            ) {
-                child_ep_targets.push_back(
-                    (expanded.move.from_square + expanded.move.to_square) / 2
-                );
-            }
-            immediate_mates += !has_legal_move(
-                expanded.child,
-                child_ep_targets
-            ) ? 1 : 0;
-        }
-    }
+    auto tactical_summary = summarize_tactical_moves(
+        board,
+        request.tactical_protection
+    );
 
     std::int64_t tactical = 0;
     std::int64_t term = 0;
     if (
-        !checked_multiply(immediate_mates, 5'000'000, term)
+        !checked_multiply(tactical_summary.immediate_mates, 5'000'000, term)
         || !checked_add(tactical, term, tactical)
-        || !checked_multiply(checks, 50'000, term)
+        || !checked_multiply(tactical_summary.checks, 50'000, term)
         || !checked_add(tactical, term, tactical)
-        || !checked_multiply(promotions, 2'000, term)
+        || !checked_multiply(tactical_summary.promotions, 2'000, term)
         || !checked_add(tactical, term, tactical)
-        || !checked_multiply(captures, 100, term)
+        || !checked_multiply(tactical_summary.captures, 100, term)
         || !checked_add(tactical, term, tactical)
     ) {
         return std::nullopt;
@@ -1576,7 +1946,21 @@ bool update_frontier_clocks(
     ) {
         return std::nullopt;
     }
-    return combined;
+    std::sort(
+        tactical_summary.opportunities.begin(),
+        tactical_summary.opportunities.end()
+    );
+    tactical_summary.opportunities.erase(
+        std::unique(
+            tactical_summary.opportunities.begin(),
+            tactical_summary.opportunities.end()
+        ),
+        tactical_summary.opportunities.end()
+    );
+    return FrontierInspection{
+        combined,
+        std::move(tactical_summary.opportunities),
+    };
 }
 
 bool frontier_score(
@@ -1595,18 +1979,18 @@ bool frontier_score(
     };
     const auto cached = context.frontier_score_cache.find(key);
     if (cached != context.frontier_score_cache.end()) {
-        score = cached->second;
+        score = cached->second.score;
         return true;
     }
     if (!context.charge_frontier_score()) {
         return false;
     }
-    const auto calculated = calculate_frontier_score(context.request, state);
+    auto calculated = calculate_frontier_inspection(context.request, state);
     if (!calculated.has_value()) {
         return context.unsupported("native frontier score overflow");
     }
-    score = *calculated;
-    context.frontier_score_cache.emplace(key, score);
+    score = calculated->score;
+    context.frontier_score_cache.emplace(key, std::move(*calculated));
     return true;
 }
 
@@ -1620,12 +2004,128 @@ bool order_frontier(
     };
     std::vector<RankedState> ranked;
     ranked.reserve(frontier.size());
-    for (auto& item : frontier) {
-        std::int64_t score = 0;
-        if (!frontier_score(context, item, score)) {
+    constexpr std::size_t PARALLEL_SCORE_THRESHOLD = 64;
+    const bool parallel =
+        context.request.worker_threads > 1
+        && context.request.frontier_weights.has_value()
+        && frontier.size() >= PARALLEL_SCORE_THRESHOLD;
+    if (!parallel) {
+        for (auto& item : frontier) {
+            if (context.deadline_reached()) {
+                return false;
+            }
+            std::int64_t score = 0;
+            if (!frontier_score(context, item, score)) {
+                return false;
+            }
+            ranked.push_back(RankedState{std::move(item), score});
+        }
+    } else {
+        struct PendingScore {
+            FrontierScoreIdentity identity;
+            const NativeFrontierState* state;
+        };
+        const std::size_t no_pending = std::numeric_limits<std::size_t>::max();
+        std::vector<std::int64_t> scores(frontier.size(), 0);
+        std::vector<std::size_t> score_sources(frontier.size(), no_pending);
+        std::vector<PendingScore> pending;
+        std::unordered_map<
+            FrontierScoreIdentity,
+            std::size_t,
+            FrontierScoreIdentityHash
+        > pending_indices;
+        pending.reserve(frontier.size());
+        pending_indices.reserve(frontier.size());
+
+        // Preserve the serial cache/work-accounting order exactly. Only the
+        // pure score calculation for unique misses executes concurrently.
+        for (std::size_t index = 0; index < frontier.size(); ++index) {
+            if (context.deadline_reached()) {
+                return false;
+            }
+            const auto& item = frontier[index];
+            const FrontierScoreIdentity identity{
+                board_identity(item.board),
+                item.halfmove_clock,
+                item.fullmove_number,
+            };
+            const auto cached = context.frontier_score_cache.find(identity);
+            if (cached != context.frontier_score_cache.end()) {
+                scores[index] = cached->second.score;
+                continue;
+            }
+            const auto [found, inserted] = pending_indices.emplace(
+                identity,
+                pending.size()
+            );
+            score_sources[index] = found->second;
+            if (!inserted) {
+                continue;
+            }
+            if (!context.charge_frontier_score()) {
+                return false;
+            }
+            pending.push_back(PendingScore{identity, &item});
+        }
+
+        std::vector<std::optional<FrontierInspection>> calculated(
+            pending.size()
+        );
+        std::atomic<bool> deadline_cancelled{false};
+        BoundedNativePool::instance().run(
+            pending.size(),
+            context.request.worker_threads,
+            [&](std::size_t index) {
+                if (
+                    deadline_cancelled.load(std::memory_order_relaxed)
+                    || (
+                        context.request.deadline.has_value()
+                        && std::chrono::steady_clock::now()
+                            >= *context.request.deadline
+                    )
+                ) {
+                    deadline_cancelled.store(true, std::memory_order_relaxed);
+                    return;
+                }
+                calculated[index] = calculate_frontier_inspection(
+                    context.request,
+                    *pending[index].state
+                );
+            }
+        );
+        if (deadline_cancelled.load(std::memory_order_relaxed)) {
+            static_cast<void>(context.deadline_reached(true));
             return false;
         }
-        ranked.push_back(RankedState{std::move(item), score});
+        if (context.deadline_reached(true)) {
+            return false;
+        }
+        for (std::size_t index = 0; index < pending.size(); ++index) {
+            if (!calculated[index].has_value()) {
+                return context.unsupported("native frontier score overflow");
+            }
+            context.frontier_score_cache.emplace(
+                pending[index].identity,
+                std::move(*calculated[index])
+            );
+        }
+        for (std::size_t index = 0; index < frontier.size(); ++index) {
+            if (score_sources[index] != no_pending) {
+                const auto cached = context.frontier_score_cache.find(
+                    pending[score_sources[index]].identity
+                );
+                if (cached == context.frontier_score_cache.end()) {
+                    return context.unsupported(
+                        "native frontier inspection cache miss"
+                    );
+                }
+                scores[index] = cached->second.score;
+            }
+            ranked.push_back(RankedState{
+                std::move(frontier[index]),
+                scores[index],
+            });
+        }
     }
     const bool mover = context.request.board.white_to_move;
     std::sort(
@@ -1736,30 +2236,35 @@ bool record_completed(
     NativeCompletedSeries completed
 ) {
     auto& stats = context.response.stats;
-    if (!context.add(stats.raw_series, completed.path_count)) {
+    if (!context.add_path_count(stats.raw_series, completed.path_count)) {
         return false;
     }
     if (
         completed.ended_by_check
-        && !context.add(stats.checking_series, completed.path_count)
+        && !context.add_path_count(stats.checking_series, completed.path_count)
     ) {
         return false;
     }
     if (
         completed.outcome == NativeSeriesOutcome::Checkmate
-        && !context.add(stats.checkmates, completed.path_count)
+        && !context.add_path_count(stats.checkmates, completed.path_count)
     ) {
         return false;
     }
     if (
         completed.outcome == NativeSeriesOutcome::Stalemate
-        && !context.add(stats.stalemates, completed.path_count)
+        && !context.add_path_count(stats.stalemates, completed.path_count)
     ) {
         return false;
     }
     context.completed.push_back(std::move(completed));
     return true;
 }
+
+[[nodiscard]] std::string tactical_signature(
+    std::size_t ply,
+    const std::string& uci
+);
 
 [[nodiscard]] NativeCompletedSeries finish_series(
     const CompleteSeriesRequest& request,
@@ -1783,6 +2288,26 @@ bool record_completed(
         quiet_series,
         delivered_check
     );
+    std::vector<TacticalOpportunity> tactical_provenance;
+    if (request.tactical_protection) {
+        tactical_provenance = state.tactical_provenance;
+        if (delivered_check && !moves.empty()) {
+            tactical_provenance.push_back(TacticalOpportunity{
+                outcome == NativeSeriesOutcome::Checkmate
+                    ? TacticalKind::Mate
+                    : TacticalKind::Check,
+                tactical_signature(moves.size(), moves.back()),
+            });
+            std::sort(tactical_provenance.begin(), tactical_provenance.end());
+            tactical_provenance.erase(
+                std::unique(
+                    tactical_provenance.begin(),
+                    tactical_provenance.end()
+                ),
+                tactical_provenance.end()
+            );
+        }
+    }
     return NativeCompletedSeries{
         board,
         std::move(moves),
@@ -1794,6 +2319,7 @@ bool record_completed(
         outcome,
         delivered_check,
         state.path_count,
+        std::move(tactical_provenance),
     };
 }
 
@@ -1814,7 +2340,43 @@ bool record_completed(
             : NativeSeriesOutcome::Stalemate,
         false,
         state.path_count,
+        request.tactical_protection
+            ? state.tactical_provenance
+            : std::vector<TacticalOpportunity>{},
     };
+}
+
+void record_played_tactical_provenance(
+    NativeFrontierState& state,
+    const ExpandedMove& expanded
+) {
+    const std::string signature = tactical_signature(
+        state.moves.size(),
+        expanded.move.uci
+    );
+    if (expanded.move.promotion != 0) {
+        state.tactical_provenance.push_back(TacticalOpportunity{
+            TacticalKind::Promotion,
+            signature,
+        });
+    }
+    if (expanded.is_capture) {
+        state.tactical_provenance.push_back(TacticalOpportunity{
+            TacticalKind::Capture,
+            signature,
+        });
+    }
+    std::sort(
+        state.tactical_provenance.begin(),
+        state.tactical_provenance.end()
+    );
+    state.tactical_provenance.erase(
+        std::unique(
+            state.tactical_provenance.begin(),
+            state.tactical_provenance.end()
+        ),
+        state.tactical_provenance.end()
+    );
 }
 
 void update_pending_ep_targets(
@@ -1860,6 +2422,15 @@ void update_pending_ep_targets(
     };
 }
 
+[[nodiscard]] std::string tactical_signature(
+    std::size_t ply,
+    const std::string& uci
+) {
+    return std::to_string(ply) + ":" + uci;
+}
+
+constexpr std::size_t TACTICAL_FRONTIER_RESERVE_MAX = 64;
+
 bool bound_frontier(
     NativeGenerationContext& context,
     std::vector<NativeFrontierState>& frontier
@@ -1890,6 +2461,9 @@ bool bound_frontier(
     std::unordered_map<std::string, std::size_t> group_indices;
     const std::size_t prefix_length = context.request.required_prefix.size();
     for (const auto& item : frontier) {
+        if (context.deadline_reached()) {
+            return false;
+        }
         const std::size_t group_index = std::min(
             prefix_length,
             item.moves.size() - 1
@@ -1937,6 +2511,119 @@ bool bound_frontier(
             }
         }
     }
+
+    if (context.request.tactical_protection) {
+        struct Representative {
+            TacticalOpportunity opportunity;
+            std::size_t rank;
+            const NativeFrontierState* state;
+        };
+        std::map<TacticalOpportunity, Representative> representatives;
+        for (std::size_t rank = 0; rank < frontier.size(); ++rank) {
+            if (context.deadline_reached()) {
+                return false;
+            }
+            const auto& item = frontier[rank];
+            std::vector<TacticalOpportunity> opportunities =
+                item.tactical_provenance;
+            const FrontierScoreIdentity identity{
+                board_identity(item.board),
+                item.halfmove_clock,
+                item.fullmove_number,
+            };
+            const auto inspected = context.frontier_score_cache.find(identity);
+            if (inspected == context.frontier_score_cache.end()) {
+                return context.unsupported(
+                    "native tactical frontier inspection cache miss"
+                );
+            }
+            const std::size_t next_ply = item.moves.size() + 1;
+            for (const auto& opportunity : inspected->second.opportunities) {
+                opportunities.push_back(TacticalOpportunity{
+                    opportunity.kind,
+                    tactical_signature(next_ply, opportunity.signature),
+                });
+            }
+            std::sort(opportunities.begin(), opportunities.end());
+            opportunities.erase(
+                std::unique(opportunities.begin(), opportunities.end()),
+                opportunities.end()
+            );
+            for (const auto& opportunity : opportunities) {
+                representatives.emplace(
+                    opportunity,
+                    Representative{opportunity, rank, &item}
+                );
+            }
+        }
+
+        std::vector<Representative> protected_states;
+        protected_states.reserve(representatives.size());
+        for (const auto& [opportunity, representative] : representatives) {
+            static_cast<void>(opportunity);
+            protected_states.push_back(representative);
+        }
+        std::sort(
+            protected_states.begin(),
+            protected_states.end(),
+            [](const Representative& left, const Representative& right) {
+                if (left.opportunity.kind != right.opportunity.kind) {
+                    return left.opportunity.kind < right.opportunity.kind;
+                }
+                if (left.rank != right.rank) {
+                    return left.rank < right.rank;
+                }
+                if (
+                    left.opportunity.signature
+                    != right.opportunity.signature
+                ) {
+                    return left.opportunity.signature
+                        < right.opportunity.signature;
+                }
+                return left.state->moves < right.state->moves;
+            }
+        );
+
+        std::set<std::vector<std::string>> reserve_candidates;
+        for (const auto& representative : protected_states) {
+            if (!selected_moves.contains(representative.state->moves)) {
+                reserve_candidates.insert(representative.state->moves);
+            }
+        }
+        const std::size_t reserve_limit = std::min(
+            std::min(
+                cap,
+                TACTICAL_FRONTIER_RESERVE_MAX / 2
+            ) * 2,
+            TACTICAL_FRONTIER_RESERVE_MAX
+        );
+        std::size_t extras = 0;
+        for (const auto& representative : protected_states) {
+            if (selected_moves.contains(representative.state->moves)) {
+                continue;
+            }
+            selected.push_back(*representative.state);
+            selected_moves.insert(representative.state->moves);
+            ++extras;
+            if (extras == reserve_limit) {
+                break;
+            }
+        }
+        if (
+            !context.add(
+                stats.tactical_frontier_states_retained,
+                static_cast<std::uint64_t>(extras)
+            )
+            || !context.add(
+                stats.tactical_frontier_reserve_drops,
+                static_cast<std::uint64_t>(
+                    reserve_candidates.size() - extras
+                )
+            )
+        ) {
+            return false;
+        }
+    }
     if (!order_frontier(context, selected)) {
         return false;
     }
@@ -1946,9 +2633,12 @@ bool bound_frontier(
     );
     std::uint64_t discarded_paths = 0;
     for (const auto& item : frontier) {
+        if (context.deadline_reached()) {
+            return false;
+        }
         if (
             !selected_moves.contains(item.moves)
-            && !context.add(discarded_paths, item.path_count)
+            && !context.add_path_count(discarded_paths, item.path_count)
         ) {
             return false;
         }
@@ -1956,7 +2646,7 @@ bool bound_frontier(
     if (
         !context.add(stats.frontier_prunes, 1)
         || !context.add(stats.frontier_states_pruned, discarded_count)
-        || !context.add(stats.frontier_paths_pruned, discarded_paths)
+        || !context.add_path_count(stats.frontier_paths_pruned, discarded_paths)
     ) {
         return false;
     }
@@ -1964,27 +2654,35 @@ bool bound_frontier(
     return true;
 }
 
-bool calculate_final_series_score(
-    NativeGenerationContext& context,
-    const NativeCompletedSeries& series,
-    std::int64_t& score
+struct FinalScoreCalculation {
+    std::int64_t score = 0;
+    const char* error = nullptr;
+};
+
+FinalScoreCalculation calculate_final_series_score_value(
+    const CompleteSeriesRequest& request,
+    const NativeCompletedSeries& series
 ) {
-    const auto& selection = *context.request.final_series_score;
+    const auto& selection = *request.final_series_score;
     if (series.outcome == NativeSeriesOutcome::Checkmate) {
-        const bool mover = context.request.board.white_to_move;
+        const bool mover = request.board.white_to_move;
         const bool winner = series.ended_by_check ? mover : !mover;
+        std::int64_t score = 0;
         const bool valid = winner == WHITE
             ? checked_subtract(selection.mate_score, selection.ply_from_root, score)
             : checked_subtract(selection.ply_from_root, selection.mate_score, score);
         return valid
-            || context.unsupported("native final mate-distance score overflow");
+            ? FinalScoreCalculation{score, nullptr}
+            : FinalScoreCalculation{
+                0,
+                "native final mate-distance score overflow",
+            };
     }
     if (
         series.outcome == NativeSeriesOutcome::Stalemate
         || series.outcome == NativeSeriesOutcome::TenSeriesDraw
     ) {
-        score = 0;
-        return true;
+        return FinalScoreCalculation{0, nullptr};
     }
 
     const BoardState& board = series.board;
@@ -2001,10 +2699,37 @@ bool calculate_final_series_score(
     };
     const auto evaluated = fast_evaluate(position, selection.weights);
     if (!evaluated.has_value()) {
-        return context.unsupported("native final static score overflow");
+        return FinalScoreCalculation{
+            0,
+            "native final static score overflow",
+        };
     }
-    score = *evaluated;
+    return FinalScoreCalculation{*evaluated, nullptr};
+}
+
+bool calculate_final_series_score(
+    NativeGenerationContext& context,
+    const NativeCompletedSeries& series,
+    std::int64_t& score
+) {
+    const auto calculated = calculate_final_series_score_value(
+        context.request,
+        series
+    );
+    if (calculated.error != nullptr) {
+        return context.unsupported(calculated.error);
+    }
+    score = calculated.score;
     return true;
+}
+
+[[nodiscard]] std::vector<TacticalOpportunity> complete_tactical_provenance(
+    const NativeCompletedSeries& series
+) {
+    std::vector<TacticalOpportunity> result = series.tactical_provenance;
+    std::sort(result.begin(), result.end());
+    result.erase(std::unique(result.begin(), result.end()), result.end());
+    return result;
 }
 
 bool merge_complete_series(NativeGenerationContext& context) {
@@ -2015,6 +2740,9 @@ bool merge_complete_series(NativeGenerationContext& context) {
         CompleteIdentityHash
     > indices;
     for (auto& completed : context.completed) {
+        if (context.deadline_reached()) {
+            return false;
+        }
         const CompleteIdentity key = complete_identity(completed);
         const auto [found, inserted] = indices.emplace(key, merged.size());
         if (inserted) {
@@ -2026,7 +2754,7 @@ bool merge_complete_series(NativeGenerationContext& context) {
             continue;
         }
         auto& incumbent = merged[found->second];
-        if (!context.add(incumbent.path_count, completed.path_count)) {
+        if (!context.add_path_count(incumbent.path_count, completed.path_count)) {
             return false;
         }
         const bool prefer_candidate =
@@ -2035,6 +2763,30 @@ bool merge_complete_series(NativeGenerationContext& context) {
                 completed.moves.size() == incumbent.representative.moves.size()
                 && completed.moves < incumbent.representative.moves
             );
+        if (context.request.tactical_protection) {
+            std::vector<TacticalOpportunity> combined_provenance =
+                incumbent.representative.tactical_provenance;
+            combined_provenance.insert(
+                combined_provenance.end(),
+                completed.tactical_provenance.begin(),
+                completed.tactical_provenance.end()
+            );
+            std::sort(combined_provenance.begin(), combined_provenance.end());
+            combined_provenance.erase(
+                std::unique(
+                    combined_provenance.begin(),
+                    combined_provenance.end()
+                ),
+                combined_provenance.end()
+            );
+            if (prefer_candidate) {
+                completed.tactical_provenance = std::move(combined_provenance);
+            } else {
+                incumbent.representative.tactical_provenance = std::move(
+                    combined_provenance
+                );
+            }
+        }
         if (prefer_candidate) {
             const std::uint64_t total_paths = incumbent.path_count;
             incumbent.representative = std::move(completed);
@@ -2053,16 +2805,65 @@ bool merge_complete_series(NativeGenerationContext& context) {
         };
         std::vector<RankedSeries> ranked;
         ranked.reserve(merged.size());
-        for (auto& item : merged) {
-            std::int64_t score = 0;
-            if (!calculate_final_series_score(
-                    context,
-                    item.representative,
-                    score
-                )) {
+        constexpr std::size_t PARALLEL_FINAL_SCORE_THRESHOLD = 64;
+        if (
+            context.request.worker_threads <= 1
+            || merged.size() < PARALLEL_FINAL_SCORE_THRESHOLD
+        ) {
+            for (auto& item : merged) {
+                if (context.deadline_reached()) {
+                    return false;
+                }
+                std::int64_t score = 0;
+                if (!calculate_final_series_score(
+                        context,
+                        item.representative,
+                        score
+                    )) {
+                    return false;
+                }
+                ranked.push_back(RankedSeries{std::move(item), score});
+            }
+        } else {
+            std::vector<FinalScoreCalculation> calculated(merged.size());
+            std::atomic<bool> deadline_cancelled{false};
+            BoundedNativePool::instance().run(
+                merged.size(),
+                context.request.worker_threads,
+                [&](std::size_t index) {
+                    if (
+                        deadline_cancelled.load(std::memory_order_relaxed)
+                        || (
+                            context.request.deadline.has_value()
+                            && std::chrono::steady_clock::now()
+                                >= *context.request.deadline
+                        )
+                    ) {
+                        deadline_cancelled.store(true, std::memory_order_relaxed);
+                        return;
+                    }
+                    calculated[index] = calculate_final_series_score_value(
+                        context.request,
+                        merged[index].representative
+                    );
+                }
+            );
+            if (deadline_cancelled.load(std::memory_order_relaxed)) {
+                static_cast<void>(context.deadline_reached(true));
                 return false;
             }
-            ranked.push_back(RankedSeries{std::move(item), score});
+            if (context.deadline_reached(true)) {
+                return false;
+            }
+            for (std::size_t index = 0; index < merged.size(); ++index) {
+                if (calculated[index].error != nullptr) {
+                    return context.unsupported(calculated[index].error);
+                }
+                ranked.push_back(RankedSeries{
+                    std::move(merged[index]),
+                    calculated[index].score,
+                });
+            }
         }
         const bool mover = context.request.board.white_to_move;
         std::sort(
@@ -2078,13 +2879,114 @@ bool merge_complete_series(NativeGenerationContext& context) {
                     < right.series.representative.moves;
             }
         );
+        const std::size_t final_cap = static_cast<std::size_t>(
+            context.request.final_series_score->max_returned_series
+        );
         if (
-            ranked.size()
-            > context.request.final_series_score->max_returned_series
+            ranked.size() > final_cap
+            && context.request.tactical_protection
         ) {
-            ranked.resize(static_cast<std::size_t>(
-                context.request.final_series_score->max_returned_series
-            ));
+            struct FinalRepresentative {
+                TacticalOpportunity opportunity;
+                std::size_t rank;
+            };
+            std::map<TacticalOpportunity, FinalRepresentative> representatives;
+            for (std::size_t rank = 0; rank < ranked.size(); ++rank) {
+                for (const auto& opportunity : complete_tactical_provenance(
+                        ranked[rank].series.representative
+                    )) {
+                    representatives.emplace(
+                        opportunity,
+                        FinalRepresentative{opportunity, rank}
+                    );
+                }
+            }
+            std::vector<FinalRepresentative> protected_series;
+            protected_series.reserve(representatives.size());
+            std::set<std::size_t> tactical_candidate_ranks;
+            for (const auto& [opportunity, representative] : representatives) {
+                static_cast<void>(opportunity);
+                protected_series.push_back(representative);
+                tactical_candidate_ranks.insert(representative.rank);
+            }
+            std::sort(
+                protected_series.begin(),
+                protected_series.end(),
+                [&ranked](
+                    const FinalRepresentative& left,
+                    const FinalRepresentative& right
+                ) {
+                    if (left.opportunity.kind != right.opportunity.kind) {
+                        return left.opportunity.kind < right.opportunity.kind;
+                    }
+                    if (left.rank != right.rank) {
+                        return left.rank < right.rank;
+                    }
+                    if (
+                        left.opportunity.signature
+                        != right.opportunity.signature
+                    ) {
+                        return left.opportunity.signature
+                            < right.opportunity.signature;
+                    }
+                    return ranked[left.rank].series.representative.moves
+                        < ranked[right.rank].series.representative.moves;
+                }
+            );
+            std::vector<bool> selected(ranked.size(), false);
+            std::size_t selected_count = 0;
+            for (const auto& representative : protected_series) {
+                if (selected[representative.rank]) {
+                    continue;
+                }
+                selected[representative.rank] = true;
+                if (++selected_count == final_cap) {
+                    break;
+                }
+            }
+            for (
+                std::size_t rank = 0;
+                rank < ranked.size() && selected_count < final_cap;
+                ++rank
+            ) {
+                if (selected[rank]) {
+                    continue;
+                }
+                selected[rank] = true;
+                ++selected_count;
+            }
+            std::uint64_t tactical_retained = 0;
+            std::uint64_t tactical_drops = 0;
+            for (const std::size_t rank : tactical_candidate_ranks) {
+                if (!selected[rank]) {
+                    ++tactical_drops;
+                } else if (rank >= final_cap) {
+                    ++tactical_retained;
+                }
+            }
+            if (
+                !context.add(
+                    stats.tactical_final_series_retained,
+                    tactical_retained
+                )
+                || !context.add(
+                    stats.tactical_final_reserve_drops,
+                    tactical_drops
+                )
+            ) {
+                return false;
+            }
+            std::vector<RankedSeries> retained;
+            retained.reserve(final_cap);
+            for (std::size_t rank = 0; rank < ranked.size(); ++rank) {
+                if (selected[rank]) {
+                    retained.push_back(std::move(ranked[rank]));
+                }
+            }
+            ranked = std::move(retained);
+        }
+        if (ranked.size() > final_cap) {
+            ranked.resize(final_cap);
         }
         context.response.series.reserve(ranked.size());
         for (auto& item : ranked) {
@@ -2186,6 +3088,9 @@ bool replay_required_prefix(
             || selected->is_pawn_move
             || selected->is_capture;
         root.moves.push_back(selected->move.uci);
+        if (request.tactical_protection) {
+            record_played_tactical_provenance(root, *selected);
+        }
         const bool series_finished = selected->delivered_check
             || root.moves.size() == static_cast<std::uint64_t>(request.series_number);
         if (series_finished) {
@@ -2236,13 +3141,24 @@ CompleteSeriesResponse generate_complete_series(
         || request.series_number == std::numeric_limits<std::int64_t>::max()
         || request.quiet_series < 0
         || request.quiet_series == std::numeric_limits<std::int64_t>::max()
+        || request.worker_threads < 1
+        || request.worker_threads > 64
         || request.halfmove_clock < 0
         || request.fullmove_number < 1
+        || (
+            request.path_count_overflow_mode != PathCountOverflowMode::Reject
+            && request.path_count_overflow_mode
+                != PathCountOverflowMode::Saturate
+        )
         || (
             request.max_frontier_states.has_value()
             && *request.max_frontier_states == 0
         )
         || (request.max_positions.has_value() && *request.max_positions == 0)
+        || (
+            request.tactical_protection
+            && !request.frontier_weights.has_value()
+        )
         || (
             request.final_series_score.has_value()
             && (
@@ -2254,6 +3170,10 @@ CompleteSeriesResponse generate_complete_series(
     ) {
         context.response.status = SeriesGenerationStatus::Unsupported;
         context.response.message = "native complete-series request is out of range";
+        return context.response;
+    }
+
+    if (context.deadline_reached(true)) {
         return context.response;
     }
 
@@ -2283,22 +3203,27 @@ CompleteSeriesResponse generate_complete_series(
             std::size_t,
             PartialIdentityHash
         > indices;
-        for (const auto& item : frontier) {
-            if (!context.charge_position()) {
-                return std::move(context.response);
-            }
-            const auto variants = expand_legal_move_variants(
-                item.board,
-                item.moves.empty() ? request.ep_targets : std::vector<int>{}
-            );
+        const auto process_variants = [
+            &context,
+            &following,
+            &indices,
+            &request,
+            mover
+        ](
+            const NativeFrontierState& item,
+            const std::vector<ExpandedMove>& variants
+        ) -> bool {
             if (variants.empty()) {
                 if (!record_completed(context, stuck_series(request, item))) {
-                    return std::move(context.response);
+                    return false;
                 }
-                continue;
+                return true;
             }
 
             for (const auto& expanded : variants) {
+                if (context.deadline_reached()) {
+                    return false;
+                }
                 NativeFrontierState candidate{
                     expanded.child,
                     item.moves,
@@ -2307,11 +3232,17 @@ CompleteSeriesResponse generate_complete_series(
                     item.path_count,
                     item.halfmove_clock,
                     item.fullmove_number,
+                    request.tactical_protection
+                        ? item.tactical_provenance
+                        : std::vector<TacticalOpportunity>{},
                 };
                 if (!update_frontier_clocks(context, candidate, expanded, mover)) {
-                    return std::move(context.response);
+                    return false;
                 }
                 candidate.moves.push_back(expanded.move.uci);
+                if (request.tactical_protection) {
+                    record_played_tactical_provenance(candidate, expanded);
+                }
                 update_pending_ep_targets(
                     candidate.pending_ep_targets,
                     expanded,
@@ -2334,7 +3265,7 @@ CompleteSeriesResponse generate_complete_series(
                                 expanded.delivered_check
                             )
                         )) {
-                        return std::move(context.response);
+                        return false;
                     }
                     continue;
                 }
@@ -2351,14 +3282,129 @@ CompleteSeriesResponse generate_complete_series(
                 }
                 auto& incumbent = following[found->second];
                 std::uint64_t total_paths = incumbent.path_count;
-                if (!context.add(total_paths, candidate.path_count)) {
-                    return std::move(context.response);
+                if (!context.add_path_count(total_paths, candidate.path_count)) {
+                    return false;
                 }
-                if (candidate.moves < incumbent.moves) {
+                const bool prefer_candidate = candidate.moves < incumbent.moves;
+                if (request.tactical_protection) {
+                    std::vector<TacticalOpportunity> combined_provenance =
+                        incumbent.tactical_provenance;
+                    combined_provenance.insert(
+                        combined_provenance.end(),
+                        candidate.tactical_provenance.begin(),
+                        candidate.tactical_provenance.end()
+                    );
+                    std::sort(
+                        combined_provenance.begin(),
+                        combined_provenance.end()
+                    );
+                    combined_provenance.erase(
+                        std::unique(
+                            combined_provenance.begin(),
+                            combined_provenance.end()
+                        ),
+                        combined_provenance.end()
+                    );
+                    if (prefer_candidate) {
+                        candidate.tactical_provenance = std::move(
+                            combined_provenance
+                        );
+                    } else {
+                        incumbent.tactical_provenance = std::move(
+                            combined_provenance
+                        );
+                    }
+                }
+                if (prefer_candidate) {
                     candidate.path_count = total_paths;
                     incumbent = std::move(candidate);
                 } else {
                     incumbent.path_count = total_paths;
+                }
+            }
+            return true;
+        };
+
+        constexpr std::size_t PARALLEL_EXPANSION_THRESHOLD = 8;
+        const bool enough_position_budget =
+            !request.max_positions.has_value()
+            || (
+                context.response.stats.positions_visited
+                    <= *request.max_positions
+                && context.response.stats.frontier_score_positions
+                    <= *request.max_positions
+                        - context.response.stats.positions_visited
+                && frontier.size()
+                    <= *request.max_positions
+                        - context.response.stats.positions_visited
+                        - context.response.stats.frontier_score_positions
+            );
+        const bool parallel_expansion =
+            request.worker_threads > 1
+            && frontier.size() >= PARALLEL_EXPANSION_THRESHOLD
+            && enough_position_budget;
+        if (!parallel_expansion) {
+            for (const auto& item : frontier) {
+                if (!context.charge_position()) {
+                    return std::move(context.response);
+                }
+                const auto variants = expand_legal_move_variants(
+                    item.board,
+                    item.moves.empty()
+                        ? request.ep_targets
+                        : std::vector<int>{}
+                );
+                if (!process_variants(item, variants)) {
+                    return std::move(context.response);
+                }
+            }
+        } else {
+            // Position work is charged in the same stable frontier order as
+            // the serial kernel. Move generation itself is pure, so each
+            // frontier item can then be expanded independently and consumed
+            // in its original index order without changing merge winners,
+            // path counts, or returned series ordering.
+            for (std::size_t index = 0; index < frontier.size(); ++index) {
+                if (!context.charge_position()) {
+                    return std::move(context.response);
+                }
+            }
+            std::vector<std::vector<ExpandedMove>> expanded(frontier.size());
+            std::atomic<bool> deadline_cancelled{false};
+            BoundedNativePool::instance().run(
+                frontier.size(),
+                request.worker_threads,
+                [&](std::size_t index) {
+                    if (
+                        deadline_cancelled.load(std::memory_order_relaxed)
+                        || (
+                            request.deadline.has_value()
+                            && std::chrono::steady_clock::now()
+                                >= *request.deadline
+                        )
+                    ) {
+                        deadline_cancelled.store(true, std::memory_order_relaxed);
+                        return;
+                    }
+                    const auto& item = frontier[index];
+                    expanded[index] = expand_legal_move_variants(
+                        item.board,
+                        item.moves.empty()
+                            ? request.ep_targets
+                            : std::vector<int>{}
+                    );
+                }
+            );
+            if (deadline_cancelled.load(std::memory_order_relaxed)) {
+                static_cast<void>(context.deadline_reached(true));
+                return std::move(context.response);
+            }
+            if (context.deadline_reached(true)) {
+                return std::move(context.response);
+            }
+            for (std::size_t index = 0; index < frontier.size(); ++index) {
+                if (!process_variants(frontier[index], expanded[index])) {
+                    return std::move(context.response);
                 }
             }
         }
@@ -2369,6 +3415,10 @@ CompleteSeriesResponse generate_complete_series(
     }
 
     if (!merge_complete_series(context)) {
+        return std::move(context.response);
+    }
+    if (context.deadline_reached(true)) {
+        context.response.series.clear();
         return std::move(context.response);
     }
     return std::move(context.response);
@@ -2465,26 +3515,47 @@ bool parse_optional_positive_u64(
 
 bool parse_optional_frontier_weights(
     PyObject* object,
-    std::optional<spc::native::FastWeights>& weights
+    std::optional<spc::native::FastWeights>& weights,
+    bool& tactical_protection
 ) {
+    tactical_protection = false;
     if (object == Py_None) {
         weights.reset();
         return true;
     }
     PyObject* sequence = PySequence_Fast(
         object,
-        "frontier_weights must be None or five signed integers"
+        "frontier_weights must be None or five/six signed integers"
     );
     if (sequence == nullptr) {
         return false;
     }
-    if (PySequence_Fast_GET_SIZE(sequence) != 5) {
+    const Py_ssize_t size = PySequence_Fast_GET_SIZE(sequence);
+    if (size != 5 && size != 6) {
         Py_DECREF(sequence);
         PyErr_SetString(
             PyExc_ValueError,
-            "frontier_weights must contain exactly five integers"
+            "frontier_weights must contain five weights and an optional tactical flag"
         );
         return false;
+    }
+    if (size == 6) {
+        const long long parsed_flag = PyLong_AsLongLong(
+            PySequence_Fast_GET_ITEM(sequence, 5)
+        );
+        if (parsed_flag == -1 && PyErr_Occurred()) {
+            Py_DECREF(sequence);
+            return false;
+        }
+        if (parsed_flag != 0 && parsed_flag != 1) {
+            Py_DECREF(sequence);
+            PyErr_SetString(
+                PyExc_ValueError,
+                "frontier tactical flag must be zero or one"
+            );
+            return false;
+        }
+        tactical_protection = parsed_flag != 0;
     }
     std::array<long long, 5> parsed{};
     for (Py_ssize_t index = 0; index < 5; ++index) {
@@ -2582,11 +3653,11 @@ bool parse_optional_final_series_score(
 PyObject* generation_stats_tuple(
     const spc::native::SeriesGenerationStats& stats
 ) {
-    PyObject* result = PyTuple_New(14);
+    PyObject* result = PyTuple_New(18);
     if (result == nullptr) {
         return nullptr;
     }
-    const std::array<std::uint64_t, 13> values = {
+    const std::array<std::uint64_t, 17> values = {
         stats.positions_visited,
         stats.frontier_score_positions,
         stats.raw_series,
@@ -2598,6 +3669,10 @@ PyObject* generation_stats_tuple(
         stats.frontier_prunes,
         stats.frontier_states_pruned,
         stats.frontier_paths_pruned,
+        stats.tactical_frontier_states_retained,
+        stats.tactical_frontier_reserve_drops,
+        stats.tactical_final_series_retained,
+        stats.tactical_final_reserve_drops,
         stats.peak_frontier_states,
         stats.required_prefix_moves,
     };
@@ -2614,7 +3689,7 @@ PyObject* generation_stats_tuple(
         Py_DECREF(result);
         return nullptr;
     }
-    PyTuple_SET_ITEM(result, 13, work_limit);
+    PyTuple_SET_ITEM(result, 17, work_limit);
     return result;
 }
 
@@ -2717,6 +3792,7 @@ PyObject* py_generate_complete_series(PyObject*, PyObject* arguments) {
     std::optional<std::uint64_t> max_positions;
     std::optional<spc::native::FastWeights> frontier_weights;
     std::optional<spc::native::FinalSeriesScore> final_series_score;
+    bool tactical_protection = false;
     try {
         if (
             !parse_square_sequence(
@@ -2741,7 +3817,8 @@ PyObject* py_generate_complete_series(PyObject*, PyObject* arguments) {
             )
             || !parse_optional_frontier_weights(
                 frontier_weights_object,
-                frontier_weights
+                frontier_weights,
+                tactical_protection
             )
             || !parse_optional_final_series_score(
                 final_series_score_object,
@@ -2762,7 +3839,7 @@ PyObject* py_generate_complete_series(PyObject*, PyObject* arguments) {
         return nullptr;
     }
 
-    const spc::native::CompleteSeriesRequest request{
+    spc::native::CompleteSeriesRequest request{
         {
             pawns,
             knights,
@@ -2786,6 +3863,7 @@ PyObject* py_generate_complete_series(PyObject*, PyObject* arguments) {
         frontier_weights,
         final_series_score,
     };
+    request.tactical_protection = tactical_protection;
 
     spc::native::CompleteSeriesResponse response;
     try {
@@ -2829,12 +3907,180 @@ PyObject* py_generate_complete_series(PyObject*, PyObject* arguments) {
     return result;
 }
 
+PyObject* py_generate_full_game_batch(PyObject*, PyObject* arguments) {
+    unsigned long long first_attempt = 0;
+    unsigned long long attempt_count = 0;
+    unsigned long long seed = 0;
+    unsigned long long max_attempt_series = 0;
+    unsigned long long max_frontier_states = 0;
+    unsigned long long max_positions_per_series = 0;
+    unsigned long long max_positions_per_game = 0;
+    unsigned long long candidate_count = 0;
+    long long material = 0;
+    long long king_space = 0;
+    long long promotion_corridors = 0;
+    long long immediate_vulnerability = 0;
+    long long boundary_check = 0;
+    if (!PyArg_ParseTuple(
+            arguments,
+            "KKKKKKKKLLLLL:generate_full_game_batch",
+            &first_attempt,
+            &attempt_count,
+            &seed,
+            &max_attempt_series,
+            &max_frontier_states,
+            &max_positions_per_series,
+            &max_positions_per_game,
+            &candidate_count,
+            &material,
+            &king_space,
+            &promotion_corridors,
+            &immediate_vulnerability,
+            &boundary_check
+        )) {
+        return nullptr;
+    }
+    if (
+        attempt_count > std::numeric_limits<std::uint32_t>::max()
+        || candidate_count == 0
+        || candidate_count > std::numeric_limits<std::uint32_t>::max()
+        || max_frontier_states == 0
+        || max_positions_per_series == 0
+        || (max_positions_per_game == 0 && max_attempt_series == 0)
+        || (
+            attempt_count != 0
+            && first_attempt > std::numeric_limits<std::uint64_t>::max()
+                - (attempt_count - 1)
+        )
+    ) {
+        PyErr_SetString(
+            PyExc_ValueError,
+            "invalid native full-game batch configuration"
+        );
+        return nullptr;
+    }
+
+    const spc::native::FullGameBatchConfig config{
+        first_attempt,
+        attempt_count,
+        seed,
+        max_attempt_series,
+        max_frontier_states,
+        max_positions_per_series,
+        max_positions_per_game,
+        static_cast<std::uint32_t>(candidate_count),
+        {
+            material,
+            king_space,
+            promotion_corridors,
+            immediate_vulnerability,
+            boundary_check,
+        },
+    };
+    std::vector<std::uint8_t> payload;
+    std::exception_ptr failure;
+    PyThreadState* saved_thread = PyEval_SaveThread();
+    try {
+        const auto records = spc::native::generate_full_games(config);
+        payload = spc::native::encode_full_game_batch(config, records);
+    } catch (...) {
+        failure = std::current_exception();
+    }
+    PyEval_RestoreThread(saved_thread);
+
+    try {
+        if (failure != nullptr) {
+            std::rethrow_exception(failure);
+        }
+        if (
+            payload.size()
+            > static_cast<std::size_t>(PY_SSIZE_T_MAX)
+        ) {
+            return PyErr_NoMemory();
+        }
+        return PyBytes_FromStringAndSize(
+            reinterpret_cast<const char*>(payload.data()),
+            static_cast<Py_ssize_t>(payload.size())
+        );
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    } catch (const std::length_error&) {
+        return PyErr_NoMemory();
+    } catch (const std::invalid_argument& error) {
+        PyErr_SetString(PyExc_ValueError, error.what());
+        return nullptr;
+    } catch (...) {
+        PyErr_SetString(PyExc_RuntimeError, "native full-game batch failed");
+        return nullptr;
+    }
+}
+
+PyObject* py_generate_full_game_batch_v2(PyObject*, PyObject* arguments) {
+    const char* request_data = nullptr;
+    Py_ssize_t request_size = 0;
+    if (!PyArg_ParseTuple(
+            arguments,
+            "y#:generate_full_game_batch_v2",
+            &request_data,
+            &request_size
+        )) {
+        return nullptr;
+    }
+
+    std::vector<std::uint8_t> request;
+    try {
+        request.assign(
+            reinterpret_cast<const std::uint8_t*>(request_data),
+            reinterpret_cast<const std::uint8_t*>(request_data) + request_size
+        );
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    } catch (const std::length_error&) {
+        return PyErr_NoMemory();
+    }
+
+    std::vector<std::uint8_t> payload;
+    std::exception_ptr failure;
+    PyThreadState* saved_thread = PyEval_SaveThread();
+    try {
+        payload = spc::native::generate_full_game_batch_v2(request);
+    } catch (...) {
+        failure = std::current_exception();
+    }
+    PyEval_RestoreThread(saved_thread);
+
+    try {
+        if (failure != nullptr) {
+            std::rethrow_exception(failure);
+        }
+        if (payload.size() > static_cast<std::size_t>(PY_SSIZE_T_MAX)) {
+            return PyErr_NoMemory();
+        }
+        return PyBytes_FromStringAndSize(
+            reinterpret_cast<const char*>(payload.data()),
+            static_cast<Py_ssize_t>(payload.size())
+        );
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    } catch (const std::length_error&) {
+        return PyErr_NoMemory();
+    } catch (const std::invalid_argument& error) {
+        PyErr_SetString(PyExc_ValueError, error.what());
+        return nullptr;
+    } catch (...) {
+        PyErr_SetString(PyExc_RuntimeError, "native full-game v2 batch failed");
+        return nullptr;
+    }
+}
+
 constexpr const char* COMPLETE_SERIES_BATCH_CAPSULE =
     "scottish_progressive.CompleteSeriesBatch.v1";
 
 bool parse_complete_series_batch_request(
     PyObject* arguments,
-    spc::native::CompleteSeriesRequest& request
+    spc::native::CompleteSeriesRequest& request,
+    bool timed = false,
+    bool parallel = false
 ) {
     unsigned long long pawns = 0;
     unsigned long long knights = 0;
@@ -2857,7 +4103,64 @@ bool parse_complete_series_batch_request(
     PyObject* max_positions_object = nullptr;
     PyObject* frontier_weights_object = nullptr;
     PyObject* final_series_score_object = nullptr;
-    if (!PyArg_ParseTuple(
+    unsigned long long remaining_nanoseconds = 0;
+    unsigned long long worker_threads = 1;
+    const bool parsed = timed && parallel
+        ? PyArg_ParseTuple(
+            arguments,
+            "KKKKKKKKKKpLLLLOOOOOOKK:prepare_complete_series_timed_parallel",
+            &pawns,
+            &knights,
+            &bishops,
+            &rooks,
+            &queens,
+            &kings,
+            &white_occupied,
+            &black_occupied,
+            &promoted,
+            &castling_rights,
+            &white_to_move,
+            &halfmove_clock,
+            &fullmove_number,
+            &series_number,
+            &quiet_series,
+            &ep_targets_object,
+            &required_prefix_object,
+            &max_frontier_states_object,
+            &max_positions_object,
+            &frontier_weights_object,
+            &final_series_score_object,
+            &remaining_nanoseconds,
+            &worker_threads
+        )
+        : timed
+        ? PyArg_ParseTuple(
+            arguments,
+            "KKKKKKKKKKpLLLLOOOOOOK:prepare_complete_series_timed",
+            &pawns,
+            &knights,
+            &bishops,
+            &rooks,
+            &queens,
+            &kings,
+            &white_occupied,
+            &black_occupied,
+            &promoted,
+            &castling_rights,
+            &white_to_move,
+            &halfmove_clock,
+            &fullmove_number,
+            &series_number,
+            &quiet_series,
+            &ep_targets_object,
+            &required_prefix_object,
+            &max_frontier_states_object,
+            &max_positions_object,
+            &frontier_weights_object,
+            &final_series_score_object,
+            &remaining_nanoseconds
+        )
+        : PyArg_ParseTuple(
             arguments,
             "KKKKKKKKKKpLLLLOOOOOO:prepare_complete_series",
             &pawns,
@@ -2881,7 +4184,18 @@ bool parse_complete_series_batch_request(
             &max_positions_object,
             &frontier_weights_object,
             &final_series_score_object
-        )) {
+        );
+    if (!parsed) {
+        return false;
+    }
+    if (
+        worker_threads < 1
+        || worker_threads > std::numeric_limits<std::uint32_t>::max()
+    ) {
+        PyErr_SetString(
+            PyExc_ValueError,
+            "worker_threads must fit uint32 and be positive"
+        );
         return false;
     }
 
@@ -2891,6 +4205,7 @@ bool parse_complete_series_batch_request(
     std::optional<std::uint64_t> max_positions;
     std::optional<spc::native::FastWeights> frontier_weights;
     std::optional<spc::native::FinalSeriesScore> final_series_score;
+    bool tactical_protection = false;
     if (
         !parse_square_sequence(
             ep_targets_object,
@@ -2914,7 +4229,8 @@ bool parse_complete_series_batch_request(
         )
         || !parse_optional_frontier_weights(
             frontier_weights_object,
-            frontier_weights
+            frontier_weights,
+            tactical_protection
         )
         || !parse_optional_final_series_score(
             final_series_score_object,
@@ -2948,6 +4264,24 @@ bool parse_complete_series_batch_request(
         frontier_weights,
         final_series_score,
     };
+    request.tactical_protection = tactical_protection;
+    if (timed) {
+        const auto now = std::chrono::steady_clock::now();
+        const auto bounded_nanoseconds = std::min<unsigned long long>(
+            remaining_nanoseconds,
+            static_cast<unsigned long long>(
+                std::numeric_limits<std::int64_t>::max()
+            )
+        );
+        const auto requested = std::chrono::duration_cast<
+            std::chrono::steady_clock::duration
+        >(std::chrono::nanoseconds(
+            static_cast<std::int64_t>(bounded_nanoseconds)
+        ));
+        const auto maximum = std::chrono::steady_clock::time_point::max() - now;
+        request.deadline = now + std::min(requested, maximum);
+    }
+    request.worker_threads = static_cast<std::uint32_t>(worker_threads);
     return true;
 }
 
@@ -2963,37 +4297,9 @@ void destroy_complete_series_batch(PyObject* capsule) noexcept {
     delete static_cast<spc::native::CompleteSeriesResponse*>(pointer);
 }
 
-PyObject* py_prepare_complete_series(PyObject*, PyObject* arguments) {
-    spc::native::CompleteSeriesRequest request{};
-    try {
-        if (!parse_complete_series_batch_request(arguments, request)) {
-            return nullptr;
-        }
-    } catch (const std::bad_alloc&) {
-        return PyErr_NoMemory();
-    } catch (const std::length_error&) {
-        return PyErr_NoMemory();
-    } catch (...) {
-        PyErr_SetString(
-            PyExc_RuntimeError,
-            "native complete-series batch argument parsing failed"
-        );
-        return nullptr;
-    }
-
-    auto response = std::make_unique<spc::native::CompleteSeriesResponse>();
-    try {
-        *response = spc::native::generate_complete_series(request);
-    } catch (const std::bad_alloc&) {
-        return PyErr_NoMemory();
-    } catch (...) {
-        PyErr_SetString(
-            PyExc_RuntimeError,
-            "native complete-series batch generation failed"
-        );
-        return nullptr;
-    }
-
+PyObject* complete_series_batch_result(
+    std::unique_ptr<spc::native::CompleteSeriesResponse> response
+) {
     PyObject* status = PyLong_FromLong(static_cast<long>(response->status));
     PyObject* message = PyUnicode_FromString(response->message.c_str());
     PyObject* stats = generation_stats_tuple(response->stats);
@@ -3038,6 +4344,105 @@ PyObject* py_prepare_complete_series(PyObject*, PyObject* arguments) {
     PyTuple_SET_ITEM(result, 3, series);
     PyTuple_SET_ITEM(result, 4, capsule);
     return result;
+}
+
+PyObject* py_prepare_complete_series(PyObject*, PyObject* arguments) {
+    spc::native::CompleteSeriesRequest request{};
+    try {
+        if (!parse_complete_series_batch_request(arguments, request)) {
+            return nullptr;
+        }
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    } catch (const std::length_error&) {
+        return PyErr_NoMemory();
+    } catch (...) {
+        PyErr_SetString(
+            PyExc_RuntimeError,
+            "native complete-series batch argument parsing failed"
+        );
+        return nullptr;
+    }
+
+    auto response = std::make_unique<spc::native::CompleteSeriesResponse>();
+    try {
+        *response = spc::native::generate_complete_series(request);
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    } catch (...) {
+        PyErr_SetString(
+            PyExc_RuntimeError,
+            "native complete-series batch generation failed"
+        );
+        return nullptr;
+    }
+
+    return complete_series_batch_result(std::move(response));
+}
+
+PyObject* prepare_complete_series_timed_impl(
+    PyObject* arguments,
+    bool parallel
+) {
+    spc::native::CompleteSeriesRequest request{};
+    try {
+        if (!parse_complete_series_batch_request(
+                arguments,
+                request,
+                true,
+                parallel
+            )) {
+            return nullptr;
+        }
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    } catch (const std::length_error&) {
+        return PyErr_NoMemory();
+    } catch (...) {
+        PyErr_SetString(
+            PyExc_RuntimeError,
+            "native timed complete-series argument parsing failed"
+        );
+        return nullptr;
+    }
+
+    auto response = std::make_unique<spc::native::CompleteSeriesResponse>();
+    std::exception_ptr failure;
+    PyThreadState* saved_thread = PyEval_SaveThread();
+    try {
+        *response = spc::native::generate_complete_series(request);
+    } catch (...) {
+        failure = std::current_exception();
+    }
+    PyEval_RestoreThread(saved_thread);
+    try {
+        if (failure != nullptr) {
+            std::rethrow_exception(failure);
+        }
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    } catch (const std::length_error&) {
+        return PyErr_NoMemory();
+    } catch (...) {
+        PyErr_SetString(
+            PyExc_RuntimeError,
+            "native timed complete-series generation failed"
+        );
+        return nullptr;
+    }
+
+    return complete_series_batch_result(std::move(response));
+}
+
+PyObject* py_prepare_complete_series_timed(PyObject*, PyObject* arguments) {
+    return prepare_complete_series_timed_impl(arguments, false);
+}
+
+PyObject* py_prepare_complete_series_timed_parallel(
+    PyObject*,
+    PyObject* arguments
+) {
+    return prepare_complete_series_timed_impl(arguments, true);
 }
 
 PyObject* square_vector_tuple(const std::vector<int>& squares) {
@@ -3677,10 +5082,40 @@ PyObject* py_has_legal_move(PyObject*, PyObject* arguments) {
 
 PyMethodDef METHODS[] = {
     {
+        "generate_full_game_batch_v2",
+        py_generate_full_game_batch_v2,
+        METH_VARARGS,
+        PyDoc_STR(
+            "Generate a deterministic packed v2 batch with profile attribution."
+        )
+    },
+    {
+        "generate_full_game_batch",
+        py_generate_full_game_batch,
+        METH_VARARGS,
+        PyDoc_STR("Generate a deterministic packed batch of complete S1 games.")
+    },
+    {
         "prepare_complete_series",
         py_prepare_complete_series,
         METH_VARARGS,
         PyDoc_STR("Prepare an opaque exact batch with lazily decoded final states.")
+    },
+    {
+        "prepare_complete_series_timed",
+        py_prepare_complete_series_timed,
+        METH_VARARGS,
+        PyDoc_STR(
+            "Prepare an opaque exact batch with a cooperative steady-clock deadline."
+        )
+    },
+    {
+        "prepare_complete_series_timed_parallel",
+        py_prepare_complete_series_timed_parallel,
+        METH_VARARGS,
+        PyDoc_STR(
+            "Prepare an exact timed batch with bounded opt-in native workers."
+        )
     },
     {
         "complete_series_candidate",
