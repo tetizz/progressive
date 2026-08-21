@@ -264,6 +264,8 @@ def _serve_web(args: argparse.Namespace) -> int:
         open_browser=not args.no_browser,
         database=args.database,
         public_origin=args.public_origin,
+        mate_proof_cache_path=args.mate_proof_cache,
+        mate_proof_cache_capacity=args.mate_proof_cache_capacity,
     )
     if args.engine_profile:
         options["engine_profile"] = args.engine_profile
@@ -771,6 +773,19 @@ def build_parser() -> argparse.ArgumentParser:
             "explicit https:// host for a bounded public deployment; disables database "
             "access and lowers compute limits"
         ),
+    )
+    web.add_argument(
+        "--mate-proof-cache",
+        help=(
+            "atomic mate-proof cache file; SPC_MATE_PROOF_CACHE_PATH is used "
+            "when this option is omitted"
+        ),
+    )
+    web.add_argument(
+        "--mate-proof-cache-capacity",
+        type=int,
+        default=4096,
+        help="maximum exact child proofs retained (default: 4096)",
     )
     web.set_defaults(handler=_serve_web)
 

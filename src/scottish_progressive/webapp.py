@@ -18,6 +18,10 @@ import webbrowser
 import chess
 
 from .database import TheoryDatabase
+from .mate_proof_cache import (
+    DEFAULT_MATE_PROOF_CACHE_CAPACITY,
+    MateProofCache,
+)
 from .model import (
     ENGINE_SOURCE_FINGERPRINT,
     ENGINE_VERSION,
@@ -119,6 +123,7 @@ class WebConfig:
     runtime_cpu_count: str | None = None
     runtime_cpu_count_source: str = "unavailable"
     native_threads_policy: str = "local-configured"
+    mate_proof_cache: MateProofCache | None = None
 
 
 def _public_analysis_runtime(
@@ -162,6 +167,7 @@ class AnalysisBoardServer(ThreadingHTTPServer):
         config: WebConfig,
     ) -> None:
         self.config = config
+        self.mate_proof_cache = config.mate_proof_cache or MateProofCache()
         # Keep a local analysis request from spawning an unbounded collection
         # of CPU-heavy searches through the threaded HTTP server.
         self.analysis_gate = threading.BoundedSemaphore(config.analysis_concurrency)
@@ -713,6 +719,20 @@ def _analysis_payload(
             "frontier_paths_pruned": result.stats.frontier_paths_pruned,
             "peak_frontier_states": result.stats.peak_frontier_states,
             "generation_work_limit_hits": result.stats.generation_work_limit_hits,
+            "mate_proof_cache_hits": result.stats.mate_proof_cache_hits,
+            "mate_proof_cache_found_hits": result.stats.mate_proof_cache_found_hits,
+            "mate_proof_cache_exhausted_hits": (
+                result.stats.mate_proof_cache_exhausted_hits
+            ),
+            "mate_proof_cache_misses": result.stats.mate_proof_cache_misses,
+            "mate_proof_cache_store_attempts": (
+                result.stats.mate_proof_cache_store_attempts
+            ),
+            "mate_proof_cache_evictions": result.stats.mate_proof_cache_evictions,
+            "mate_proof_cache_work_saved": (
+                result.stats.mate_proof_cache_work_saved
+            ),
+            "mate_proof_cache_errors": result.stats.mate_proof_cache_errors,
         },
         "move_quality": move_quality.as_dict() if move_quality is not None else None,
         "saved": analysis_id is not None,
@@ -740,6 +760,7 @@ def analyze_payload(
     database_path: Path | None = None,
     engine_profile: EngineProfile | None = None,
     request_limits: AnalysisRequestLimits = LOCAL_ANALYSIS_LIMITS,
+    mate_proof_cache: MateProofCache | None = None,
 ) -> dict[str, object]:
     boundary = state_from_payload(payload)
     prefix = _prefix_from_payload(payload)
@@ -859,6 +880,7 @@ def analyze_payload(
         limits,
         profile=engine_profile,
         required_prefix=required_prefix,
+        mate_proof_cache=mate_proof_cache,
     )
     quality: MoveQualityVerdict | None = None
     if prefix and rate_move:
@@ -868,6 +890,7 @@ def analyze_payload(
             limits,
             profile=engine_profile,
             required_prefix=parent_prefix,
+            mate_proof_cache=mate_proof_cache,
         )
         candidate_result = (
             result
@@ -877,6 +900,7 @@ def analyze_payload(
                 limits,
                 profile=engine_profile,
                 required_prefix=prefix,
+                mate_proof_cache=mate_proof_cache,
             )
         )
         quality = grade_move_quality(
@@ -1119,6 +1143,15 @@ class AnalysisBoardHandler(BaseHTTPRequestHandler):
                         },
                         "database_configured": self.app_server.config.database_path
                         is not None,
+                        "mate_proof_cache": {
+                            **self.app_server.mate_proof_cache.snapshot().as_dict(),
+                            "persistent": (
+                                self.app_server.mate_proof_cache.path is not None
+                            ),
+                            "identity": (
+                                self.app_server.mate_proof_cache.identity.as_dict()
+                            ),
+                        },
                     }
                 )
                 return
@@ -1219,6 +1252,7 @@ class AnalysisBoardHandler(BaseHTTPRequestHandler):
                     database_path=self.app_server.config.database_path,
                     engine_profile=self.app_server.config.engine_profile,
                     request_limits=self.app_server.config.analysis_limits,
+                    mate_proof_cache=self.app_server.mate_proof_cache,
                 )
             finally:
                 self.app_server.analysis_gate.release()
@@ -1289,6 +1323,8 @@ def create_server(
     request_limit: int = MAX_REQUEST_BYTES,
     public_origin: str | None = None,
     cors_origin: str | None = None,
+    mate_proof_cache_path: str | Path | None = None,
+    mate_proof_cache_capacity: int = DEFAULT_MATE_PROOF_CACHE_CAPACITY,
 ) -> AnalysisBoardServer:
     normalized_origin: str | None = None
     allowed_authority: str | None = None
@@ -1322,6 +1358,13 @@ def create_server(
     static_path = Path(static_root).resolve() if static_root else _default_static_root()
     if not static_path.is_dir():
         raise ValueError(f"web static directory not found: {static_path}")
+    configured_cache_path = mate_proof_cache_path
+    if configured_cache_path is None:
+        configured_cache_path = os.environ.get("SPC_MATE_PROOF_CACHE_PATH") or None
+    mate_proof_cache = MateProofCache(
+        configured_cache_path,
+        capacity=mate_proof_cache_capacity,
+    )
     if normalized_origin is not None:
         analysis_limits, runtime_cpu_count, runtime_cpu_count_source = (
             _public_analysis_runtime()
@@ -1352,6 +1395,7 @@ def create_server(
             if normalized_origin is not None
             else "local-configured"
         ),
+        mate_proof_cache=mate_proof_cache,
     )
     if database_path is not None:
         try:
@@ -1373,6 +1417,8 @@ def serve(
     database: str | Path | None = None,
     engine_profile: EngineProfile | str | Path | None = None,
     public_origin: str | None = None,
+    mate_proof_cache_path: str | Path | None = None,
+    mate_proof_cache_capacity: int = DEFAULT_MATE_PROOF_CACHE_CAPACITY,
 ) -> int:
     server = create_server(
         host,
@@ -1380,6 +1426,8 @@ def serve(
         database=database,
         engine_profile=engine_profile,
         public_origin=public_origin,
+        mate_proof_cache_path=mate_proof_cache_path,
+        mate_proof_cache_capacity=mate_proof_cache_capacity,
     )
     bound_host, bound_port = server.server_address[:2]
     display_host = f"[{bound_host}]" if ":" in bound_host else bound_host

@@ -573,6 +573,12 @@ def test_http_health_prefix_static_and_traversal(tmp_path: Path) -> None:
         assert health["engine_profile_recommended_depth"] == 2
         assert health["engine_profile_recommended_branch_cap"] == 32
         assert len(health["ui_source_fingerprint"]) == 16
+        assert health["mate_proof_cache"]["capacity"] == 4096
+        assert health["mate_proof_cache"]["entries"] == 0
+        assert health["mate_proof_cache"]["persistent"] is False
+        assert health["mate_proof_cache"]["identity"]["engine_source"] == (
+            health["source_fingerprint"]
+        )
 
         status, prefix = post_json(
             f"{base}/api/prefix",
@@ -646,6 +652,8 @@ def test_web_cli_defaults_to_loopback_and_can_disable_browser(monkeypatch) -> No
         "open_browser": False,
         "database": None,
         "public_origin": None,
+        "mate_proof_cache_path": None,
+        "mate_proof_cache_capacity": 4096,
     }
 
 

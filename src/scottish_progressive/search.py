@@ -40,6 +40,7 @@ from .rules import (
 )
 
 if TYPE_CHECKING:
+    from .mate_proof_cache import MateProofCache
     from .series_mate import SeriesMateProbe
 
 
@@ -215,6 +216,14 @@ class SearchStats:
     native_series_mate_work_limit_hits: int = 0
     native_series_mate_deadline_hits: int = 0
     native_series_mate_unsupported: int = 0
+    mate_proof_cache_hits: int = 0
+    mate_proof_cache_found_hits: int = 0
+    mate_proof_cache_exhausted_hits: int = 0
+    mate_proof_cache_misses: int = 0
+    mate_proof_cache_store_attempts: int = 0
+    mate_proof_cache_evictions: int = 0
+    mate_proof_cache_work_saved: int = 0
+    mate_proof_cache_errors: int = 0
     branch_caps: int = 0
     series_generation_positions: int = 0
     frontier_score_positions: int = 0
@@ -414,10 +423,13 @@ class SeriesSearcher:
         limits: SearchLimits,
         profile: EngineProfile | None = None,
         evaluation_overlay: EvaluationOverlay | None = None,
+        *,
+        mate_proof_cache: MateProofCache | None = None,
     ) -> None:
         self.limits = limits
         self.profile = profile or baseline_profile()
         self.evaluation_overlay = evaluation_overlay
+        self.mate_proof_cache = mate_proof_cache
         if (
             evaluation_overlay is not None
             and evaluation_overlay.base_profile_id != self.profile.profile_id
@@ -950,6 +962,98 @@ class SeriesSearcher:
             self._root_child_native_mate_exhausted_keys.add(key)
             self.stats.root_safety_exact_exhausted_children += 1
 
+    def _persistent_mate_proof(
+        self,
+        state: ProgressiveState,
+    ) -> tuple[str, SeriesResult | None] | None:
+        """Consult an injected cross-search cache before any proof solver."""
+
+        cache = self.mate_proof_cache
+        if cache is None:
+            return None
+        try:
+            hit = cache.lookup(state)
+        except Exception:
+            self.stats.mate_proof_cache_errors += 1
+            self.stats.mate_proof_cache_misses += 1
+            return None
+        if hit is None:
+            self.stats.mate_proof_cache_misses += 1
+            return None
+        status = str(hit.status)
+        proof_work = hit.proof_work
+        if type(proof_work) is not int or proof_work < 0:
+            self.stats.mate_proof_cache_errors += 1
+            self.stats.mate_proof_cache_misses += 1
+            return None
+        series = hit.series
+        if status == "found":
+            if series is None:
+                self.stats.mate_proof_cache_errors += 1
+                self.stats.mate_proof_cache_misses += 1
+                return None
+            try:
+                replayed = play_series(state, series.moves)
+            except Exception:
+                replayed = None
+            if (
+                replayed is None
+                or replayed.outcome is not Outcome.CHECKMATE
+                or not replayed.ended_by_check
+            ):
+                self.stats.mate_proof_cache_errors += 1
+                self.stats.mate_proof_cache_misses += 1
+                return None
+            series = replayed
+            self.stats.mate_proof_cache_found_hits += 1
+        elif status == "exhausted":
+            if series is not None:
+                self.stats.mate_proof_cache_errors += 1
+                self.stats.mate_proof_cache_misses += 1
+                return None
+            self.stats.mate_proof_cache_exhausted_hits += 1
+        else:
+            self.stats.mate_proof_cache_errors += 1
+            self.stats.mate_proof_cache_misses += 1
+            return None
+        self.stats.mate_proof_cache_hits += 1
+        self.stats.mate_proof_cache_work_saved += proof_work
+        return status, series
+
+    def _store_persistent_mate_proof(
+        self,
+        state: ProgressiveState,
+        mate: SeriesResult | None,
+        *,
+        proof_work: int,
+        exhausted: bool = False,
+    ) -> None:
+        cache = self.mate_proof_cache
+        if cache is None:
+            return
+        try:
+            if mate is not None:
+                evictions = cache.store_found(
+                    state,
+                    mate,
+                    proof_work=proof_work,
+                )
+            elif exhausted:
+                evictions = cache.store_exhausted(
+                    state,
+                    proof_work=proof_work,
+                )
+            else:
+                return
+        except Exception:
+            self.stats.mate_proof_cache_errors += 1
+            return
+        if type(evictions) is not int or evictions < 0:
+            self.stats.mate_proof_cache_errors += 1
+            return
+        self.stats.mate_proof_cache_store_attempts += 1
+        self.stats.mate_proof_cache_evictions += evictions
+
     def _root_child_promotion_mate(
         self,
         state: ProgressiveState,
@@ -1067,15 +1171,17 @@ class SeriesSearcher:
     ) -> SeriesResult | None:
         """Returns a replay-proven reply mate or certifies an exact miss.
 
-        The specialized promotion lane always runs first. Its replayed hit is
-        authoritative, but its selective miss is not a no-mate proof. A cheap
-        width-32 screen follows, then the complete native one-series solver.
-        Native ``EXHAUSTED`` is the only exact no-mate result and is cached by
-        child transposition key. ``WORK_LIMIT``, ``DEADLINE``, ``UNSUPPORTED``,
-        a missing kernel, or an incomplete selective screen remain unknown and
-        fail closed instead of certifying the current root depth. The adaptive
-        legacy screen may still recover a concrete replayed mate after an
-        unknown native result, but never turns a miss into an exact proof.
+        An injected identity-bound proof cache is consulted before any solver.
+        On a miss, the specialized promotion lane still runs before every
+        broader proof search. Its replayed hit is authoritative, but its
+        selective miss is not a no-mate proof. A cheap width-32 screen follows,
+        then the complete native one-series solver. Native ``EXHAUSTED`` is the
+        only exact no-mate result and is cached by child transposition key.
+        ``WORK_LIMIT``, ``DEADLINE``, ``UNSUPPORTED``, a missing kernel, or an
+        incomplete selective screen remain unknown and fail closed instead of
+        certifying the current root depth. The adaptive legacy screen may still
+        recover a concrete replayed mate after an unknown native result, but
+        never turns a miss into an exact proof.
 
         Every expanded position and generated edge is charged to the search's
         deterministic shared safety budget. Series 5-6 retain width 4096 for
@@ -1101,10 +1207,28 @@ class SeriesSearcher:
             return self._root_child_mate_screen_cache[key]
         self.stats.root_safety_screen_calls += 1
 
+        persistent = self._persistent_mate_proof(state)
+        if persistent is not None:
+            status, mate = persistent
+            self._root_child_mate_screen_cache[key] = mate
+            if status == "found":
+                assert mate is not None
+                self._mark_root_child_proven_mate(key)
+            else:
+                self._mark_root_child_exact_exhausted(key)
+            return mate
+
+        proof_work_start = self.stats.work_positions
+
         promotion_mate = self._root_child_promotion_mate(state)
         if promotion_mate is not None:
             self._root_child_mate_screen_cache[key] = promotion_mate
             self._mark_root_child_proven_mate(key)
+            self._store_persistent_mate_proof(
+                state,
+                promotion_mate,
+                proof_work=self.stats.work_positions - proof_work_start,
+            )
             return promotion_mate
 
         mate, completed = self._root_child_mate_screen_stage(
@@ -1115,6 +1239,11 @@ class SeriesSearcher:
         if mate is not None:
             self._root_child_mate_screen_cache[key] = mate
             self._mark_root_child_proven_mate(key)
+            self._store_persistent_mate_proof(
+                state,
+                mate,
+                proof_work=self.stats.work_positions - proof_work_start,
+            )
             return mate
         if not completed and self._root_child_mate_screen_remaining() <= 0:
             self.stats.root_safety_budget_interruptions += 1
@@ -1134,6 +1263,12 @@ class SeriesSearcher:
                 self._mark_root_child_exact_exhausted(key)
             else:
                 self._mark_root_child_proven_mate(key)
+            self._store_persistent_mate_proof(
+                state,
+                mate,
+                proof_work=self.stats.work_positions - proof_work_start,
+                exhausted=mate is None,
+            )
             return mate
         if (
             ROOT_CHILD_ADAPTIVE_MATE_SCREEN_MIN_SERIES
@@ -1163,6 +1298,11 @@ class SeriesSearcher:
         self._root_child_mate_screen_cache[key] = mate
         if mate is not None:
             self._mark_root_child_proven_mate(key)
+            self._store_persistent_mate_proof(
+                state,
+                mate,
+                proof_work=self.stats.work_positions - proof_work_start,
+            )
         return mate
 
     def _root_child_mate_screen_stage(
@@ -2826,11 +2966,13 @@ def analyze(
     *,
     required_prefix: tuple[str, ...] = (),
     evaluation_overlay: EvaluationOverlay | None = None,
+    mate_proof_cache: MateProofCache | None = None,
 ) -> SearchResult:
     return SeriesSearcher(
         limits or SearchLimits(),
         profile,
         evaluation_overlay,
+        mate_proof_cache=mate_proof_cache,
     ).run(
         state,
         required_prefix=required_prefix,

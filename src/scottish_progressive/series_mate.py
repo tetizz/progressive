@@ -50,6 +50,16 @@ else:
     del _native_mate_candidate
 
 
+def native_mate_runtime_identity() -> str:
+    """Return the exact accepted extension identity or an unavailable marker."""
+
+    expected = _native_mate_source_identity()
+    actual = getattr(_native_mate, "SOURCE_IDENTITY", None)
+    if expected is not None and actual == expected:
+        return expected
+    return "unavailable"
+
+
 class SeriesMateStatus(StrEnum):
     FOUND = "found"
     EXHAUSTED = "exhausted"
