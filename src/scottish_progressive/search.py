@@ -53,10 +53,12 @@ QUIET_ADJUDICATION_POSITION_LIMIT = 4_096
 # reuse by the number of retained SeriesResult objects, not by node count.
 SERIES_GENERATION_CACHE_CAPACITY = 4_096
 # Best-only play may otherwise accept a root series whose opponent reply mate
-# was discarded by the ordinary width-32 child beam. This second, tactical
-# beam is deliberately much wider, globally bounded, and late-series or
-# promotion-gated so ordinary opening positions pay only the cheap scan.
+# was discarded by the ordinary width-32 child beam. This second screen is
+# deliberately much wider and globally bounded. It is invoked only after a
+# fully scored root candidate can become the new choice, so early positions pay
+# for successive contenders rather than a blanket wide/tactical search.
 ROOT_CHILD_MATE_SCREEN_FRONTIER = 832
+ROOT_CHILD_MATE_SCREEN_CHEAP_FRONTIER = 32
 ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT = 1_600_000
 ROOT_CHILD_MATE_SCREEN_MIN_SERIES = 7
 # A low-risk root may still expose a concrete promotion tactic in the
@@ -805,25 +807,56 @@ class SeriesSearcher:
         self,
         state: ProgressiveState,
     ) -> SeriesResult | None:
-        """Returns one replay-proven reply mate from a wide native screen.
+        """Returns one replay-proven reply mate from staged native screens.
 
         This is an existential tactical check, never a no-mate proof. A
         missing native kernel, a selective miss, or exhaustion therefore
         returns ``None`` and ordinary minimax remains authoritative. Work is
         charged to the search's normal deterministic counter and the screen
         has one search-wide budget shared by every root child and iteration.
+        Every contender first pays for a protected width-32 probe; only a late
+        or promotion-risk child with no retained mate falls through to the
+        historical ordinary width-832 probe.
         """
 
         if (
             self.limits.collect_all_root_scores
             or self.limits.max_series_per_node is None
-            or not _tactical_frontier_protection_eligible(state)
         ):
             return None
 
         key = state.transposition_key
         if key in self._root_child_mate_screen_cache:
             return self._root_child_mate_screen_cache[key]
+
+        mate, completed = self._root_child_mate_screen_stage(
+            state,
+            frontier=ROOT_CHILD_MATE_SCREEN_CHEAP_FRONTIER,
+            tactical_protection=True,
+        )
+        if mate is not None or not completed:
+            self._root_child_mate_screen_cache[key] = mate
+            return mate
+        if not _tactical_frontier_protection_eligible(state):
+            self._root_child_mate_screen_cache[key] = None
+            return None
+
+        mate, _completed = self._root_child_mate_screen_stage(
+            state,
+            frontier=ROOT_CHILD_MATE_SCREEN_FRONTIER,
+            tactical_protection=False,
+        )
+        self._root_child_mate_screen_cache[key] = mate
+        return mate
+
+    def _root_child_mate_screen_stage(
+        self,
+        state: ProgressiveState,
+        *,
+        frontier: int,
+        tactical_protection: bool,
+    ) -> tuple[SeriesResult | None, bool]:
+        """Runs one native screen stage; the boolean means the batch completed."""
 
         remaining = (
             self._root_child_mate_screen_budget
@@ -836,16 +869,17 @@ class SeriesSearcher:
                 - self.stats.generation_positions,
             )
         if remaining <= 0:
-            return None
+            return None, False
 
         generation = GenerationStats()
         frontier_score = NativeFrontierScoreConfig.from_profile(
             state,
             self.profile,
+            tactical_protection=tactical_protection,
         )
         final_score = NativeFinalSeriesScoreConfig.from_profile(
             self.profile,
-            max_returned_series=ROOT_CHILD_MATE_SCREEN_FRONTIER,
+            max_returned_series=frontier,
             ply_from_root=2,
             mate_score=MATE_SCORE,
         )
@@ -867,7 +901,7 @@ class SeriesSearcher:
                 state,
                 generation,
                 required_prefix=(),
-                max_frontier_states=ROOT_CHILD_MATE_SCREEN_FRONTIER,
+                max_frontier_states=frontier,
                 max_positions=remaining,
                 frontier_score=frontier_score,
                 native_final_score=final_score,
@@ -893,8 +927,7 @@ class SeriesSearcher:
             self._check_deadline()
             raise _Timeout
         if exhausted or batch is None:
-            self._root_child_mate_screen_cache[key] = None
-            return None
+            return None, False
 
         mate: SeriesResult | None = None
         for candidate in batch.references():
@@ -911,8 +944,7 @@ class SeriesSearcher:
             if replayed.outcome == Outcome.CHECKMATE and replayed.ended_by_check:
                 mate = replayed
                 break
-        self._root_child_mate_screen_cache[key] = mate
-        return mate
+        return mate, True
 
     @staticmethod
     def _terminal_score(
@@ -1609,6 +1641,17 @@ class SeriesSearcher:
                     if contender:
                         reply_mate = self._root_child_immediate_mate(child_state)
                         if reply_mate is not None:
+                            if (
+                                child_pv
+                                and child_pv[0].moves == reply_mate.moves
+                                and child_pv[0].outcome == Outcome.CHECKMATE
+                                and child_pv[0].ended_by_check
+                            ):
+                                # The ordinary minimax frontier already owns
+                                # the same authoritative mate. Keep its stable
+                                # transposition metadata instead of replacing
+                                # it with the wider screen's representative.
+                                reply_mate = child_pv[0]
                             child_mover = child_state.board.turn
                             screened_score = self._terminal_score(
                                 reply_mate,
