@@ -11,6 +11,7 @@ from scottish_progressive.evaluation import evaluate, probe_series_reach
 from scottish_progressive.model import Outcome, ProgressiveState
 from scottish_progressive.rules import (
     GenerationCancelled,
+    TACTICAL_FRONTIER_RESERVE_MAX,
     generate_series,
     play_series,
 )
@@ -343,7 +344,7 @@ def test_best_only_root_matches_full_root_after_risk_gated_selection() -> None:
     )
 
     assert full.best_series is not None and best_only.best_series is not None
-    assert full.best_series.moves == ("b1a3", "a3b5", "b5c7")
+    assert full.best_series.moves == ("e2e4", "e4e5", "e5f6")
     assert best_only.score == full.score
     assert best_only.best_series.moves == full.best_series.moves
     assert best_only.principal_variation == full.principal_variation
@@ -415,12 +416,14 @@ def test_frontier_cap_finds_known_series_four_mate_before_full_materialization()
     assert result.stats.frontier_states_pruned > 0
     assert result.stats.peak_frontier_states > cap
     assert result.stats.series_generation_positions <= (
-        1 + cap * (state.moves_available - 1)
+        1
+        + (cap + TACTICAL_FRONTIER_RESERVE_MAX)
+        * (state.moves_available - 1)
     )
-    assert result.stats.tactical_frontier_states_retained == 0
-    assert result.stats.tactical_frontier_reserve_drops == 0
-    assert result.stats.tactical_final_series_retained == 0
-    assert result.stats.tactical_final_reserve_drops == 0
+    assert result.stats.tactical_frontier_states_retained > 0
+    assert result.stats.tactical_frontier_reserve_drops > 0
+    assert result.stats.tactical_final_series_retained > 0
+    assert result.stats.tactical_final_reserve_drops > 0
     assert result.stats.generation_positions == (
         result.stats.series_generation_positions
         + result.stats.frontier_score_positions
@@ -464,8 +467,8 @@ def test_wide_frontier_scoring_cannot_overshoot_combined_work_cap() -> None:
     assert result.stats.frontier_prunes > 0
     assert result.stats.peak_frontier_states > 64
     assert result.stats.work_positions == 1_736
-    assert result.stats.series_generation_positions == 134
-    assert result.stats.frontier_score_positions == 1_473
+    assert result.stats.series_generation_positions == 114
+    assert result.stats.frontier_score_positions == 1_493
     assert result.stats.static_evaluation_positions == 1
     assert result.stats.evaluation_reach_positions == 128
     assert result.stats.quiet_adjudication_positions == 0
@@ -504,11 +507,11 @@ def test_iterative_deepening_reuses_bounded_complete_series_frontier() -> None:
     # The immediate root mate means every iteration asks for the identical
     # expensive series-four frontier. Generate it once, then reuse it twice.
     assert result.stats.series_generation_cache_hits == 2
-    assert result.stats.series_generation_positions == 135
-    assert result.stats.frontier_score_positions == 1_473
+    assert result.stats.series_generation_positions == 200
+    assert result.stats.frontier_score_positions == 1_493
     assert result.stats.static_evaluation_positions == 1
     assert result.stats.evaluation_reach_positions == 128
-    assert result.stats.generation_positions == 1_737
+    assert result.stats.generation_positions == 1_822
     assert result.stats.series_generation_cache_peak <= (
         SERIES_GENERATION_CACHE_CAPACITY
     )
@@ -710,9 +713,10 @@ def test_tactical_frontier_policy_is_root_stable_across_late_descendants() -> No
     early_root = SeriesSearcher(
         SearchLimits(depth_series=5, max_series_per_node=32)
     )
-    assert not early_root._tactical_frontier_protection_enabled(hard_s4)
+    assert early_root._tactical_frontier_protection_enabled(hard_s4)
+    assert early_root._root_tactical_frontier_protection is False
     # Merely reaching the late-series threshold no longer changes the beam
-    # policy selected by the Series-4 root.
+    # policy selected for descendants of the Series-4 root.
     assert not early_root._tactical_frontier_protection_enabled(
         late,
         ply_from_root=4,
@@ -739,7 +743,7 @@ def test_tactical_frontier_policy_is_root_stable_across_late_descendants() -> No
     )
 
 
-def test_hard_s4_depth_five_keeps_late_only_tactical_reserve_off() -> None:
+def test_hard_s4_depth_five_limits_tactical_reserve_to_the_root() -> None:
     """Opt-in merged-native performance/correctness regression.
 
     The deterministic ten-million-work gate takes roughly 17 seconds on the
@@ -769,10 +773,10 @@ def test_hard_s4_depth_five_keeps_late_only_tactical_reserve_off() -> None:
     assert result.completed_depth == 5
     assert not result.work_limit_reached
     assert result.stats.work_positions <= 10_000_000
-    assert result.stats.tactical_frontier_states_retained == 0
-    assert result.stats.tactical_frontier_reserve_drops == 0
-    assert result.stats.tactical_final_series_retained == 0
-    assert result.stats.tactical_final_reserve_drops == 0
+    assert result.stats.tactical_frontier_states_retained > 0
+    assert result.stats.tactical_frontier_reserve_drops > 0
+    assert result.stats.tactical_final_series_retained > 0
+    assert result.stats.tactical_final_reserve_drops > 0
 
 
 def test_deeper_pending_adjudication_keeps_last_completed_iteration(

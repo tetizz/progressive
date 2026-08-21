@@ -412,10 +412,11 @@ class SeriesSearcher:
     ) -> bool:
         """Returns the root-stable tactical policy for one generated node.
 
-        A late or promotion-risk root protects every descendant in the search.
-        An earlier ordinary root remains on the fixed-width fast path even if
-        minimax eventually reaches Series 7; only a concrete promotion risk in
-        the immediate opponent-series safety horizon may opt its node in.
+        Every root protects distinct tactical candidates before the first
+        irreversible beam cut. A late or promotion-risk root also protects
+        every descendant in the search. Descendants of an earlier ordinary
+        root remain on the fixed-width fast path unless a concrete promotion
+        risk appears in the immediate opponent-series safety horizon.
         """
 
         if self._root_tactical_frontier_protection is None:
@@ -425,6 +426,8 @@ class SeriesSearcher:
                     required_prefix=required_prefix,
                 )
             )
+        if ply_from_root == 1:
+            return True
         if self._root_tactical_frontier_protection:
             return True
         return (
