@@ -72,7 +72,9 @@ EARLY_S4_HISTORY = (
 )
 BLUNDERING_S4 = ("f6f5", "f5e4", "c7c5", "d8b6")
 HUMAN_S5_MATE = ("b1c3", "c3e4", "f1b5", "b5d7", "f3e5")
-SAFE_S4 = ("d7d5", "d5e4", "d8d6", "g8h6")
+PRIOR_SAFE_S4 = ("d7d5", "d5e4", "d8d6", "g8h6")
+ROOT_TACTICAL_S4 = ("e7e5", "f6f5", "f5e4", "f8b4")
+HOSTED_SHALLOW_S4 = ("g8h6", "h6f5", "f5h4", "h4f3")
 
 
 def _play_limits() -> SearchLimits:
@@ -278,6 +280,52 @@ def test_ordinary_opening_screen_is_staged_and_keeps_the_canonical_result(
     assert result.stats.tactical_final_reserve_drops == 0
 
 
+def test_root_tactical_protection_retains_the_stronger_s4_candidate() -> None:
+    """Every root gets tactical lanes even when descendants stay low-risk."""
+
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            max_generation_positions=250_000,
+            collect_all_root_scores=False,
+            native_threads=1,
+        ),
+        PROFILE,
+    )
+    retained = searcher._ordered_generated(
+        _early_s4_state(),
+        ply_from_root=1,
+    )
+
+    assert any(candidate.moves == ROOT_TACTICAL_S4 for candidate in retained)
+    assert searcher.stats.tactical_frontier_states_retained > 0
+    assert searcher.stats.tactical_final_series_retained > 0
+    assert searcher.stats.tactical_final_reserve_drops > 0
+
+
+def test_root_tactical_protection_keeps_depth_three_opening_result() -> None:
+    result = analyze(
+        ProgressiveState.initial(),
+        SearchLimits(
+            depth_series=3,
+            max_series_per_node=32,
+            max_generation_positions=1_000_000,
+            collect_all_root_scores=False,
+            native_threads=1,
+        ),
+        PROFILE,
+    )
+
+    assert result.best_series is not None
+    assert result.best_series.moves == ("e2e4",)
+    assert result.score == 848
+    assert result.completed_depth == 3
+    assert result.stats.work_positions == 341_943
+    assert result.stats.tactical_frontier_states_retained == 0
+    assert result.stats.tactical_frontier_reserve_drops == 0
+
+
 def test_hosted_shallow_s4_selection_avoids_cap832_reply_mate() -> None:
     """The single-thread hosted fast path must reject the live blunder."""
 
@@ -296,7 +344,7 @@ def test_hosted_shallow_s4_selection_avoids_cap832_reply_mate() -> None:
     )
 
     assert result.best_series is not None
-    assert result.best_series.moves == SAFE_S4
+    assert result.best_series.moves == HOSTED_SHALLOW_S4
     assert result.completed_depth == 2
     selected_child = play_series(root, result.best_series.moves).final_state
     reply_mate, verifier_work = _ordinary_cap832_reply_mate(selected_child)
@@ -304,18 +352,12 @@ def test_hosted_shallow_s4_selection_avoids_cap832_reply_mate() -> None:
     assert 0 < verifier_work < 50_000
 
 
-@pytest.mark.parametrize("requested_depth", (4, 5))
-def test_early_s4_play_avoids_every_cap832_replay_mate(
-    requested_depth: int,
-) -> None:
-    """Opt-in live-strength gate for the 10m-work, 16-thread play profile."""
-
-    if os.environ.get("SPC_RUN_EARLY_S4_GATE") != "1":
-        pytest.skip("set SPC_RUN_EARLY_S4_GATE=1 for the early S4 strength gate")
+def test_website_depth_four_selects_stronger_safe_root_tactical_line() -> None:
+    """Root protection changes the live choice, not merely its mate screen."""
 
     root = _early_s4_state()
     limits = SearchLimits(
-        depth_series=requested_depth,
+        depth_series=4,
         max_series_per_node=32,
         max_generation_positions=10_000_000,
         time_limit_seconds=30.0,
@@ -325,7 +367,56 @@ def test_early_s4_play_avoids_every_cap832_replay_mate(
     result = analyze(root, limits, PROFILE)
 
     assert result.best_series is not None
-    assert result.best_series.moves == SAFE_S4
+    assert result.best_series.moves == ROOT_TACTICAL_S4
+    assert result.score == 1_078
+    assert result.completed_depth == 4
+    assert result.proof is None
+    assert not result.exact_width
+    assert result.stats.tactical_frontier_states_retained > 0
+    assert result.stats.tactical_frontier_reserve_drops > 0
+
+    prior = analyze(
+        root,
+        limits,
+        PROFILE,
+        required_prefix=PRIOR_SAFE_S4,
+    )
+    assert prior.best_series is not None
+    assert prior.best_series.moves == PRIOR_SAFE_S4
+    assert prior.score == 1_885
+    assert prior.completed_depth == 4
+    # Scores are white-centric heuristic values, so Black prefers the lower
+    # score. Neither selective result is a proof of a win.
+    assert result.score < prior.score
+
+    selected_child = play_series(root, result.best_series.moves).final_state
+    reply_mate, verifier_work = _ordinary_cap832_reply_mate(
+        selected_child,
+        native_threads=16,
+    )
+    assert reply_mate is None
+    assert 0 < verifier_work < 50_000
+
+
+def test_early_s4_depth_five_avoids_every_cap832_replay_mate() -> None:
+    """Opt-in 10m-work depth-five gate, expected to complete depth four."""
+
+    if os.environ.get("SPC_RUN_EARLY_S4_GATE") != "1":
+        pytest.skip("set SPC_RUN_EARLY_S4_GATE=1 for the early S4 strength gate")
+
+    root = _early_s4_state()
+    limits = SearchLimits(
+        depth_series=5,
+        max_series_per_node=32,
+        max_generation_positions=10_000_000,
+        time_limit_seconds=30.0,
+        collect_all_root_scores=False,
+        native_threads=16,
+    )
+    result = analyze(root, limits, PROFILE)
+
+    assert result.best_series is not None
+    assert result.best_series.moves == ROOT_TACTICAL_S4
     assert result.completed_depth == 4
     selected_child = play_series(root, result.best_series.moves).final_state
     reply_mate, verifier_work = _ordinary_cap832_reply_mate(
