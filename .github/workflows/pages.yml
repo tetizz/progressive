@@ -1,0 +1,66 @@
+name: Deploy public play site
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: progressive-pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Validate public runtime contract
+        shell: python
+        run: |
+          from pathlib import Path
+
+          root = Path("src/scottish_progressive/web/static")
+          index = (root / "index.html").read_text(encoding="utf-8")
+          app = (root / "app.js").read_text(encoding="utf-8")
+          required = [
+              "styles.css",
+              "study-safety.js",
+              "evaluation-format.js",
+              "play-handoff.js",
+              "play-timeline.js",
+              "app.js",
+              "THIRD_PARTY_NOTICES.txt",
+          ]
+          missing = [name for name in required if not (root / name).is_file()]
+          if missing:
+              raise SystemExit(f"missing public assets: {missing}")
+          if 'https://progressive-ui9q.onrender.com' not in index:
+              raise SystemExit("public API origin is not configured")
+          if 'const API_ORIGIN = isPublicPagesSite' not in app:
+              raise SystemExit("public API routing is not enabled")
+          if 'src="/' in index or 'href="/styles.css"' in index:
+              raise SystemExit("root-relative assets would break the project Pages path")
+
+      - name: Upload static site
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: src/scottish_progressive/web/static
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

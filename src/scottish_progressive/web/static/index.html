@@ -5,14 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <meta name="theme-color" content="#262522">
+    <meta name="spc-api-origin" content="https://progressive-ui9q.onrender.com">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://progressive-ui9q.onrender.com; object-src 'none'; base-uri 'none'; form-action 'none'">
     <title>Scottish Progressive</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="./styles.css">
   </head>
   <body>
     <a class="skip-link" href="#workspace">Skip to board</a>
     <header class="app-header">
-      <a class="brand" href="/" aria-label="Scottish Progressive home"><span class="brand-long">Scottish Progressive</span><span class="brand-short">Progressive</span></a>
+      <a class="brand" href="./" aria-label="Scottish Progressive home"><span class="brand-long">Scottish Progressive</span><span class="brand-short">Progressive</span></a>
       <nav class="mode-switch" aria-label="Workspace mode">
         <button class="mode-button is-active" id="mode-play" type="button" aria-pressed="true">Play</button>
         <button class="mode-button" id="mode-analyze" type="button" aria-pressed="false">Analyze</button>
@@ -211,7 +213,7 @@
             <label class="field-label" for="ep-input">Progressive en-passant targets</label><input id="ep-input" type="text" spellcheck="false" placeholder="e3, c6 — or leave blank"><p class="field-help">Comma-separated target squares. Invalid targets are rejected.</p>
             <div class="setup-actions"><button class="primary" type="submit">Load position</button><button class="secondary" id="load-start" type="button">Starting position</button></div><div class="setup-error" id="setup-error" hidden role="alert"></div>
           </form>
-          <p class="piece-credit">Cburnett chess pieces by Colin M. L. Burnett, GPLv2+. <a href="/THIRD_PARTY_NOTICES.txt" target="_blank" rel="noreferrer">License</a></p>
+          <p class="piece-credit">Cburnett chess pieces by Colin M. L. Burnett, GPLv2+. <a href="./THIRD_PARTY_NOTICES.txt" target="_blank" rel="noreferrer">License</a></p>
         </section>
       </aside>
     </main>
@@ -223,10 +225,10 @@
     </dialog>
     <dialog class="promotion-dialog" id="promotion-dialog" aria-labelledby="promotion-title"><form method="dialog"><div class="dialog-heading"><div><p class="section-kicker">PROMOTION</p><h2 id="promotion-title">Choose a piece</h2></div><button class="dialog-close" value="cancel" aria-label="Cancel promotion">×</button></div><div class="promotion-options" id="promotion-options"></div></form></dialog>
     <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
-    <script src="/study-safety.js" defer></script>
-    <script src="/evaluation-format.js" defer></script>
-    <script src="/play-handoff.js" defer></script>
-    <script src="/play-timeline.js" defer></script>
-    <script src="/app.js" defer></script>
+    <script src="./study-safety.js" defer></script>
+    <script src="./evaluation-format.js" defer></script>
+    <script src="./play-handoff.js" defer></script>
+    <script src="./play-timeline.js" defer></script>
+    <script src="./app.js" defer></script>
   </body>
 </html>

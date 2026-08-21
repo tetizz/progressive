@@ -13,6 +13,39 @@ STATIC = ROOT / "src" / "scottish_progressive" / "web" / "static"
 NODE = shutil.which("node")
 
 
+def test_public_assets_are_project_pages_safe_and_keep_local_same_origin() -> None:
+    index = (STATIC / "index.html").read_text(encoding="utf-8")
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+
+    assert 'name="spc-api-origin" content="https://progressive-ui9q.onrender.com"' in index
+    assert "connect-src 'self' https://progressive-ui9q.onrender.com" in index
+    assert 'href="./styles.css"' in index
+    assert 'href="./" aria-label="Scottish Progressive home"' in index
+    assert 'href="./THIRD_PARTY_NOTICES.txt"' in index
+    assert 'src="/app.js"' not in index
+    assert 'src="./app.js"' in index
+    assert 'return `./pieces/cburnett/' in app
+    assert 'const PUBLIC_SITE_HOST = "tetizz.github.io"' in app
+    assert 'const PUBLIC_SITE_PATH = "/progressive"' in app
+    assert 'const API_ORIGIN = isPublicPagesSite ? configuredApiOrigin : ""' in app
+    assert 'fetch(`${API_ORIGIN}${path}`' in app
+    assert 'if (options.body !== undefined' in app
+
+
+def test_deployment_manifests_keep_pages_and_render_on_the_same_commit() -> None:
+    render = (ROOT / "render.yaml").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "pages.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "SPC_ALLOWED_CORS_ORIGIN" in render
+    assert "value: https://tetizz.github.io" in render
+    assert "SPC_OMIT_STALE_OPENING_REPORTS" in render
+    assert "branches: [main]" in workflow
+    assert "src/scottish_progressive/web/static" in workflow
+    assert "actions/deploy-pages@v4" in workflow
+
+
 @pytest.mark.skipif(NODE is None, reason="Node.js is required for browser asset tests")
 def test_player_evaluations_use_pawns_sides_and_sound_mate_notation() -> None:
     script = r"""
@@ -56,8 +89,8 @@ def test_visible_evaluation_surfaces_share_the_human_formatter() -> None:
     index = (STATIC / "index.html").read_text(encoding="utf-8")
     app = (STATIC / "app.js").read_text(encoding="utf-8")
 
-    assert index.index('src="/evaluation-format.js"') < index.index(
-        'src="/app.js"'
+    assert index.index('src="./evaluation-format.js"') < index.index(
+        'src="./app.js"'
     )
     assert "About 100 evaluation points equals one pawn" in index
     assert "not calibrated Stockfish centipawns" in index
@@ -149,7 +182,7 @@ def test_play_flow_guards_completed_series_and_stale_handoffs() -> None:
         )
     ]
 
-    assert index.index('src="/play-handoff.js"') < index.index('src="/app.js"')
+    assert index.index('src="./play-handoff.js"') < index.index('src="./app.js"')
     assert "PLAY_HANDOFF.isActive()" in engine_turn
     assert "state.complete" in engine_turn
     assert "state.nextState" in engine_turn
@@ -287,7 +320,7 @@ def test_saved_position_guard_loads_before_the_board_application() -> None:
     app = (STATIC / "app.js").read_text(encoding="utf-8")
     load_saved_position = app[app.index("async function loadSavedPosition"):]
 
-    assert index.index('src="/study-safety.js"') < index.index('src="/app.js"')
+    assert index.index('src="./study-safety.js"') < index.index('src="./app.js"')
     assert load_saved_position.index(
         "confirmSavedPositionReplacement"
     ) < load_saved_position.index("exitPvPreview(false);")
@@ -430,7 +463,7 @@ def test_play_history_navigation_is_accessible_and_locks_live_play() -> None:
         )
     ]
 
-    assert index.index('src="/play-timeline.js"') < index.index('src="/app.js"')
+    assert index.index('src="./play-timeline.js"') < index.index('src="./app.js"')
     assert 'id="play-history-previous"' in index
     assert 'aria-label="Previous move"' in index
     assert 'id="play-history-next"' in index

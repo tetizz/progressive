@@ -112,6 +112,7 @@ class WebConfig:
     request_limit: int = MAX_REQUEST_BYTES
     public_origin: str | None = None
     allowed_authority: str | None = None
+    allowed_cors_origin: str | None = None
     analysis_limits: AnalysisRequestLimits = LOCAL_ANALYSIS_LIMITS
     analysis_concurrency: int = 2
 
@@ -936,6 +937,7 @@ class AnalysisBoardHandler(BaseHTTPRequestHandler):
             "Content-Security-Policy",
             "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
         )
+        self._write_cors_headers()
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(encoded)
@@ -947,6 +949,29 @@ class AnalysisBoardHandler(BaseHTTPRequestHandler):
         if error.details is not None:
             payload["error"]["details"] = error.details  # type: ignore[index]
         self._write_json(payload, error.status)
+
+    def _origin_matches(self, candidate: str, expected: str) -> bool:
+        if expected.startswith("http://"):
+            return candidate.rstrip("/").lower() == expected.lower()
+        try:
+            normalized, _ = _normalize_public_origin(candidate)
+        except ValueError:
+            return False
+        return normalized == expected
+
+    def _cors_request_origin(self) -> str | None:
+        configured = self.app_server.config.allowed_cors_origin
+        origin = self.headers.get("Origin")
+        if configured is None or origin is None:
+            return None
+        return configured if self._origin_matches(origin, configured) else None
+
+    def _write_cors_headers(self) -> None:
+        allowed_origin = self._cors_request_origin()
+        if allowed_origin is None:
+            return
+        self.send_header("Access-Control-Allow-Origin", allowed_origin)
+        self.send_header("Vary", "Origin")
 
     def _validate_local_request(self, *, require_same_origin: bool = False) -> None:
         bound_host, bound_port = self.app_server.server_address[:2]
@@ -961,7 +986,14 @@ class AnalysisBoardHandler(BaseHTTPRequestHandler):
         if require_same_origin:
             origin = self.headers.get("Origin")
             expected_origin = config.public_origin or f"http://{expected_authority}"
-            if origin is not None and origin.rstrip("/").lower() != expected_origin.lower():
+            allowed_origins = tuple(
+                candidate
+                for candidate in (expected_origin, config.allowed_cors_origin)
+                if candidate is not None
+            )
+            if origin is not None and not any(
+                self._origin_matches(origin, allowed) for allowed in allowed_origins
+            ):
                 raise APIError(
                     403,
                     "invalid-origin",
@@ -1063,6 +1095,66 @@ class AnalysisBoardHandler(BaseHTTPRequestHandler):
     def do_HEAD(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         self.do_GET()
 
+    def do_OPTIONS(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        try:
+            self._validate_local_request()
+            path = self._route_path()
+            origin = self.headers.get("Origin")
+            allowed_origin = self.app_server.config.allowed_cors_origin
+            if (
+                origin is None
+                or allowed_origin is None
+                or not self._origin_matches(origin, allowed_origin)
+            ):
+                raise APIError(403, "invalid-origin", "CORS origin is not allowed")
+
+            requested_method = self.headers.get(
+                "Access-Control-Request-Method", ""
+            ).strip().upper()
+            allowed_method = {
+                "/api/health": "GET",
+                "/api/openings": "GET",
+                "/api/prefix": "POST",
+                "/api/state": "POST",
+                "/api/analyze": "POST",
+            }.get(path)
+            if allowed_method is None or requested_method != allowed_method:
+                raise APIError(
+                    403,
+                    "invalid-preflight",
+                    "CORS method is not allowed for this endpoint",
+                )
+
+            requested_headers = {
+                item.strip().lower()
+                for item in self.headers.get(
+                    "Access-Control-Request-Headers", ""
+                ).split(",")
+                if item.strip()
+            }
+            if not requested_headers <= {"content-type"}:
+                raise APIError(
+                    403,
+                    "invalid-preflight",
+                    "CORS request headers are not allowed",
+                )
+
+            self.send_response(HTTPStatus.NO_CONTENT)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Access-Control-Allow-Origin", allowed_origin)
+            self.send_header("Access-Control-Allow-Methods", allowed_method)
+            if requested_headers:
+                self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header(
+                "Vary",
+                "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
+            )
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+        except APIError as error:
+            self._write_error(error)
+
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         try:
             self._validate_local_request(require_same_origin=True)
@@ -1152,6 +1244,7 @@ def create_server(
     reports_dir: str | Path | None = None,
     request_limit: int = MAX_REQUEST_BYTES,
     public_origin: str | None = None,
+    cors_origin: str | None = None,
 ) -> AnalysisBoardServer:
     normalized_origin: str | None = None
     allowed_authority: str | None = None
@@ -1164,6 +1257,14 @@ def create_server(
         if database is not None:
             raise ValueError("public analysis board cannot expose a SQLite database")
         normalized_origin, allowed_authority = _normalize_public_origin(public_origin)
+    configured_cors_origin = cors_origin
+    if configured_cors_origin is None and normalized_origin is not None:
+        configured_cors_origin = os.environ.get("SPC_ALLOWED_CORS_ORIGIN")
+    normalized_cors_origin: str | None = None
+    if configured_cors_origin is not None:
+        if normalized_origin is None:
+            raise ValueError("CORS origin is available only for a public analysis board")
+        normalized_cors_origin, _ = _normalize_public_origin(configured_cors_origin)
     if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
         raise ValueError("port must be between 0 and 65535")
     if request_limit < 1024:
@@ -1189,6 +1290,7 @@ def create_server(
         ),
         public_origin=normalized_origin,
         allowed_authority=allowed_authority,
+        allowed_cors_origin=normalized_cors_origin,
         analysis_limits=(
             PUBLIC_ANALYSIS_LIMITS if normalized_origin is not None else LOCAL_ANALYSIS_LIMITS
         ),

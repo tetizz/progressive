@@ -17,3 +17,5 @@ services:
         value: 3.14.3
       - key: SPC_OMIT_STALE_OPENING_REPORTS
         value: "1"
+      - key: SPC_ALLOWED_CORS_ORIGIN
+        value: https://tetizz.github.io

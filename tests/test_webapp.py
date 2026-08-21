@@ -701,6 +701,41 @@ def test_public_server_requires_explicit_origin_and_enforces_bounded_mode(
     server.server_close()
 
 
+def test_cors_origin_requires_public_mode_and_exact_https_origin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "index.html").write_text("board", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="only for a public"):
+        create_server(
+            "127.0.0.1",
+            0,
+            static_root=static,
+            cors_origin="https://tetizz.github.io",
+        )
+    with pytest.raises(ValueError, match="https origin"):
+        create_server(
+            "127.0.0.1",
+            0,
+            static_root=static,
+            public_origin="https://progressive.example",
+            cors_origin="http://tetizz.github.io",
+        )
+
+    monkeypatch.setenv("SPC_ALLOWED_CORS_ORIGIN", "https://tetizz.github.io")
+    server = create_server(
+        "127.0.0.1",
+        0,
+        static_root=static,
+        reports_dir=tmp_path,
+        public_origin="https://progressive.example",
+    )
+    assert server.config.allowed_cors_origin == "https://tetizz.github.io"
+    server.server_close()
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -739,16 +774,25 @@ def test_public_server_validates_host_origin_and_reports_public_limits(
         static_root=static,
         reports_dir=tmp_path,
         public_origin="https://progressive.example",
+        cors_origin="https://tetizz.github.io",
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base = f"http://127.0.0.1:{server.server_port}"
     try:
         health_request = Request(
-            f"{base}/api/health", headers={"Host": "progressive.example"}
+            f"{base}/api/health",
+            headers={
+                "Host": "progressive.example",
+                "Origin": "https://tetizz.github.io",
+            },
         )
         with urlopen(health_request, timeout=3) as response:
             health = json.loads(response.read())
+            assert (
+                response.headers["Access-Control-Allow-Origin"]
+                == "https://tetizz.github.io"
+            )
         assert health["deployment_mode"] == "public-bounded"
         assert health["database_configured"] is False
         assert health["analysis_limits"]["maximum_seconds"] == PUBLIC_MAX_ANALYSIS_SECONDS
@@ -764,12 +808,50 @@ def test_public_server_validates_host_origin_and_reports_public_limits(
             method="POST",
             headers={
                 "Host": "progressive.example",
-                "Origin": "https://progressive.example",
+                "Origin": "https://tetizz.github.io",
                 "Content-Type": "application/json",
             },
         )
         with urlopen(accepted, timeout=3) as response:
             assert response.status == 200
+            assert (
+                response.headers["Access-Control-Allow-Origin"]
+                == "https://tetizz.github.io"
+            )
+
+        preflight = Request(
+            f"{base}/api/prefix",
+            method="OPTIONS",
+            headers={
+                "Host": "progressive.example",
+                "Origin": "https://tetizz.github.io",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+        with urlopen(preflight, timeout=3) as response:
+            assert response.status == 204
+            assert response.headers["Access-Control-Allow-Origin"] == (
+                "https://tetizz.github.io"
+            )
+            assert response.headers["Access-Control-Allow-Methods"] == "POST"
+            assert response.headers["Access-Control-Allow-Headers"] == "Content-Type"
+            assert "Origin" in response.headers["Vary"]
+
+        hostile_preflight = Request(
+            f"{base}/api/prefix",
+            method="OPTIONS",
+            headers={
+                "Host": "progressive.example",
+                "Origin": "https://attacker.example",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+        with pytest.raises(HTTPError) as preflight_denied:
+            urlopen(hostile_preflight, timeout=3)
+        assert preflight_denied.value.code == 403
+        assert preflight_denied.value.headers.get("Access-Control-Allow-Origin") is None
 
         hostile = Request(
             f"{base}/api/prefix",

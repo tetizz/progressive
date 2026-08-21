@@ -15,6 +15,19 @@
   const EVALUATION = globalThis.ScottishProgressiveEvaluation;
   const PLAY_HANDOFF = globalThis.ScottishProgressivePlayHandoff.createGate();
   const PLAY_TIMELINE = globalThis.ScottishProgressivePlayTimeline;
+  const PUBLIC_SITE_HOST = "tetizz.github.io";
+  const PUBLIC_SITE_PATH = "/progressive";
+  const configuredApiOrigin = document
+    .querySelector('meta[name="spc-api-origin"]')
+    ?.getAttribute("content")
+    ?.trim()
+    ?.replace(/\/$/, "") || "";
+  const publicPath = globalThis.location.pathname.toLowerCase();
+  const expectedPublicPath = PUBLIC_SITE_PATH.toLowerCase();
+  const isPublicPagesSite = globalThis.location.hostname.toLowerCase() === PUBLIC_SITE_HOST
+    && (publicPath === expectedPublicPath
+      || publicPath.startsWith(`${expectedPublicPath}/`));
+  const API_ORIGIN = isPublicPagesSite ? configuredApiOrigin : "";
   const EVALUATION_SCALE_HELP = "About 100 evaluation points equals one pawn. This is a heuristic Progressive evaluation, not calibrated Stockfish centipawns.";
   const ANALYSIS_PRESETS = {
     quick: { depth: 4, cap: 48, seconds: 1.25, alternatives: 2, generationPositions: 150_000 },
@@ -186,9 +199,16 @@
   }
 
   async function requestJson(path, options = {}) {
-    const response = await fetch(path, {
+    if (!path.startsWith("/api/")) throw new Error("API path must start with /api/");
+    const headers = { ...(options.headers || {}) };
+    if (options.body !== undefined && !Object.keys(headers).some(
+      (name) => name.toLowerCase() === "content-type",
+    )) {
+      headers["Content-Type"] = "application/json";
+    }
+    const response = await fetch(`${API_ORIGIN}${path}`, {
       ...options,
-      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      headers,
     });
     const type = response.headers.get("content-type") || "";
     const payload = type.includes("application/json")
@@ -245,7 +265,7 @@
 
   function pieceAsset(piece) {
     const prefix = piece.color === "white" ? "w" : "b";
-    return `/pieces/cburnett/${prefix}${piece.type.toUpperCase()}.svg`;
+    return `./pieces/cburnett/${prefix}${piece.type.toUpperCase()}.svg`;
   }
 
   function activeBoardFen() {
