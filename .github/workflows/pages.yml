@@ -99,16 +99,34 @@ jobs:
                           raise ValueError(f"non-JSON response: {content_type!r}")
                       health = json.load(response)
                   actual = health.get("source_fingerprint")
+                  limits = health.get("analysis_limits", {})
+                  runtime = health.get("runtime", {})
+                  contract_ready = (
+                      limits.get("maximum_depth") == 5
+                      and limits.get("maximum_seconds") == 30.0
+                      and limits.get("maximum_generation_positions") == 10_000_000
+                      and runtime.get("cpu_count_source") == "RENDER_CPU_COUNT"
+                      and runtime.get("cpu_count")
+                      and limits.get("native_threads") == 1
+                      and runtime.get("native_threads") == limits.get("native_threads")
+                      and runtime.get("native_threads_policy")
+                      == "single-thread-pool-avoidance"
+                  )
                   if (
                       health.get("ok") is True
                       and actual == expected
                       and allowed_origin == "https://tetizz.github.io"
+                      and contract_ready
                   ):
-                      print(f"Render engine ready: fingerprint {actual} (attempt {attempt})")
+                      print(
+                          f"Render engine ready: fingerprint {actual}, "
+                          f"limits={limits}, runtime={runtime} (attempt {attempt})"
+                      )
                       break
                   last = (
                       f"fingerprint={actual!r}, ok={health.get('ok')!r}, "
-                      f"cors={allowed_origin!r}"
+                      f"cors={allowed_origin!r}, contract={contract_ready!r}, "
+                      f"limits={limits!r}, runtime={runtime!r}"
                   )
               except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError) as error:
                   last = f"{type(error).__name__}: {error}"

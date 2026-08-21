@@ -658,7 +658,7 @@ def test_server_rejects_non_loopback_binding(tmp_path: Path) -> None:
 
 
 def test_public_server_requires_explicit_origin_and_enforces_bounded_mode(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     static = tmp_path / "static"
     static.mkdir()
@@ -694,11 +694,72 @@ def test_public_server_requires_explicit_origin_and_enforces_bounded_mode(
     assert server.config.analysis_limits.maximum_seconds == PUBLIC_MAX_ANALYSIS_SECONDS
     assert server.config.analysis_limits.maximum_depth == PUBLIC_MAX_ANALYSIS_DEPTH
     assert server.config.analysis_limits.native_threads == 1
+    assert server.config.runtime_cpu_count is None
+    assert server.config.runtime_cpu_count_source == "conservative-fallback"
+    assert server.config.native_threads_policy == "single-thread-pool-avoidance"
     assert (
         server.config.analysis_limits.maximum_generation_positions
         == PUBLIC_MAX_GENERATION_POSITIONS
     )
     server.server_close()
+
+
+@pytest.mark.parametrize(
+    "reported_cpu_count",
+    ["0.1", "0.5", "1", "2", "16", "64"],
+)
+def test_public_server_reports_render_cpu_but_avoids_the_parallel_native_pool(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reported_cpu_count: str,
+) -> None:
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "index.html").write_text("board", encoding="utf-8")
+    monkeypatch.delenv("RENDER_CPU_COUNT", raising=False)
+    monkeypatch.setenv("RENDER_CPU_COUNT", reported_cpu_count)
+
+    server = create_server(
+        "127.0.0.1",
+        0,
+        static_root=static,
+        reports_dir=tmp_path,
+        public_origin="https://progressive.example",
+    )
+    try:
+        assert server.config.runtime_cpu_count == reported_cpu_count
+        assert server.config.runtime_cpu_count_source == "RENDER_CPU_COUNT"
+        assert server.config.analysis_limits.native_threads == 1
+        assert server.config.native_threads_policy == "single-thread-pool-avoidance"
+    finally:
+        server.server_close()
+
+
+@pytest.mark.parametrize("reported_cpu_count", ["", "0", "-1", "nan", "invalid"])
+def test_public_server_falls_back_safely_for_invalid_runtime_cpu(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reported_cpu_count: str,
+) -> None:
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "index.html").write_text("board", encoding="utf-8")
+    monkeypatch.setenv("RENDER_CPU_COUNT", reported_cpu_count)
+
+    server = create_server(
+        "127.0.0.1",
+        0,
+        static_root=static,
+        reports_dir=tmp_path,
+        public_origin="https://progressive.example",
+    )
+    try:
+        assert server.config.runtime_cpu_count is None
+        assert server.config.runtime_cpu_count_source == "conservative-fallback"
+        assert server.config.analysis_limits.native_threads == 1
+        assert server.config.native_threads_policy == "single-thread-pool-avoidance"
+    finally:
+        server.server_close()
 
 
 def test_cors_origin_requires_public_mode_and_exact_https_origin(
@@ -763,11 +824,12 @@ def test_public_analysis_rejects_limits_above_the_hosted_envelope(
 
 
 def test_public_server_validates_host_origin_and_reports_public_limits(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     static = tmp_path / "static"
     static.mkdir()
     (static / "index.html").write_text("board", encoding="utf-8")
+    monkeypatch.setenv("RENDER_CPU_COUNT", "0.5")
     server = create_server(
         "127.0.0.1",
         0,
@@ -797,7 +859,16 @@ def test_public_server_validates_host_origin_and_reports_public_limits(
         assert health["database_configured"] is False
         assert health["analysis_limits"]["maximum_seconds"] == PUBLIC_MAX_ANALYSIS_SECONDS
         assert health["analysis_limits"]["maximum_depth"] == PUBLIC_MAX_ANALYSIS_DEPTH
+        assert health["analysis_limits"]["maximum_generation_positions"] == (
+            PUBLIC_MAX_GENERATION_POSITIONS
+        )
         assert health["analysis_limits"]["native_threads"] == 1
+        assert health["runtime"] == {
+            "cpu_count": "0.5",
+            "cpu_count_source": "RENDER_CPU_COUNT",
+            "native_threads": 1,
+            "native_threads_policy": "single-thread-pool-avoidance",
+        }
 
         body = json.dumps(
             {"fen": chess.STARTING_FEN, "series": 1, "prefix": []}

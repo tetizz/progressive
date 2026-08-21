@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 import hashlib
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -47,10 +48,10 @@ MAX_SERIES_NUMBER = 512
 DEFAULT_GENERATION_POSITIONS = 500_000
 MAX_GENERATION_POSITIONS = 10_000_000
 
-PUBLIC_MAX_ANALYSIS_SECONDS = 5.0
+PUBLIC_MAX_ANALYSIS_SECONDS = 30.0
 PUBLIC_MAX_SERIES_CAP = 96
-PUBLIC_MAX_ANALYSIS_DEPTH = 4
-PUBLIC_MAX_GENERATION_POSITIONS = 250_000
+PUBLIC_MAX_ANALYSIS_DEPTH = 5
+PUBLIC_MAX_GENERATION_POSITIONS = 10_000_000
 LOCAL_NATIVE_THREADS = min(16, os.cpu_count() or 1)
 
 REPORT_FILES = {
@@ -115,6 +116,39 @@ class WebConfig:
     allowed_cors_origin: str | None = None
     analysis_limits: AnalysisRequestLimits = LOCAL_ANALYSIS_LIMITS
     analysis_concurrency: int = 2
+    runtime_cpu_count: str | None = None
+    runtime_cpu_count_source: str = "unavailable"
+    native_threads_policy: str = "local-configured"
+
+
+def _public_analysis_runtime(
+    environment: Mapping[str, str] | None = None,
+) -> tuple[AnalysisRequestLimits, str | None, str]:
+    """Report Render's allocation while retaining the proven serial native path.
+
+    Parallel native calls currently initialize a persistent pool from
+    host-visible hardware rather than the container CPU quota. Public requests
+    therefore stay at one native thread even when Render reports a larger
+    allocation, avoiding an unreported worker pool until its lazy sizing is
+    separately proven.
+    """
+
+    variables = os.environ if environment is None else environment
+    raw_cpu_count = variables.get("RENDER_CPU_COUNT")
+    if raw_cpu_count is None:
+        return PUBLIC_ANALYSIS_LIMITS, None, "conservative-fallback"
+    reported_cpu_count = raw_cpu_count.strip()
+    try:
+        cpu_count = Decimal(reported_cpu_count)
+    except InvalidOperation:
+        return PUBLIC_ANALYSIS_LIMITS, None, "conservative-fallback"
+    if not reported_cpu_count or not cpu_count.is_finite() or cpu_count <= 0:
+        return PUBLIC_ANALYSIS_LIMITS, None, "conservative-fallback"
+    return (
+        PUBLIC_ANALYSIS_LIMITS,
+        reported_cpu_count,
+        "RENDER_CPU_COUNT",
+    )
 
 
 class AnalysisBoardServer(ThreadingHTTPServer):
@@ -1073,6 +1107,16 @@ class AnalysisBoardHandler(BaseHTTPRequestHandler):
                             "maximum_alternatives": limits.maximum_alternatives,
                             "native_threads": limits.native_threads,
                         },
+                        "runtime": {
+                            "cpu_count": self.app_server.config.runtime_cpu_count,
+                            "cpu_count_source": (
+                                self.app_server.config.runtime_cpu_count_source
+                            ),
+                            "native_threads": limits.native_threads,
+                            "native_threads_policy": (
+                                self.app_server.config.native_threads_policy
+                            ),
+                        },
                         "database_configured": self.app_server.config.database_path
                         is not None,
                     }
@@ -1278,6 +1322,14 @@ def create_server(
     static_path = Path(static_root).resolve() if static_root else _default_static_root()
     if not static_path.is_dir():
         raise ValueError(f"web static directory not found: {static_path}")
+    if normalized_origin is not None:
+        analysis_limits, runtime_cpu_count, runtime_cpu_count_source = (
+            _public_analysis_runtime()
+        )
+    else:
+        analysis_limits = LOCAL_ANALYSIS_LIMITS
+        runtime_cpu_count = str(os.cpu_count() or 1)
+        runtime_cpu_count_source = "os.cpu_count"
     config = WebConfig(
         static_root=static_path,
         reports_dir=(Path(reports_dir).resolve() if reports_dir else _default_reports_dir()),
@@ -1291,10 +1343,15 @@ def create_server(
         public_origin=normalized_origin,
         allowed_authority=allowed_authority,
         allowed_cors_origin=normalized_cors_origin,
-        analysis_limits=(
-            PUBLIC_ANALYSIS_LIMITS if normalized_origin is not None else LOCAL_ANALYSIS_LIMITS
-        ),
+        analysis_limits=analysis_limits,
         analysis_concurrency=1 if normalized_origin is not None else 2,
+        runtime_cpu_count=runtime_cpu_count,
+        runtime_cpu_count_source=runtime_cpu_count_source,
+        native_threads_policy=(
+            "single-thread-pool-avoidance"
+            if normalized_origin is not None
+            else "local-configured"
+        ),
     )
     if database_path is not None:
         try:

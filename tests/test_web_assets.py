@@ -53,6 +53,14 @@ def test_deployment_manifests_keep_pages_and_render_on_the_same_commit() -> None
     assert "actions/deploy-pages@v4" in workflow
     assert "Wait for matching deployed engine" in workflow
     assert "actual == expected" in workflow
+    assert 'limits.get("maximum_depth") == 5' in workflow
+    assert 'limits.get("maximum_seconds") == 30.0' in workflow
+    assert (
+        'limits.get("maximum_generation_positions") == 10_000_000' in workflow
+    )
+    assert 'runtime.get("cpu_count_source") == "RENDER_CPU_COUNT"' in workflow
+    assert 'limits.get("native_threads") == 1' in workflow
+    assert '== "single-thread-pool-avoidance"' in workflow
     assert "Build commit-addressed Pages artifact" in workflow
     assert "python scripts/build_pages_site.py" in workflow
     assert '--version "$GITHUB_SHA"' in workflow
@@ -261,6 +269,7 @@ def test_play_strength_is_explicit_and_reports_completed_not_claimed_depth() -> 
 
     assert 'id="play-strength-strong"' in index
     assert 'id="play-strength-faster"' in index
+    assert 'id="play-runtime-status"' in index
     assert "Deeper · up to 30s" not in index
     assert index.count("Checking server limits…") == 2
     assert 'id="play-search-depth"' in index
@@ -280,8 +289,14 @@ def test_play_strength_is_explicit_and_reports_completed_not_claimed_depth() -> 
     assert "Work limit reached" in evidence
     assert "Best-move alpha-beta across up to ${evidence.maxSeries} retained series per node" in evidence
     assert 'renderStrengthOption(dom.play_strength_strong, playSearchLimits("strong"))' in evidence
-    assert 'detail.textContent = `Depth ${optionLimits.depth} · up to ${seconds}s`' in evidence
-    assert "on this server.`" in evidence
+    assert (
+        'detail.textContent = `Depth ${optionLimits.depth} · up to ${seconds}s · ${work} work`'
+        in evidence
+    )
+    assert "state.play.nativeThreads" in evidence
+    assert "state.play.runtimeCpuCount" in evidence
+    assert "single-thread-pool-avoidance" in evidence
+    assert "capped at ${work} generated positions" in evidence
     assert "state.play.healthReady" in evidence
     assert "state.play.healthReady = true;" in app
     assert 'if (state.play.thinking) cancelEngineTurn();' in app

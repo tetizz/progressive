@@ -74,7 +74,7 @@
     "play-series-title", "play-series-count", "play-series-copy", "play-history", "play-history-count",
     "play-history-previous", "play-history-next", "play-history-position",
     "play-new-game", "play-analyze-position", "play-resign", "play-engine-name", "play-engine-id",
-    "play-engine-version", "play-strength-strong", "play-strength-faster", "play-strength-status",
+    "play-engine-version", "play-runtime-status", "play-strength-strong", "play-strength-faster", "play-strength-status",
     "play-search-depth", "play-search-status", "workspace-tabs", "analysis-panel", "theory-panel", "setup-panel",
   ].map((id) => [id.replaceAll("-", "_"), document.getElementById(id)]));
 
@@ -151,6 +151,10 @@
       engineProfileId: null,
       engineVersion: null,
       engineFingerprint: null,
+      runtimeCpuCount: null,
+      runtimeCpuCountSource: null,
+      nativeThreads: 1,
+      nativeThreadsPolicy: null,
       healthReady: false,
       recommendedDepth: 2,
       recommendedBranchCap: 32,
@@ -556,8 +560,13 @@
         return;
       }
       const seconds = optionLimits.seconds.toLocaleString();
-      if (detail) detail.textContent = `Depth ${optionLimits.depth} · up to ${seconds}s`;
-      node.title = `Searches toward depth ${optionLimits.depth} for up to ${seconds} ${optionLimits.seconds === 1 ? "second" : "seconds"} on this server.`;
+      const work = compactNumber(optionLimits.generationPositions);
+      const threads = `${state.play.nativeThreads} native search thread${state.play.nativeThreads === 1 ? "" : "s"}${state.play.nativeThreadsPolicy === "single-thread-pool-avoidance" ? " in host-safe mode" : ""}`;
+      const allocation = state.play.runtimeCpuCount === null
+        ? "the server's reported allocation"
+        : `${state.play.runtimeCpuCount} allocated CPU`;
+      if (detail) detail.textContent = `Depth ${optionLimits.depth} · up to ${seconds}s · ${work} work`;
+      node.title = `Searches toward depth ${optionLimits.depth} for up to ${seconds} ${optionLimits.seconds === 1 ? "second" : "seconds"}, capped at ${work} generated positions, using ${threads} on ${allocation}.`;
     };
     renderStrengthOption(dom.play_strength_strong, playSearchLimits("strong"));
     renderStrengthOption(dom.play_strength_faster, playSearchLimits("faster"));
@@ -565,7 +574,7 @@
     dom.play_strength_faster.classList.toggle("is-active", state.play.strength === "faster");
     dom.play_strength_strong.setAttribute("aria-pressed", String(state.play.strength === "strong"));
     dom.play_strength_faster.setAttribute("aria-pressed", String(state.play.strength === "faster"));
-    dom.play_strength_status.textContent = `${limits.label} · target depth ${limits.depth} · up to ${limits.seconds.toLocaleString()}s`;
+    dom.play_strength_status.textContent = `${limits.label} · target depth ${limits.depth} · up to ${limits.seconds.toLocaleString()}s · ${compactNumber(limits.generationPositions)} work cap`;
     if (state.play.activeSearch) {
       const active = state.play.activeSearch;
       dom.play_search_depth.textContent = `Searching · requested depth ${active.depth}`;
@@ -2042,6 +2051,9 @@
     dom.play_engine_name.textContent = `Current champion · ${state.play.engineName}`;
     dom.play_engine_id.textContent = state.play.engineProfileId || "—";
     dom.play_engine_version.textContent = [state.play.engineVersion, state.play.engineFingerprint].filter(Boolean).join(" · ") || "—";
+    dom.play_runtime_status.textContent = state.play.healthReady
+      ? `${state.play.runtimeCpuCount === null ? "CPU allocation unavailable" : `${state.play.runtimeCpuCount} CPU allocated`} · ${state.play.nativeThreads} native search thread${state.play.nativeThreads === 1 ? "" : "s"}${state.play.nativeThreadsPolicy === "single-thread-pool-avoidance" ? " · host-safe mode" : ""}`
+      : "Checking CPU allocation…";
     renderPlaySearchEvidence();
     renderPlayHistory();
     renderPlayNavigation(timeline);
@@ -3479,6 +3491,16 @@
       state.play.engineProfileId = first(health.engine_profile_id, null);
       state.play.engineVersion = first(health.engine_version, health.version, null);
       state.play.engineFingerprint = first(health.source_fingerprint, health.fingerprint, null);
+      state.play.runtimeCpuCount = first(health.runtime?.cpu_count, null);
+      state.play.runtimeCpuCountSource = first(health.runtime?.cpu_count_source, null);
+      state.play.nativeThreads = Math.max(1, Math.floor(asNumber(
+        first(health.runtime?.native_threads, health.analysis_limits?.native_threads),
+        1,
+      )));
+      state.play.nativeThreadsPolicy = first(
+        health.runtime?.native_threads_policy,
+        null,
+      );
       state.play.recommendedDepth = Math.max(1, Math.floor(asNumber(
         health.engine_profile_recommended_depth,
         state.play.recommendedDepth,
