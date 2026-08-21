@@ -348,7 +348,7 @@ def _hard_s4() -> ProgressiveState:
     return state
 
 
-def test_hard_s4_depth_five_completes_below_eight_million_work() -> None:
+def test_hard_s4_depth_five_completes_with_exact_safety_under_production_work() -> None:
     if os.environ.get("SPC_RUN_TRANSACTIONAL_PVS_GATES") != "1":
         pytest.skip("set SPC_RUN_TRANSACTIONAL_PVS_GATES=1 for the hard PVS gate")
 
@@ -358,13 +358,22 @@ def test_hard_s4_depth_five_completes_below_eight_million_work() -> None:
             depth_series=5,
             max_series_per_node=32,
             time_limit_seconds=180.0,
-            max_generation_positions=8_000_000,
+            max_generation_positions=10_000_000,
             collect_all_root_scores=False,
             native_threads=16,
         ),
         baseline_profile(),
     )
-    assert result.stats.work_positions == 7_904_529
+    assert result.stats.work_positions == 8_666_067
+    assert result.stats.root_safety_screen_positions == 831_549
+    assert (
+        result.stats.native_series_mate_positions
+        + result.stats.native_series_mate_edges
+        == 794_493
+    )
+    assert result.stats.native_series_mate_calls == 2
+    assert result.stats.native_series_mate_exhausted == 2
+    assert result.stats.native_series_mate_cache_hits == 3
     assert result.completed_depth == 5
     assert not result.work_limit_reached
     assert result.score == -1808

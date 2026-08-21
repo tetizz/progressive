@@ -4,7 +4,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 import time
-from typing import Mapping, Protocol
+from typing import TYPE_CHECKING, Mapping, Protocol
 
 import chess
 
@@ -39,6 +39,9 @@ from .rules import (
     quiet_adjudication_status,
 )
 
+if TYPE_CHECKING:
+    from .series_mate import SeriesMateProbe
+
 
 MATE_SCORE = 1_000_000
 UNKNOWN_PROOF_BOUNDS = (-1, 1)
@@ -61,8 +64,33 @@ SERIES_GENERATION_CACHE_CAPACITY = 4_096
 ROOT_CHILD_MATE_SCREEN_FRONTIER = 832
 ROOT_CHILD_EARLY_MATE_SCREEN_FRONTIER = 4_096
 ROOT_CHILD_MATE_SCREEN_CHEAP_FRONTIER = 32
-ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT = 1_600_000
+ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT = 3_000_000
+# Preserve one fifth of the shared safety allowance for the established
+# staged current-series screens whenever the exact native solver is unknown.
+# At the hosted 10M search cap the exact lane still receives 1.28M work,
+# enough for the accepted S8 mate receipt while leaving a conservative
+# fallback instead of turning WorkLimit or Unsupported into a no-mate claim.
+ROOT_CHILD_NATIVE_MATE_FALLBACK_DENOMINATOR = 5
+# Exact reply safety is not a late-game optimization. A capped legacy miss is
+# selective at every series number, including the opening, so every valid
+# reply child must reach the authoritative native Found/Exhausted lane before
+# it can be settled or cached as safe.
+ROOT_CHILD_NATIVE_MATE_MIN_SERIES = 1
+# A single exact late-series negative can consume nearly the entire shared
+# root-safety allowance before the established tactical screen finds a mate in
+# a few thousand positions. Bound that speculative lane per child so one early
+# contender cannot starve the final winner. Series 5-6 remain uncapped here:
+# their exhaustive negatives are affordable and are required by the live D2
+# safe-reply gate.
+ROOT_CHILD_NATIVE_MATE_LATE_SERIES_WORK_LIMIT = 250_000
 ROOT_CHILD_MATE_SCREEN_MIN_SERIES = 7
+# A cap-32 root whose every retained child has a replay-proven reply mate is a
+# selector failure signal, not a proof that every legal root series loses.
+# Regenerate one bounded tactical frontier before accepting that result. This
+# is deliberately root-only; widening every descendant would erase the hosted
+# depth contract.
+ROOT_ALL_MATING_WIDEN_FRONTIER = 832
+ROOT_ALL_MATING_WIDEN_MAX_SERIES = 8
 # Five- and six-move reply series can hide mating routes behind several quiet
 # prefixes. Keep this range local to successive root-contender safety
 # screens: lowering the general tactical-frontier threshold would widen every
@@ -165,6 +193,28 @@ class SearchStats:
     root_safety_screen_cache_hits: int = 0
     root_safety_screen_stages: int = 0
     root_safety_screen_positions: int = 0
+    root_safety_promotion_cache_hits: int = 0
+    root_safety_budget_interruptions: int = 0
+    root_safety_unknown_interruptions: int = 0
+    root_safety_proven_mate_children: int = 0
+    root_safety_exact_exhausted_children: int = 0
+    root_safety_exhausted_fallbacks: int = 0
+    root_safety_terminal_fallbacks: int = 0
+    root_safety_unknown_fallbacks: int = 0
+    root_safety_all_mating_widenings: int = 0
+    root_safety_widened_candidates: int = 0
+    root_safety_widening_positions: int = 0
+    root_safety_widened_terminal_mates: int = 0
+    root_safety_widened_exact_children: int = 0
+    native_series_mate_calls: int = 0
+    native_series_mate_positions: int = 0
+    native_series_mate_edges: int = 0
+    native_series_mate_cache_hits: int = 0
+    native_series_mate_found: int = 0
+    native_series_mate_exhausted: int = 0
+    native_series_mate_work_limit_hits: int = 0
+    native_series_mate_deadline_hits: int = 0
+    native_series_mate_unsupported: int = 0
     branch_caps: int = 0
     series_generation_positions: int = 0
     frontier_score_positions: int = 0
@@ -202,7 +252,8 @@ class SearchStats:
         ``generation_positions`` remains the stored compatibility name used
         by existing API/database consumers. New code should prefer this alias;
         both include series generation, frontier scoring, promotion-mate
-        probing, static evaluation, evaluation reach, and quiet-proof work.
+        probing, exact native mate positions and generated edges, static
+        evaluation, evaluation reach, and quiet-proof work.
         """
 
         return self.generation_positions
@@ -426,13 +477,26 @@ class SeriesSearcher:
         self._root_child_mate_screen_cache: dict[
             tuple[int, str, int, int], SeriesResult | None
         ] = {}
+        self._root_child_native_mate_cache_keys: set[
+            tuple[int, str, int, int]
+        ] = set()
+        self._root_child_promotion_mate_cache: dict[
+            tuple[int, str, int, int], SeriesResult | None
+        ] = {}
+        self._root_child_proven_mate_keys: set[
+            tuple[int, str, int, int]
+        ] = set()
+        self._root_child_native_mate_exhausted_keys: set[
+            tuple[int, str, int, int]
+        ] = set()
+        self._root_widened_terminal_series: SeriesResult | None = None
         configured_work = self.limits.max_generation_positions
         self._root_child_mate_screen_budget = (
             ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT
             if configured_work is None
             else min(
                 ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT,
-                configured_work // 5,
+                configured_work // 3,
             )
         )
         self._root_child_mate_screen_work = 0
@@ -691,7 +755,13 @@ class SeriesSearcher:
         required_prefix: tuple[str, ...] = (),
         reserve_positions: int = 0,
         tactical_protection: bool | None = None,
+        max_frontier_states: int | None = None,
     ) -> tuple[list[SeriesResult] | _NativeSeriesBatch, bool]:
+        frontier_limit = (
+            self.limits.max_series_per_node
+            if max_frontier_states is None
+            else max_frontier_states
+        )
         generation = GenerationStats()
         remaining_positions: int | None = None
         if self.limits.max_generation_positions is not None:
@@ -724,11 +794,11 @@ class SeriesSearcher:
         native_final_score = (
             NativeFinalSeriesScoreConfig.from_profile(
                 self.profile,
-                max_returned_series=self.limits.max_series_per_node,
+                max_returned_series=frontier_limit,
                 ply_from_root=ply_from_root,
                 mate_score=MATE_SCORE,
             )
-            if self.limits.max_series_per_node is not None
+            if frontier_limit is not None
             else None
         )
 
@@ -748,7 +818,7 @@ class SeriesSearcher:
                     state,
                     generation,
                     required_prefix=required_prefix,
-                    max_frontier_states=self.limits.max_series_per_node,
+                    max_frontier_states=frontier_limit,
                     max_positions=remaining_positions,
                     frontier_score=frontier_score,
                     native_final_score=native_final_score,
@@ -764,11 +834,11 @@ class SeriesSearcher:
                     state,
                     stats=generation,
                     required_prefix=required_prefix,
-                    max_frontier_states=self.limits.max_series_per_node,
+                    max_frontier_states=frontier_limit,
                     max_positions=remaining_positions,
                     frontier_score=(
                         frontier_score
-                        if self.limits.max_series_per_node is not None
+                        if frontier_limit is not None
                         else None
                     ),
                     native_final_score=native_final_score,
@@ -840,45 +910,230 @@ class SeriesSearcher:
             raise _WorkLimit
         return series[0]
 
+    def _root_child_mate_screen_remaining(self) -> int:
+        remaining = (
+            self._root_child_mate_screen_budget
+            - self._root_child_mate_screen_work
+        )
+        if self.limits.max_generation_positions is not None:
+            remaining = min(
+                remaining,
+                self.limits.max_generation_positions
+                - self.stats.generation_positions,
+            )
+        return max(0, remaining)
+
+    def _record_native_series_mate_probe(
+        self,
+        probe: SeriesMateProbe,
+    ) -> None:
+        work = probe.positions_visited + probe.moves_generated
+        self.stats.native_series_mate_positions += probe.positions_visited
+        self.stats.native_series_mate_edges += probe.moves_generated
+        self._root_child_mate_screen_work += work
+        self.stats.root_safety_screen_positions += work
+        self.stats.generation_positions += work
+
+    def _mark_root_child_proven_mate(
+        self,
+        key: tuple[int, str, int, int],
+    ) -> None:
+        if key not in self._root_child_proven_mate_keys:
+            self._root_child_proven_mate_keys.add(key)
+            self.stats.root_safety_proven_mate_children += 1
+
+    def _mark_root_child_exact_exhausted(
+        self,
+        key: tuple[int, str, int, int],
+    ) -> None:
+        if key not in self._root_child_native_mate_exhausted_keys:
+            self._root_child_native_mate_exhausted_keys.add(key)
+            self.stats.root_safety_exact_exhausted_children += 1
+
+    def _root_child_promotion_mate(
+        self,
+        state: ProgressiveState,
+    ) -> SeriesResult | None:
+        """Runs the established promotion proof before broader reply search."""
+
+        key = state.transposition_key
+        if key in self._root_child_promotion_mate_cache:
+            self.stats.root_safety_promotion_cache_hits += 1
+            return self._root_child_promotion_mate_cache[key]
+        if not promotion_mate_eligible(state):
+            self._root_child_promotion_mate_cache[key] = None
+            return None
+
+        remaining = self._root_child_mate_screen_remaining()
+        if remaining <= 0:
+            self.stats.root_safety_budget_interruptions += 1
+            raise _WorkLimit
+        lane_limit = min(
+            MAX_PROMOTION_MATE_POSITIONS,
+            max(1, remaining // 5),
+        )
+        probe = find_promotion_series_mate(
+            state,
+            max_positions=lane_limit,
+            should_stop=(
+                (lambda: time.perf_counter() >= self._deadline)
+                if self._deadline is not None
+                else None
+            ),
+            promotion_score=NativeFrontierScoreConfig.from_profile(
+                state,
+                self.profile,
+            ),
+        )
+        self._record_promotion_mate_probe(probe)
+        self._root_child_mate_screen_work += probe.positions_visited
+        self.stats.root_safety_screen_positions += probe.positions_visited
+        if probe.cancelled:
+            raise _Timeout
+        # A selective miss is not a no-mate proof, but it is deterministic and
+        # need not be repeated for the same cached child boundary.
+        self._root_child_promotion_mate_cache[key] = probe.series
+        return probe.series
+
+    def _root_child_exact_native_mate(
+        self,
+        state: ProgressiveState,
+    ) -> tuple[bool, SeriesResult | None, bool]:
+        """Returns ``(complete, mate, unknown)`` from the exact native lane.
+
+        Import stays local so evaluation, training, league, and full-game
+        consumers do not load the separate extension. Only replay-validated
+        Found and exhaustive negative results settle this safety question;
+        every resource or compatibility status remains unknown.
+        """
+
+        remaining = self._root_child_mate_screen_remaining()
+        if remaining <= 1:
+            self.stats.root_safety_budget_interruptions += 1
+            raise _WorkLimit
+        fallback_reserve = max(
+            1,
+            remaining // ROOT_CHILD_NATIVE_MATE_FALLBACK_DENOMINATOR,
+        )
+        native_work_limit = remaining - fallback_reserve
+        if state.series_number < ROOT_CHILD_NATIVE_MATE_MIN_SERIES:
+            return False, None, True
+        if state.series_number >= ROOT_CHILD_MATE_SCREEN_MIN_SERIES:
+            native_work_limit = min(
+                native_work_limit,
+                ROOT_CHILD_NATIVE_MATE_LATE_SERIES_WORK_LIMIT,
+            )
+        if native_work_limit < 1:
+            self.stats.root_safety_budget_interruptions += 1
+            raise _WorkLimit
+
+        self._check_deadline()
+        remaining_seconds = (
+            max(0.0, self._deadline - time.perf_counter())
+            if self._deadline is not None
+            else None
+        )
+        # Deliberately lazy: see the non-import contract in the docstring.
+        from .series_mate import SeriesMateStatus, find_native_series_mate
+
+        self.stats.native_series_mate_calls += 1
+        probe = find_native_series_mate(
+            state,
+            max_positions=None,
+            max_work=native_work_limit,
+            time_limit_seconds=remaining_seconds,
+        )
+        self._record_native_series_mate_probe(probe)
+        if probe.status is SeriesMateStatus.FOUND:
+            if probe.series is None:  # pragma: no cover - adapter invariant
+                raise RuntimeError("native mate status carried no replayed line")
+            self.stats.native_series_mate_found += 1
+            return True, probe.series, False
+        if probe.status is SeriesMateStatus.EXHAUSTED:
+            self.stats.native_series_mate_exhausted += 1
+            return True, None, False
+        if probe.status is SeriesMateStatus.DEADLINE:
+            self.stats.native_series_mate_deadline_hits += 1
+            raise _Timeout
+        if probe.status is SeriesMateStatus.WORK_LIMIT:
+            self.stats.native_series_mate_work_limit_hits += 1
+        else:
+            self.stats.native_series_mate_unsupported += 1
+        return False, None, True
+
     def _root_child_immediate_mate(
         self,
         state: ProgressiveState,
     ) -> SeriesResult | None:
-        """Returns one replay-proven reply mate from staged native screens.
+        """Returns a replay-proven reply mate or certifies an exact miss.
 
-        This is an existential tactical check, never a no-mate proof. A
-        missing native kernel, a selective miss, or exhaustion therefore
-        returns ``None`` and ordinary minimax remains authoritative. Work is
-        charged to the search's normal deterministic counter and the screen
-        has one search-wide budget shared by every root child and iteration.
-        Every contender first pays for a protected width-32 probe; only a late
-        or promotion-risk child with no retained mate falls through to the
-        adaptive ordinary wide probe. Series 5-6 use width 4096 because their
-        first quiet prefixes can hide a mate before the existing late-series
-        tactical policy begins; later replies retain the historical width 832.
-        Both stages remain confined to successive root contenders and share
-        one fixed search-wide budget.
+        The specialized promotion lane always runs first. Its replayed hit is
+        authoritative, but its selective miss is not a no-mate proof. A cheap
+        width-32 screen follows, then the complete native one-series solver.
+        Native ``EXHAUSTED`` is the only exact no-mate result and is cached by
+        child transposition key. ``WORK_LIMIT``, ``DEADLINE``, ``UNSUPPORTED``,
+        a missing kernel, or an incomplete selective screen remain unknown and
+        fail closed instead of certifying the current root depth. The adaptive
+        legacy screen may still recover a concrete replayed mate after an
+        unknown native result, but never turns a miss into an exact proof.
+
+        Every expanded position and generated edge is charged to the search's
+        deterministic shared safety budget. Series 5-6 retain width 4096 for
+        the legacy recovery screen; later tactical replies retain width 832.
         """
 
         if (
             self.limits.collect_all_root_scores
             or self.limits.max_series_per_node is None
+            # A root already running the established one-series verifier width
+            # is itself the safety screen. Recursively screening the selected
+            # reply asks a different two-series question and can consume the
+            # verifier's fixed evidence budget before depth one completes.
+            or self.limits.max_series_per_node >= ROOT_CHILD_MATE_SCREEN_FRONTIER
         ):
             return None
 
         key = state.transposition_key
         if key in self._root_child_mate_screen_cache:
             self.stats.root_safety_screen_cache_hits += 1
+            if key in self._root_child_native_mate_cache_keys:
+                self.stats.native_series_mate_cache_hits += 1
             return self._root_child_mate_screen_cache[key]
         self.stats.root_safety_screen_calls += 1
+
+        promotion_mate = self._root_child_promotion_mate(state)
+        if promotion_mate is not None:
+            self._root_child_mate_screen_cache[key] = promotion_mate
+            self._mark_root_child_proven_mate(key)
+            return promotion_mate
 
         mate, completed = self._root_child_mate_screen_stage(
             state,
             frontier=ROOT_CHILD_MATE_SCREEN_CHEAP_FRONTIER,
             tactical_protection=True,
         )
-        if mate is not None or not completed:
+        if mate is not None:
             self._root_child_mate_screen_cache[key] = mate
+            self._mark_root_child_proven_mate(key)
+            return mate
+        if not completed and self._root_child_mate_screen_remaining() <= 0:
+            self.stats.root_safety_budget_interruptions += 1
+            raise _WorkLimit
+
+        native_complete, mate, native_unknown = (
+            self._root_child_exact_native_mate(state)
+        )
+        if not native_complete and not native_unknown:
+            raise RuntimeError(
+                "incomplete exact mate lane must be classified as unknown"
+            )
+        if native_complete:
+            self._root_child_mate_screen_cache[key] = mate
+            self._root_child_native_mate_cache_keys.add(key)
+            if mate is None:
+                self._mark_root_child_exact_exhausted(key)
+            else:
+                self._mark_root_child_proven_mate(key)
             return mate
         if (
             ROOT_CHILD_ADAPTIVE_MATE_SCREEN_MIN_SERIES
@@ -889,14 +1144,25 @@ class SeriesSearcher:
         elif _tactical_frontier_protection_eligible(state):
             frontier = ROOT_CHILD_MATE_SCREEN_FRONTIER
         else:
+            if native_unknown or not completed:
+                self.stats.root_safety_unknown_interruptions += 1
+                raise _WorkLimit
             self._root_child_mate_screen_cache[key] = None
             return None
-        mate, _completed = self._root_child_mate_screen_stage(
+        mate, wide_completed = self._root_child_mate_screen_stage(
             state,
             frontier=frontier,
             tactical_protection=False,
         )
+        if mate is None and (native_unknown or not wide_completed):
+            if self._root_child_mate_screen_remaining() <= 0:
+                self.stats.root_safety_budget_interruptions += 1
+            else:
+                self.stats.root_safety_unknown_interruptions += 1
+            raise _WorkLimit
         self._root_child_mate_screen_cache[key] = mate
+        if mate is not None:
+            self._mark_root_child_proven_mate(key)
         return mate
 
     def _root_child_mate_screen_stage(
@@ -910,16 +1176,7 @@ class SeriesSearcher:
 
         self.stats.root_safety_screen_stages += 1
 
-        remaining = (
-            self._root_child_mate_screen_budget
-            - self._root_child_mate_screen_work
-        )
-        if self.limits.max_generation_positions is not None:
-            remaining = min(
-                remaining,
-                self.limits.max_generation_positions
-                - self.stats.generation_positions,
-            )
+        remaining = self._root_child_mate_screen_remaining()
         if remaining <= 0:
             return None, False
 
@@ -1951,6 +2208,212 @@ class SeriesSearcher:
             _proof_from_bounds(proof_bounds),
         )
 
+    def _root_safety_fallback(
+        self,
+        *candidates: SeriesResult | None,
+    ) -> SeriesResult | None:
+        """Prefers exact-safe children and never returns a proven mate child."""
+
+        unique: list[SeriesResult] = []
+        seen: set[tuple[int, str, int, int]] = set()
+        for candidate in candidates:
+            if candidate is None or candidate.outcome is not None:
+                continue
+            key = candidate.final_state.transposition_key
+            if key in seen or key in self._root_child_proven_mate_keys:
+                continue
+            seen.add(key)
+            unique.append(candidate)
+        for candidate in unique:
+            if (
+                candidate.final_state.transposition_key
+                in self._root_child_native_mate_exhausted_keys
+            ):
+                self.stats.root_safety_exhausted_fallbacks += 1
+                return candidate
+        if unique:
+            self.stats.root_safety_unknown_fallbacks += 1
+            return unique[0]
+        return None
+
+    def _root_all_mating_widening(
+        self,
+        state: ProgressiveState,
+        depth: int,
+        required_prefix: tuple[str, ...],
+        retained: tuple[ScoredSeries, ...],
+    ) -> tuple[
+        int,
+        tuple[SeriesResult, ...],
+        tuple[ScoredSeries, ...],
+        str | None,
+    ]:
+        """Widens only a root frontier whose every retained child is mating.
+
+        A capped selector cannot turn ``FOUND`` for every retained child into a
+        game-theoretic loss. Generate one larger root-only frontier, with the
+        same explicit native frontier and final-return cap, and first look for
+        a decisive current-series terminal. If none exists, screen previously
+        unseen children. An exact-EXHAUSTED child may replace the known losses;
+        an unresolved child aborts the depth as UNKNOWN. Descendants retain the
+        configured ordinary width.
+        """
+
+        self.stats.root_safety_all_mating_widenings += 1
+        self._selective = True
+        work_before = self.stats.generation_positions
+        try:
+            generated, _width_complete = self._generate(
+                state,
+                ply_from_root=1,
+                required_prefix=required_prefix,
+                tactical_protection=True,
+                max_frontier_states=ROOT_ALL_MATING_WIDEN_FRONTIER,
+            )
+        finally:
+            self.stats.root_safety_widening_positions += (
+                self.stats.generation_positions - work_before
+            )
+        candidates = (
+            generated.references()
+            if isinstance(generated, _NativeSeriesBatch)
+            else generated
+        )
+        self.stats.root_safety_widened_candidates += len(candidates)
+
+        mover = state.board.turn
+        for candidate in candidates:
+            terminal = self._terminal_score(candidate, mover, 1)
+            if terminal not in (MATE_SCORE - 1, -MATE_SCORE + 1):
+                continue
+            if (
+                mover == chess.WHITE
+                and terminal != MATE_SCORE - 1
+                or mover == chess.BLACK
+                and terminal != -MATE_SCORE + 1
+            ):
+                continue
+            materialized = self._materialize_series(candidate)
+            proof_bounds = self._terminal_proof_bounds(materialized, mover)
+            scored = ScoredSeries(materialized, terminal, (), proof_bounds)
+            self.stats.root_safety_widened_terminal_mates += 1
+            self._root_widened_terminal_series = materialized
+            self._root_scores_complete = False
+            return (
+                terminal,
+                (materialized,),
+                (scored,),
+                _proof_from_bounds(proof_bounds),
+            )
+
+        retained_keys = {
+            item.series.final_state.transposition_key for item in retained
+        }
+        unknown_fallback: SeriesResult | None = None
+        exact_unscored_fallback: SeriesResult | None = None
+        pending_interruption: _Timeout | _WorkLimit | None = None
+        safe_scored: list[ScoredSeries] = []
+        for candidate in candidates:
+            try:
+                self._check_deadline()
+            except _Timeout as error:
+                pending_interruption = error
+                break
+            if candidate.outcome is not None:
+                # A terminal draw is authoritative safety, but it must still
+                # compete with every later fully screened widened child. A
+                # stronger win may appear after it in deterministic order.
+                if candidate.outcome in {Outcome.STALEMATE, Outcome.TEN_SERIES_DRAW}:
+                    materialized = self._materialize_series(candidate)
+                    safe_scored.append(ScoredSeries(materialized, 0))
+                    self.stats.root_safety_widened_exact_children += 1
+                continue
+            child_key = candidate.final_state.transposition_key
+            if child_key in retained_keys or child_key in self._root_child_proven_mate_keys:
+                continue
+            materialized = self._materialize_series(candidate)
+            try:
+                reply_mate = self._root_child_immediate_mate(
+                    materialized.final_state
+                )
+            except _Timeout as error:
+                pending_interruption = error
+                if unknown_fallback is None:
+                    unknown_fallback = materialized
+                break
+            except _WorkLimit as error:
+                pending_interruption = pending_interruption or error
+                if unknown_fallback is None:
+                    unknown_fallback = materialized
+                if self._root_child_mate_screen_remaining() <= 0:
+                    break
+                continue
+            if reply_mate is not None:
+                continue
+            if child_key not in self._root_child_native_mate_exhausted_keys:
+                if unknown_fallback is None:
+                    unknown_fallback = materialized
+                continue
+
+            try:
+                score, child_pv, proof_bounds = self._minimax(
+                    materialized.final_state,
+                    depth - 1,
+                    -MATE_SCORE * 2,
+                    MATE_SCORE * 2,
+                    1,
+                )
+            except (_Timeout, _WorkLimit) as error:
+                pending_interruption = pending_interruption or error
+                if exact_unscored_fallback is None:
+                    exact_unscored_fallback = materialized
+                break
+            safe_scored.append(
+                ScoredSeries(
+                    materialized,
+                    score,
+                    child_pv,
+                    proof_bounds,
+                )
+            )
+            self.stats.root_safety_widened_exact_children += 1
+
+        safe_scored.sort(
+            key=lambda item: (
+                -item.score if mover == chess.WHITE else item.score,
+                item.series.machine_notation,
+            )
+        )
+        if safe_scored:
+            best = safe_scored[0]
+            self._root_scores_complete = False
+            # An unknown sibling can still be stronger. Preserve the best
+            # fully scored exact-safe move as the fallback choice, but abort
+            # this depth so its score/proof/alternatives cannot be certified.
+            if pending_interruption is not None or unknown_fallback is not None:
+                error = pending_interruption or _WorkLimit()
+                best_key = best.series.final_state.transposition_key
+                if best_key in self._root_child_native_mate_exhausted_keys:
+                    self.stats.root_safety_exhausted_fallbacks += 1
+                elif best.series.outcome is not None:
+                    self.stats.root_safety_terminal_fallbacks += 1
+                raise _RootInterrupted((), error, best.series) from error
+            return (
+                best.score,
+                (best.series,) + best.principal_variation,
+                tuple(safe_scored),
+                None,
+            )
+
+        error = pending_interruption or _WorkLimit()
+        if exact_unscored_fallback is not None:
+            self.stats.root_safety_exhausted_fallbacks += 1
+            raise _RootInterrupted((), error, exact_unscored_fallback) from error
+        if unknown_fallback is not None:
+            self.stats.root_safety_unknown_fallbacks += 1
+            raise _RootInterrupted((), error, unknown_fallback) from error
+        raise error
+
     def _search_root(
         self,
         state: ProgressiveState,
@@ -1981,8 +2444,30 @@ class SeriesSearcher:
                 {},
             )
 
+        widened_terminal = self._root_widened_terminal_series
+        if widened_terminal is not None:
+            mover = state.board.turn
+            score = self._terminal_score(widened_terminal, mover, 1)
+            if score is None:  # pragma: no cover - cache invariant
+                raise RuntimeError("cached widened root terminal is nonterminal")
+            proof_bounds = self._terminal_proof_bounds(widened_terminal, mover)
+            scored = ScoredSeries(
+                widened_terminal,
+                score,
+                (),
+                proof_bounds,
+            )
+            self._root_scores_complete = False
+            return (
+                score,
+                (widened_terminal,),
+                (scored,),
+                _proof_from_bounds(proof_bounds),
+            )
+
         overrides: dict[tuple[int, str, int, int], SeriesResult] = {}
-        last_provisional: SeriesResult | None = None
+        last_exact_exhausted: SeriesResult | None = None
+        last_unknown: SeriesResult | None = None
 
         while True:
             try:
@@ -1996,35 +2481,66 @@ class SeriesSearcher:
             except _RootInterrupted as interrupted:
                 # A retry has reset alpha/beta around new authoritative evidence.
                 # Partial scores from any pass cannot certify the iteration, so
-                # expose only the last fully legal provisional as a move fallback.
-                raise _RootInterrupted(
-                    (),
-                    interrupted.cause,
-                    last_provisional or interrupted.fallback,
-                ) from interrupted
+                # expose only an exact-EXHAUSTED or explicitly UNKNOWN child as
+                # a move fallback. A replay-proven mate child is never eligible.
+                fallback = self._root_safety_fallback(
+                    last_exact_exhausted,
+                    last_unknown,
+                    interrupted.fallback,
+                )
+                if fallback is None:
+                    raise interrupted.cause from interrupted
+                raise _RootInterrupted((), interrupted.cause, fallback) from interrupted
             except (_Timeout, _WorkLimit) as error:
                 # Root generation can be interrupted before _search_root_pass has
                 # materialized a frontier and wrapped the cancellation. A retry
-                # still has the previous completed pass's legal provisional; keep
-                # only that move, never its now-discarded score, alternatives, or
-                # proof. A first-pass raw cancellation has no such fallback and
-                # retains the historical no-move result handled by run().
-                if last_provisional is None:
+                # may still have a previously screened exact-EXHAUSTED or UNKNOWN
+                # child; keep only that move, never its now-discarded score,
+                # alternatives, or proof. A first-pass raw cancellation with no
+                # eligible child retains the historical no-move result in run().
+                fallback = self._root_safety_fallback(
+                    last_exact_exhausted,
+                    last_unknown,
+                )
+                if fallback is None:
                     raise
-                raise _RootInterrupted((), error, last_provisional) from error
+                raise _RootInterrupted((), error, fallback) from error
             if not pv:
                 return score, pv, alternatives, proof
 
             provisional = pv[0]
-            last_provisional = provisional
             if provisional.outcome is not None:
                 return score, pv, alternatives, proof
             child_state = provisional.final_state
             child_key = child_state.transposition_key
+            if child_key in self._root_child_native_mate_exhausted_keys:
+                last_exact_exhausted = provisional
+            elif child_key not in self._root_child_proven_mate_keys:
+                last_unknown = provisional
             if child_key in overrides:
                 # The best root choice still loses after every root bound was
-                # repaired around its authoritative reply mate. Returning it
-                # now describes the loss honestly rather than looping.
+                # repaired around its authoritative reply mate. If every
+                # retained choice has the same replay-proven defect, widen the
+                # selector before describing any one retained line as a loss.
+                if alternatives and all(
+                    item.series.outcome is None
+                    and item.series.final_state.transposition_key
+                    in self._root_child_proven_mate_keys
+                    for item in alternatives
+                ):
+                    if state.series_number <= ROOT_ALL_MATING_WIDEN_MAX_SERIES:
+                        return self._root_all_mating_widening(
+                            state,
+                            depth,
+                            required_prefix,
+                            alternatives,
+                        )
+                    # At later series, an 832-wide root itself can exceed the
+                    # hosted 10M ceiling. Preserve the replay-truth for the
+                    # selected retained line, but never promote the capped set
+                    # to a game-wide forced-loss proof.
+                    self._selective = True
+                    return score, pv, alternatives, None
                 return score, pv, alternatives, proof
             reply_mate = (
                 pv[1]
@@ -2042,9 +2558,24 @@ class SeriesSearcher:
                 # No incomplete safety probe may certify an unscreened score.
                 # The iterative-deepening caller will retain its last complete
                 # depth; at depth zero this is explicitly a move-only fallback.
-                raise _RootInterrupted((), error, provisional) from error
+                fallback = self._root_safety_fallback(
+                    last_exact_exhausted,
+                    provisional,
+                    last_unknown,
+                )
+                if fallback is None:
+                    raise
+                raise _RootInterrupted((), error, fallback) from error
             if reply_mate is None:
+                if child_key in self._root_child_native_mate_exhausted_keys:
+                    last_exact_exhausted = provisional
                 return score, pv, alternatives, proof
+            self._mark_root_child_proven_mate(child_key)
+            if (
+                last_unknown is not None
+                and last_unknown.final_state.transposition_key == child_key
+            ):
+                last_unknown = None
             overrides[child_key] = reply_mate
             self.stats.root_safety_retries += 1
 
@@ -2057,6 +2588,7 @@ class SeriesSearcher:
         required_prefix = tuple(required_prefix)
         started = time.perf_counter()
         self._preferred_root_series = None
+        self._root_widened_terminal_series = None
         self._root_tactical_frontier_protection = (
             _tactical_frontier_protection_eligible(
                 state,

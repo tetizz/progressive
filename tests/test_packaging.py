@@ -222,3 +222,46 @@ print("forced-fallback-ok")
             text=True,
         )
         assert fallback.stdout.strip() == "forced-fallback-ok"
+
+
+def test_render_omit_path_packages_isolated_native_mate_without_stale_reports(
+    tmp_path: Path,
+) -> None:
+    wheel_dir = tmp_path / "wheel"
+    run_dir = tmp_path / "outside-repository"
+    wheel_dir.mkdir()
+    run_dir.mkdir()
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "wheel",
+            str(ROOT),
+            "--no-deps",
+            "--wheel-dir",
+            str(wheel_dir),
+        ],
+        cwd=run_dir,
+        env={**os.environ, "SPC_OMIT_STALE_OPENING_REPORTS": "1"},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    wheels = list(wheel_dir.glob("scottish_progressive-*.whl"))
+    assert len(wheels) == 1, build.stdout + build.stderr
+    with zipfile.ZipFile(wheels[0]) as archive:
+        members = archive.namelist()
+
+    assert not any(
+        name.startswith("scottish_progressive/reports/") for name in members
+    )
+    assert "scottish_progressive/_native_mate.cpp" in members
+    if WINDOWS_CP314:
+        mate_members = [
+            name
+            for name in members
+            if name.startswith("scottish_progressive/_native_mate.cp314-win_")
+            and name.endswith(".pyd")
+        ]
+        assert len(mate_members) == 1, members

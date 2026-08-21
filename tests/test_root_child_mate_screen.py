@@ -7,6 +7,7 @@ import pytest
 
 import scottish_progressive.evaluation as evaluation_module
 import scottish_progressive.search as search_module
+import scottish_progressive.series_mate as series_mate_module
 from scottish_progressive.model import Outcome, ProgressiveState, SeriesResult
 from scottish_progressive.profiles import baseline_profile
 from scottish_progressive.rules import play_series
@@ -17,6 +18,7 @@ from scottish_progressive.search import (
     SeriesSearcher,
     analyze,
 )
+from scottish_progressive.series_mate import SeriesMateProbe, SeriesMateStatus
 
 
 S7_STATE = ProgressiveState.from_fen(
@@ -182,6 +184,12 @@ def test_wide_native_child_screen_replays_the_human_mate() -> None:
     assert searcher.stats.work_positions <= ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT
     assert searcher.stats.root_safety_screen_calls == 1
     assert searcher.stats.root_safety_screen_cache_hits == 0
+    assert blunder.final_state.transposition_key in (
+        searcher._root_child_proven_mate_keys
+    )
+    assert searcher._root_safety_fallback(blunder) is None
+    assert searcher.stats.root_safety_exhausted_fallbacks == 0
+    assert searcher.stats.root_safety_unknown_fallbacks == 0
     charged_work = searcher.stats.work_positions
     assert searcher._root_child_immediate_mate(blunder.final_state) == mate
     assert searcher.stats.work_positions == charged_work
@@ -214,7 +222,7 @@ def test_early_s4_child_screen_replays_the_exact_s5_mate() -> None:
 
 
 def test_adaptive_early_s5_screen_rejects_the_second_live_loss() -> None:
-    """A quiet-prefix mate must survive beyond the old width-832 screen."""
+    """The exact lane finds the quiet-prefix mate below the old 81,476 work."""
 
     root = _live_loss_s4_state()
     assert root.pfen == (
@@ -244,7 +252,13 @@ def test_adaptive_early_s5_screen_rejects_the_second_live_loss() -> None:
 
     assert screened is not None
     assert play_series(blunder.final_state, screened.moves).outcome == Outcome.CHECKMATE
-    assert 0 < searcher.stats.work_positions <= ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT
+    assert searcher.stats.native_series_mate_calls == 1
+    assert searcher.stats.native_series_mate_found == 1
+    assert searcher.stats.native_series_mate_positions == 600
+    assert searcher.stats.native_series_mate_edges == 24_006
+    assert searcher.stats.root_safety_screen_stages == 1
+    assert searcher.stats.work_positions == 30_837
+    assert searcher.stats.work_positions < 81_476 // 2
 
 
 def test_wide_reply_screen_does_not_materialize_without_native(
@@ -285,7 +299,501 @@ def test_wide_reply_screen_does_not_materialize_without_native(
     assert searcher.stats.root_safety_screen_positions == 0
 
 
-def test_early_promotion_risk_keeps_the_historical_width832_route(
+def test_exact_exhaustion_is_cached_by_child_transposition_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = ProgressiveState.from_fen(
+        "7k/8/8/8/8/8/8/K7 w - - 0 1",
+        5,
+    )
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_root_child_mate_screen_stage",
+        lambda *_args, **_kwargs: (None, True),
+    )
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            collect_all_root_scores=False,
+        ),
+        PROFILE,
+    )
+
+    assert searcher._root_child_immediate_mate(state) is None
+    charged = searcher.stats.work_positions
+    assert searcher.stats.native_series_mate_calls == 1
+    assert searcher.stats.native_series_mate_exhausted == 1
+    assert searcher._root_child_immediate_mate(state) is None
+    assert searcher.stats.work_positions == charged
+    assert searcher.stats.native_series_mate_cache_hits == 1
+
+    exhausted_candidate = SeriesResult(("a1a2",), ("Ka2",), state)
+    unknown_state = ProgressiveState.from_fen(
+        "7k/8/8/8/8/8/8/1K6 w - - 0 1",
+        5,
+    )
+    unknown_candidate = SeriesResult(("a1b1",), ("Kb1",), unknown_state)
+    assert (
+        searcher._root_safety_fallback(unknown_candidate, exhausted_candidate)
+        == exhausted_candidate
+    )
+    assert searcher.stats.root_safety_exhausted_fallbacks == 1
+    assert searcher.stats.root_safety_unknown_fallbacks == 0
+
+
+def test_all_mating_widening_compares_every_exact_safe_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = ProgressiveState.initial()
+    first_safe = play_series(root, ("e2e4",))
+    later_stronger = play_series(root, ("d2d4",))
+    scores = {
+        first_safe.final_state.transposition_key: 100,
+        later_stronger.final_state.transposition_key: 400,
+    }
+
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_generate",
+        lambda *_args, **_kwargs: ([first_safe, later_stronger], False),
+    )
+
+    def exact_safe(
+        searcher: SeriesSearcher,
+        state: ProgressiveState,
+    ) -> None:
+        searcher._mark_root_child_exact_exhausted(state.transposition_key)
+        return None
+
+    def scored_child(
+        _searcher: SeriesSearcher,
+        state: ProgressiveState,
+        _depth: int,
+        _alpha: int,
+        _beta: int,
+        _ply_from_root: int,
+    ) -> tuple[int, tuple[SeriesResult, ...], tuple[int, int]]:
+        return scores[state.transposition_key], (), search_module.UNKNOWN_PROOF_BOUNDS
+
+    monkeypatch.setattr(SeriesSearcher, "_root_child_immediate_mate", exact_safe)
+    monkeypatch.setattr(SeriesSearcher, "_minimax", scored_child)
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            max_generation_positions=10_000_000,
+            collect_all_root_scores=False,
+        ),
+        PROFILE,
+    )
+
+    score, pv, alternatives, proof = searcher._root_all_mating_widening(
+        root,
+        1,
+        (),
+        (),
+    )
+
+    assert score == 400
+    assert pv == (later_stronger,)
+    assert [item.series for item in alternatives] == [later_stronger, first_safe]
+    assert proof is None
+    assert not searcher._root_scores_complete
+    assert searcher.stats.root_safety_widened_exact_children == 2
+
+
+def test_all_mating_widening_interruption_keeps_best_safe_move_without_score(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = ProgressiveState.initial()
+    safe = play_series(root, ("e2e4",))
+    unknown = play_series(root, ("d2d4",))
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_generate",
+        lambda *_args, **_kwargs: ([safe, unknown], False),
+    )
+
+    def screen(
+        searcher: SeriesSearcher,
+        state: ProgressiveState,
+    ) -> None:
+        if state.transposition_key == safe.final_state.transposition_key:
+            searcher._mark_root_child_exact_exhausted(state.transposition_key)
+            return None
+        raise search_module._WorkLimit
+
+    monkeypatch.setattr(SeriesSearcher, "_root_child_immediate_mate", screen)
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_minimax",
+        lambda *_args, **_kwargs: (250, (), search_module.UNKNOWN_PROOF_BOUNDS),
+    )
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            max_generation_positions=10_000_000,
+            collect_all_root_scores=False,
+        ),
+        PROFILE,
+    )
+
+    with pytest.raises(search_module._RootInterrupted) as captured:
+        searcher._root_all_mating_widening(root, 1, (), ())
+
+    interrupted = captured.value
+    assert interrupted.fallback == safe
+    assert interrupted.scored == ()
+    assert isinstance(interrupted.cause, search_module._WorkLimit)
+    assert searcher.stats.root_safety_widened_exact_children == 1
+    assert searcher.stats.root_safety_exhausted_fallbacks == 1
+    assert searcher.stats.root_safety_unknown_fallbacks == 0
+
+
+def test_series_two_cap32_miss_cannot_hide_authoritative_native_mate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = ProgressiveState.from_fen(
+        "8/8/8/8/8/5k2/4q3/7K b - - 0 1",
+        2,
+    )
+    reply_mate = play_series(state, ("e2g2",))
+    assert reply_mate.outcome is Outcome.CHECKMATE
+    stages = 0
+
+    def malicious_cap32_miss(
+        *_args: object,
+        **_kwargs: object,
+    ) -> tuple[None, bool]:
+        nonlocal stages
+        stages += 1
+        return None, True
+
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_root_child_mate_screen_stage",
+        malicious_cap32_miss,
+    )
+    monkeypatch.setattr(
+        series_mate_module,
+        "find_native_series_mate",
+        lambda *_args, **_kwargs: SeriesMateProbe(
+            SeriesMateStatus.FOUND,
+            "authoritative early mate",
+            series=reply_mate,
+            positions_visited=1,
+            moves_generated=19,
+        ),
+    )
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            collect_all_root_scores=False,
+        ),
+        PROFILE,
+    )
+
+    assert searcher._root_child_immediate_mate(state) == reply_mate
+    assert searcher._root_child_immediate_mate(state) == reply_mate
+    assert stages == 1
+    assert searcher.stats.native_series_mate_calls == 1
+    assert searcher.stats.native_series_mate_found == 1
+    assert searcher.stats.native_series_mate_cache_hits == 1
+    assert searcher.stats.root_safety_proven_mate_children == 1
+    assert searcher.stats.root_safety_exact_exhausted_children == 0
+
+
+def test_series_two_exact_exhaustion_is_the_only_cached_safe_miss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = play_series(ProgressiveState.initial(), ("e2e4",)).final_state
+    assert state.series_number == 2
+    stages = 0
+
+    def completed_cap32_miss(
+        *_args: object,
+        **_kwargs: object,
+    ) -> tuple[None, bool]:
+        nonlocal stages
+        stages += 1
+        return None, True
+
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_root_child_mate_screen_stage",
+        completed_cap32_miss,
+    )
+    monkeypatch.setattr(
+        series_mate_module,
+        "find_native_series_mate",
+        lambda *_args, **_kwargs: SeriesMateProbe(
+            SeriesMateStatus.EXHAUSTED,
+            "authoritative early no-mate",
+            positions_visited=21,
+            moves_generated=466,
+        ),
+    )
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            collect_all_root_scores=False,
+        ),
+        PROFILE,
+    )
+
+    assert searcher._root_child_immediate_mate(state) is None
+    assert searcher._root_child_immediate_mate(state) is None
+    assert stages == 1
+    assert searcher.stats.native_series_mate_calls == 1
+    assert searcher.stats.native_series_mate_exhausted == 1
+    assert searcher.stats.native_series_mate_cache_hits == 1
+    assert searcher.stats.root_safety_exact_exhausted_children == 1
+    assert searcher.stats.root_safety_proven_mate_children == 0
+    assert state.transposition_key in searcher._root_child_native_mate_exhausted_keys
+
+
+@pytest.mark.parametrize("remaining", (0, 1, 2))
+@pytest.mark.parametrize("series_number", (1, 2, 4, 5, 8))
+@pytest.mark.parametrize(
+    "native_status",
+    (
+        SeriesMateStatus.EXHAUSTED,
+        SeriesMateStatus.UNSUPPORTED,
+        SeriesMateStatus.WORK_LIMIT,
+        SeriesMateStatus.DEADLINE,
+    ),
+)
+def test_exact_lane_no_call_or_unknown_status_never_caches_a_selective_miss(
+    monkeypatch: pytest.MonkeyPatch,
+    remaining: int,
+    series_number: int,
+    native_status: SeriesMateStatus,
+) -> None:
+    state = ProgressiveState.from_fen(
+        (
+            "7k/8/8/8/8/8/8/K7 w - - 0 1"
+            if series_number % 2
+            else "7k/8/8/8/8/8/8/K7 b - - 0 1"
+        ),
+        series_number,
+    )
+    stage_calls = 0
+    exact_work_limits: list[int | None] = []
+
+    def completed_selective_miss(
+        *_args: object,
+        **_kwargs: object,
+    ) -> tuple[None, bool]:
+        nonlocal stage_calls
+        stage_calls += 1
+        return None, True
+
+    def exact_probe(*_args: object, **kwargs: object) -> SeriesMateProbe:
+        exact_work_limits.append(kwargs.get("max_work"))
+        return SeriesMateProbe(native_status, f"forced {native_status.value}")
+
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_root_child_promotion_mate",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_root_child_mate_screen_stage",
+        completed_selective_miss,
+    )
+    # Series 8 normally selects a tactical recovery stage. Force the
+    # non-tactical branch so this table covers both early and late children.
+    monkeypatch.setattr(
+        search_module,
+        "_tactical_frontier_protection_eligible",
+        lambda _state: False,
+    )
+    monkeypatch.setattr(
+        series_mate_module,
+        "find_native_series_mate",
+        exact_probe,
+    )
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            collect_all_root_scores=False,
+        ),
+        PROFILE,
+    )
+    searcher._root_child_mate_screen_work = (
+        searcher._root_child_mate_screen_budget - remaining
+    )
+
+    for _attempt in range(2):
+        if remaining <= 1 or native_status is SeriesMateStatus.WORK_LIMIT:
+            with pytest.raises(search_module._WorkLimit):
+                searcher._root_child_immediate_mate(state)
+        elif native_status is SeriesMateStatus.UNSUPPORTED:
+            with pytest.raises(search_module._WorkLimit):
+                searcher._root_child_immediate_mate(state)
+        elif native_status is SeriesMateStatus.DEADLINE:
+            with pytest.raises(search_module._Timeout):
+                searcher._root_child_immediate_mate(state)
+        else:
+            assert searcher._root_child_immediate_mate(state) is None
+
+    key = state.transposition_key
+    if remaining == 2 and native_status is SeriesMateStatus.EXHAUSTED:
+        assert stage_calls == 1
+        assert exact_work_limits == [1]
+        assert key in searcher._root_child_mate_screen_cache
+        assert key in searcher._root_child_native_mate_cache_keys
+        assert key in searcher._root_child_native_mate_exhausted_keys
+        assert searcher.stats.native_series_mate_cache_hits == 1
+        assert searcher.stats.root_safety_exact_exhausted_children == 1
+    else:
+        assert stage_calls >= 2
+        assert key not in searcher._root_child_mate_screen_cache
+        assert key not in searcher._root_child_native_mate_cache_keys
+        assert key not in searcher._root_child_native_mate_exhausted_keys
+        assert searcher.stats.native_series_mate_cache_hits == 0
+        assert searcher.stats.root_safety_exact_exhausted_children == 0
+        assert searcher.stats.root_safety_proven_mate_children == 0
+        if remaining <= 1:
+            assert exact_work_limits == []
+            assert searcher.stats.root_safety_budget_interruptions == 2
+        else:
+            assert exact_work_limits == [1, 1]
+
+
+def test_incomplete_exact_lane_cannot_omit_unknown_classification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = play_series(ProgressiveState.initial(), ("e2e4",)).final_state
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_root_child_promotion_mate",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_root_child_mate_screen_stage",
+        lambda *_args, **_kwargs: (None, True),
+    )
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_root_child_exact_native_mate",
+        lambda *_args, **_kwargs: (False, None, False),
+    )
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            collect_all_root_scores=False,
+        ),
+        PROFILE,
+    )
+
+    with pytest.raises(RuntimeError, match="must be classified as unknown"):
+        searcher._root_child_immediate_mate(state)
+    assert state.transposition_key not in searcher._root_child_mate_screen_cache
+    assert (
+        state.transposition_key
+        not in searcher._root_child_native_mate_exhausted_keys
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "counter"),
+    (
+        (SeriesMateStatus.WORK_LIMIT, "native_series_mate_work_limit_hits"),
+        (SeriesMateStatus.UNSUPPORTED, "native_series_mate_unsupported"),
+    ),
+)
+def test_unknown_exact_status_cannot_certify_a_root_child(
+    monkeypatch: pytest.MonkeyPatch,
+    status: SeriesMateStatus,
+    counter: str,
+) -> None:
+    state = ProgressiveState.from_fen(
+        "7k/8/8/8/8/8/8/K7 w - - 0 1",
+        5,
+    )
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_root_child_mate_screen_stage",
+        lambda *_args, **_kwargs: (None, True),
+    )
+    monkeypatch.setattr(
+        series_mate_module,
+        "find_native_series_mate",
+        lambda *_args, **_kwargs: SeriesMateProbe(
+            status,
+            "forced unknown",
+            positions_visited=2,
+            moves_generated=3,
+        ),
+    )
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            collect_all_root_scores=False,
+        ),
+        PROFILE,
+    )
+
+    with pytest.raises(search_module._WorkLimit):
+        searcher._root_child_immediate_mate(state)
+    assert getattr(searcher.stats, counter) == 1
+    assert searcher.stats.root_safety_unknown_interruptions == 1
+    assert searcher.stats.work_positions == 5
+
+
+def test_exact_deadline_interrupts_instead_of_falling_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = ProgressiveState.from_fen(
+        "7k/8/8/8/8/8/8/K7 w - - 0 1",
+        5,
+    )
+    stages = 0
+
+    def completed_stage(*_args: object, **_kwargs: object) -> tuple[None, bool]:
+        nonlocal stages
+        stages += 1
+        return None, True
+
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_root_child_mate_screen_stage",
+        completed_stage,
+    )
+    monkeypatch.setattr(
+        series_mate_module,
+        "find_native_series_mate",
+        lambda *_args, **_kwargs: SeriesMateProbe(
+            SeriesMateStatus.DEADLINE,
+            "forced deadline",
+        ),
+    )
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            collect_all_root_scores=False,
+        ),
+        PROFILE,
+    )
+
+    with pytest.raises(search_module._Timeout):
+        searcher._root_child_immediate_mate(state)
+    assert stages == 1
+    assert searcher.stats.native_series_mate_deadline_hits == 1
+
+
+def test_early_promotion_risk_uses_width832_only_to_recover_unknown_native_mate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = play_series(
@@ -315,6 +823,14 @@ def test_early_promotion_risk_keeps_the_historical_width832_route(
         "_root_child_mate_screen_stage",
         fake_stage,
     )
+    monkeypatch.setattr(
+        series_mate_module,
+        "find_native_series_mate",
+        lambda *_args, **_kwargs: SeriesMateProbe(
+            SeriesMateStatus.UNSUPPORTED,
+            "forced early unknown",
+        ),
+    )
     searcher = SeriesSearcher(
         SearchLimits(
             depth_series=1,
@@ -324,8 +840,13 @@ def test_early_promotion_risk_keeps_the_historical_width832_route(
         PROFILE,
     )
 
-    assert searcher._root_child_immediate_mate(state) is None
+    with pytest.raises(search_module._WorkLimit):
+        searcher._root_child_immediate_mate(state)
     assert calls == [(32, True), (832, False)]
+    assert searcher.stats.native_series_mate_calls == 1
+    assert searcher.stats.native_series_mate_unsupported == 1
+    assert searcher.stats.root_safety_unknown_interruptions == 1
+    assert state.transposition_key not in searcher._root_child_mate_screen_cache
 
 
 def test_interrupted_safety_retry_keeps_the_last_completed_root_depth(
@@ -398,7 +919,7 @@ def test_interrupted_safety_retry_keeps_the_last_completed_root_depth(
         (search_module._WorkLimit, False, True),
     ),
 )
-def test_raw_retry_interruption_at_depth_zero_keeps_only_a_legal_move_fallback(
+def test_raw_retry_interruption_never_falls_back_to_a_proven_mate_child(
     monkeypatch: pytest.MonkeyPatch,
     cause_type: type[Exception],
     timed_out: bool,
@@ -461,8 +982,8 @@ def test_raw_retry_interruption_at_depth_zero_keeps_only_a_legal_move_fallback(
 
     assert calls == 2
     assert result.completed_depth == 0
-    assert result.best_series == unsafe
-    assert result.principal_variation == (unsafe,)
+    assert result.best_series is None
+    assert result.principal_variation == ()
     assert result.score == result.root_evaluation.total
     assert result.alternatives == ()
     assert result.proof is None
@@ -471,6 +992,9 @@ def test_raw_retry_interruption_at_depth_zero_keeps_only_a_legal_move_fallback(
     assert result.work_limit_reached is work_limit_reached
     assert result.stats.root_safety_passes == 2
     assert result.stats.root_safety_retries == 1
+    assert result.stats.root_safety_proven_mate_children == 1
+    assert result.stats.root_safety_exhausted_fallbacks == 0
+    assert result.stats.root_safety_unknown_fallbacks == 0
 
 
 def test_raw_retry_timeout_restores_last_completed_root_metadata(
@@ -566,12 +1090,16 @@ def test_hosted_depth_two_selects_a_screened_reply_to_the_second_live_loss() -> 
     assert result.best_series.moves != LIVE_LOSS_S4
     assert result.completed_depth == 2
     assert result.score == 639
-    assert result.stats.work_positions < 300_000
+    assert result.stats.work_positions < 2_000_000
     assert result.stats.root_safety_passes == 4
     assert result.stats.root_safety_retries == 2
     assert result.stats.root_safety_screen_calls == 4
-    assert result.stats.root_safety_screen_stages == 7
-    assert result.stats.root_safety_screen_positions < 175_000
+    assert result.stats.root_safety_screen_stages == 4
+    assert result.stats.root_safety_screen_positions < 1_750_000
+    assert result.stats.native_series_mate_calls == 3
+    assert result.stats.native_series_mate_found == 1
+    assert result.stats.native_series_mate_exhausted == 2
+    assert result.stats.native_series_mate_work_limit_hits == 0
     rejected = next(
         item for item in result.alternatives if item.series.moves == LIVE_LOSS_S4
     )
@@ -680,15 +1208,93 @@ def test_ordinary_opening_screen_is_staged_and_keeps_the_canonical_result(
     assert result.best_series.moves == ("g2g3",)
     assert result.score == -150
     # The screen is called only for successive exact root contenders. At S2,
-    # each protected width-32 probe is tiny; the entire opening stays under the
-    # prior 30k deterministic-work envelope without widening to 832.
+    # each authoritative native exhaustion is tiny; exact safety adds 972
+    # position/edge units and the opening remains near its prior 30k envelope
+    # without widening to 832.
     assert 0 < cheap_calls <= 8
     assert wide_calls == 0
-    assert result.stats.work_positions < 30_000
+    assert result.stats.work_positions == 30_610
+    assert result.stats.native_series_mate_calls == 2
+    assert result.stats.native_series_mate_exhausted == 2
+    assert result.stats.root_safety_exact_exhausted_children == 2
     assert result.stats.tactical_frontier_states_retained == 0
     assert result.stats.tactical_frontier_reserve_drops == 0
     assert result.stats.tactical_final_series_retained == 0
     assert result.stats.tactical_final_reserve_drops == 0
+
+
+@pytest.mark.parametrize(
+    (
+        "state",
+        "expected_moves",
+        "expected_score",
+        "expected_work",
+        "expected_safety_work",
+        "expected_native_work",
+    ),
+    (
+        (
+            ProgressiveState.initial(),
+            ("g2g3",),
+            -150,
+            30_610,
+            1_054,
+            972,
+        ),
+        (
+            play_series(ProgressiveState.initial(), ("e2e4",)).final_state,
+            ("f7f5", "e8f7"),
+            848,
+            68_537,
+            31_162,
+            30_046,
+        ),
+    ),
+)
+def test_public_faster_opening_contract_settles_every_reply_exactly(
+    state: ProgressiveState,
+    expected_moves: tuple[str, ...],
+    expected_score: int,
+    expected_work: int,
+    expected_safety_work: int,
+    expected_native_work: int,
+) -> None:
+    result = analyze(
+        state,
+        SearchLimits(
+            depth_series=2,
+            max_series_per_node=32,
+            time_limit_seconds=5.0,
+            max_generation_positions=500_000,
+            collect_all_root_scores=False,
+            native_threads=1,
+        ),
+        PROFILE,
+    )
+
+    assert result.best_series is not None
+    assert result.best_series.moves == expected_moves
+    assert play_series(state, result.best_series.moves) == result.best_series
+    assert result.score == expected_score
+    assert result.completed_depth == 2
+    assert not result.timed_out
+    assert not result.work_limit_reached
+    assert result.stats.work_positions == expected_work
+    assert result.stats.root_safety_screen_positions == expected_safety_work
+    assert (
+        result.stats.native_series_mate_positions
+        + result.stats.native_series_mate_edges
+        == expected_native_work
+    )
+    assert result.stats.native_series_mate_calls == 2
+    assert result.stats.native_series_mate_exhausted == 2
+    assert result.stats.native_series_mate_found == 0
+    assert result.stats.native_series_mate_work_limit_hits == 0
+    assert result.stats.native_series_mate_deadline_hits == 0
+    assert result.stats.native_series_mate_unsupported == 0
+    assert result.stats.root_safety_exact_exhausted_children == 2
+    assert result.stats.root_safety_unknown_interruptions == 0
+    assert result.stats.root_safety_budget_interruptions == 0
 
 
 def test_root_tactical_protection_retains_the_stronger_s4_candidate() -> None:
@@ -732,13 +1338,16 @@ def test_root_tactical_protection_keeps_depth_three_opening_result() -> None:
     assert result.best_series.moves == ("e2e4",)
     assert result.score == 848
     assert result.completed_depth == 3
-    assert result.stats.work_positions == 341_820
+    assert result.stats.work_positions == 343_279
+    assert result.stats.native_series_mate_calls == 3
+    assert result.stats.native_series_mate_exhausted == 3
+    assert result.stats.root_safety_exact_exhausted_children == 3
     assert result.stats.tactical_frontier_states_retained == 0
     assert result.stats.tactical_frontier_reserve_drops == 0
 
 
-def test_hosted_shallow_s4_selection_avoids_cap832_reply_mate() -> None:
-    """The single-thread hosted fast path must reject the live blunder."""
+def test_shallow_s4_unknown_returns_only_a_move_liveness_fallback() -> None:
+    """A 250k cap cannot certify the S5 negative and must not fake depth."""
 
     root = _early_s4_state()
     result = analyze(
@@ -755,12 +1364,16 @@ def test_hosted_shallow_s4_selection_avoids_cap832_reply_mate() -> None:
     )
 
     assert result.best_series is not None
-    assert result.best_series.moves == HOSTED_SHALLOW_S4
-    assert result.completed_depth == 2
-    selected_child = play_series(root, result.best_series.moves).final_state
-    reply_mate, verifier_work = _ordinary_cap832_reply_mate(selected_child)
-    assert reply_mate is None
-    assert 0 < verifier_work < 50_000
+    assert result.completed_depth == 0
+    assert result.work_limit_reached
+    assert not result.timed_out
+    assert result.score == result.root_evaluation.total
+    assert result.principal_variation == (result.best_series,)
+    assert result.alternatives == ()
+    assert result.proof is None
+    assert not result.root_scores_complete
+    assert result.stats.native_series_mate_work_limit_hits == 1
+    assert result.stats.root_safety_unknown_interruptions == 1
 
 
 def test_website_depth_four_selects_stronger_safe_root_tactical_line() -> None:
@@ -838,16 +1451,176 @@ def test_early_s4_depth_five_avoids_every_cap832_replay_mate() -> None:
     assert 0 < verifier_work < 50_000
 
 
-def test_depth_four_play_avoids_every_cap832_replay_mate() -> None:
-    result = analyze(S7_STATE, _play_limits(), PROFILE)
+def test_s7_small_safety_budget_discards_root_metadata_as_unknown() -> None:
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            max_generation_positions=250_000,
+            time_limit_seconds=30.0,
+            collect_all_root_scores=False,
+            native_threads=16,
+        ),
+        PROFILE,
+    )
+    result = searcher.run(S7_STATE)
 
     assert result.best_series is not None
     assert result.best_series.moves != BLUNDERING_S7
+    assert result.completed_depth == 0
+    assert not result.timed_out
+    assert result.work_limit_reached
+    assert result.score == result.root_evaluation.total
+    assert result.principal_variation == (result.best_series,)
+    assert result.alternatives == ()
+    assert result.proof is None
+    assert not result.root_scores_complete
+    assert result.stats.root_safety_budget_interruptions == 1
+    assert result.stats.root_safety_unknown_fallbacks == 1
+    assert result.stats.root_safety_exhausted_fallbacks == 0
+    assert result.stats.root_safety_proven_mate_children > 0
+    assert (
+        result.stats.root_safety_screen_positions
+        == 250_000 // 3
+    )
+
+    # This is intentionally only a move-liveness fallback. A fresh exact
+    # verifier exposes the real S8 mate that the old width-832 negative missed;
+    # no score, proof, or alternative from the discarded depth may leak.
     selected_child = play_series(S7_STATE, result.best_series.moves).final_state
+    assert selected_child.transposition_key not in searcher._root_child_proven_mate_keys
+    assert (
+        selected_child.transposition_key
+        not in searcher._root_child_native_mate_exhausted_keys
+    )
     verifier = _live_searcher()
-    assert verifier._root_child_immediate_mate(selected_child) is None
-    assert verifier.stats.work_positions > 0
+    mate = verifier._root_child_immediate_mate(selected_child)
+    assert mate is not None
+    assert play_series(selected_child, mate.moves).outcome == Outcome.CHECKMATE
     assert verifier.stats.work_positions <= ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT
+
+
+def test_s7_cap32_misses_terminal_mate_that_cap832_ranks_first() -> None:
+    target = (
+        "a1c1",
+        "c1d1",
+        "d2c3",
+        "g1f3",
+        "f3g5",
+        "g5e6",
+        "d1d8",
+    )
+    narrow = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            max_generation_positions=10_000_000,
+            collect_all_root_scores=False,
+            native_threads=1,
+        ),
+        PROFILE,
+    )
+    narrow_retained = narrow._ordered_generated(S7_STATE, ply_from_root=1)
+    wide = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=832,
+            max_generation_positions=10_000_000,
+            collect_all_root_scores=False,
+            native_threads=1,
+        ),
+        PROFILE,
+    )
+    wide_retained = wide._ordered_generated(S7_STATE, ply_from_root=1)
+
+    assert target not in {candidate.moves for candidate in narrow_retained}
+    assert narrow.stats.work_positions == 7_502
+    assert wide_retained[0].moves == target
+    assert wide_retained[0].outcome == Outcome.CHECKMATE
+    assert wide_retained[0].ended_by_check
+    assert wide.stats.work_positions == 41_928
+
+
+def test_hosted_s7_widens_all_mating_cap32_and_plays_the_root_mate() -> None:
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=5,
+            max_series_per_node=32,
+            max_generation_positions=10_000_000,
+            time_limit_seconds=30.0,
+            collect_all_root_scores=False,
+            native_threads=1,
+        ),
+        PROFILE,
+    )
+    result = searcher.run(S7_STATE)
+
+    assert result.best_series is not None
+    assert result.best_series.moves == (
+        "a1c1",
+        "c1d1",
+        "d2c3",
+        "g1f3",
+        "f3g5",
+        "g5e6",
+        "d1d8",
+    )
+    assert result.best_series.outcome == Outcome.CHECKMATE
+    assert result.best_series.ended_by_check
+    assert result.completed_depth == 5
+    assert not result.timed_out
+    assert not result.work_limit_reached
+    assert result.score == MATE_SCORE - 1
+    assert result.proof == "white"
+    assert result.principal_variation == (result.best_series,)
+    assert result.alternatives == (
+        search_module.ScoredSeries(
+            result.best_series,
+            MATE_SCORE - 1,
+            (),
+            (1, 1),
+        ),
+    )
+    assert not result.root_scores_complete
+    assert result.stats.root_safety_retries == 32
+    assert result.stats.root_safety_proven_mate_children == 32
+    assert result.stats.root_safety_exact_exhausted_children == 0
+    assert result.stats.root_safety_budget_interruptions == 0
+    assert result.stats.root_safety_unknown_interruptions == 0
+    assert result.stats.root_safety_exhausted_fallbacks == 0
+    assert result.stats.root_safety_unknown_fallbacks == 0
+    assert result.stats.root_safety_screen_positions < 1_000_000
+    assert result.stats.root_safety_all_mating_widenings == 1
+    assert result.stats.root_safety_widened_candidates == 832
+    assert result.stats.root_safety_widening_positions == 41_928
+    assert result.stats.root_safety_widened_terminal_mates == 1
+    assert result.stats.root_safety_widened_exact_children == 0
+    assert result.stats.work_positions < 1_000_000
+
+
+def test_s8_underpromotion_proof_runs_before_general_native_search() -> None:
+    state = ProgressiveState.from_fen(
+        "7R/pp3p1p/1p3k2/3P4/1b6/5P2/PPP2P1P/RNK5 b - - 0 1",
+        8,
+    )
+    searcher = _live_searcher()
+    mate = searcher._root_child_immediate_mate(state)
+
+    assert mate is not None
+    assert mate.moves == (
+        "b4d6",
+        "b6b5",
+        "b5b4",
+        "b4b3",
+        "b3a2",
+        "a2b1n",
+        "b1c3",
+        "d6f4",
+    )
+    assert play_series(state, mate.moves).outcome == Outcome.CHECKMATE
+    assert searcher.stats.promotion_mate_mates == 1
+    assert searcher.stats.native_series_mate_calls == 0
+    assert searcher.stats.root_safety_screen_stages == 0
 
 
 def test_nonpromotion_queen_mate_is_screened_and_reported() -> None:

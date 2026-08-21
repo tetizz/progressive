@@ -1097,7 +1097,7 @@ def test_quiet_adjudication_in_deeper_pass_keeps_fast_kqk_fallback() -> None:
     assert result.forced is None
 
 
-def test_live_series_22_kqk_pending_pass_keeps_production_fallback() -> None:
+def test_live_series_22_kqk_keeps_unknown_move_only_production_fallback() -> None:
     state = ProgressiveState.from_fen(
         "8/8/8/8/6Q1/2K5/6k1/8 b - - 144 109",
         22,
@@ -1122,17 +1122,20 @@ def test_live_series_22_kqk_pending_pass_keeps_production_fallback() -> None:
         "g2f1/f1e1/e1f1/f1e1/e1f1/f1e1/e1f1/f1e1/e1f1/f1e1/e1f1/"
         "f1e1/e1f1/f1e1/e1f1/f1e1/e1f1/f1e1/e1f1/f1e1/e1f2/f2e3"
     )
-    assert result.score == shallow.score == 1_411
+    assert result.score == shallow.score == result.root_evaluation.total == 1_641
     assert result.best_series == shallow.best_series
     assert result.principal_variation == shallow.principal_variation
-    assert result.alternatives == shallow.alternatives
-    assert result.proof == shallow.proof
-    assert result.completed_depth == 1
-    assert result.adjudication_status == "manual-proof-required"
+    assert result.principal_variation == (result.best_series,)
+    assert result.alternatives == shallow.alternatives == ()
+    assert result.proof == shallow.proof is None
+    assert result.completed_depth == shallow.completed_depth == 0
+    assert result.adjudication_status is None
     assert not result.exact_width
     assert not result.timed_out
-    assert not result.work_limit_reached
-    assert result.root_scores_complete == shallow.root_scores_complete
+    assert result.work_limit_reached
+    assert not result.root_scores_complete
+    assert result.stats.native_series_mate_work_limit_hits == 1
+    assert result.stats.root_safety_unknown_fallbacks == 1
     assert result.forced is None
 
 

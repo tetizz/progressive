@@ -21,6 +21,7 @@ NATIVE_SOURCE_FILES = (
     "native_selfplay.cpp",
     "native_selfplay.hpp",
 )
+NATIVE_MATE_SOURCE_FILES = ("_native_mate.cpp",)
 
 
 def engine_source_fingerprint(package: Path) -> str:
@@ -41,6 +42,17 @@ def native_source_identity(package: Path) -> str:
 
     digest = hashlib.sha256()
     for filename in NATIVE_SOURCE_FILES:
+        path = package / filename
+        digest.update(filename.encode("utf-8"))
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def native_mate_source_identity(package: Path) -> str:
+    """Identity of the isolated one-series mate extension sources."""
+
+    digest = hashlib.sha256()
+    for filename in NATIVE_MATE_SOURCE_FILES:
         path = package / filename
         digest.update(filename.encode("utf-8"))
         digest.update(path.read_bytes())
@@ -91,6 +103,7 @@ native_compile_args = ["/std:c++20", "/O2"] if os.name == "nt" else [
 ]
 native_package = Path(__file__).resolve().parent / "src" / "scottish_progressive"
 native_identity = native_source_identity(native_package)
+native_mate_identity = native_mate_source_identity(native_package)
 
 setup(
     cmdclass={"build_py": BuildPyWithOpeningReports},
@@ -109,6 +122,16 @@ setup(
             optional=True,
             define_macros=[("SPC_NATIVE_SOURCE_IDENTITY", f'"{native_identity}"')],
             extra_compile_args=native_compile_args,
-        )
+        ),
+        Extension(
+            "scottish_progressive._native_mate",
+            sources=["src/scottish_progressive/_native_mate.cpp"],
+            language="c++",
+            optional=True,
+            define_macros=[
+                ("SPC_NATIVE_MATE_SOURCE_IDENTITY", f'"{native_mate_identity}"')
+            ],
+            extra_compile_args=native_compile_args,
+        ),
     ],
 )

@@ -849,7 +849,7 @@ def test_integrated_batch_replays_only_returned_search_evidence(
         return original(*args, **kwargs)
 
     monkeypatch.setattr(rules_module, "play_series", counted)
-    result = analyze(
+    interrupted = analyze(
         ProgressiveState.from_fen(chess.STARTING_FEN, 3),
         SearchLimits(
             depth_series=2,
@@ -859,7 +859,31 @@ def test_integrated_batch_replays_only_returned_search_evidence(
         ),
         baseline_profile(),
     )
+    assert interrupted.completed_depth == 1
+    assert interrupted.work_limit_reached
+    assert interrupted.stats.native_series_mate_exhausted == 1
+    assert interrupted.stats.native_series_mate_work_limit_hits == 1
+    assert interrupted.stats.root_safety_unknown_interruptions == 1
+
+    # A 500k configured work contract gives the shared exact-safety lane enough
+    # room to settle both Series-4 reply children. The replay assertion remains
+    # about returned evidence, while the smaller run above proves fail-closed
+    # last-completed-depth behavior instead of silently accepting a capped miss.
+    replay_calls = 0
+    result = analyze(
+        ProgressiveState.from_fen(chess.STARTING_FEN, 3),
+        SearchLimits(
+            depth_series=2,
+            max_series_per_node=16,
+            max_generation_positions=500_000,
+            collect_all_root_scores=False,
+        ),
+        baseline_profile(),
+    )
     assert result.completed_depth == 2
+    assert not result.work_limit_reached
+    assert result.stats.native_series_mate_calls == 2
+    assert result.stats.native_series_mate_exhausted == 2
     assert replay_calls > 0
     assert replay_calls < result.stats.generated_unique_series
 
