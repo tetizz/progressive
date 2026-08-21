@@ -14,7 +14,13 @@ import uuid
 
 import chess
 
-from .model import ENGINE_SOURCE_FINGERPRINT, ENGINE_VERSION, Outcome, ProgressiveState
+from .model import (
+    ENGINE_SOURCE_FINGERPRINT,
+    ENGINE_VERSION,
+    Outcome,
+    ProgressiveState,
+    SeriesResult,
+)
 from .profiles import (
     EngineProfile,
     baseline_profile,
@@ -25,13 +31,76 @@ from .profiles import (
     save_profile,
 )
 from .resources import ResourceBudget, detect_resource_budget
-from .rules import generate_series, play_series
-from .search import SearchLimits, analyze
+from .rules import _series_tactical_provenance, generate_series, play_series
+from .search import (
+    TACTICAL_FINAL_ORDINARY_QUOTA_DENOMINATOR,
+    EvaluationOverlay,
+    SearchLimits,
+    analyze,
+)
 
 
 LEAGUE_SCHEMA_VERSION = 3
 OPENING_SUITE_VERSION = "spc-league-boundaries-v4"
 PROMOTION_METHOD = "deterministic-fixed-suite-pairs-v1"
+
+HUMAN_FIRST_GAME_REPLY_VERIFIER_WIDTH = 832
+HUMAN_FIRST_GAME_REPLY_VERIFIER_WORK_LIMIT = 1_600_000
+HUMAN_FIRST_GAME_ROOT_WIDTH = 32
+HUMAN_FIRST_GAME_ROOT_WORK_LIMIT = 250_000
+
+
+@dataclass(frozen=True, slots=True)
+class TacticalRefutationAnchor:
+    anchor_id: str
+    history: tuple[tuple[str, ...], ...]
+    blundering_series: tuple[str, ...]
+    immediate_reply_mate: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TacticalContenderHypothesis:
+    hypothesis_id: str
+    series: tuple[str, ...]
+    evidence_label: str
+
+
+HUMAN_FIRST_GAME_REFUTATION = TacticalRefutationAnchor(
+    anchor_id="human-e4-kf7-qb6-s5-mate-v1",
+    history=(
+        ("e2e4",),
+        ("f7f6", "e8f7"),
+        ("d2d4", "e1d2", "g1f3"),
+        ("f6f5", "f5e4", "c7c5", "d8b6"),
+    ),
+    blundering_series=("f6f5", "f5e4", "c7c5", "d8b6"),
+    immediate_reply_mate=("b1c3", "c3e4", "f1b5", "b5d7", "f3e5"),
+)
+
+HUMAN_FIRST_GAME_CONTENDER_HYPOTHESES = (
+    TacticalContenderHypothesis(
+        hypothesis_id="A",
+        series=("e7e5", "f6f5", "f5e4", "f8b4"),
+        evidence_label=(
+            "current-live bounded contender; heuristic hypothesis, not a win proof"
+        ),
+    ),
+    TacticalContenderHypothesis(
+        hypothesis_id="B",
+        series=("e7e5", "f6f5", "g8f6", "f6e4"),
+        evidence_label=(
+            "unstable immediate-mate hypothesis; heuristic hypothesis, not a win proof"
+        ),
+    ),
+    TacticalContenderHypothesis(
+        hypothesis_id="E",
+        series=("d7d5", "d5e4", "e4f3", "g7g5"),
+        evidence_label=(
+            "root64 depth4 +664 with no bounded immediate reply mate observed; "
+            "heuristic hypothesis, not a win proof"
+        ),
+    ),
+)
 
 PUBLISHED_RULE_ANCHORS: tuple[tuple[str, int, tuple[str, ...]], ...] = (
     (
@@ -716,6 +785,360 @@ def _play_game(job: GameJob) -> GameRecord:
     return technical_incomplete("technical-emergency-series-watchdog-exhausted")
 
 
+def _replay_tactical_refutation_anchor(
+    anchor: TacticalRefutationAnchor = HUMAN_FIRST_GAME_REFUTATION,
+) -> tuple[ProgressiveState, SeriesResult, SeriesResult, tuple[str, ...]]:
+    """Authoritatively replays the stored game through its immediate mate."""
+
+    if not anchor.history or anchor.history[-1] != anchor.blundering_series:
+        raise AssertionError("tactical refutation must end its history at the blunder")
+
+    state = ProgressiveState.initial()
+    replayed_history: list[str] = []
+    state_before_blunder: ProgressiveState | None = None
+    blunder_result: SeriesResult | None = None
+    for index, moves in enumerate(anchor.history):
+        if index == len(anchor.history) - 1:
+            state_before_blunder = state
+        result = play_series(state, moves)
+        if result.machine_notation != "/".join(moves):
+            raise AssertionError("tactical refutation history is not canonical")
+        replayed_history.append(result.machine_notation)
+        state = result.final_state
+        if index == len(anchor.history) - 1:
+            blunder_result = result
+
+    assert state_before_blunder is not None and blunder_result is not None
+    if (
+        state_before_blunder.series_number != 4
+        or state_before_blunder.board.turn != chess.BLACK
+        or blunder_result.outcome is not None
+        or state.series_number != 5
+        or state.board.turn != chess.WHITE
+    ):
+        raise AssertionError("tactical refutation must reach Black S4 then White S5")
+
+    mate_result = play_series(state, anchor.immediate_reply_mate)
+    if (
+        mate_result.machine_notation != "/".join(anchor.immediate_reply_mate)
+        or mate_result.outcome != Outcome.CHECKMATE
+        or not mate_result.ended_by_check
+        or mate_result.used_moves != 5
+    ):
+        raise AssertionError("tactical refutation reply must be an immediate S5 mate")
+    return (
+        state_before_blunder,
+        blunder_result,
+        mate_result,
+        tuple(replayed_history),
+    )
+
+
+def _analyze_gate_position(
+    state: ProgressiveState,
+    limits: SearchLimits,
+    profile: EngineProfile,
+    evaluation_overlay: EvaluationOverlay | None,
+):
+    return analyze(
+        state,
+        limits,
+        profile=profile,
+        evaluation_overlay=evaluation_overlay,
+    )
+
+
+def _one_series_reply_verifier(
+    state: ProgressiveState,
+    profile: EngineProfile,
+    evaluation_overlay: EvaluationOverlay | None,
+) -> dict[str, Any]:
+    """Runs the fixed wide verifier and replays its selected reply."""
+
+    limits = SearchLimits(
+        depth_series=1,
+        max_series_per_node=HUMAN_FIRST_GAME_REPLY_VERIFIER_WIDTH,
+        time_limit_seconds=None,
+        max_generation_positions=HUMAN_FIRST_GAME_REPLY_VERIFIER_WORK_LIMIT,
+        collect_all_root_scores=False,
+        native_threads=1,
+    )
+    result = _analyze_gate_position(state, limits, profile, evaluation_overlay)
+    selected = result.best_series
+    replayed: SeriesResult | None = None
+    replay_error: str | None = None
+    if selected is not None:
+        try:
+            replayed = play_series(state, selected.moves)
+        except BaseException as error:  # pragma: no cover - engine evidence is legal
+            replay_error = f"{type(error).__name__}: {error}"
+    completed = (
+        result.requested_depth == 1
+        and result.completed_depth == 1
+        and not result.timed_out
+        and not result.work_limit_reached
+        and selected is not None
+        and replay_error is None
+    )
+    mate_found = bool(
+        completed
+        and replayed is not None
+        and replayed.outcome == Outcome.CHECKMATE
+        and replayed.ended_by_check
+    )
+    return {
+        "completed": completed,
+        "mate_found": mate_found,
+        "selected_reply": (
+            None if selected is None else selected.machine_notation
+        ),
+        "replayed_outcome": (
+            None
+            if replayed is None or replayed.outcome is None
+            else replayed.outcome.value
+        ),
+        "replay_error": replay_error,
+        "requested_depth": result.requested_depth,
+        "completed_depth": result.completed_depth,
+        "timed_out": result.timed_out,
+        "work_limit_reached": result.work_limit_reached,
+        "work_positions": result.stats.work_positions,
+        "proof": result.proof,
+        "verifier_width": HUMAN_FIRST_GAME_REPLY_VERIFIER_WIDTH,
+        "verifier_work_limit": HUMAN_FIRST_GAME_REPLY_VERIFIER_WORK_LIMIT,
+        "exact_width": result.exact_width,
+    }
+
+
+def _evaluate_human_first_game_refutation(
+    profile: EngineProfile,
+    *,
+    evaluation_overlay: EvaluationOverlay | None = None,
+) -> dict[str, Any]:
+    """Rejects the live S4 blunder and certifies retained-set move quality.
+
+    The no-mate result is deliberately scoped to the fixed width-832 reply
+    verifier. The heuristic comparison is scoped to the fully scored retained
+    root set; neither selective check is presented as a forced-win proof.
+    """
+
+    if (
+        evaluation_overlay is not None
+        and evaluation_overlay.base_profile_id != profile.profile_id
+    ):
+        raise ValueError(
+            "first-game refutation overlay is bound to a different profile"
+        )
+
+    root_state, blunder, canonical_mate, replayed_history = (
+        _replay_tactical_refutation_anchor()
+    )
+    contender_hypotheses: list[dict[str, Any]] = []
+    for hypothesis in HUMAN_FIRST_GAME_CONTENDER_HYPOTHESES:
+        replayed_hypothesis = play_series(root_state, hypothesis.series)
+        if replayed_hypothesis.machine_notation != "/".join(hypothesis.series):
+            raise AssertionError("first-game contender hypothesis is not canonical")
+        contender_hypotheses.append(
+            {
+                "hypothesis_id": hypothesis.hypothesis_id,
+                "series": replayed_hypothesis.machine_notation,
+                "final_position_hash": replayed_hypothesis.final_state.position_hash,
+                "evidence_label": hypothesis.evidence_label,
+                "pass_required": False,
+            }
+        )
+    blunder_verifier = _one_series_reply_verifier(
+        blunder.final_state,
+        profile,
+        evaluation_overlay,
+    )
+    root_limits = SearchLimits(
+        depth_series=2,
+        max_series_per_node=HUMAN_FIRST_GAME_ROOT_WIDTH,
+        time_limit_seconds=None,
+        max_generation_positions=HUMAN_FIRST_GAME_ROOT_WORK_LIMIT,
+        collect_all_root_scores=True,
+        native_threads=1,
+    )
+    root_result = _analyze_gate_position(
+        root_state,
+        root_limits,
+        profile,
+        evaluation_overlay,
+    )
+    selected = root_result.best_series
+    selected_notation = None if selected is None else selected.machine_notation
+    retained = tuple(root_result.alternatives)
+    selected_entry = next(
+        (
+            item
+            for item in retained
+            if selected is not None and item.series.moves == selected.moves
+        ),
+        None,
+    )
+    root_complete = (
+        root_result.requested_depth == 2
+        and root_result.completed_depth == 2
+        and not root_result.timed_out
+        and not root_result.work_limit_reached
+        and root_result.root_scores_complete
+        and selected_entry is not None
+        and bool(retained)
+    )
+
+    tactical_count = sum(
+        bool(_series_tactical_provenance(root_state, item.series))
+        for item in retained
+    )
+    non_tactical_count = len(retained) - tactical_count
+    ordinary_quota_slots = min(
+        HUMAN_FIRST_GAME_ROOT_WIDTH,
+        max(
+            1,
+            (
+                HUMAN_FIRST_GAME_ROOT_WIDTH
+                + TACTICAL_FINAL_ORDINARY_QUOTA_DENOMINATOR
+                - 1
+            )
+            // TACTICAL_FINAL_ORDINARY_QUOTA_DENOMINATOR,
+        ),
+    )
+    tactical_reserve_slots = HUMAN_FIRST_GAME_ROOT_WIDTH - ordinary_quota_slots
+    mover_is_white = root_state.board.turn == chess.WHITE
+    selected_score = None if selected_entry is None else selected_entry.score
+    best_retained_score = (
+        None
+        if not retained
+        else (
+            max(item.score for item in retained)
+            if mover_is_white
+            else min(item.score for item in retained)
+        )
+    )
+    selected_is_best_retained = bool(
+        root_complete and selected_score == best_retained_score
+    )
+
+    strictly_better = ()
+    if selected_score is not None:
+        strictly_better = tuple(
+            item
+            for item in retained
+            if (
+                item.score > selected_score
+                if mover_is_white
+                else item.score < selected_score
+            )
+        )
+    reply_screens: list[dict[str, Any]] = []
+    candidates_to_screen = tuple(
+        (item.series, item.score) for item in strictly_better
+    ) + (((selected, selected_score),) if selected is not None else ())
+    for candidate, score in candidates_to_screen:
+        assert candidate is not None
+        replayed_candidate = play_series(root_state, candidate.moves)
+        reply_screens.append(
+            {
+                "series": candidate.machine_notation,
+                "score_white_heuristic_points": score,
+                "is_selected": candidate.moves == selected.moves,
+                "reply_verifier": _one_series_reply_verifier(
+                    replayed_candidate.final_state,
+                    profile,
+                    evaluation_overlay,
+                ),
+            }
+        )
+
+    selected_screen = next(
+        (item for item in reply_screens if item["is_selected"]),
+        None,
+    )
+    selected_reply_safe = bool(
+        selected_screen is not None
+        and selected_screen["reply_verifier"]["completed"]
+        and not selected_screen["reply_verifier"]["mate_found"]
+    )
+    better_screen_incomplete = any(
+        not item["reply_verifier"]["completed"]
+        for item in reply_screens
+        if not item["is_selected"]
+    )
+    better_safe_candidate = any(
+        item["reply_verifier"]["completed"]
+        and not item["reply_verifier"]["mate_found"]
+        for item in reply_screens
+        if not item["is_selected"]
+    )
+    selected_is_best_retained_safe = bool(
+        selected_reply_safe
+        and not better_screen_incomplete
+        and not better_safe_candidate
+        and selected_is_best_retained
+    )
+    fixture_calibrated = bool(
+        blunder_verifier["completed"] and blunder_verifier["mate_found"]
+    )
+    avoided_blunder = bool(
+        selected is not None and selected.moves != blunder.moves
+    )
+    reply_safety_passed = bool(
+        fixture_calibrated
+        and root_complete
+        and avoided_blunder
+        and selected_reply_safe
+    )
+    retained_move_quality_passed = bool(
+        root_complete and selected_is_best_retained_safe
+    )
+
+    return {
+        "name": HUMAN_FIRST_GAME_REFUTATION.anchor_id,
+        "passed": reply_safety_passed and retained_move_quality_passed,
+        "evidence": {
+            "canonical_history": replayed_history,
+            "root_position_hash": root_state.position_hash,
+            "blundering_series": blunder.machine_notation,
+            "canonical_immediate_mate": canonical_mate.machine_notation,
+            "canonical_terminal": canonical_mate.outcome.value,
+            "contender_hypotheses": contender_hypotheses,
+            "blunder_reply_verifier": blunder_verifier,
+            "selected_series": selected_notation,
+            "selected_score_white_heuristic_points": selected_score,
+            "best_retained_score_white_heuristic_points": best_retained_score,
+            "avoided_blunder": avoided_blunder,
+            "root_search_complete": root_complete,
+            "root_scores_complete": root_result.root_scores_complete,
+            "retained_candidates": len(retained),
+            "retained_tactical_provenance_candidates": tactical_count,
+            "retained_non_tactical_provenance_candidates": non_tactical_count,
+            "both_provenance_classes_present": (
+                tactical_count > 0 and non_tactical_count > 0
+            ),
+            "selector_ordinary_static_quota_slots": ordinary_quota_slots,
+            "selector_tactical_reserve_slots": tactical_reserve_slots,
+            "selected_is_best_retained_by_score": selected_is_best_retained,
+            "selected_is_best_retained_safe": selected_is_best_retained_safe,
+            "reply_safety_passed": reply_safety_passed,
+            "retained_move_quality_passed": retained_move_quality_passed,
+            "screened_selected_and_strictly_better": reply_screens,
+            "quality_scope": (
+                "best width-832-reply-screened heuristic continuation among "
+                "the fully scored retained width-32 root set; not a forced-win proof"
+            ),
+            "class_coverage_scope": (
+                "the 16/16 slot counts are the mixed-selector contract; candidate "
+                "provenance is observed here, while per-candidate lane attribution "
+                "belongs to selector unit tests because SearchResult omits it"
+            ),
+            "proof": root_result.proof,
+            "exact_width": root_result.exact_width,
+            "work_positions": root_result.stats.work_positions,
+        },
+    }
+
+
 def run_rules_tactical_gate(
     profile: EngineProfile,
     *,
@@ -875,6 +1298,19 @@ def run_rules_tactical_gate(
                 "name": "published-s4-mate-selection",
                 "passed": False,
                 "error": str(error),
+            }
+        )
+
+    try:
+        checks.append(
+            _evaluate_human_first_game_refutation(profile)
+        )
+    except BaseException as error:
+        checks.append(
+            {
+                "name": HUMAN_FIRST_GAME_REFUTATION.anchor_id,
+                "passed": False,
+                "error": f"{type(error).__name__}: {error}",
             }
         )
     return GateReport(
