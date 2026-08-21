@@ -456,6 +456,48 @@ def test_native_final_pre_cap_matches_white_and_black_search_order(
     assert any(drops > 0 for _retained, drops in final_counter_pairs)
 
 
+def test_native_final_cap_keeps_ordinary_leaders_with_s4_tactical_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = ProgressiveState.initial()
+    for series in (
+        ("e2e4",),
+        ("f7f6", "e8f7"),
+        ("d2d4", "e1d2", "g1f3"),
+    ):
+        root = play_series(root, series).final_state
+
+    selected, stats, oracle = _paired_native_final_cap(
+        monkeypatch,
+        root,
+        final_cap=32,
+        ply_from_root=1,
+        max_frontier_states=32,
+    )
+    ordinary = SeriesSearcher(
+        SearchLimits(depth_series=1, max_series_per_node=32),
+        baseline_profile(),
+    )._ordered(
+        root,
+        oracle,
+        root.board.turn,
+        1,
+        tactical_protection=False,
+    )
+    selected_notation = {
+        result.machine_notation for result in selected
+    }
+    ordinary_notation = {
+        result.machine_notation for result in ordinary
+    }
+
+    assert len(selected) == 32
+    assert len(selected_notation & ordinary_notation) == 16
+    assert stats.tactical_final_series_retained == 16
+    assert stats.tactical_final_reserve_drops > 0
+    assert "e7e5/f6f5/f5e4/f8b4" in selected_notation
+
+
 def test_native_final_pre_cap_terminal_ties_and_mate_distance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
