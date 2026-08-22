@@ -415,10 +415,14 @@ def _validate_root_session_config(
         raise ValueError("ordinary-Worker root sessions require worker_threads=1")
     tactical = config.get("root_tactical_protection")
     if (
-        not isinstance(tactical, bool)
-        or hard_limits.get("root_tactical_protection_values") != [False, True]
+        tactical is not False
+        or hard_limits.get("root_tactical_protection_values") != [False]
+        or hard_limits.get("root_tactical_policy")
+        != "canonical-boundary-policy-v1"
     ):
-        raise ValueError("root-session root_tactical_protection must be boolean")
+        raise ValueError(
+            "root-session config must use canonical boundary tactical policy"
+        )
     tt_capacity = bounded_integer(
         "root_contract_tt_capacity",
         integer_limits["minimum_tt_capacity"],
@@ -632,6 +636,7 @@ def validate_root_session_certificate(
             "tt_scout_rollback",
             "persistent_depth_reuse",
             "selected_owner_certification",
+            "canonical_root_tactical_policy",
         )
     ):
         raise ValueError("root-session contract lacks coordinator capabilities")

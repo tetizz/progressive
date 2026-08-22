@@ -191,6 +191,7 @@ def _root_session_certificate(
                 "tt_scout_rollback": True,
                 "persistent_depth_reuse": True,
                 "selected_owner_certification": True,
+                "canonical_root_tactical_policy": True,
             },
             "hard_limits": {
                 "minimum_depth": 1,
@@ -206,7 +207,8 @@ def _root_session_certificate(
                 "minimum_external_cache_weight": 0,
                 "external_cache_weight_lte_series_cache_capacity": True,
                 "worker_threads": 1,
-                "root_tactical_protection_values": [False, True],
+                "root_tactical_protection_values": [False],
+                "root_tactical_policy": "canonical-boundary-policy-v1",
                 "minimum_tt_capacity": 1,
                 "maximum_tt_capacity": 1_048_576,
                 "minimum_eval_capacity": 1,
@@ -234,7 +236,7 @@ def _root_session_certificate(
                 "series_cache_capacity": 65_536,
                 "external_cache_weight": 0,
                 "worker_threads": 1,
-                "root_tactical_protection": True,
+                "root_tactical_protection": False,
                 "root_contract_tt_capacity": 262_144,
                 "root_contract_eval_capacity": 262_144,
                 "weights": {
@@ -647,6 +649,36 @@ def test_root_and_mate_certificates_fail_closed_on_contract_and_identity_drift(
         )
 
     root["evidence"]["start_w32_d5_elapsed_seconds"] = 42.5
+    root["root_session_contract"]["hard_limits"][
+        "root_tactical_protection_values"
+    ] = [False, True]
+    root_path.write_text(json.dumps(root), encoding="utf-8")
+    with pytest.raises(ValueError, match="canonical boundary tactical policy"):
+        builder.build_bundle(
+            single_wasm=wasm,
+            single_module_js=module_js,
+            single_root_session_certificate_path=root_path,
+            single_mate_certificate_path=mate_path,
+            source_package=package,
+            output=tmp_path / "legacy-root-policy-envelope",
+        )
+
+    root["root_session_contract"]["hard_limits"][
+        "root_tactical_protection_values"
+    ] = [False]
+    root["geometry"]["session_config"]["root_tactical_protection"] = True
+    root_path.write_text(json.dumps(root), encoding="utf-8")
+    with pytest.raises(ValueError, match="canonical boundary tactical policy"):
+        builder.build_bundle(
+            single_wasm=wasm,
+            single_module_js=module_js,
+            single_root_session_certificate_path=root_path,
+            single_mate_certificate_path=mate_path,
+            source_package=package,
+            output=tmp_path / "legacy-root-policy-config",
+        )
+
+    root["geometry"]["session_config"]["root_tactical_protection"] = False
     root["geometry"]["session_config"].pop("root_contract_eval_capacity")
     root_path.write_text(json.dumps(root), encoding="utf-8")
     with pytest.raises(ValueError, match="exactly bind every native field"):

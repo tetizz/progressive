@@ -443,7 +443,9 @@ function validateRootSessionConfig(value, contract) {
     || !bounded(value.worker_threads, 1, maximumWorkers)
     || !bounded(value.root_contract_tt_capacity, 1, maximumTt)
     || !bounded(value.root_contract_eval_capacity, 1, maximumEval)
-    || typeof value.root_tactical_protection !== "boolean"
+    || value.root_tactical_protection !== false
+    || !sameJson(hard.root_tactical_protection_values, [false])
+    || hard.root_tactical_policy !== "canonical-boundary-policy-v1"
     || !value.weights
     || typeof value.weights !== "object"
     || Array.isArray(value.weights)
@@ -573,6 +575,7 @@ function validateRootSessionCertificate(certificate, value, context) {
     || contract.reply_mate_safety !== false
     || contract.product_publishable !== false
     || contract.capabilities?.selected_owner_certification !== true
+    || contract.capabilities?.canonical_root_tactical_policy !== true
     || !geometry
     || !evidence
     || evidence.failures !== 0
