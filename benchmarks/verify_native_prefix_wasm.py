@@ -72,18 +72,18 @@ CASES = (
         "prefix": ["c3d5", "d3e4", "e4h7", "d5f4", "h7g6"],
     },
     {
-        "name": "progressive-ep-legal-next-suffix-correction",
+        "name": "progressive-ep-legal-next-suffix-parity",
         "fen": "8/8/8/8/1p5p/7b/2PB1KPk/7b w - - 0 1",
         "series": 3,
         "prefix": ["g2g4", "c2c4"],
-        "known_python_san_bug": "legal-next",
+        "progressive_san_exact": True,
     },
     {
-        "name": "progressive-ep-check-suffix-correction",
+        "name": "progressive-ep-check-suffix-parity",
         "fen": "8/8/8/8/1p5p/7b/2PB1KPk/7b w - - 0 1",
         "series": 3,
         "prefix": ["g2g4", "c2c4", "d2f4"],
-        "known_python_san_bug": "completed-prefix",
+        "progressive_san_exact": True,
     },
 )
 ERROR_CASES = (
@@ -182,7 +182,7 @@ def main() -> int:
         {
             key: value
             for key, value in case.items()
-            if key not in {"name", "known_python_san_bug", "expected_error"}
+            if key not in {"name", "progressive_san_exact", "expected_error"}
         }
         for case in all_cases
     ]
@@ -200,52 +200,17 @@ def main() -> int:
         raise AssertionError("WASM batch result count differs from request")
 
     parity = 0
-    corrected = 0
+    progressive_san_parity = 0
     for case, wasm in zip(CASES, wasm_results[: len(CASES)], strict=True):
         oracle = inspect_prefix(state_for(case), tuple(case["prefix"]))
-        san_bug = case.get("known_python_san_bug")
-        if san_bug == "legal-next":
-            oracle_move = next(
-                move for move in oracle["legal_next"] if move["uci"] == "d2f4"
-            )
-            wasm_move = next(
-                move for move in wasm["legal_next"] if move["uci"] == "d2f4"
-            )
-            if oracle_move["san"] != "Bf4#" or wasm_move["san"] != "Bf4+":
-                raise AssertionError("legal-next Progressive EP SAN edge was not reproduced")
-            wasm_without_san = selected(wasm)
-            oracle_without_san = selected(oracle)
-            for key in ("legal_next", "legal_moves"):
-                next(move for move in wasm_without_san[key] if move["uci"] == "d2f4")[
-                    "san"
-                ] = "Bf4#"
-            if wasm_without_san != oracle_without_san:
-                raise AssertionError("legal-next EP SAN correction differs beyond suffix")
-            corrected += 1
-            continue
-        if san_bug == "completed-prefix":
-            if oracle["san"][-1] != "Bf4#" or wasm["san"][-1] != "Bf4+":
-                raise AssertionError("completed-prefix Progressive EP SAN edge was not reproduced")
-            for payload in (oracle, wasm):
-                if payload["outcome"] is not None or payload["completion_reason"] != "check":
-                    raise AssertionError("EP check edge must remain a non-mate check")
-                if payload["next_state"]["ep_targets"] != ["g3"]:
-                    raise AssertionError("EP check edge lost its only legal reply target")
-            wasm_without_san = selected(wasm)
-            oracle_without_san = selected(oracle)
-            wasm_without_san["san"] = oracle_without_san["san"]
-            wasm_without_san["notation"] = oracle_without_san["notation"]
-            wasm_without_san["frames"][-1]["san"] = oracle_without_san["frames"][-1]["san"]
-            if wasm_without_san != oracle_without_san:
-                raise AssertionError("EP SAN correction case differs beyond corrected suffix")
-            corrected += 1
-            continue
         if selected(wasm) != selected(oracle):
             raise AssertionError(
                 f"{case['name']} differs:\nWASM={json.dumps(selected(wasm), sort_keys=True)}"
                 f"\nPYTHON={json.dumps(selected(oracle), sort_keys=True)}"
             )
         parity += 1
+        if case.get("progressive_san_exact") is True:
+            progressive_san_parity += 1
 
     for case, wasm in zip(
         ERROR_CASES,
@@ -261,7 +226,8 @@ def main() -> int:
                 "schema": "spc-prefix-parity-receipt-v1",
                 "cases": len(all_cases),
                 "exact_python_parity": parity,
-                "progressive_san_corrections": corrected,
+                "progressive_san_corrections": 0,
+                "progressive_san_exact_parity": progressive_san_parity,
                 "fail_closed_errors": len(ERROR_CASES),
                 "mate_replay": "checkmate",
                 "multi_ep": "covered",
