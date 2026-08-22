@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 from typing import Any, Mapping
 from urllib.parse import parse_qs, urlparse
 
@@ -20,6 +21,7 @@ IDENTITY_FIELDS = (
 )
 RUNTIME_FIELDS = ("exception_strategy", "wasm_simd", "allocator")
 ENGINE_FIELDS = ("engine_version", "ruleset_version", "profile_id")
+HEX_64 = re.compile(r"[0-9a-f]{64}")
 
 
 def _load(path: Path) -> Mapping[str, Any]:
@@ -140,6 +142,41 @@ def _rivals(result: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _assert_selection_covered(
+    selected: Mapping[str, Any],
+    rivals: Mapping[str, Any],
+    label: str,
+) -> None:
+    bounds = rivals["bounds"]
+    selected_bounds = [
+        item for item in bounds if item["candidate_identity"] == selected["candidate_identity"]
+    ]
+    if len(selected_bounds) != 1:
+        raise ValueError(f"{label} does not cover the selected candidate exactly once")
+    selected_bound = selected_bounds[0]
+    if (
+        selected_bound["bound"] != "exact"
+        or selected_bound["score"] != selected["score"]
+        or selected_bound["proof_bounds"] != selected["proof_bounds"]
+    ):
+        raise ValueError(f"{label} does not exactly certify the selected candidate")
+    for item in bounds:
+        if item["candidate_identity"] == selected["candidate_identity"]:
+            continue
+        if item["bound"] == "lower" or item["score"] > selected["score"]:
+            raise ValueError(f"{label} contains a rival bound that does not prove the selection")
+
+
+def _assert_same_candidate_universe(
+    warm_rivals: Mapping[str, Any],
+    cold_rivals: Mapping[str, Any],
+) -> None:
+    warm_ids = {item["candidate_identity"] for item in warm_rivals["bounds"]}
+    cold_ids = {item["candidate_identity"] for item in cold_rivals["bounds"]}
+    if warm_ids != cold_ids:
+        raise ValueError("fresh D5 and persistent D1-D5 cover different candidate universes")
+
+
 def _timeout_ms(cdp_receipt: Mapping[str, Any]) -> float:
     page = cdp_receipt.get("page_environment")
     if not isinstance(page, dict) or not isinstance(page.get("location"), str):
@@ -211,15 +248,23 @@ def main() -> int:
     cold_selected = _selected(cold_result)
     rivals = _rivals(warm_result)
     cold_rivals = _rivals(cold_result)
+    _assert_selection_covered(selected, rivals, "persistent D1-D5 coverage")
+    _assert_selection_covered(cold_selected, cold_rivals, "fresh D5 coverage")
+    _assert_same_candidate_universe(rivals, cold_rivals)
     retained_manifest = warm_result.get("retained_manifest_sha256")
+    cold_retained_manifest = cold_result.get("retained_manifest_sha256")
     if (
         selected != cold_selected
-        or rivals != cold_rivals
-        or retained_manifest != cold_result.get("retained_manifest_sha256")
+        or rivals["coverage_complete"] is not True
+        or cold_rivals["coverage_complete"] is not True
+        or rivals["unknown_count"] != 0
+        or cold_rivals["unknown_count"] != 0
         or not isinstance(retained_manifest, str)
-        or len(retained_manifest) != 64
+        or not HEX_64.fullmatch(retained_manifest)
+        or not isinstance(cold_retained_manifest, str)
+        or not HEX_64.fullmatch(cold_retained_manifest)
     ):
-        raise ValueError("fresh D5 and persistent D1-D5 do not produce the same complete oracle")
+        raise ValueError("fresh D5 and persistent D1-D5 do not select the same complete oracle")
 
     geometry = warm.get("geometry")
     if not isinstance(geometry, dict) or geometry.get("mode") != "warm":
@@ -302,7 +347,7 @@ def main() -> int:
         "gates": {
             "initial_root_enumeration_python_parity": True,
             "persistent_d1_d2_python_parity": True,
-            "persistent_d1_through_d5_matches_fresh_d5": True,
+            "persistent_d1_through_d5_selects_same_result_as_fresh_d5": True,
             "exact_selected_replay": warm_iterations[-1].get("final_replay", {}).get("complete") is True,
             "work_receipts": True,
             "deadline_receipts": True,

@@ -9,6 +9,8 @@ import sys
 
 import pytest
 
+from benchmarks import build_opera_release_receipt as opera_receipt_builder
+from benchmarks import build_root_d5_oracle as root_oracle_builder
 from scripts import promote_browser_wasm_release as promoter
 
 
@@ -444,7 +446,7 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
         "gates": {
             "initial_root_enumeration_python_parity": True,
             "persistent_d1_d2_python_parity": True,
-            "persistent_d1_through_d5_matches_fresh_d5": True,
+            "persistent_d1_through_d5_selects_same_result_as_fresh_d5": True,
             "exact_selected_replay": True,
             "work_receipts": True,
             "deadline_receipts": True,
@@ -543,8 +545,15 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
                     "within_cap": True,
                 },
                 "safety_status": "exhausted",
+                "safety_revision": 1,
+                "owner_worker_id": "root-0",
                 "owner_certification_count": 1,
                 "coverage_complete": True,
+                "root_bounds": copy.deepcopy(bounds),
+                "retained_manifest_sha256": retained_manifest_sha256,
+                "order_shape_sha256": "8" * 64,
+                "root_scores_complete": True,
+                "width_complete": True,
                 "final_replay": {
                     "complete": True,
                     "outcome": None,
@@ -561,7 +570,14 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
         "principal_variation": principal_variation,
         "work": iterations[-1]["work"],
         "safety_status": "exhausted",
+        "safety_revision": 1,
+        "owner_worker_id": "root-0",
         "coverage_complete": True,
+        "root_bounds": copy.deepcopy(bounds),
+        "retained_manifest_sha256": retained_manifest_sha256,
+        "order_shape_sha256": "8" * 64,
+        "root_scores_complete": True,
+        "width_complete": True,
     }
     worker_memory = [
         {
@@ -594,6 +610,53 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
         }
         for index in range(8)
     ]
+    selected_signature = promoter._canonical_sha256(selected)
+
+    def run_binding(elapsed_ms: float) -> dict[str, object]:
+        run_bounds = copy.deepcopy(bounds)
+        semantic = {
+            "selected": selected,
+            "retained_manifest_sha256": retained_manifest_sha256,
+            "rival_bounds": run_bounds,
+        }
+        return {
+            "status": "complete",
+            "selected_signature_sha256": selected_signature,
+            "run_signature_sha256": promoter._canonical_sha256(semantic),
+            "selected_candidate_identity": selected["candidate_identity"],
+            "unknown_or_limit_count": 0,
+            "selected_owner_certification_count": 1,
+            "elapsed_ms": elapsed_ms,
+            "retained_manifest_sha256": retained_manifest_sha256,
+            "rival_bounds": run_bounds,
+            "root_coverage_sha256": promoter._canonical_sha256(run_bounds),
+        }
+
+    cold_binding = run_binding(40_000.0)
+    warm_binding = run_binding(49_000.0)
+
+    def schedule_binding(
+        wave: int,
+        order_shape_sha256: str,
+        elapsed_ms: float,
+    ) -> dict[str, object]:
+        binding = run_binding(elapsed_ms)
+        semantic = {
+            "run_signature_sha256": binding["run_signature_sha256"],
+            "workers": 8,
+            "initial_full_wave": wave,
+            "order_shape_sha256": order_shape_sha256,
+        }
+        return {
+            "workers": 8,
+            "initial_full_wave": wave,
+            "order_shape_sha256": order_shape_sha256,
+            **binding,
+            "trial_signature_sha256": promoter._canonical_sha256(semantic),
+        }
+
+    wave_four_binding = schedule_binding(4, "8" * 64, 49_000.0)
+    wave_two_binding = schedule_binding(2, "9" * 64, 51_000.0)
     opera_worker = {
         "schema": promoter.OPERA_WORKER_SCHEMA,
         "status": "passed-not-certified",
@@ -620,46 +683,15 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
         "oracle": {
             "schema": "spc-opera-root-d5-oracle-binding-v1",
             "oracle_signature_sha256": oracle_signature,
-            "cold_matches_oracle": True,
-            "warm_matches_oracle": True,
-            "cold_d5": {
-                "status": "complete",
-                "result_signature_sha256": oracle_signature,
-                "selected_candidate_identity": selected["candidate_identity"],
-                "unknown_or_limit_count": 0,
-                "selected_owner_certification_count": 1,
-                "elapsed_ms": 40_000.0,
-            },
-            "warm_d1_through_d5": {
-                "status": "complete",
-                "result_signature_sha256": oracle_signature,
-                "selected_candidate_identity": selected["candidate_identity"],
-                "unknown_or_limit_count": 0,
-                "selected_owner_certification_count": 1,
-                "elapsed_ms": 49_000.0,
-            },
+            "selected_signature_sha256": selected_signature,
+            "cold_selected_matches_oracle": True,
+            "warm_full_matches_oracle": True,
+            "cold_d5": cold_binding,
+            "warm_d1_through_d5": warm_binding,
         },
         "schedule_trials": [
-            {
-                "workers": 8,
-                "initial_full_wave": 4,
-                "order_shape_sha256": "8" * 64,
-                "result_signature_sha256": oracle_signature,
-                "status": "complete",
-                "unknown_or_limit_count": 0,
-                "selected_owner_certification_count": 1,
-                "elapsed_ms": 49_000.0,
-            },
-            {
-                "workers": 8,
-                "initial_full_wave": 2,
-                "order_shape_sha256": "9" * 64,
-                "result_signature_sha256": oracle_signature,
-                "status": "complete",
-                "unknown_or_limit_count": 0,
-                "selected_owner_certification_count": 1,
-                "elapsed_ms": 51_000.0,
-            },
+            wave_four_binding,
+            wave_two_binding,
         ],
         "memory": {
             "per_worker_hard_maximum_bytes": full_memory["maximum_bytes"],
@@ -694,8 +726,9 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
             "memory_envelope_observed": True,
             "d5_w32_anchor": True,
             "under_60_seconds_total": True,
-            "cold_d5_matches_oracle": True,
-            "warm_d1_d5_matches_oracle": True,
+            "cold_d5_selected_matches_oracle": True,
+            "warm_d1_d5_full_matches_oracle": True,
+            "alternate_schedule_selected_matches_oracle": True,
             "multiple_seed_wave_order_shapes": True,
             "no_unknown_or_limit_results": True,
             "release_certificate_present": False,
@@ -754,6 +787,29 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
         "wasm": wasm,
         "module_js": module_js,
     }
+
+
+def _root_bound_fixture() -> tuple[dict[str, object], dict[str, object]]:
+    principal_variation = [{"moves": ["b2b3"], "machine_notation": "b2b3"}]
+    bounds = [
+        {
+            "candidate_identity": f"candidate-{index:02d}",
+            "bound": "exact" if index == 0 else "upper",
+            "score": 951 - index,
+            "proof_bounds": [-1, 1],
+        }
+        for index in range(20)
+    ]
+    result = {
+        "candidate_identity": "candidate-00",
+        "move": "b2b3",
+        "score": 951,
+        "proof_bounds": [-1, 1],
+        "principal_variation": principal_variation,
+        "root_bounds": bounds,
+    }
+    oracle = {"rival_bounds": {"bounds": copy.deepcopy(bounds)}}
+    return result, oracle
 
 
 def _rewrite(fixture: dict[str, object], label: str, mutate) -> None:
@@ -869,10 +925,138 @@ def test_rejects_schedule_shapes_that_do_not_reproduce_the_oracle(tmp_path: Path
     fixture = _valid_fixture(tmp_path)
 
     def mutate(payload: dict[str, object]) -> None:
-        payload["worker_receipt"]["schedule_trials"][1]["result_signature_sha256"] = "f" * 64
+        payload["worker_receipt"]["schedule_trials"][1]["selected_signature_sha256"] = "f" * 64
 
     _rewrite(fixture, "opera", mutate)
-    with pytest.raises(promoter.ReleaseGateError, match="schedule trial did not exactly complete"):
+    with pytest.raises(promoter.ReleaseGateError, match="did not reproduce the selected oracle result"):
+        _validate(fixture)
+
+
+def test_rejects_duplicate_alternate_root_candidates(tmp_path: Path) -> None:
+    fixture = _valid_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        trial = payload["worker_receipt"]["schedule_trials"][1]
+        trial["rival_bounds"] = [copy.deepcopy(trial["rival_bounds"][0]) for _ in range(20)]
+
+    _rewrite(fixture, "opera", mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="candidate universe exactly"):
+        _validate(fixture)
+
+
+def test_receipt_builder_rejects_duplicate_root_candidates() -> None:
+    result, oracle = _root_bound_fixture()
+    result["root_bounds"] = [copy.deepcopy(result["root_bounds"][0]) for _ in range(20)]
+
+    with pytest.raises(ValueError, match="exact candidate universe"):
+        opera_receipt_builder._normalize_bounds(result, oracle, "alternate run")
+
+
+def test_receipt_builder_rejects_final_iteration_result_drift() -> None:
+    result, _ = _root_bound_fixture()
+    result["completed_depth"] = 5
+    final = {
+        "depth": 5,
+        **{
+            key: copy.deepcopy(result.get(key))
+            for key in opera_receipt_builder.FINAL_RESULT_FIELDS
+        },
+    }
+    final["score"] = result["score"] - 1
+
+    with pytest.raises(ValueError, match="final iteration differs"):
+        opera_receipt_builder._assert_final_result_identity(final, result, "alternate run")
+
+
+def test_rejects_disjoint_cold_root_candidates(tmp_path: Path) -> None:
+    fixture = _valid_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        cold = payload["worker_receipt"]["oracle"]["cold_d5"]
+        for index, bound in enumerate(cold["rival_bounds"]):
+            bound["candidate_identity"] = f"fake-candidate-{index:02d}"
+
+    _rewrite(fixture, "opera", mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="candidate universe exactly"):
+        _validate(fixture)
+
+
+def test_root_oracle_builder_rejects_disjoint_candidate_universes() -> None:
+    result, oracle = _root_bound_fixture()
+    warm = {"bounds": copy.deepcopy(oracle["rival_bounds"]["bounds"])}
+    cold = {"bounds": copy.deepcopy(result["root_bounds"])}
+    for index, bound in enumerate(cold["bounds"]):
+        bound["candidate_identity"] = f"fake-candidate-{index:02d}"
+
+    with pytest.raises(ValueError, match="different candidate universes"):
+        root_oracle_builder._assert_same_candidate_universe(warm, cold)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("score", "951", "candidate score"),
+        ("proof_bounds", [-1, True], "candidate proof bounds"),
+    ],
+)
+def test_rejects_malformed_cold_bound_payloads(
+    tmp_path: Path,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    fixture = _valid_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        payload["worker_receipt"]["oracle"]["cold_d5"]["rival_bounds"][0][field] = value
+
+    _rewrite(fixture, "opera", mutate)
+    with pytest.raises(promoter.ReleaseGateError, match=message):
+        _validate(fixture)
+
+
+def test_rejects_tampered_alternate_coverage_digest(tmp_path: Path) -> None:
+    fixture = _valid_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        payload["worker_receipt"]["schedule_trials"][1]["root_coverage_sha256"] = "f" * 64
+
+    _rewrite(fixture, "opera", mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="root-coverage digest"):
+        _validate(fixture)
+
+
+def test_rejects_re_signed_wave_four_order_shape_drift(tmp_path: Path) -> None:
+    fixture = _valid_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        trial = payload["worker_receipt"]["schedule_trials"][0]
+        trial["order_shape_sha256"] = "a" * 64
+        trial["trial_signature_sha256"] = promoter._canonical_sha256(
+            {
+                "run_signature_sha256": trial["run_signature_sha256"],
+                "workers": trial["workers"],
+                "initial_full_wave": trial["initial_full_wave"],
+                "order_shape_sha256": trial["order_shape_sha256"],
+            }
+        )
+
+    _rewrite(fixture, "opera", mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="differs from the signed warm run"):
+        _validate(fixture)
+
+
+def test_rejects_false_full_oracle_signature_on_cold_run(tmp_path: Path) -> None:
+    fixture = _valid_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        worker = payload["worker_receipt"]
+        worker["oracle"]["cold_d5"]["run_signature_sha256"] = worker["oracle"][
+            "oracle_signature_sha256"
+        ]
+
+    _rewrite(fixture, "opera", mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="actual-run signature"):
         _validate(fixture)
 
 

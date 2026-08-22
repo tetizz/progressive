@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 
@@ -759,6 +760,7 @@ async function main() {
     root_session_contract: contract,
     prefix_contract: prefixContract,
   };
+  await mkdir(dirname(args.output), { recursive: true });
   await writeFile(args.output, `${JSON.stringify(receipt, null, 2)}\n`, "utf8");
   process.stdout.write(`${JSON.stringify(receipt)}\n`);
 }

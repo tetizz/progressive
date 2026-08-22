@@ -244,6 +244,9 @@ async function initialize(payload) {
     instantiate_ms: performance.now() - instantiateStarted,
     native_work_after: 0,
     build: {
+      source_revision: receipt.source_revision,
+      source_fingerprint: receipt.source_fingerprint,
+      kernel_sha256: receipt.kernel_sha256,
       wasm_sha256: wasmHash,
       module_js_sha256: moduleHash,
       artifact_set_sha256: receipt.artifact_set_sha256,

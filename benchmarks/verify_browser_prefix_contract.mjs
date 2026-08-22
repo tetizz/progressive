@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -371,5 +371,6 @@ const receipt = {
   cancellation_fallback_suppressed: true,
   remote_calls: remoteCalls,
 };
+await mkdir(path.dirname(args.get("--output")), { recursive: true });
 await writeFile(args.get("--output"), `${JSON.stringify(receipt, null, 2)}\n`, "utf8");
 process.stdout.write(`${JSON.stringify(receipt)}\n`);

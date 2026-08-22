@@ -763,7 +763,7 @@ def _validate_root_parity(
     receipt: Receipt,
     build: BuildEvidence,
     root_contract: Mapping[str, Any],
-) -> tuple[int, dict[str, Any], dict[str, Any], str]:
+) -> tuple[int, dict[str, Any], dict[str, Any], list[dict[str, Any]], str, str]:
     payload = receipt.payload
     if payload.get("schema") != ROOT_PARITY_SCHEMA or payload.get("status") != "passed":
         raise ReleaseGateError("root D5 oracle receipt did not pass")
@@ -904,7 +904,7 @@ def _validate_root_parity(
     for key in (
         "initial_root_enumeration_python_parity",
         "persistent_d1_d2_python_parity",
-        "persistent_d1_through_d5_matches_fresh_d5",
+        "persistent_d1_through_d5_selects_same_result_as_fresh_d5",
         "exact_selected_replay",
         "work_receipts",
         "deadline_receipts",
@@ -933,7 +933,14 @@ def _validate_root_parity(
     oracle_signature = payload.get("oracle_signature_sha256")
     if oracle_signature != _canonical_sha256(semantic):
         raise ReleaseGateError("root D5 oracle semantic signature is invalid")
-    return differential_cases, config, selected, str(oracle_signature)
+    return (
+        differential_cases,
+        config,
+        selected,
+        [dict(_mapping(item, "root D5 oracle candidate bound")) for item in bounds],
+        str(retained_manifest_sha256),
+        str(oracle_signature),
+    )
 
 
 def _validate_prefix_parity(receipt: Receipt, build: BuildEvidence) -> int:
@@ -1087,12 +1094,115 @@ def _query_value(query: Mapping[str, list[str]], key: str) -> str:
     return values[0]
 
 
+def _normalize_opera_bounds(
+    value: object,
+    *,
+    label: str,
+    expected_candidate_ids: set[str],
+    selected: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    raw_bounds = _list(value, f"{label} rival bounds")
+    if len(raw_bounds) != 20:
+        raise ReleaseGateError(f"{label} must retain exactly 20 candidate bounds")
+    bounds: list[dict[str, Any]] = []
+    for raw_bound in raw_bounds:
+        bound = _mapping(raw_bound, f"{label} candidate bound")
+        candidate_identity = _text(
+            bound.get("candidate_identity"),
+            f"{label} candidate identity",
+        )
+        bound_type = bound.get("bound")
+        if bound_type not in {"exact", "lower", "upper"}:
+            raise ReleaseGateError(f"{label} contains an invalid or Unknown candidate bound")
+        score = _integer(bound.get("score"), f"{label} candidate score", -2_000_000_000)
+        proof_bounds = _list(bound.get("proof_bounds"), f"{label} candidate proof bounds")
+        if len(proof_bounds) != 2 or any(
+            isinstance(item, bool) or not isinstance(item, int) for item in proof_bounds
+        ):
+            raise ReleaseGateError(f"{label} contains invalid candidate proof bounds")
+        bounds.append(
+            {
+                "candidate_identity": candidate_identity,
+                "bound": bound_type,
+                "score": score,
+                "proof_bounds": proof_bounds,
+            }
+        )
+    bounds.sort(key=lambda item: item["candidate_identity"])
+    candidate_ids = [item["candidate_identity"] for item in bounds]
+    if len(set(candidate_ids)) != 20 or set(candidate_ids) != expected_candidate_ids:
+        raise ReleaseGateError(f"{label} does not cover the oracle candidate universe exactly")
+
+    selected_identity = selected.get("candidate_identity")
+    selected_bounds = [
+        item for item in bounds if item["candidate_identity"] == selected_identity
+    ]
+    if len(selected_bounds) != 1:
+        raise ReleaseGateError(f"{label} does not cover the selected candidate exactly once")
+    selected_bound = selected_bounds[0]
+    if (
+        selected_bound["bound"] != "exact"
+        or selected_bound["score"] != selected.get("score")
+        or selected_bound["proof_bounds"] != selected.get("proof_bounds")
+    ):
+        raise ReleaseGateError(f"{label} does not exactly certify the selected candidate")
+    for bound in bounds:
+        if bound["candidate_identity"] == selected_identity:
+            continue
+        if bound["bound"] == "lower" or bound["score"] > selected.get("score"):
+            raise ReleaseGateError(f"{label} contains a rival bound that does not prove the selection")
+    return bounds
+
+
+def _validate_opera_run_binding(
+    value: object,
+    *,
+    label: str,
+    selected: Mapping[str, Any],
+    expected_candidate_ids: set[str],
+) -> tuple[list[dict[str, Any]], str, str]:
+    run = _mapping(value, label)
+    selected_signature = _canonical_sha256(selected)
+    if (
+        run.get("status") != "complete"
+        or run.get("selected_signature_sha256") != selected_signature
+        or run.get("selected_candidate_identity") != selected.get("candidate_identity")
+        or run.get("unknown_or_limit_count") != 0
+        or run.get("selected_owner_certification_count") != 1
+    ):
+        raise ReleaseGateError(f"{label} did not reproduce the selected oracle result")
+    _number(run.get("elapsed_ms"), f"{label} elapsed", 0.000001)
+    retained_manifest = run.get("retained_manifest_sha256")
+    if not isinstance(retained_manifest, str) or not HEX_64.fullmatch(retained_manifest):
+        raise ReleaseGateError(f"{label} has an invalid retained-manifest digest")
+    bounds = _normalize_opera_bounds(
+        run.get("rival_bounds"),
+        label=label,
+        expected_candidate_ids=expected_candidate_ids,
+        selected=selected,
+    )
+    coverage_sha256 = _canonical_sha256(bounds)
+    if run.get("root_coverage_sha256") != coverage_sha256:
+        raise ReleaseGateError(f"{label} has an invalid root-coverage digest")
+    semantic = {
+        "selected": dict(selected),
+        "retained_manifest_sha256": retained_manifest,
+        "rival_bounds": bounds,
+    }
+    run_signature = _canonical_sha256(semantic)
+    if run.get("run_signature_sha256") != run_signature:
+        raise ReleaseGateError(f"{label} has an invalid actual-run signature")
+    return bounds, retained_manifest, run_signature
+
+
 def _validate_opera(
     receipt: Receipt,
     build: BuildEvidence,
     *,
     expected_config: Mapping[str, Any],
     oracle_selected: Mapping[str, Any],
+    oracle_rival_bounds: list[dict[str, Any]],
+    oracle_retained_manifest_sha256: str,
     oracle_signature_sha256: str,
 ) -> tuple[dict[str, Any], float, dict[str, Any], dict[str, Any], int]:
     payload = receipt.payload
@@ -1264,6 +1374,20 @@ def _validate_opera(
         or result.get("principal_variation") != final_iteration.get("principal_variation")
     ):
         raise ReleaseGateError("Opera final result is not the completed safe D5 iteration")
+    for key in (
+        "work",
+        "safety_status",
+        "safety_revision",
+        "owner_worker_id",
+        "root_bounds",
+        "retained_manifest_sha256",
+        "order_shape_sha256",
+        "coverage_complete",
+        "root_scores_complete",
+        "width_complete",
+    ):
+        if result.get(key) != final_iteration.get(key):
+            raise ReleaseGateError(f"Opera final result {key!r} differs from its D5 iteration")
     expected_result_fields = {
         "candidate_identity": oracle_selected.get("candidate_identity"),
         "move": oracle_selected.get("move"),
@@ -1274,28 +1398,52 @@ def _validate_opera(
     for key, expected in expected_result_fields.items():
         if result.get(key) != expected:
             raise ReleaseGateError(f"Opera warm D1-D5 result {key!r} differs from the oracle")
+    expected_candidate_ids = {
+        _text(item.get("candidate_identity"), "root D5 oracle candidate identity")
+        for item in oracle_rival_bounds
+    }
+    if len(expected_candidate_ids) != 20:
+        raise ReleaseGateError("root D5 oracle candidate universe is incomplete")
+    warm_result_bounds = _normalize_opera_bounds(
+        result.get("root_bounds"),
+        label="Opera warm D1-D5 result",
+        expected_candidate_ids=expected_candidate_ids,
+        selected=oracle_selected,
+    )
+    warm_result_manifest = result.get("retained_manifest_sha256")
+    warm_result_order_shape = result.get("order_shape_sha256")
+    if (
+        warm_result_bounds != oracle_rival_bounds
+        or warm_result_manifest != oracle_retained_manifest_sha256
+        or not isinstance(warm_result_order_shape, str)
+        or not HEX_64.fullmatch(warm_result_order_shape)
+    ):
+        raise ReleaseGateError("Opera warm D1-D5 rival coverage differs from the signed oracle")
 
     oracle = _mapping(worker.get("oracle"), "Opera oracle binding")
+    selected_signature = _canonical_sha256(oracle_selected)
     if (
         oracle.get("schema") != "spc-opera-root-d5-oracle-binding-v1"
         or oracle.get("oracle_signature_sha256") != oracle_signature_sha256
-        or oracle.get("cold_matches_oracle") is not True
-        or oracle.get("warm_matches_oracle") is not True
+        or oracle.get("selected_signature_sha256") != selected_signature
+        or oracle.get("cold_selected_matches_oracle") is not True
+        or oracle.get("warm_full_matches_oracle") is not True
     ):
         raise ReleaseGateError("Opera receipt is not bound to the signed root D5 oracle")
-    for run_name in ("cold_d5", "warm_d1_through_d5"):
-        run = _mapping(oracle.get(run_name), f"Opera {run_name} oracle run")
-        if (
-            run.get("status") != "complete"
-            or run.get("result_signature_sha256") != oracle_signature_sha256
-            or run.get("selected_candidate_identity")
-            != oracle_selected.get("candidate_identity")
-            or run.get("unknown_or_limit_count") != 0
-            or run.get("selected_owner_certification_count") != 1
-        ):
-            raise ReleaseGateError(f"Opera {run_name} did not exactly complete the oracle")
-        _number(run.get("elapsed_ms"), f"Opera {run_name} elapsed", 0.000001)
-
+    _validate_opera_run_binding(
+        oracle.get("cold_d5"),
+        label="Opera cold D5 oracle run",
+        selected=oracle_selected,
+        expected_candidate_ids=expected_candidate_ids,
+    )
+    warm_bounds, warm_manifest, warm_run_signature = _validate_opera_run_binding(
+        oracle.get("warm_d1_through_d5"),
+        label="Opera warm D1-D5 oracle run",
+        selected=oracle_selected,
+        expected_candidate_ids=expected_candidate_ids,
+    )
+    if warm_bounds != oracle_rival_bounds or warm_manifest != oracle_retained_manifest_sha256:
+        raise ReleaseGateError("Opera warm oracle run does not carry the signed full coverage")
     schedule_trials = _list(worker.get("schedule_trials"), "Opera schedule trials")
     if len(schedule_trials) < 2:
         raise ReleaseGateError("Opera receipt needs at least two real schedule shapes")
@@ -1311,14 +1459,27 @@ def _validate_opera(
             raise ReleaseGateError("Opera schedule trial used the wrong Worker geometry")
         if not isinstance(order_shape, str) or not HEX_64.fullmatch(order_shape):
             raise ReleaseGateError("Opera schedule trial has an invalid order-shape digest")
-        if (
-            trial.get("status") != "complete"
-            or trial.get("result_signature_sha256") != oracle_signature_sha256
-            or trial.get("unknown_or_limit_count") != 0
-            or trial.get("selected_owner_certification_count") != 1
+        trial_bounds, trial_manifest, trial_signature = _validate_opera_run_binding(
+            trial,
+            label=f"Opera wave-{wave} schedule trial",
+            selected=oracle_selected,
+            expected_candidate_ids=expected_candidate_ids,
+        )
+        trial_semantic = {
+            "run_signature_sha256": trial_signature,
+            "workers": workers,
+            "initial_full_wave": wave,
+            "order_shape_sha256": order_shape,
+        }
+        if trial.get("trial_signature_sha256") != _canonical_sha256(trial_semantic):
+            raise ReleaseGateError("Opera schedule trial has an invalid schedule signature")
+        if wave == 4 and (
+            trial_bounds != oracle_rival_bounds
+            or trial_manifest != oracle_retained_manifest_sha256
+            or trial_signature != warm_run_signature
+            or order_shape != warm_result_order_shape
         ):
-            raise ReleaseGateError("Opera schedule trial did not exactly complete the oracle")
-        _number(trial.get("elapsed_ms"), "Opera schedule trial elapsed", 0.000001)
+            raise ReleaseGateError("Opera wave-4 schedule trial differs from the signed warm run")
         schedule_shapes.add((wave, order_shape))
         order_shapes.add(order_shape)
         saw_wave_four = saw_wave_four or wave == 4
@@ -1430,8 +1591,9 @@ def _validate_opera(
         "memory_envelope_observed",
         "d5_w32_anchor",
         "under_60_seconds_total",
-        "cold_d5_matches_oracle",
-        "warm_d1_d5_matches_oracle",
+        "cold_d5_selected_matches_oracle",
+        "warm_d1_d5_full_matches_oracle",
+        "alternate_schedule_selected_matches_oracle",
         "multiple_seed_wave_order_shapes",
         "no_unknown_or_limit_results",
     ):
@@ -1460,7 +1622,14 @@ def validate_evidence(
         source_package=source_package,
     )
     root_contract, prefix_contract = _validate_root_smoke(receipts["root_smoke"], build)
-    root_cases, root_config, canonical_d5, oracle_signature = _validate_root_parity(
+    (
+        root_cases,
+        root_config,
+        canonical_d5,
+        oracle_rival_bounds,
+        oracle_retained_manifest,
+        oracle_signature,
+    ) = _validate_root_parity(
         receipts["root_parity"],
         build,
         root_contract,
@@ -1470,6 +1639,8 @@ def validate_evidence(
         build,
         expected_config=root_config,
         oracle_selected=canonical_d5,
+        oracle_rival_bounds=oracle_rival_bounds,
+        oracle_retained_manifest_sha256=oracle_retained_manifest,
         oracle_signature_sha256=oracle_signature,
     )
     prefix_cases = _validate_prefix_parity(receipts["prefix_parity"], build)
