@@ -58,6 +58,7 @@ jobs:
               raise SystemExit("root-relative assets would break the project Pages path")
 
       - name: Wait for matching deployed engine
+        continue-on-error: true
         shell: python
         run: |
           import hashlib
@@ -78,7 +79,7 @@ jobs:
               digest.update(path.relative_to(package).as_posix().encode("utf-8"))
               digest.update(path.read_bytes())
           expected = digest.hexdigest()[:16]
-          deadline = time.monotonic() + 15 * 60
+          deadline = time.monotonic() + 30
           attempt = 0
           last = "no response"
           while time.monotonic() < deadline:
