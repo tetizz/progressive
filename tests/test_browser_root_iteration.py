@@ -40,6 +40,8 @@ def test_browser_root_worker_pool_contract() -> None:
         "mate_cache_identity_boundary_bound": True,
         "crash_last_safe_and_reprobe": True,
         "absolute_deadline_epoch_transport": True,
+        "canonical_root_policy_drift_fails_closed": True,
+        "canonical_root_policy_selects_late_and_promotion_boundaries": True,
         "mismatched_worker_time_origin_clamped": True,
         "unknown_memory_uses_lower_geometry": True,
     }

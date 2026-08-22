@@ -6,6 +6,7 @@ const ROOT_SESSION_CERTIFICATE_SCHEMA = "spc-root-session-certificate-v1";
 const MATE_CERTIFICATE_SCHEMA = "spc-series-mate-certificate-v1";
 const ROOT_SESSION_ABI_VERSION = 2;
 const MATE_ABI_VERSION = 1;
+const ROOT_TACTICAL_POLICY = "canonical-boundary-policy-v1";
 const COMBINED_EXPORTS = Object.freeze([
   "_spc_start_kernel_search_json",
   "_spc_boundary_kernel_search_json",
@@ -445,7 +446,7 @@ function validateRootSessionConfig(value, contract) {
     || !bounded(value.root_contract_eval_capacity, 1, maximumEval)
     || value.root_tactical_protection !== false
     || !sameJson(hard.root_tactical_protection_values, [false])
-    || hard.root_tactical_policy !== "canonical-boundary-policy-v1"
+    || hard.root_tactical_policy !== ROOT_TACTICAL_POLICY
     || !value.weights
     || typeof value.weights !== "object"
     || Array.isArray(value.weights)
@@ -458,6 +459,37 @@ function validateRootSessionConfig(value, contract) {
     ...value,
     weights: Object.freeze({ ...value.weights }),
   });
+}
+
+function canonicalRootPolicyMatches(value, expectedProtection = null) {
+  return Boolean(
+    value
+    && value.canonical_root_tactical_policy === ROOT_TACTICAL_POLICY
+    && typeof value.canonical_root_tactical_protection === "boolean"
+    && (
+      expectedProtection === null
+      || value.canonical_root_tactical_protection === expectedProtection
+    )
+  );
+}
+
+function canonicalRootTacticalProtection(boundary) {
+  const series = boundary?.series;
+  const board = typeof boundary?.fen === "string"
+    ? boundary.fen.split(" ")[0]
+    : null;
+  const ranks = board?.split("/");
+  if (!Number.isInteger(series) || !Array.isArray(ranks) || ranks.length !== 8) return null;
+  if (series >= 5) return true;
+  const white = series % 2 === 1;
+  const pawn = white ? "P" : "p";
+  for (let row = 0; row < ranks.length; row += 1) {
+    const expanded = ranks[row].replace(/[1-8]/g, (digit) => " ".repeat(Number(digit)));
+    if (expanded.length !== 8) return null;
+    const distance = white ? row : 7 - row;
+    if (distance > 0 && series - distance >= 2 && expanded.includes(pawn)) return true;
+  }
+  return false;
 }
 
 function validateRootPlayLimits(value, config) {
@@ -1527,6 +1559,7 @@ export async function loadCertifiedBrowserKernel({
     initial_memory_bytes: initialMemoryBytes,
   });
   let rootSessionId = null;
+  let rootCanonicalTacticalProtection = null;
   let rootMemoryPeakBytes = initialMemoryBytes;
   const rootMemoryReceipt = () => {
     const memoryBytes = validateRuntimeMemory(module, identity.memory_limits);
@@ -1585,6 +1618,9 @@ export async function loadCertifiedBrowserKernel({
         identity,
         "spc-root-session-create-result-v1",
       );
+      const expectedCanonicalProtection = canonicalRootTacticalProtection(
+        nativeRequest.boundary,
+      );
       if (
         raw.status !== "ready"
         || !Number.isInteger(raw.session_id)
@@ -1594,7 +1630,10 @@ export async function loadCertifiedBrowserKernel({
         || raw.configured_max_depth !== identity.root_geometry.session_config.max_depth
         || raw.native_work_after !== 0
         || raw.capabilities?.selected_owner_certification !== true
+        || raw.capabilities?.canonical_root_tactical_policy !== true
         || raw.capabilities?.reply_mate_safety !== false
+        || expectedCanonicalProtection === null
+        || !canonicalRootPolicyMatches(raw, expectedCanonicalProtection)
       ) {
         throw new KernelAdapterError(
           "The native root-session create ABI returned an invalid session envelope.",
@@ -1602,6 +1641,7 @@ export async function loadCertifiedBrowserKernel({
         );
       }
       rootSessionId = raw.session_id;
+      rootCanonicalTacticalProtection = raw.canonical_root_tactical_protection;
       return {
         ...raw,
         status: raw.status,
@@ -1659,6 +1699,12 @@ export async function loadCertifiedBrowserKernel({
         identity,
         "spc-root-session-enumeration-result-v1",
       );
+      if (!canonicalRootPolicyMatches(raw, rootCanonicalTacticalProtection)) {
+        throw new KernelAdapterError(
+          "The native root enumeration changed its canonical tactical policy.",
+          "browser-root-enumeration-invalid",
+        );
+      }
       return {
         ...raw,
         ...rootMemoryReceipt(),
@@ -1702,6 +1748,12 @@ export async function loadCertifiedBrowserKernel({
         identity,
         "spc-root-session-import-result-v1",
       );
+      if (!canonicalRootPolicyMatches(raw, rootCanonicalTacticalProtection)) {
+        throw new KernelAdapterError(
+          "The native root import changed its canonical tactical policy.",
+          "browser-root-import-invalid",
+        );
+      }
       return {
         ...raw,
         ...rootMemoryReceipt(),
@@ -1758,6 +1810,7 @@ export async function loadCertifiedBrowserKernel({
       const sessionId = rootSessionId;
       const status = module._spc_root_session_destroy(sessionId);
       rootSessionId = null;
+      rootCanonicalTacticalProtection = null;
       if (status !== 1) {
         throw new KernelAdapterError(
           "The native root session could not be destroyed cleanly.",

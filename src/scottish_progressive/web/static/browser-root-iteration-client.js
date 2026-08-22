@@ -8,6 +8,7 @@
   const UCI_MOVE = /^[a-h][1-8][a-h][1-8][qrbn]?$/;
   const MATE_SCORE = 1_000_000;
   const MAX_LOCAL_DEPTH = 5;
+  const ROOT_TACTICAL_POLICY = "canonical-boundary-policy-v1";
   const ROOT_IDENTITY_KEYS = Object.freeze([
     "source_fingerprint", "kernel_sha256", "module_js_sha256", "certificate_id",
     "runtime_variant", "thread_count", "engine_version", "ruleset_version", "profile_id",
@@ -101,6 +102,27 @@
       promoted_hex: promoted.padStart(16, "0"),
       chess960: false,
     });
+  }
+
+  function canonicalRootTacticalProtection(boundary) {
+    const core = canonicalBoundary(boundary);
+    const board = core?.fen.split(" ")[0];
+    const ranks = board?.split("/");
+    if (!core || !Array.isArray(ranks) || ranks.length !== 8) return null;
+    if (core.series >= 5) return true;
+    const white = core.series % 2 === 1;
+    const pawn = white ? "P" : "p";
+    for (let row = 0; row < ranks.length; row += 1) {
+      const expanded = ranks[row].replace(/[1-8]/g, (digit) => " ".repeat(Number(digit)));
+      if (expanded.length !== 8) return null;
+      const distance = white ? row : 7 - row;
+      if (
+        distance > 0
+        && core.series - distance >= 2
+        && expanded.includes(pawn)
+      ) return true;
+    }
+    return false;
   }
 
   function normalizeExactBoundaryState(value) {
@@ -355,6 +377,7 @@
       this.crashed = false;
       this.sessionReady = false;
       this.sessionId = null;
+      this.canonicalRootTacticalProtection = null;
       this.nativeWorkAfter = 0;
       this.memoryBytes = 0;
       this.memoryPeakBytes = 0;
@@ -493,6 +516,7 @@
       this.worker = null;
       this.sessionReady = false;
       this.sessionId = null;
+      this.canonicalRootTacticalProtection = null;
       try {
         worker?.terminate();
       } catch {
@@ -739,6 +763,13 @@
     }
 
     async _resetSessions({ identity, expected, boundary, requestId, deadlineMs, signal }) {
+      const expectedCanonicalProtection = canonicalRootTacticalProtection(boundary);
+      if (expectedCanonicalProtection === null) {
+        throw new RootIterationClientError(
+          "The root boundary cannot select a canonical tactical policy.",
+          "browser-root-session-create-invalid",
+        );
+      }
       await Promise.all(this.pool.map(async (channel) => {
         if (channel.sessionReady) {
           const destroyed = await channel.call("root-session-destroy", {
@@ -757,6 +788,7 @@
         }
         channel.sessionReady = false;
         channel.sessionId = null;
+        channel.canonicalRootTacticalProtection = null;
         channel.nativeWorkAfter = 0;
         channel.memoryBytes = 0;
         channel.memoryPeakBytes = 0;
@@ -791,7 +823,11 @@
           || response.configured_max_depth !== sessionConfig.max_depth
           || response.native_work_after !== 0
           || response.capabilities?.selected_owner_certification !== true
+          || response.capabilities?.canonical_root_tactical_policy !== true
           || response.capabilities?.reply_mate_safety !== false
+          || response.canonical_root_tactical_policy !== ROOT_TACTICAL_POLICY
+          || response.canonical_root_tactical_protection
+            !== expectedCanonicalProtection
           || response.product_publishable !== false
           || response.safety_certified !== false
           || !exactInteger(response.memory_bytes, 1)
@@ -804,12 +840,22 @@
         }
         channel.sessionId = response.session_id;
         channel.sessionReady = true;
+        channel.canonicalRootTacticalProtection =
+          response.canonical_root_tactical_protection;
         channel.nativeWorkAfter = exactInteger(response.native_work_after, 0)
           ? response.native_work_after
           : 0;
         channel.memoryBytes = response.memory_bytes;
         channel.memoryPeakBytes = response.memory_peak_bytes;
       }));
+      if (new Set(this.pool.map(
+        (channel) => channel.canonicalRootTacticalProtection,
+      )).size !== 1) {
+        throw new RootIterationClientError(
+          "The root Worker pool disagreed on the canonical tactical policy.",
+          "browser-root-session-create-invalid",
+        );
+      }
     }
 
     async _enumerateAndImport({
@@ -877,6 +923,9 @@
         || !exactInteger(rawEnumeration.remaining_time_ms, 0, enumerateRequest.remaining_time_ms)
         || rawEnumeration.product_publishable !== false
         || rawEnumeration.safety_certified !== false
+        || rawEnumeration.canonical_root_tactical_policy !== ROOT_TACTICAL_POLICY
+        || rawEnumeration.canonical_root_tactical_protection
+          !== primary.canonicalRootTacticalProtection
       ) {
         throw new RootIterationClientError(
           "The authoritative root enumeration returned an invalid routing envelope.",
@@ -965,6 +1014,11 @@
           || !exactInteger(reply.remaining_time_ms, 0, request.remaining_time_ms)
           || reply.product_publishable !== false
           || reply.safety_certified !== false
+          || reply.canonical_root_tactical_policy !== ROOT_TACTICAL_POLICY
+          || reply.canonical_root_tactical_protection
+            !== channel.canonicalRootTacticalProtection
+          || reply.canonical_root_tactical_protection
+            !== rawEnumeration.canonical_root_tactical_protection
           || reply.enumeration_identity !== manifest.enumeration_identity
           || reply.retained_count !== manifest.candidates.length
           || !sameJson(importedManifest, manifest)

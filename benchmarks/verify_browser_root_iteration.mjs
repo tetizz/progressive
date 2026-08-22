@@ -26,6 +26,7 @@ const browserClientApi = require(path.join(
 const WHITE_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const ALT_WHITE_FEN = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1";
 const BLACK_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1";
+const PROMOTION_FEN = "7k/4P3/8/8/8/8/8/K7 w - - 0 1";
 const SOURCE = "a".repeat(16);
 const WASM = "b".repeat(64);
 const MODULE = "c".repeat(64);
@@ -44,7 +45,7 @@ const CONFIG = Object.freeze({
   series_cache_capacity: 1_024,
   external_cache_weight: 128,
   worker_threads: 1,
-  root_tactical_protection: true,
+  root_tactical_protection: false,
   root_contract_tt_capacity: 4_096,
   root_contract_eval_capacity: 4_096,
   weights: Object.freeze({
@@ -191,14 +192,39 @@ function boundaryPayload(fen, series, quietSeries = 0) {
   };
 }
 
+function canonicalTacticalProtection(boundary) {
+  if (boundary.series >= 5) return true;
+  const white = boundary.series % 2 === 1;
+  const pawn = white ? "P" : "p";
+  const ranks = boundary.fen.split(" ")[0].split("/");
+  for (let row = 0; row < ranks.length; row += 1) {
+    const expanded = ranks[row].replace(/[1-8]/g, (digit) => " ".repeat(Number(digit)));
+    const distance = white ? row : 7 - row;
+    if (distance > 0 && boundary.series - distance >= 2 && expanded.includes(pawn)) return true;
+  }
+  return false;
+}
+
 function candidateMoves(series, index) {
   if (series === 1) {
     return [["e2e4"], ["d2d4"], ["g1f3"], ["c2c4"], ["b1c3"], ["a2a3"], ["h2h3"], ["g2g3"]][index];
   }
-  return [
+  const twoMoveSeries = [
     ["a7a6", "h7h6"], ["b7b6", "g7g6"], ["c7c6", "f7f6"], ["d7d6", "e7e6"],
     ["g8f6", "b8c6"], ["a7a5", "h7h5"], ["b7b5", "g7g5"], ["c7c5", "f7f5"],
   ][index];
+  if (series === 2) return twoMoveSeries;
+  const longerSeries = [
+    ["a2a3", "a3a4", "b2b3", "b3b4", "c2c3"],
+    ["b2b3", "b3b4", "c2c3", "c3c4", "d2d3"],
+    ["c2c3", "c3c4", "d2d3", "d3d4", "e2e3"],
+    ["d2d3", "d3d4", "e2e3", "e3e4", "f2f3"],
+    ["e2e3", "e3e4", "f2f3", "f3f4", "g2g3"],
+    ["f2f3", "f3f4", "g2g3", "g3g4", "h2h3"],
+    ["g2g3", "g3g4", "h2h3", "h3h4", "a2a3"],
+    ["h2h3", "h3h4", "a2a3", "a3a4", "b2b3"],
+  ];
+  return longerSeries[index].slice(0, series);
 }
 
 function manifestFor(boundary, generation, preferredSeries, { terminalFirst = false } = {}) {
@@ -313,12 +339,14 @@ class MockWorld {
     safetyUnknown = false,
     crashGeneration = null,
     searchDelayMs = 2,
+    policyDrift = null,
   } = {}) {
     this.foundFirst = foundFirst;
     this.terminalFirst = terminalFirst;
     this.safetyUnknown = safetyUnknown;
     this.crashGeneration = crashGeneration;
     this.searchDelayMs = searchDelayMs;
+    this.policyDrift = policyDrift;
     this.workers = [];
     this.live = 0;
     this.peakLive = 0;
@@ -328,6 +356,7 @@ class MockWorld {
     this.safetyReceipts = [];
     this.crashed = false;
     this.createBoundaries = [];
+    this.canonicalProtections = [];
     this.deadlineEpochs = [];
   }
 
@@ -350,9 +379,11 @@ class MockWorld {
       worker.nativeWork = 0;
       worker.lastAccountedWork = 0;
       worker.boundary = { ...payload.boundary, ep_targets: [...payload.boundary.ep_targets] };
+      const canonicalProtection = canonicalTacticalProtection(worker.boundary);
       worker.manifest = null;
       worker.createCount += 1;
       this.createBoundaries.push({ worker: worker.name, boundary: worker.boundary });
+      this.canonicalProtections.push(canonicalProtection);
       return {
         schema: "spc-root-session-create-result-v1",
         abi_version: 2,
@@ -366,7 +397,16 @@ class MockWorld {
         config: CONFIG,
         configured_max_depth: CONFIG.max_depth,
         native_work_after: 0,
-        capabilities: { selected_owner_certification: true, reply_mate_safety: false },
+        canonical_root_tactical_policy: "canonical-boundary-policy-v1",
+        canonical_root_tactical_protection: this.policyDrift === "create"
+          && worker.name.endsWith("1")
+          ? !canonicalProtection
+          : canonicalProtection,
+        capabilities: {
+          selected_owner_certification: true,
+          canonical_root_tactical_policy: true,
+          reply_mate_safety: false,
+        },
         product_publishable: false,
         safety_certified: false,
         memory_bytes: MEMORY.initial_bytes,
@@ -411,6 +451,10 @@ class MockWorld {
         remaining_time_ms: payload.remaining_time_ms,
         ...ROOT_IDENTITY,
         ...manifest,
+        canonical_root_tactical_policy: "canonical-boundary-policy-v1",
+        canonical_root_tactical_protection: this.policyDrift === "enumerate"
+          ? !canonicalTacticalProtection(worker.boundary)
+          : canonicalTacticalProtection(worker.boundary),
         work,
         product_publishable: false,
         safety_certified: false,
@@ -437,6 +481,10 @@ class MockWorld {
         remaining_time_ms: payload.remaining_time_ms,
         ...ROOT_IDENTITY,
         ...worker.manifest,
+        canonical_root_tactical_policy: "canonical-boundary-policy-v1",
+        canonical_root_tactical_protection: this.policyDrift === "import"
+          ? !canonicalTacticalProtection(worker.boundary)
+          : canonicalTacticalProtection(worker.boundary),
         work,
         product_publishable: false,
         safety_certified: false,
@@ -898,6 +946,52 @@ async function testMismatchedWorkerTimeOriginClampsDeadline() {
   }
 }
 
+async function testCanonicalRootPolicyDriftFailsClosed() {
+  for (const [policyDrift, expectedCode] of [
+    ["create", "browser-root-session-create-invalid"],
+    ["enumerate", "browser-root-enumeration-invalid"],
+    ["import", "browser-root-import-mismatch"],
+  ]) {
+    const world = new MockWorld({ policyDrift });
+    const client = browserClientApi.createClient({
+      workerUrl: "mock-worker.js",
+      workerFactory: world.factory,
+      navigatorValue: DESKTOP_NAVIGATOR,
+    });
+    await preflight(client);
+    await assert.rejects(
+      client.analyzeRoot(payload(boundaryPayload(WHITE_FEN, 1), 1), {
+        deadlineMs: performance.now() + 20_000,
+      }),
+      (error) => error?.code === expectedCode,
+      `${policyDrift} tactical-policy drift must fail closed`,
+    );
+    client.close();
+  }
+}
+
+async function testCanonicalRootPolicySelection() {
+  for (const boundary of [
+    boundaryPayload(WHITE_FEN, 5),
+    boundaryPayload(PROMOTION_FEN, 3),
+  ]) {
+    const world = new MockWorld();
+    const client = browserClientApi.createClient({
+      workerUrl: "mock-worker.js",
+      workerFactory: world.factory,
+      navigatorValue: DESKTOP_NAVIGATOR,
+    });
+    await preflight(client);
+    const result = await client.analyzeRoot(payload(boundary, 1), {
+      deadlineMs: performance.now() + 20_000,
+    });
+    assert.equal(result.completed_depth, 1);
+    assert.equal(world.canonicalProtections.length, 8);
+    assert(world.canonicalProtections.every(Boolean));
+    client.close();
+  }
+}
+
 function testGeometry() {
   assert.equal(rootClientApi.selectCertifiedGeometry(IDENTITY, {
     hardwareConcurrency: 8,
@@ -919,6 +1013,8 @@ await testMateProofCacheAcrossFiveDepthsAndBoundaries();
 await testUnknownMateProofNeverCaches();
 await testImmediateMatePublishesWithBoundCoverage();
 await testMateCacheIdentityAndBoundaryBinding();
+await testCanonicalRootPolicySelection();
+await testCanonicalRootPolicyDriftFailsClosed();
 await testMismatchedWorkerTimeOriginClampsDeadline();
 testGeometry();
 
@@ -938,6 +1034,8 @@ process.stdout.write(JSON.stringify({
   mate_cache_identity_boundary_bound: true,
   crash_last_safe_and_reprobe: true,
   absolute_deadline_epoch_transport: true,
+  canonical_root_policy_drift_fails_closed: true,
+  canonical_root_policy_selects_late_and_promotion_boundaries: true,
   mismatched_worker_time_origin_clamped: true,
   unknown_memory_uses_lower_geometry: true,
 }));
