@@ -1,0 +1,344 @@
+{
+  "abi_version": 1,
+  "contract_version": 1,
+  "schema": "spc-browser-wasm-manifest-v1",
+  "source_fingerprint": "6ba9d0ee7faf5646",
+  "variants": {
+    "single": {
+      "kernel_sha256": "109ced6f6e017fa8234ef2cc9d5f9eea1d73aebf1a1b9618a243bda69170d1e9",
+      "mate_certificate": {
+        "abi_version": 1,
+        "allocator": "dlmalloc",
+        "certificate_id": "spc-mate-f80964af5542cd39",
+        "contract_version": 1,
+        "engine": {
+          "engine_version": "spc-0.9.0",
+          "profile_id": "spc-68942034c41b4cc4",
+          "ruleset_version": "scottish-modern-common-v1"
+        },
+        "evidence": {
+          "authoritative_replay": true,
+          "black_found": true,
+          "browser_worker_smoke": true,
+          "combined_artifact": true,
+          "deadline_receipts": true,
+          "deadline_unknown": true,
+          "differential_cases": 5,
+          "exhausted": true,
+          "failures": 0,
+          "proof_bounds": true,
+          "python_parity": true,
+          "signed_mate_distance_overrides": true,
+          "white_found": true,
+          "work_limit_unknown": true,
+          "work_receipts": true
+        },
+        "exception_strategy": "wasm",
+        "exports": [
+          "_spc_start_kernel_search_json",
+          "_spc_boundary_kernel_search_json",
+          "_spc_boundary_prefix_json",
+          "_spc_boundary_prefix_contract_json",
+          "_spc_start_kernel_abi_version",
+          "_spc_root_session_contract_json",
+          "_spc_root_session_create_json",
+          "_spc_root_session_enumerate_json",
+          "_spc_root_session_import_json",
+          "_spc_root_session_search_json",
+          "_spc_root_session_destroy",
+          "_spc_root_session_abi_version",
+          "_spc_series_mate_search_json",
+          "_spc_series_mate_abi_version",
+          "_malloc",
+          "_free"
+        ],
+        "kernel_sha256": "109ced6f6e017fa8234ef2cc9d5f9eea1d73aebf1a1b9618a243bda69170d1e9",
+        "mate_capability_certified": true,
+        "memory": {
+          "estimated_peak_bytes": 67108864,
+          "growth_enabled": true,
+          "initial_bytes": 33554432,
+          "maximum_bytes": 67108864
+        },
+        "module_js_sha256": "3cb0cfcfc047c40cd1c72d44e519122bb46c7d4dd38a647d5297302fb8181d8e",
+        "product_publishable": false,
+        "reply_mate_safety": true,
+        "runtime_requirements": {
+          "cross_origin_isolated": false,
+          "native_wasm_exception_handling": true,
+          "ordinary_module_worker": true,
+          "pthreads": false,
+          "wasm_simd": true
+        },
+        "runtime_variant": "single",
+        "schema": "spc-series-mate-certificate-v1",
+        "source_fingerprint": "6ba9d0ee7faf5646",
+        "status": "certified",
+        "support_files": [],
+        "thread_count": 1,
+        "wasm_sha256": "9f261cee923d149de380de825032678d5e3396e6bfb57dde6ecded5cbeb9f4cc",
+        "wasm_simd": true
+      },
+      "module_js": "spc-engine.js",
+      "module_js_sha256": "3cb0cfcfc047c40cd1c72d44e519122bb46c7d4dd38a647d5297302fb8181d8e",
+      "prefix_certificate": {
+        "certificate_id": "spc-prefix-f9e67f6b349712d8",
+        "contract_version": 1,
+        "engine": {
+          "engine_version": "spc-0.9.0",
+          "ruleset_version": "scottish-modern-common-v1"
+        },
+        "evidence": {
+          "compiled_prefix_replay": true,
+          "differential_cases": 14,
+          "failures": 0,
+          "illegal_prefix_fail_closed": true,
+          "multi_ep_san": true
+        },
+        "memory": {
+          "estimated_peak_bytes": 67108864,
+          "growth_enabled": true,
+          "initial_bytes": 33554432,
+          "maximum_bytes": 67108864
+        },
+        "module_js_sha256": "3cb0cfcfc047c40cd1c72d44e519122bb46c7d4dd38a647d5297302fb8181d8e",
+        "prefix_contract": {
+          "abi_version": 1,
+          "chess960": false,
+          "limits": {
+            "maximum_ep_targets": 8,
+            "maximum_ep_utf8_bytes": 23,
+            "maximum_fen_utf8_bytes": 512,
+            "maximum_prefix_moves": 256,
+            "maximum_prefix_utf8_bytes": 1535,
+            "maximum_promoted_hex_bytes": 18,
+            "maximum_quiet_series": 1000000,
+            "maximum_series_number": 256,
+            "maximum_uci_move_bytes": 5
+          },
+          "promoted_hex_required_for_product": true,
+          "result_schema": "spc-boundary-prefix-v1",
+          "schema": "spc-boundary-prefix-contract-v1"
+        },
+        "runtime_variant": "single",
+        "source_fingerprint": "6ba9d0ee7faf5646",
+        "status": "certified",
+        "support_files": [],
+        "thread_count": 1,
+        "wasm_sha256": "9f261cee923d149de380de825032678d5e3396e6bfb57dde6ecded5cbeb9f4cc"
+      },
+      "root_session_certificate": {
+        "abi_version": 2,
+        "allocator": "dlmalloc",
+        "certificate_id": "spc-root-session-d93a8d6d7bc88b8f",
+        "contract_version": 1,
+        "engine": {
+          "engine_version": "spc-0.9.0",
+          "profile_id": "spc-68942034c41b4cc4",
+          "ruleset_version": "scottish-modern-common-v1"
+        },
+        "evidence": {
+          "browser_worker_smoke": true,
+          "canonical_root_tactical_policy": true,
+          "combined_artifact": true,
+          "configured_max_depth_rejected": true,
+          "cumulative_work_and_cache_receipts": true,
+          "deadline_fail_closed": true,
+          "deterministic_node_smoke": true,
+          "differential_cases": 3,
+          "enumerate_import_search": true,
+          "exact_manifest_import": true,
+          "failures": 0,
+          "opera_worker_smoke": true,
+          "per_call_work_credit": true,
+          "persistent_d1_d2_session": true,
+          "selected_owner_warm_exact_certification": true,
+          "start_w32_d5_completed_depth": 5,
+          "start_w32_d5_elapsed_seconds": 46.744600000023844,
+          "start_w32_d5_width": 32,
+          "work_limit_fail_closed": true
+        },
+        "exception_strategy": "wasm",
+        "exports": [
+          "_spc_start_kernel_search_json",
+          "_spc_boundary_kernel_search_json",
+          "_spc_boundary_prefix_json",
+          "_spc_boundary_prefix_contract_json",
+          "_spc_start_kernel_abi_version",
+          "_spc_root_session_contract_json",
+          "_spc_root_session_create_json",
+          "_spc_root_session_enumerate_json",
+          "_spc_root_session_import_json",
+          "_spc_root_session_search_json",
+          "_spc_root_session_destroy",
+          "_spc_root_session_abi_version",
+          "_spc_series_mate_search_json",
+          "_spc_series_mate_abi_version",
+          "_malloc",
+          "_free"
+        ],
+        "geometry": {
+          "aggregate_maximum_bytes": 536870912,
+          "desktop_initial_full_wave": 4,
+          "desktop_workers": 8,
+          "play_limits": {
+            "default_generation_positions": 100000000,
+            "default_seconds": 60.0,
+            "maximum_seconds": 60.0,
+            "safety_reserve_positions": 1000000
+          },
+          "session_config": {
+            "external_cache_weight": 0,
+            "mate_score": 1000000,
+            "max_depth": 5,
+            "max_work": 100000000,
+            "root_contract_eval_capacity": 262144,
+            "root_contract_tt_capacity": 262144,
+            "root_tactical_protection": false,
+            "series_cache_capacity": 65536,
+            "weights": {
+              "boundary_check": 100,
+              "immediate_vulnerability": 100,
+              "king_space": 100,
+              "material": 100,
+              "promotion_corridors": 100,
+              "series_reach": 100,
+              "useful_mobility": 100
+            },
+            "width": 32,
+            "worker_threads": 1
+          },
+          "supported_lower_geometries": []
+        },
+        "kernel_sha256": "109ced6f6e017fa8234ef2cc9d5f9eea1d73aebf1a1b9618a243bda69170d1e9",
+        "memory": {
+          "estimated_peak_bytes": 67108864,
+          "growth_enabled": true,
+          "initial_bytes": 33554432,
+          "maximum_bytes": 67108864
+        },
+        "module_js_sha256": "3cb0cfcfc047c40cd1c72d44e519122bb46c7d4dd38a647d5297302fb8181d8e",
+        "product_publishable": false,
+        "reply_mate_safety": false,
+        "root_session_certified": true,
+        "root_session_contract": {
+          "abi_version": 2,
+          "capabilities": {
+            "call_work_credit": true,
+            "canonical_root_tactical_policy": true,
+            "enumerate": true,
+            "hard_memory_limit": true,
+            "import": true,
+            "persistent_depth_reuse": true,
+            "search": true,
+            "selected_owner_certification": true,
+            "tt_scout_rollback": true
+          },
+          "deadline": {
+            "coordinator_echo": "deadline_monotonic_ms",
+            "extension_rejected": true,
+            "transport": "remaining_time_ms",
+            "zero_means_immediate_timeout": true
+          },
+          "hard_limits": {
+            "chess960": false,
+            "external_cache_weight_lte_series_cache_capacity": true,
+            "maximum_depth": 8,
+            "maximum_ep_targets": 8,
+            "maximum_eval_capacity": 1048576,
+            "maximum_fen_utf8_bytes": 512,
+            "maximum_json_depth": 24,
+            "maximum_json_nodes": 250000,
+            "maximum_mate_score": 1000000000,
+            "maximum_max_work": 9007199254740991,
+            "maximum_quiet_series": 1000000,
+            "maximum_request_utf8_bytes": 16777216,
+            "maximum_series_cache_capacity": 1048576,
+            "maximum_series_number": 256,
+            "maximum_tt_capacity": 1048576,
+            "maximum_wasm_memory_bytes": 268435456,
+            "maximum_weight": 300,
+            "maximum_width": 512,
+            "minimum_depth": 1,
+            "minimum_eval_capacity": 1,
+            "minimum_external_cache_weight": 0,
+            "minimum_mate_score": 1,
+            "minimum_max_work": 1,
+            "minimum_series_cache_capacity": 1,
+            "minimum_tt_capacity": 1,
+            "minimum_weight": 25,
+            "minimum_width": 1,
+            "promoted_hex_exact_bytes": 16,
+            "root_tactical_policy": "canonical-boundary-policy-v1",
+            "root_tactical_protection_values": [
+              false
+            ],
+            "weight_fields": [
+              "material",
+              "king_space",
+              "series_reach",
+              "promotion_corridors",
+              "immediate_vulnerability",
+              "useful_mobility",
+              "boundary_check"
+            ],
+            "worker_threads": 1
+          },
+          "manifest": {
+            "candidate_root_series_fields": [
+              "moves",
+              "machine_notation",
+              "transposition_count",
+              "child_boundary",
+              "outcome",
+              "ended_by_check"
+            ],
+            "child_boundary_exact": true,
+            "preferred_series_required": true,
+            "root_tactical_policy": "canonical-boundary-policy-v1"
+          },
+          "one_active_session_per_worker": true,
+          "product_publishable": false,
+          "pthreads_required": false,
+          "reply_mate_safety": false,
+          "request_encoding": "caller-owned-utf8-pointer-length",
+          "request_schemas": {
+            "create": "spc-root-session-create-v1",
+            "enumerate": "spc-root-session-enumerate-v1",
+            "import": "spc-root-session-import-v1",
+            "search": "spc-root-candidate-task-v1"
+          },
+          "response_lifetime": "until-next-root-session-abi-call-on-this-worker",
+          "response_ownership": "facade-owned",
+          "result_schemas": {
+            "create": "spc-root-session-create-result-v1",
+            "enumerate": "spc-root-session-enumeration-result-v1",
+            "import": "spc-root-session-import-result-v1",
+            "search": "spc-root-candidate-result-v1"
+          },
+          "schema": "spc-root-session-contract-v1",
+          "worker_threads": 1
+        },
+        "runtime_requirements": {
+          "cross_origin_isolated": false,
+          "native_wasm_exception_handling": true,
+          "ordinary_module_worker": true,
+          "pthreads": false,
+          "wasm_simd": true
+        },
+        "runtime_variant": "single",
+        "schema": "spc-root-session-certificate-v1",
+        "source_fingerprint": "6ba9d0ee7faf5646",
+        "status": "certified",
+        "support_files": [],
+        "thread_count": 1,
+        "wasm_sha256": "9f261cee923d149de380de825032678d5e3396e6bfb57dde6ecded5cbeb9f4cc",
+        "wasm_simd": true
+      },
+      "support_files": [],
+      "thread_count": 1,
+      "wasm": "spc-engine.wasm",
+      "wasm_sha256": "9f261cee923d149de380de825032678d5e3396e6bfb57dde6ecded5cbeb9f4cc"
+    }
+  }
+}
