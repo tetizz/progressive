@@ -161,9 +161,9 @@ def test_shallow_tt_entry_cannot_answer_a_deeper_search() -> None:
     window = (-2 * MATE_SCORE, 2 * MATE_SCORE)
 
     shallow = warm._minimax(state, 1, *window, 1)
-    assert warm._tt[state.transposition_key].depth == 1
+    assert warm._tt[warm._tt_key(state)].depth == 1
     deep_after_shallow = warm._minimax(state, 2, *window, 1)
-    assert warm._tt[state.transposition_key].depth == 2
+    assert warm._tt[warm._tt_key(state)].depth == 2
 
     fresh = SeriesSearcher(limits)
     deep_fresh = fresh._minimax(state, 2, *window, 1)

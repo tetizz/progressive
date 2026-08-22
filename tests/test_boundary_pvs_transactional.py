@@ -205,8 +205,8 @@ def test_512_sparse_boundaries_match_full_alpha_beta_exactly() -> None:
 
 def test_tt_journals_restore_repeated_and_nested_writes() -> None:
     searcher = SeriesSearcher(SearchLimits())
-    first_key = WHITE_ANCHOR.transposition_key
-    second_key = BLACK_ANCHOR.transposition_key
+    first_key = searcher._tt_key(WHITE_ANCHOR)
+    second_key = searcher._tt_key(BLACK_ANCHOR)
     original = _TTEntry(1, 10, Bound.EXACT, (), UNKNOWN_PROOF_BOUNDS)
     outer_value = _TTEntry(2, 20, Bound.LOWER, (), UNKNOWN_PROOF_BOUNDS)
     inner_value = _TTEntry(3, 30, Bound.UPPER, (), UNKNOWN_PROOF_BOUNDS)
@@ -236,8 +236,8 @@ def test_zero_window_interruption_rolls_back_every_tt_write(
     interruption: type[Exception],
 ) -> None:
     searcher = SeriesSearcher(SearchLimits(depth_series=3))
-    original_key = WHITE_ANCHOR.transposition_key
-    added_key = BLACK_ANCHOR.transposition_key
+    original_key = searcher._tt_key(WHITE_ANCHOR)
+    added_key = searcher._tt_key(BLACK_ANCHOR)
     original = _TTEntry(1, 10, Bound.EXACT, (), UNKNOWN_PROOF_BOUNDS)
     replacement = _TTEntry(2, 20, Bound.LOWER, (), UNKNOWN_PROOF_BOUNDS)
     nested = _TTEntry(3, 30, Bound.UPPER, (), UNKNOWN_PROOF_BOUNDS)
@@ -278,8 +278,8 @@ def test_zero_window_rolls_back_before_bound_return_or_full_research(
     probe_score: int,
 ) -> None:
     searcher = SeriesSearcher(SearchLimits(depth_series=3))
-    original_key = WHITE_ANCHOR.transposition_key
-    added_key = BLACK_ANCHOR.transposition_key
+    original_key = searcher._tt_key(WHITE_ANCHOR)
+    added_key = searcher._tt_key(BLACK_ANCHOR)
     original = _TTEntry(1, 10, Bound.EXACT, (), UNKNOWN_PROOF_BOUNDS)
     speculative = _TTEntry(2, 20, Bound.LOWER, (), UNKNOWN_PROOF_BOUNDS)
     persistent = _TTEntry(3, 30, Bound.EXACT, (), UNKNOWN_PROOF_BOUNDS)

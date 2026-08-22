@@ -108,6 +108,11 @@ TACTICAL_DESCENDANT_PROMOTION_MAX_PLY = 2
 # seeded first and may consume more when they alone fill the cap. Keep this
 # ratio synchronized with FINAL_ORDINARY_QUOTA_DENOMINATOR in _native_eval.cpp.
 TACTICAL_FINAL_ORDINARY_QUOTA_DENOMINATOR = 2
+ROOT_PVS_ENABLED = True
+# A Series-1 root is ordinary single-move chess. Multi-move Progressive roots
+# retain the canonical full-window path because a scout can otherwise alter
+# tied descendant PVs exposed through exact root alternatives.
+ROOT_PVS_MAX_ROOT_SERIES = 1
 
 
 def _tactical_frontier_protection_eligible(
@@ -187,6 +192,9 @@ class SearchStats:
     pvs_zero_window_searches: int = 0
     pvs_researches: int = 0
     pvs_tt_writes_rolled_back: int = 0
+    root_pvs_zero_window_searches: int = 0
+    root_pvs_researches: int = 0
+    root_pvs_tt_writes_rolled_back: int = 0
     root_bound_candidates: int = 0
     root_safety_passes: int = 0
     root_safety_retries: int = 0
@@ -363,6 +371,9 @@ class _TTEntry:
     proof_bounds: tuple[int, int]
 
 
+_TTKey = tuple[tuple[int, str, int, int], int, int, int, bool]
+
+
 @dataclass(frozen=True, slots=True)
 class _SeriesCacheEntry:
     collection: tuple[SeriesResult, ...] | _NativeSeriesBatch
@@ -449,7 +460,7 @@ class SeriesSearcher:
         # while score/bound reuse remains gated by ``entry.depth >= depth``.
         # This is the progressive-series equivalent of Stockfish's hash-move
         # ordering: it changes visit order, never the generated legal set.
-        self._tt: dict[tuple[int, str, int, int], _TTEntry] = {}
+        self._tt: dict[_TTKey, _TTEntry] = {}
         # A PVS null-window probe is deliberately speculative.  Every TT write
         # made below that probe is journaled, including repeated writes to one
         # key.  Nested probes own nested journals and always restore their
@@ -457,7 +468,7 @@ class SeriesSearcher:
         self._tt_transaction_stack: list[
             list[
                 tuple[
-                    tuple[int, str, int, int],
+                    _TTKey,
                     _TTEntry | None,
                 ]
             ]
@@ -467,7 +478,16 @@ class SeriesSearcher:
             tuple[int, str, int, int], str | None
         ] = {}
         self._series_generation_cache: OrderedDict[
-            tuple[tuple[int, str, int, int], tuple[str, ...], int, bool],
+            tuple[
+                tuple[int, str, int, int],
+                int,
+                int,
+                int,
+                bool,
+                tuple[str, ...],
+                int,
+                bool,
+            ],
             _SeriesCacheEntry,
         ] = OrderedDict()
         self._series_generation_cache_weight = 0
@@ -1709,6 +1729,10 @@ class SeriesSearcher:
         )
         key = (
             state.transposition_key,
+            state.board.halfmove_clock,
+            state.board.fullmove_number,
+            state.board.promoted,
+            state.board.chess960,
             required_prefix,
             ply_from_root,
             tactical_protection,
@@ -1820,18 +1844,26 @@ class SeriesSearcher:
                     series.insert(0, series.pop(index))
                 return
 
+    @staticmethod
+    def _tt_key(state: ProgressiveState) -> _TTKey:
+        return (
+            state.transposition_key,
+            state.board.halfmove_clock,
+            state.board.fullmove_number,
+            state.board.promoted,
+            state.board.chess960,
+        )
+
     def _begin_tt_transaction(
         self,
-    ) -> list[tuple[tuple[int, str, int, int], _TTEntry | None]]:
-        journal: list[
-            tuple[tuple[int, str, int, int], _TTEntry | None]
-        ] = []
+    ) -> list[tuple[_TTKey, _TTEntry | None]]:
+        journal: list[tuple[_TTKey, _TTEntry | None]] = []
         self._tt_transaction_stack.append(journal)
         return journal
 
     def _write_tt(
         self,
-        key: tuple[int, str, int, int],
+        key: _TTKey,
         entry: _TTEntry,
     ) -> None:
         if self._tt_transaction_stack:
@@ -1842,7 +1874,7 @@ class SeriesSearcher:
 
     def _rollback_tt_transaction(
         self,
-        journal: list[tuple[tuple[int, str, int, int], _TTEntry | None]],
+        journal: list[tuple[_TTKey, _TTEntry | None]],
     ) -> int:
         if (
             not self._tt_transaction_stack
@@ -1929,6 +1961,83 @@ class SeriesSearcher:
             )
         return score, pv, proof_bounds
 
+    def _search_root_child_with_pvs(
+        self,
+        state: ProgressiveState,
+        depth: int,
+        alpha: int,
+        beta: int,
+        ply_from_root: int,
+        *,
+        parent_mover: chess.Color,
+        has_prior_child: bool,
+    ) -> tuple[int, tuple[SeriesResult, ...], tuple[int, int]]:
+        """Rejects a later root candidate with a transactional one-point probe."""
+
+        if (
+            not ROOT_PVS_ENABLED
+            or not has_prior_child
+            or depth < 2
+            or beta - alpha <= 1
+        ):
+            return self._minimax(
+                state,
+                depth,
+                alpha,
+                beta,
+                ply_from_root,
+            )
+
+        self.stats.root_pvs_zero_window_searches += 1
+        journal = self._begin_tt_transaction()
+        try:
+            if parent_mover == chess.WHITE:
+                score, pv, proof_bounds = self._minimax(
+                    state,
+                    depth,
+                    alpha,
+                    alpha + 1,
+                    ply_from_root,
+                )
+            else:
+                score, pv, proof_bounds = self._minimax(
+                    state,
+                    depth,
+                    beta - 1,
+                    beta,
+                    ply_from_root,
+                )
+            needs_research = alpha < score < beta
+        finally:
+            self.stats.root_pvs_tt_writes_rolled_back += (
+                self._rollback_tt_transaction(journal)
+            )
+
+        if needs_research:
+            self.stats.root_pvs_researches += 1
+            return self._minimax(
+                state,
+                depth,
+                alpha,
+                beta,
+                ply_from_root,
+            )
+        return score, pv, proof_bounds
+
+    def _root_pvs_eligible(
+        self,
+        state: ProgressiveState,
+        depth: int,
+    ) -> bool:
+        """Limits root scouts to the final ordinary single-move iteration."""
+
+        return (
+            ROOT_PVS_ENABLED
+            and not self.limits.collect_all_root_scores
+            and state.series_number <= ROOT_PVS_MAX_ROOT_SERIES
+            and depth == self.limits.depth_series
+        )
+
     def _minimax(
         self,
         state: ProgressiveState,
@@ -1947,7 +2056,7 @@ class SeriesSearcher:
         if depth == 0:
             return self._evaluate(state).total, (), UNKNOWN_PROOF_BOUNDS
 
-        key = state.transposition_key
+        key = self._tt_key(state)
         entry = self._tt.get(key)
         original_alpha, original_beta = alpha, beta
         if entry is not None and entry.depth >= depth:
@@ -2186,7 +2295,7 @@ class SeriesSearcher:
         scored: list[ScoredSeries] = []
         root_alpha = -MATE_SCORE * 2
         root_beta = MATE_SCORE * 2
-        for result in series:
+        for candidate_index, result in enumerate(series):
             try:
                 self._check_deadline()
                 terminal = self._terminal_score(result, mover, 1)
@@ -2231,13 +2340,26 @@ class SeriesSearcher:
                         if self.limits.collect_all_root_scores
                         else root_beta
                     )
-                    score, child_pv, proof_bounds = self._minimax(
-                        child_state,
-                        depth - 1,
-                        child_alpha,
-                        child_beta,
-                        1,
-                    )
+                    if not self._root_pvs_eligible(state, depth):
+                        score, child_pv, proof_bounds = self._minimax(
+                            child_state,
+                            depth - 1,
+                            child_alpha,
+                            child_beta,
+                            1,
+                        )
+                    else:
+                        score, child_pv, proof_bounds = (
+                            self._search_root_child_with_pvs(
+                                child_state,
+                                depth - 1,
+                                child_alpha,
+                                child_beta,
+                                1,
+                                parent_mover=mover,
+                                has_prior_child=candidate_index > 0,
+                            )
+                        )
                     score_is_exact = (
                         self.limits.collect_all_root_scores
                         or child_alpha < score < child_beta
