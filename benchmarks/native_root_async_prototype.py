@@ -349,6 +349,12 @@ def main() -> None:
     parser.add_argument("--cache-capacity", type=int, default=65_536)
     parser.add_argument("--time-limit", type=float, default=300.0)
     parser.add_argument(
+        "--initial-full-wave",
+        type=int,
+        default=4,
+        help="number of exact full-window root seeds dispatched before scouts",
+    )
+    parser.add_argument(
         "--stream-first-wave",
         action="store_true",
         help=(
@@ -357,6 +363,8 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+    if not 1 <= args.initial_full_wave <= args.workers:
+        raise SystemExit("initial-full-wave must be between 1 and workers")
 
     session_count = args.workers + 1
     worker_work_budget = args.max_work // session_count
@@ -503,7 +511,9 @@ def main() -> None:
             command_queues[worker_id].put(command)
 
         search_started = time.perf_counter()
-        for worker_id, candidate in enumerate(candidates[:4]):
+        for worker_id, candidate in enumerate(
+            candidates[: args.initial_full_wave]
+        ):
             dispatch(
                 worker_id,
                 candidate,
@@ -513,13 +523,14 @@ def main() -> None:
             )
 
         first_wave_candidate_ids = {
-            candidate.candidate_id for candidate in candidates[:4]
+            candidate.candidate_id
+            for candidate in candidates[: args.initial_full_wave]
         }
         first_wave_results: list[dict[str, object]] = []
         completion_counter = 0
         incumbent: ExactCandidate | None = None
         incumbent_epoch = 0
-        remaining = deque(candidates[4:])
+        remaining = deque(candidates[args.initial_full_wave :])
         first_wave_seconds: float | None = None
         dynamic_started: float | None = None
 
@@ -590,7 +601,10 @@ def main() -> None:
             else:
                 raise RuntimeError(f"unknown bound kind: {result!r}")
 
-            if len(first_wave_results) == 4 and first_wave_seconds is None:
+            if (
+                len(first_wave_results) == args.initial_full_wave
+                and first_wave_seconds is None
+            ):
                 first_wave_seconds = time.perf_counter() - search_started
                 if not args.stream_first_wave:
                     exact_first_wave = [
@@ -621,7 +635,10 @@ def main() -> None:
             )
             task_receipts.append(result)
 
-            barrier_open = args.stream_first_wave or len(first_wave_results) == 4
+            barrier_open = (
+                args.stream_first_wave
+                or len(first_wave_results) == args.initial_full_wave
+            )
             if barrier_open:
                 for idle_worker in range(args.workers):
                     if idle_worker in in_flight or not remaining:
@@ -706,6 +723,7 @@ def main() -> None:
             "reason": "start-only final-iteration feasibility; no root mate safety",
             "completion_order_nondeterministic": True,
             "stream_first_wave": args.stream_first_wave,
+            "initial_full_wave": args.initial_full_wave,
             "deterministic_result": expected_match,
             "root_proof": None,
             "depth": args.depth,
