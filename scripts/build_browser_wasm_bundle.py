@@ -14,7 +14,11 @@ MANIFEST_SCHEMA = "spc-browser-wasm-manifest-v1"
 CERTIFICATE_SCHEMA = "spc-browser-wasm-certificate-v1"
 PREFIX_CONTRACT_SCHEMA = "spc-boundary-prefix-contract-v1"
 PREFIX_RESULT_SCHEMA = "spc-boundary-prefix-v1"
+ROOT_SESSION_CERTIFICATE_SCHEMA = "spc-root-session-certificate-v1"
+ROOT_SESSION_CONTRACT_SCHEMA = "spc-root-session-contract-v1"
+MATE_CERTIFICATE_SCHEMA = "spc-series-mate-certificate-v1"
 MIN_PREFIX_DIFFERENTIAL_CASES = 14
+MIN_MATE_DIFFERENTIAL_CASES = 5
 PREFIX_HARD_LIMITS = {
     "maximum_fen_utf8_bytes": 512,
     "maximum_series_number": 256,
@@ -31,6 +35,46 @@ HEX_64 = re.compile(r"[0-9a-f]{64}")
 MAX_INITIAL_MEMORY_BYTES = 128 * 1024 * 1024
 MAXIMUM_MEMORY_BYTES = 256 * 1024 * 1024
 MAX_ESTIMATED_PEAK_MEMORY_BYTES = 192 * 1024 * 1024
+COMBINED_EXPORTS = [
+    "_spc_start_kernel_search_json",
+    "_spc_boundary_kernel_search_json",
+    "_spc_boundary_prefix_json",
+    "_spc_boundary_prefix_contract_json",
+    "_spc_start_kernel_abi_version",
+    "_spc_root_session_contract_json",
+    "_spc_root_session_create_json",
+    "_spc_root_session_enumerate_json",
+    "_spc_root_session_import_json",
+    "_spc_root_session_search_json",
+    "_spc_root_session_destroy",
+    "_spc_root_session_abi_version",
+    "_spc_series_mate_search_json",
+    "_spc_series_mate_abi_version",
+    "_malloc",
+    "_free",
+]
+ROOT_SESSION_CONFIG_KEYS = {
+    "max_depth",
+    "width",
+    "max_work",
+    "mate_score",
+    "series_cache_capacity",
+    "external_cache_weight",
+    "worker_threads",
+    "root_tactical_protection",
+    "root_contract_tt_capacity",
+    "root_contract_eval_capacity",
+    "weights",
+}
+ROOT_SESSION_WEIGHT_KEYS = {
+    "material",
+    "king_space",
+    "series_reach",
+    "promotion_corridors",
+    "immediate_vulnerability",
+    "useful_mobility",
+    "boundary_check",
+}
 
 
 def sha256_file(path: Path) -> str:
@@ -207,6 +251,453 @@ def validate_prefix_certificate(
     return contract, memory, engine_identity
 
 
+def _validate_combined_capability_identity(
+    certificate: Mapping[str, Any],
+    *,
+    schema: str,
+    abi_version: int,
+    source_fingerprint: str,
+    wasm_sha256: str,
+    module_js_sha256: str,
+    runtime_variant: str,
+    thread_count: int,
+    support_files: list[dict[str, str]],
+) -> tuple[dict[str, int | bool], dict[str, str], str, str]:
+    expected = {
+        "schema": schema,
+        "status": "certified",
+        "contract_version": 1,
+        "abi_version": abi_version,
+        "product_publishable": False,
+        "source_fingerprint": source_fingerprint,
+        "wasm_sha256": wasm_sha256,
+        "module_js_sha256": module_js_sha256,
+        "runtime_variant": runtime_variant,
+        "thread_count": thread_count,
+        "support_files": support_files,
+        "exports": COMBINED_EXPORTS,
+    }
+    for key, expected_value in expected.items():
+        if certificate.get(key) != expected_value:
+            raise ValueError(
+                f"{schema} {key!r} does not match the combined artifact: "
+                f"expected {expected_value!r}, found {certificate.get(key)!r}"
+            )
+    certificate_id = certificate.get("certificate_id")
+    if not isinstance(certificate_id, str) or not certificate_id.strip():
+        raise ValueError(f"{schema} requires a non-empty certificate_id")
+    kernel_sha256 = certificate.get("kernel_sha256")
+    if not isinstance(kernel_sha256, str) or not HEX_64.fullmatch(kernel_sha256):
+        raise ValueError(f"{schema} requires a lowercase kernel_sha256")
+    exception_strategy = certificate.get("exception_strategy")
+    if exception_strategy not in {"emscripten", "wasm"}:
+        raise ValueError(f"{schema} must bind the compiled exception strategy")
+    wasm_simd = certificate.get("wasm_simd")
+    if not isinstance(wasm_simd, bool):
+        raise ValueError(f"{schema} must bind whether Wasm SIMD was compiled")
+    allocator = certificate.get("allocator")
+    if allocator not in {"dlmalloc", "emmalloc"}:
+        raise ValueError(f"{schema} must bind the compiled allocator")
+    expected_runtime = {
+        "ordinary_module_worker": True,
+        "pthreads": False,
+        "cross_origin_isolated": False,
+        "native_wasm_exception_handling": exception_strategy == "wasm",
+        "wasm_simd": wasm_simd,
+    }
+    if certificate.get("runtime_requirements") != expected_runtime:
+        raise ValueError(f"{schema} has inconsistent runtime requirements")
+    engine = _require_mapping(certificate.get("engine"), f"{schema} engine")
+    engine_identity: dict[str, str] = {}
+    for key in ("engine_version", "ruleset_version", "profile_id"):
+        value = engine.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{schema} engine requires non-empty {key}")
+        engine_identity[key] = value
+    return (
+        validate_memory_limits(certificate.get("memory")),
+        engine_identity,
+        kernel_sha256,
+        exception_strategy,
+    )
+
+
+def _validate_root_session_config(
+    value: object,
+    contract: Mapping[str, Any],
+) -> dict[str, object]:
+    config = _require_mapping(value, "root-session certified config")
+    if set(config) != ROOT_SESSION_CONFIG_KEYS:
+        raise ValueError("root-session config must exactly bind every native field")
+    hard_limits = _require_mapping(
+        contract.get("hard_limits"),
+        "root-session contract hard limits",
+    )
+
+    def bounded_integer(
+        key: str,
+        minimum: int,
+        maximum: int,
+    ) -> int:
+        candidate = config.get(key)
+        if (
+            isinstance(candidate, bool)
+            or not isinstance(candidate, int)
+            or not minimum <= candidate <= maximum
+        ):
+            raise ValueError(f"root-session config {key} is outside its hard limit")
+        return candidate
+
+    integer_limits: dict[str, int] = {}
+    for key in (
+        "minimum_depth",
+        "maximum_depth",
+        "minimum_width",
+        "maximum_width",
+        "minimum_max_work",
+        "maximum_max_work",
+        "minimum_mate_score",
+        "maximum_mate_score",
+        "minimum_series_cache_capacity",
+        "maximum_series_cache_capacity",
+        "minimum_external_cache_weight",
+        "worker_threads",
+        "minimum_tt_capacity",
+        "maximum_tt_capacity",
+        "minimum_eval_capacity",
+        "maximum_eval_capacity",
+        "minimum_weight",
+        "maximum_weight",
+    ):
+        limit = hard_limits.get(key)
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+            raise ValueError(f"root-session contract has invalid {key}")
+        integer_limits[key] = limit
+
+    max_depth = bounded_integer(
+        "max_depth",
+        integer_limits["minimum_depth"],
+        integer_limits["maximum_depth"],
+    )
+    width = bounded_integer(
+        "width",
+        integer_limits["minimum_width"],
+        integer_limits["maximum_width"],
+    )
+    max_work = bounded_integer(
+        "max_work",
+        integer_limits["minimum_max_work"],
+        integer_limits["maximum_max_work"],
+    )
+    mate_score = bounded_integer(
+        "mate_score",
+        integer_limits["minimum_mate_score"],
+        integer_limits["maximum_mate_score"],
+    )
+    series_cache = bounded_integer(
+        "series_cache_capacity",
+        integer_limits["minimum_series_cache_capacity"],
+        integer_limits["maximum_series_cache_capacity"],
+    )
+    external_cache = bounded_integer(
+        "external_cache_weight",
+        integer_limits["minimum_external_cache_weight"],
+        series_cache,
+    )
+    worker_threads = bounded_integer(
+        "worker_threads",
+        integer_limits["worker_threads"],
+        integer_limits["worker_threads"],
+    )
+    if worker_threads != 1 or hard_limits.get(
+        "external_cache_weight_lte_series_cache_capacity"
+    ) is not True:
+        raise ValueError("ordinary-Worker root sessions require worker_threads=1")
+    tactical = config.get("root_tactical_protection")
+    if (
+        not isinstance(tactical, bool)
+        or hard_limits.get("root_tactical_protection_values") != [False, True]
+    ):
+        raise ValueError("root-session root_tactical_protection must be boolean")
+    tt_capacity = bounded_integer(
+        "root_contract_tt_capacity",
+        integer_limits["minimum_tt_capacity"],
+        integer_limits["maximum_tt_capacity"],
+    )
+    eval_capacity = bounded_integer(
+        "root_contract_eval_capacity",
+        integer_limits["minimum_eval_capacity"],
+        integer_limits["maximum_eval_capacity"],
+    )
+    weights = _require_mapping(config.get("weights"), "root-session weights")
+    if set(weights) != ROOT_SESSION_WEIGHT_KEYS:
+        raise ValueError("root-session config must exactly bind all seven weights")
+    normalized_weights: dict[str, int] = {}
+    for key in sorted(ROOT_SESSION_WEIGHT_KEYS):
+        candidate = weights.get(key)
+        if (
+            isinstance(candidate, bool)
+            or not isinstance(candidate, int)
+            or not integer_limits["minimum_weight"]
+            <= candidate
+            <= integer_limits["maximum_weight"]
+        ):
+            raise ValueError(f"root-session weight {key} is invalid")
+        normalized_weights[key] = candidate
+    return {
+        "max_depth": max_depth,
+        "width": width,
+        "max_work": max_work,
+        "mate_score": mate_score,
+        "series_cache_capacity": series_cache,
+        "external_cache_weight": external_cache,
+        "worker_threads": worker_threads,
+        "root_tactical_protection": tactical,
+        "root_contract_tt_capacity": tt_capacity,
+        "root_contract_eval_capacity": eval_capacity,
+        "weights": normalized_weights,
+    }
+
+
+def _validate_root_geometry(
+    value: object,
+    memory: Mapping[str, int | bool],
+    contract: Mapping[str, Any],
+) -> dict[str, object]:
+    geometry = _require_mapping(value, "root-session geometry")
+    expected_keys = {
+        "desktop_workers",
+        "desktop_initial_full_wave",
+        "aggregate_maximum_bytes",
+        "supported_lower_geometries",
+        "session_config",
+    }
+    if set(geometry) != expected_keys:
+        raise ValueError("root-session geometry must exactly name its pool envelope")
+    workers = geometry.get("desktop_workers")
+    wave = geometry.get("desktop_initial_full_wave")
+    aggregate = geometry.get("aggregate_maximum_bytes")
+    maximum = int(memory["maximum_bytes"])
+    if workers != 8 or wave != 4 or aggregate != workers * maximum:
+        raise ValueError("desktop root geometry must certify workers=8 and wave=4")
+    lower = geometry.get("supported_lower_geometries")
+    if not isinstance(lower, list):
+        raise ValueError("supported lower root geometries must be an array")
+    normalized_lower: list[dict[str, int]] = []
+    seen: set[tuple[int, int]] = set()
+    for item in lower:
+        candidate = _require_mapping(item, "lower root geometry")
+        if set(candidate) != {
+            "workers",
+            "initial_full_wave",
+            "aggregate_maximum_bytes",
+        }:
+            raise ValueError("lower root geometry has unknown or missing fields")
+        lower_workers = candidate.get("workers")
+        lower_wave = candidate.get("initial_full_wave")
+        lower_aggregate = candidate.get("aggregate_maximum_bytes")
+        if (
+            isinstance(lower_workers, bool)
+            or not isinstance(lower_workers, int)
+            or not 1 <= lower_workers < workers
+            or isinstance(lower_wave, bool)
+            or not isinstance(lower_wave, int)
+            or not 1 <= lower_wave <= lower_workers
+            or lower_aggregate != lower_workers * maximum
+            or (lower_workers, lower_wave) in seen
+        ):
+            raise ValueError("lower root geometry is invalid or duplicated")
+        seen.add((lower_workers, lower_wave))
+        normalized_lower.append(dict(candidate))
+    if normalized_lower != sorted(
+        normalized_lower,
+        key=lambda item: (item["workers"], item["initial_full_wave"]),
+        reverse=True,
+    ):
+        raise ValueError("lower root geometries must use fastest-first canonical order")
+    return {
+        "desktop_workers": workers,
+        "desktop_initial_full_wave": wave,
+        "aggregate_maximum_bytes": aggregate,
+        "supported_lower_geometries": normalized_lower,
+        "session_config": _validate_root_session_config(
+            geometry.get("session_config"),
+            contract,
+        ),
+    }
+
+
+def validate_root_session_certificate(
+    certificate: Mapping[str, Any],
+    *,
+    source_fingerprint: str,
+    wasm_sha256: str,
+    module_js_sha256: str,
+    runtime_variant: str,
+    thread_count: int,
+    support_files: list[dict[str, str]],
+) -> tuple[
+    dict[str, int | bool],
+    dict[str, str],
+    str,
+    str,
+    dict[str, object],
+    dict[str, object],
+]:
+    memory, engine, kernel_sha256, exception_strategy = (
+        _validate_combined_capability_identity(
+            certificate,
+            schema=ROOT_SESSION_CERTIFICATE_SCHEMA,
+            abi_version=2,
+            source_fingerprint=source_fingerprint,
+            wasm_sha256=wasm_sha256,
+            module_js_sha256=module_js_sha256,
+            runtime_variant=runtime_variant,
+            thread_count=thread_count,
+            support_files=support_files,
+        )
+    )
+    if (
+        certificate.get("root_session_certified") is not True
+        or certificate.get("reply_mate_safety") is not False
+    ):
+        raise ValueError("root-session certificate must not claim reply-mate safety")
+    contract = _require_mapping(
+        certificate.get("root_session_contract"),
+        "root-session contract",
+    )
+    if (
+        contract.get("schema") != ROOT_SESSION_CONTRACT_SCHEMA
+        or contract.get("abi_version") != 2
+        or contract.get("worker_threads") != 1
+        or contract.get("pthreads_required") is not False
+        or contract.get("one_active_session_per_worker") is not True
+        or contract.get("product_publishable") is not False
+        or contract.get("reply_mate_safety") is not False
+    ):
+        raise ValueError("root-session certificate carries an invalid native contract")
+    capabilities = _require_mapping(
+        contract.get("capabilities"),
+        "root-session contract capabilities",
+    )
+    if any(
+        capabilities.get(key) is not True
+        for key in (
+            "enumerate",
+            "import",
+            "search",
+            "call_work_credit",
+            "hard_memory_limit",
+            "tt_scout_rollback",
+            "persistent_depth_reuse",
+            "selected_owner_certification",
+        )
+    ):
+        raise ValueError("root-session contract lacks coordinator capabilities")
+    evidence = _require_mapping(certificate.get("evidence"), "root-session evidence")
+    required_true = (
+        "deterministic_node_smoke",
+        "combined_artifact",
+        "enumerate_import_search",
+        "exact_manifest_import",
+        "persistent_d1_d2_session",
+        "cumulative_work_and_cache_receipts",
+        "configured_max_depth_rejected",
+        "per_call_work_credit",
+        "selected_owner_warm_exact_certification",
+        "deadline_fail_closed",
+        "work_limit_fail_closed",
+        "browser_worker_smoke",
+        "opera_worker_smoke",
+    )
+    if evidence.get("failures") != 0 or any(
+        evidence.get(key) is not True for key in required_true
+    ):
+        raise ValueError("root-session certificate is missing required passing evidence")
+    cases = evidence.get("differential_cases")
+    elapsed = evidence.get("start_w32_d5_elapsed_seconds")
+    if (
+        isinstance(cases, bool)
+        or not isinstance(cases, int)
+        or cases < 1
+        or evidence.get("start_w32_d5_completed_depth") != 5
+        or evidence.get("start_w32_d5_width") != 32
+        or isinstance(elapsed, bool)
+        or not isinstance(elapsed, (int, float))
+        or not 0 <= float(elapsed) < 60
+    ):
+        raise ValueError("root-session certificate lacks the exact W32 D5 gate")
+    geometry = _validate_root_geometry(
+        certificate.get("geometry"),
+        memory,
+        contract,
+    )
+    return (
+        memory,
+        engine,
+        kernel_sha256,
+        exception_strategy,
+        dict(contract),
+        geometry,
+    )
+
+
+def validate_mate_certificate(
+    certificate: Mapping[str, Any],
+    *,
+    source_fingerprint: str,
+    wasm_sha256: str,
+    module_js_sha256: str,
+    runtime_variant: str,
+    thread_count: int,
+    support_files: list[dict[str, str]],
+) -> tuple[dict[str, int | bool], dict[str, str], str, str]:
+    memory, engine, kernel_sha256, exception_strategy = (
+        _validate_combined_capability_identity(
+            certificate,
+            schema=MATE_CERTIFICATE_SCHEMA,
+            abi_version=1,
+            source_fingerprint=source_fingerprint,
+            wasm_sha256=wasm_sha256,
+            module_js_sha256=module_js_sha256,
+            runtime_variant=runtime_variant,
+            thread_count=thread_count,
+            support_files=support_files,
+        )
+    )
+    if (
+        certificate.get("mate_capability_certified") is not True
+        or certificate.get("reply_mate_safety") is not True
+    ):
+        raise ValueError("mate certificate must explicitly certify reply-mate safety")
+    evidence = _require_mapping(certificate.get("evidence"), "mate evidence")
+    required_true = (
+        "combined_artifact",
+        "python_parity",
+        "authoritative_replay",
+        "white_found",
+        "black_found",
+        "exhausted",
+        "work_limit_unknown",
+        "deadline_unknown",
+        "signed_mate_distance_overrides",
+        "proof_bounds",
+        "work_receipts",
+        "deadline_receipts",
+        "browser_worker_smoke",
+    )
+    cases = evidence.get("differential_cases")
+    if (
+        evidence.get("failures") != 0
+        or any(evidence.get(key) is not True for key in required_true)
+        or isinstance(cases, bool)
+        or not isinstance(cases, int)
+        or cases < MIN_MATE_DIFFERENTIAL_CASES
+    ):
+        raise ValueError("mate certificate is missing required parity evidence")
+    return memory, engine, kernel_sha256, exception_strategy
+
+
 def validate_certificate(
     certificate: Mapping[str, Any],
     *,
@@ -340,6 +831,8 @@ def _build_variant(
     module_js: Path,
     certificate_path: Path | None,
     prefix_certificate_path: Path | None,
+    root_session_certificate_path: Path | None,
+    mate_certificate_path: Path | None,
     support_paths: tuple[Path, ...],
     source_fingerprint: str,
     destination: Path,
@@ -348,9 +841,17 @@ def _build_variant(
         raise ValueError(
             "the verified single-thread lane may not load external support files"
         )
-    if certificate_path is None and prefix_certificate_path is None:
+    if all(
+        path is None
+        for path in (
+            certificate_path,
+            prefix_certificate_path,
+            root_session_certificate_path,
+            mate_certificate_path,
+        )
+    ):
         raise ValueError(
-            f"{runtime_variant} requires a search or prefix certificate"
+            f"{runtime_variant} requires at least one capability certificate"
         )
     required_paths = [
         (wasm, "WebAssembly binary"),
@@ -361,6 +862,10 @@ def _build_variant(
         required_paths.append((certificate_path, "safety certificate"))
     if prefix_certificate_path is not None:
         required_paths.append((prefix_certificate_path, "prefix certificate"))
+    if root_session_certificate_path is not None:
+        required_paths.append((root_session_certificate_path, "root-session certificate"))
+    if mate_certificate_path is not None:
+        required_paths.append((mate_certificate_path, "mate certificate"))
     for path, label in required_paths:
         if not path.is_file():
             raise FileNotFoundError(f"{runtime_variant} {label} is missing: {path}")
@@ -370,9 +875,24 @@ def _build_variant(
         if prefix_certificate_path
         else None
     )
+    root_session_certificate = (
+        load_certificate(root_session_certificate_path)
+        if root_session_certificate_path
+        else None
+    )
+    mate_certificate = (
+        load_certificate(mate_certificate_path)
+        if mate_certificate_path
+        else None
+    )
     certificate_thread_counts = [
         value.get("thread_count")
-        for value in (certificate, prefix_certificate)
+        for value in (
+            certificate,
+            prefix_certificate,
+            root_session_certificate,
+            mate_certificate,
+        )
         if value is not None
     ]
     if any(value != certificate_thread_counts[0] for value in certificate_thread_counts):
@@ -425,6 +945,48 @@ def _build_variant(
             thread_count=thread_count,
             support_files=support_files,
         )
+    root_memory: dict[str, int | bool] | None = None
+    root_engine: dict[str, str] | None = None
+    root_kernel_sha256: str | None = None
+    root_exception_strategy: str | None = None
+    root_contract: dict[str, object] | None = None
+    root_geometry: dict[str, object] | None = None
+    if root_session_certificate is not None:
+        (
+            root_memory,
+            root_engine,
+            root_kernel_sha256,
+            root_exception_strategy,
+            root_contract,
+            root_geometry,
+        ) = validate_root_session_certificate(
+            root_session_certificate,
+            source_fingerprint=source_fingerprint,
+            wasm_sha256=wasm_sha256,
+            module_js_sha256=module_js_sha256,
+            runtime_variant=runtime_variant,
+            thread_count=thread_count,
+            support_files=support_files,
+        )
+    mate_memory: dict[str, int | bool] | None = None
+    mate_engine: dict[str, str] | None = None
+    mate_kernel_sha256: str | None = None
+    mate_exception_strategy: str | None = None
+    if mate_certificate is not None:
+        (
+            mate_memory,
+            mate_engine,
+            mate_kernel_sha256,
+            mate_exception_strategy,
+        ) = validate_mate_certificate(
+            mate_certificate,
+            source_fingerprint=source_fingerprint,
+            wasm_sha256=wasm_sha256,
+            module_js_sha256=module_js_sha256,
+            runtime_variant=runtime_variant,
+            thread_count=thread_count,
+            support_files=support_files,
+        )
     if search_memory is not None and prefix_memory is not None:
         if search_memory != prefix_memory:
             raise ValueError(
@@ -438,6 +1000,75 @@ def _build_variant(
                 raise ValueError(
                     f"search and prefix certificates disagree on {key}"
                 )
+    capability_memories = [
+        (name, memory)
+        for name, memory in (
+            ("search", search_memory),
+            ("prefix", prefix_memory),
+            ("root-session", root_memory),
+            ("mate", mate_memory),
+        )
+        if memory is not None
+    ]
+    reference_memory = capability_memories[0][1]
+    if any(memory != reference_memory for _, memory in capability_memories[1:]):
+        raise ValueError("combined capability certificates have different memory envelopes")
+    engine_versions: list[tuple[str, str, str]] = []
+    if certificate is not None:
+        search_engine_value = _require_mapping(certificate.get("engine"), "search engine")
+        engine_versions.append(
+            (
+                "search",
+                str(search_engine_value.get("engine_version", "")),
+                str(search_engine_value.get("ruleset_version", "")),
+            )
+        )
+    for name, engine in (
+        ("prefix", prefix_engine),
+        ("root-session", root_engine),
+        ("mate", mate_engine),
+    ):
+        if engine is not None:
+            engine_versions.append(
+                (name, engine["engine_version"], engine["ruleset_version"])
+            )
+    reference_engine = engine_versions[0][1:]
+    if any(identity[1:] != reference_engine for identity in engine_versions[1:]):
+        raise ValueError("combined capability certificates have different engine identities")
+    if root_engine is not None and mate_engine is not None:
+        if root_engine["profile_id"] != mate_engine["profile_id"]:
+            raise ValueError("root-session and mate certificates have different profiles")
+    if certificate is not None and root_engine is not None:
+        search_profile = _require_mapping(certificate.get("engine"), "search engine").get(
+            "engine_profile_id"
+        )
+        if search_profile != root_engine["profile_id"]:
+            raise ValueError("search and root-session certificates have different profiles")
+    if (
+        root_kernel_sha256 is not None
+        and mate_kernel_sha256 is not None
+        and root_kernel_sha256 != mate_kernel_sha256
+    ):
+        raise ValueError("root-session and mate certificates have different kernels")
+    if (
+        root_exception_strategy is not None
+        and mate_exception_strategy is not None
+        and root_exception_strategy != mate_exception_strategy
+    ):
+        raise ValueError("root-session and mate certificates have different exception strategies")
+    if (
+        root_session_certificate is not None
+        and mate_certificate is not None
+        and (
+            root_session_certificate.get("wasm_simd")
+            != mate_certificate.get("wasm_simd")
+            or root_session_certificate.get("runtime_requirements")
+            != mate_certificate.get("runtime_requirements")
+            or root_session_certificate.get("allocator")
+            != mate_certificate.get("allocator")
+        )
+    ):
+        raise ValueError("root-session and mate certificates have different runtimes")
 
     destination.mkdir(parents=True)
     shutil.copyfile(wasm, destination / "spc-engine.wasm")
@@ -453,6 +1084,8 @@ def _build_variant(
         "module_js_sha256": module_js_sha256,
         "support_files": support_files,
     }
+    if root_kernel_sha256 is not None or mate_kernel_sha256 is not None:
+        variant["kernel_sha256"] = root_kernel_sha256 or mate_kernel_sha256
     if certificate is not None:
         assert search_memory is not None
         variant["safety_certificate"] = {
@@ -493,6 +1126,84 @@ def _build_variant(
             "engine": prefix_engine,
             "prefix_contract": prefix_contract,
         }
+    if root_session_certificate is not None:
+        assert root_memory is not None
+        assert root_engine is not None
+        assert root_kernel_sha256 is not None
+        assert root_exception_strategy is not None
+        assert root_contract is not None
+        assert root_geometry is not None
+        variant["root_session_certificate"] = {
+            "schema": ROOT_SESSION_CERTIFICATE_SCHEMA,
+            "status": "certified",
+            "certificate_id": root_session_certificate["certificate_id"],
+            "contract_version": 1,
+            "abi_version": 2,
+            "root_session_certified": True,
+            "reply_mate_safety": False,
+            "product_publishable": False,
+            "source_fingerprint": source_fingerprint,
+            "kernel_sha256": root_kernel_sha256,
+            "runtime_variant": runtime_variant,
+            "thread_count": thread_count,
+            "wasm_sha256": wasm_sha256,
+            "module_js_sha256": module_js_sha256,
+            "support_files": support_files,
+            "exports": COMBINED_EXPORTS,
+            "exception_strategy": root_exception_strategy,
+            "wasm_simd": root_session_certificate["wasm_simd"],
+            "allocator": root_session_certificate["allocator"],
+            "runtime_requirements": dict(
+                _require_mapping(
+                    root_session_certificate["runtime_requirements"],
+                    "root runtime requirements",
+                )
+            ),
+            "memory": root_memory,
+            "engine": root_engine,
+            "root_session_contract": root_contract,
+            "geometry": root_geometry,
+            "evidence": dict(
+                _require_mapping(root_session_certificate["evidence"], "root evidence")
+            ),
+        }
+    if mate_certificate is not None:
+        assert mate_memory is not None
+        assert mate_engine is not None
+        assert mate_kernel_sha256 is not None
+        assert mate_exception_strategy is not None
+        variant["mate_certificate"] = {
+            "schema": MATE_CERTIFICATE_SCHEMA,
+            "status": "certified",
+            "certificate_id": mate_certificate["certificate_id"],
+            "contract_version": 1,
+            "abi_version": 1,
+            "mate_capability_certified": True,
+            "reply_mate_safety": True,
+            "product_publishable": False,
+            "source_fingerprint": source_fingerprint,
+            "kernel_sha256": mate_kernel_sha256,
+            "runtime_variant": runtime_variant,
+            "thread_count": thread_count,
+            "wasm_sha256": wasm_sha256,
+            "module_js_sha256": module_js_sha256,
+            "support_files": support_files,
+            "exports": COMBINED_EXPORTS,
+            "exception_strategy": mate_exception_strategy,
+            "wasm_simd": mate_certificate["wasm_simd"],
+            "allocator": mate_certificate["allocator"],
+            "runtime_requirements": dict(
+                _require_mapping(
+                    mate_certificate["runtime_requirements"],
+                    "mate runtime requirements",
+                )
+            ),
+            "memory": mate_memory,
+            "engine": mate_engine,
+            "evidence": dict(
+                _require_mapping(mate_certificate["evidence"], "mate evidence")
+            ),
+        }
     return variant
 
 
@@ -502,6 +1213,8 @@ def build_bundle(
     single_module_js: Path,
     single_certificate_path: Path | None = None,
     single_prefix_certificate_path: Path | None = None,
+    single_root_session_certificate_path: Path | None = None,
+    single_mate_certificate_path: Path | None = None,
     single_support_paths: tuple[Path, ...] = (),
     pthread_wasm: Path | None = None,
     pthread_module_js: Path | None = None,
@@ -547,6 +1260,8 @@ def build_bundle(
                 module_js=single_module_js,
                 certificate_path=single_certificate_path,
                 prefix_certificate_path=single_prefix_certificate_path,
+                root_session_certificate_path=single_root_session_certificate_path,
+                mate_certificate_path=single_mate_certificate_path,
                 support_paths=single_support_paths,
                 source_fingerprint=source_fingerprint,
                 destination=staging / "single",
@@ -628,7 +1343,17 @@ def validate_existing_bundle(bundle: Path, source_package: Path) -> Mapping[str,
         raise ValueError("browser engine bundle artifact hash mismatch")
     certificate_value = variant.get("safety_certificate")
     prefix_certificate_value = variant.get("prefix_certificate")
-    if certificate_value is None and prefix_certificate_value is None:
+    root_certificate_value = variant.get("root_session_certificate")
+    mate_certificate_value = variant.get("mate_certificate")
+    if all(
+        value is None
+        for value in (
+            certificate_value,
+            prefix_certificate_value,
+            root_certificate_value,
+            mate_certificate_value,
+        )
+    ):
         raise ValueError("single browser lane has no certified capability")
     search_memory: dict[str, int | bool] | None = None
     search_engine: Mapping[str, Any] | None = None
@@ -671,6 +1396,90 @@ def validate_existing_bundle(bundle: Path, source_package: Path) -> Mapping[str,
                     raise ValueError(
                         f"search and prefix certificates disagree on {key}"
                     )
+    root_memory: dict[str, int | bool] | None = None
+    root_engine: dict[str, str] | None = None
+    root_kernel: str | None = None
+    root_exception: str | None = None
+    if root_certificate_value is not None:
+        root_certificate = _require_mapping(
+            root_certificate_value,
+            "single root-session certificate",
+        )
+        (
+            root_memory,
+            root_engine,
+            root_kernel,
+            root_exception,
+            _root_contract,
+            _root_geometry,
+        ) = validate_root_session_certificate(
+            root_certificate,
+            source_fingerprint=source_fingerprint,
+            wasm_sha256=wasm_sha256,
+            module_js_sha256=module_js_sha256,
+            runtime_variant="single",
+            thread_count=1,
+            support_files=[],
+        )
+    mate_memory: dict[str, int | bool] | None = None
+    mate_engine: dict[str, str] | None = None
+    mate_kernel: str | None = None
+    mate_exception: str | None = None
+    if mate_certificate_value is not None:
+        mate_certificate = _require_mapping(
+            mate_certificate_value,
+            "single mate certificate",
+        )
+        (
+            mate_memory,
+            mate_engine,
+            mate_kernel,
+            mate_exception,
+        ) = validate_mate_certificate(
+            mate_certificate,
+            source_fingerprint=source_fingerprint,
+            wasm_sha256=wasm_sha256,
+            module_js_sha256=module_js_sha256,
+            runtime_variant="single",
+            thread_count=1,
+            support_files=[],
+        )
+    memories = [
+        value
+        for value in (search_memory, prefix_memory if prefix_certificate_value else None, root_memory, mate_memory)
+        if value is not None
+    ]
+    if any(value != memories[0] for value in memories[1:]):
+        raise ValueError("combined capability certificates have different memory envelopes")
+    kernels = [value for value in (root_kernel, mate_kernel) if value is not None]
+    if kernels and (
+        any(value != kernels[0] for value in kernels[1:])
+        or variant.get("kernel_sha256") != kernels[0]
+    ):
+        raise ValueError("combined root/mate kernel identity mismatch")
+    exceptions = [value for value in (root_exception, mate_exception) if value is not None]
+    if any(value != exceptions[0] for value in exceptions[1:]):
+        raise ValueError("combined root/mate exception strategy mismatch")
+    if (
+        root_certificate_value is not None
+        and mate_certificate_value is not None
+        and (
+            root_certificate.get("wasm_simd") != mate_certificate.get("wasm_simd")
+            or root_certificate.get("runtime_requirements")
+            != mate_certificate.get("runtime_requirements")
+            or root_certificate.get("allocator") != mate_certificate.get("allocator")
+        )
+    ):
+        raise ValueError("combined root/mate runtime requirements mismatch")
+    if root_engine is not None and mate_engine is not None and root_engine != mate_engine:
+        raise ValueError("combined root/mate engine identity mismatch")
+    if search_engine is not None and root_engine is not None:
+        if (
+            search_engine.get("engine_version") != root_engine["engine_version"]
+            or search_engine.get("ruleset_version") != root_engine["ruleset_version"]
+            or search_engine.get("engine_profile_id") != root_engine["profile_id"]
+        ):
+            raise ValueError("combined search/root engine identity mismatch")
     expected_files = {
         "browser-engine-manifest.json",
         f"single/{wasm_name}",
@@ -698,6 +1507,8 @@ def main() -> None:
     parser.add_argument("--single-module-js", type=Path)
     parser.add_argument("--single-certificate", type=Path)
     parser.add_argument("--single-prefix-certificate", type=Path)
+    parser.add_argument("--single-root-session-certificate", type=Path)
+    parser.add_argument("--single-mate-certificate", type=Path)
     parser.add_argument("--single-support-file", type=Path, action="append", default=[])
     parser.add_argument("--pthread-wasm", type=Path)
     parser.add_argument("--pthread-module-js", type=Path)
@@ -719,6 +1530,8 @@ def main() -> None:
                 arguments.single_module_js,
                 arguments.single_certificate,
                 arguments.single_prefix_certificate,
+                arguments.single_root_session_certificate,
+                arguments.single_mate_certificate,
                 arguments.pthread_wasm,
                 arguments.pthread_module_js,
                 arguments.pthread_certificate,
@@ -745,10 +1558,13 @@ def main() -> None:
     if (
         arguments.single_certificate is None
         and arguments.single_prefix_certificate is None
+        and arguments.single_root_session_certificate is None
+        and arguments.single_mate_certificate is None
     ):
         parser.error(
             "building a bundle requires --single-certificate, "
-            "--single-prefix-certificate, or both"
+            "--single-prefix-certificate, --single-root-session-certificate, "
+            "or --single-mate-certificate"
         )
     assert arguments.single_wasm is not None
     assert arguments.single_module_js is not None
@@ -764,6 +1580,16 @@ def main() -> None:
         single_prefix_certificate_path=(
             arguments.single_prefix_certificate.resolve()
             if arguments.single_prefix_certificate
+            else None
+        ),
+        single_root_session_certificate_path=(
+            arguments.single_root_session_certificate.resolve()
+            if arguments.single_root_session_certificate
+            else None
+        ),
+        single_mate_certificate_path=(
+            arguments.single_mate_certificate.resolve()
+            if arguments.single_mate_certificate
             else None
         ),
         single_support_paths=tuple(path.resolve() for path in arguments.single_support_file),

@@ -17,6 +17,7 @@ REQUIRED = (
     "src/scottish_progressive/native_subtree_wasm.cpp",
     "src/scottish_progressive/native_subtree_wasm.hpp",
     "src/scottish_progressive/native_subtree_wasm_support.hpp",
+    "src/scottish_progressive/_native_mate.cpp",
 )
 
 
@@ -39,7 +40,8 @@ def main() -> int:
     missing = [path for path in REQUIRED if not (ROOT / path).is_file()]
     untracked = [path for path in REQUIRED if path not in tracked]
     receipt = {
-        "schema": "spc-wasm-dependency-closure-v1",
+        "schema": "spc-wasm-dependency-closure-v2",
+        "target": "ordinary-worker-root-session-prefix-mate",
         "ok": not missing and not untracked,
         "required": list(REQUIRED),
         "missing_from_worktree": missing,

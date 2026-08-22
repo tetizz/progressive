@@ -128,6 +128,208 @@ def _prefix_certificate(
     }
 
 
+def _root_session_certificate(
+    builder,
+    *,
+    source_package: Path,
+    wasm: Path,
+    module_js: Path,
+) -> dict[str, object]:
+    maximum = 128 * 1024 * 1024
+    return {
+        "schema": builder.ROOT_SESSION_CERTIFICATE_SCHEMA,
+        "status": "certified",
+        "certificate_id": "root-session-gate-20260822-single",
+        "contract_version": 1,
+        "abi_version": 2,
+        "root_session_certified": True,
+        "reply_mate_safety": False,
+        "product_publishable": False,
+        "source_fingerprint": builder.engine_source_fingerprint(source_package),
+        "kernel_sha256": "d" * 64,
+        "wasm_sha256": builder.sha256_file(wasm),
+        "module_js_sha256": builder.sha256_file(module_js),
+        "runtime_variant": "single",
+        "thread_count": 1,
+        "support_files": [],
+        "exports": list(builder.COMBINED_EXPORTS),
+        "exception_strategy": "emscripten",
+        "wasm_simd": False,
+        "allocator": "dlmalloc",
+        "runtime_requirements": {
+            "ordinary_module_worker": True,
+            "pthreads": False,
+            "cross_origin_isolated": False,
+            "native_wasm_exception_handling": False,
+            "wasm_simd": False,
+        },
+        "memory": {
+            "initial_bytes": 16 * 1024 * 1024,
+            "maximum_bytes": maximum,
+            "estimated_peak_bytes": 96 * 1024 * 1024,
+            "growth_enabled": True,
+        },
+        "engine": {
+            "engine_version": "test-engine-v1",
+            "ruleset_version": "test-rules-v1",
+            "profile_id": "spc-browser-test",
+        },
+        "root_session_contract": {
+            "schema": builder.ROOT_SESSION_CONTRACT_SCHEMA,
+            "abi_version": 2,
+            "worker_threads": 1,
+            "pthreads_required": False,
+            "one_active_session_per_worker": True,
+            "product_publishable": False,
+            "reply_mate_safety": False,
+            "capabilities": {
+                "enumerate": True,
+                "import": True,
+                "search": True,
+                "call_work_credit": True,
+                "hard_memory_limit": True,
+                "tt_scout_rollback": True,
+                "persistent_depth_reuse": True,
+                "selected_owner_certification": True,
+            },
+            "hard_limits": {
+                "minimum_depth": 1,
+                "maximum_depth": 8,
+                "minimum_width": 1,
+                "maximum_width": 512,
+                "minimum_max_work": 1,
+                "maximum_max_work": 9_007_199_254_740_991,
+                "minimum_mate_score": 1,
+                "maximum_mate_score": 1_000_000_000,
+                "minimum_series_cache_capacity": 1,
+                "maximum_series_cache_capacity": 1_048_576,
+                "minimum_external_cache_weight": 0,
+                "external_cache_weight_lte_series_cache_capacity": True,
+                "worker_threads": 1,
+                "root_tactical_protection_values": [False, True],
+                "minimum_tt_capacity": 1,
+                "maximum_tt_capacity": 1_048_576,
+                "minimum_eval_capacity": 1,
+                "maximum_eval_capacity": 1_048_576,
+                "minimum_weight": 25,
+                "maximum_weight": 300,
+            },
+        },
+        "geometry": {
+            "desktop_workers": 8,
+            "desktop_initial_full_wave": 4,
+            "aggregate_maximum_bytes": 8 * maximum,
+            "supported_lower_geometries": [],
+            "session_config": {
+                "max_depth": 5,
+                "width": 32,
+                "max_work": 100_000_000,
+                "mate_score": 1_000_000,
+                "series_cache_capacity": 65_536,
+                "external_cache_weight": 0,
+                "worker_threads": 1,
+                "root_tactical_protection": True,
+                "root_contract_tt_capacity": 262_144,
+                "root_contract_eval_capacity": 262_144,
+                "weights": {
+                    "material": 100,
+                    "king_space": 100,
+                    "series_reach": 100,
+                    "promotion_corridors": 100,
+                    "immediate_vulnerability": 100,
+                    "useful_mobility": 100,
+                    "boundary_check": 100,
+                },
+            },
+        },
+        "evidence": {
+            "failures": 0,
+            "differential_cases": 12,
+            "deterministic_node_smoke": True,
+            "combined_artifact": True,
+            "enumerate_import_search": True,
+            "exact_manifest_import": True,
+            "persistent_d1_d2_session": True,
+            "cumulative_work_and_cache_receipts": True,
+            "configured_max_depth_rejected": True,
+            "per_call_work_credit": True,
+            "selected_owner_warm_exact_certification": True,
+            "deadline_fail_closed": True,
+            "work_limit_fail_closed": True,
+            "browser_worker_smoke": True,
+            "opera_worker_smoke": True,
+            "start_w32_d5_completed_depth": 5,
+            "start_w32_d5_width": 32,
+            "start_w32_d5_elapsed_seconds": 42.5,
+        },
+    }
+
+
+def _mate_certificate(
+    builder,
+    *,
+    source_package: Path,
+    wasm: Path,
+    module_js: Path,
+) -> dict[str, object]:
+    return {
+        "schema": builder.MATE_CERTIFICATE_SCHEMA,
+        "status": "certified",
+        "certificate_id": "mate-gate-20260822-single",
+        "contract_version": 1,
+        "abi_version": 1,
+        "mate_capability_certified": True,
+        "reply_mate_safety": True,
+        "product_publishable": False,
+        "source_fingerprint": builder.engine_source_fingerprint(source_package),
+        "kernel_sha256": "d" * 64,
+        "wasm_sha256": builder.sha256_file(wasm),
+        "module_js_sha256": builder.sha256_file(module_js),
+        "runtime_variant": "single",
+        "thread_count": 1,
+        "support_files": [],
+        "exports": list(builder.COMBINED_EXPORTS),
+        "exception_strategy": "emscripten",
+        "wasm_simd": False,
+        "allocator": "dlmalloc",
+        "runtime_requirements": {
+            "ordinary_module_worker": True,
+            "pthreads": False,
+            "cross_origin_isolated": False,
+            "native_wasm_exception_handling": False,
+            "wasm_simd": False,
+        },
+        "memory": {
+            "initial_bytes": 16 * 1024 * 1024,
+            "maximum_bytes": 128 * 1024 * 1024,
+            "estimated_peak_bytes": 96 * 1024 * 1024,
+            "growth_enabled": True,
+        },
+        "engine": {
+            "engine_version": "test-engine-v1",
+            "ruleset_version": "test-rules-v1",
+            "profile_id": "spc-browser-test",
+        },
+        "evidence": {
+            "failures": 0,
+            "differential_cases": builder.MIN_MATE_DIFFERENTIAL_CASES,
+            "combined_artifact": True,
+            "python_parity": True,
+            "authoritative_replay": True,
+            "white_found": True,
+            "black_found": True,
+            "exhausted": True,
+            "work_limit_unknown": True,
+            "deadline_unknown": True,
+            "signed_mate_distance_overrides": True,
+            "proof_bounds": True,
+            "work_receipts": True,
+            "deadline_receipts": True,
+            "browser_worker_smoke": True,
+        },
+    }
+
+
 def test_bundle_builder_stages_only_a_certified_identity_bound_single_lane(
     tmp_path: Path,
 ) -> None:
@@ -214,6 +416,146 @@ def test_bundle_builder_stages_an_independently_certified_prefix_lane(
         128 * 1024 * 1024
     )
     builder.validate_existing_bundle(output, package)
+
+
+def test_bundle_builder_stages_one_identity_bound_root_and_mate_artifact(
+    tmp_path: Path,
+) -> None:
+    builder = _load_bundle_builder()
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "core.cpp").write_text("int engine = 1;\n", encoding="utf-8")
+    wasm = tmp_path / "kernel.wasm"
+    module_js = tmp_path / "kernel.mjs"
+    root_path = tmp_path / "root-certificate.json"
+    mate_path = tmp_path / "mate-certificate.json"
+    wasm.write_bytes(b"\0asm\x01\0\0\0")
+    module_js.write_text("export default async () => ({});\n", encoding="utf-8")
+    root_path.write_text(
+        json.dumps(
+            _root_session_certificate(
+                builder,
+                source_package=package,
+                wasm=wasm,
+                module_js=module_js,
+            )
+        ),
+        encoding="utf-8",
+    )
+    mate_path.write_text(
+        json.dumps(
+            _mate_certificate(
+                builder,
+                source_package=package,
+                wasm=wasm,
+                module_js=module_js,
+            )
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "engine"
+
+    manifest = builder.build_bundle(
+        single_wasm=wasm,
+        single_module_js=module_js,
+        single_root_session_certificate_path=root_path,
+        single_mate_certificate_path=mate_path,
+        source_package=package,
+        output=output,
+    )
+
+    variant = manifest["variants"]["single"]
+    assert variant["kernel_sha256"] == "d" * 64
+    assert variant["root_session_certificate"]["reply_mate_safety"] is False
+    assert variant["mate_certificate"]["reply_mate_safety"] is True
+    assert variant["root_session_certificate"]["exports"] == list(
+        builder.COMBINED_EXPORTS
+    )
+    assert (
+        variant["root_session_certificate"]["memory"]
+        == variant["mate_certificate"]["memory"]
+    )
+    builder.validate_existing_bundle(output, package)
+
+
+def test_root_and_mate_certificates_fail_closed_on_contract_and_identity_drift(
+    tmp_path: Path,
+) -> None:
+    builder = _load_bundle_builder()
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "core.cpp").write_text("int engine = 1;\n", encoding="utf-8")
+    wasm = tmp_path / "kernel.wasm"
+    module_js = tmp_path / "kernel.mjs"
+    root_path = tmp_path / "root-certificate.json"
+    mate_path = tmp_path / "mate-certificate.json"
+    wasm.write_bytes(b"\0asm\x01\0\0\0")
+    module_js.write_text("export default async () => ({});\n", encoding="utf-8")
+    root = _root_session_certificate(
+        builder,
+        source_package=package,
+        wasm=wasm,
+        module_js=module_js,
+    )
+    mate = _mate_certificate(
+        builder,
+        source_package=package,
+        wasm=wasm,
+        module_js=module_js,
+    )
+
+    root["reply_mate_safety"] = True
+    root_path.write_text(json.dumps(root), encoding="utf-8")
+    mate_path.write_text(json.dumps(mate), encoding="utf-8")
+    with pytest.raises(ValueError, match="must not claim reply-mate safety"):
+        builder.build_bundle(
+            single_wasm=wasm,
+            single_module_js=module_js,
+            single_root_session_certificate_path=root_path,
+            single_mate_certificate_path=mate_path,
+            source_package=package,
+            output=tmp_path / "unsafe-root",
+        )
+
+    root["reply_mate_safety"] = False
+    root["evidence"]["start_w32_d5_elapsed_seconds"] = 60
+    root_path.write_text(json.dumps(root), encoding="utf-8")
+    with pytest.raises(ValueError, match="exact W32 D5 gate"):
+        builder.build_bundle(
+            single_wasm=wasm,
+            single_module_js=module_js,
+            single_root_session_certificate_path=root_path,
+            single_mate_certificate_path=mate_path,
+            source_package=package,
+            output=tmp_path / "slow-root",
+        )
+
+    root["evidence"]["start_w32_d5_elapsed_seconds"] = 42.5
+    root["geometry"]["session_config"].pop("root_contract_eval_capacity")
+    root_path.write_text(json.dumps(root), encoding="utf-8")
+    with pytest.raises(ValueError, match="exactly bind every native field"):
+        builder.build_bundle(
+            single_wasm=wasm,
+            single_module_js=module_js,
+            single_root_session_certificate_path=root_path,
+            single_mate_certificate_path=mate_path,
+            source_package=package,
+            output=tmp_path / "unbound-config",
+        )
+
+    root["geometry"]["session_config"]["root_contract_eval_capacity"] = 262_144
+    mate["kernel_sha256"] = "e" * 64
+    root_path.write_text(json.dumps(root), encoding="utf-8")
+    mate_path.write_text(json.dumps(mate), encoding="utf-8")
+    with pytest.raises(ValueError, match="different kernels"):
+        builder.build_bundle(
+            single_wasm=wasm,
+            single_module_js=module_js,
+            single_root_session_certificate_path=root_path,
+            single_mate_certificate_path=mate_path,
+            source_package=package,
+            output=tmp_path / "kernel-drift",
+        )
 
 
 def test_prefix_certificate_rejects_weak_evidence_and_limits_above_native_abi(

@@ -62,91 +62,14 @@ jobs:
           if 'src="/' in index or 'href="/styles.css"' in index:
               raise SystemExit("root-relative assets would break the project Pages path")
 
-      - name: Validate certified browser engine bundle
+      # The exact, repository-bound browser bundle is the static release
+      # authority. Render remains an optional runtime fallback and is never a
+      # prerequisite for publishing these independently verifiable bytes.
+      - name: Validate local certified browser engine release authority
         run: >-
           python scripts/build_browser_wasm_bundle.py
           --validate-existing src/scottish_progressive/web/static/engine
           --source-package src/scottish_progressive
-
-      - name: Wait for matching deployed engine
-        shell: python
-        run: |
-          import hashlib
-          import json
-          from pathlib import Path
-          import time
-          from urllib.error import HTTPError, URLError
-          from urllib.request import Request, urlopen
-
-          package = Path("src/scottish_progressive")
-          digest = hashlib.sha256()
-          paths = (
-              path
-              for pattern in ("*.py", "*.cpp", "*.hpp", "*.h")
-              for path in package.rglob(pattern)
-          )
-          for path in sorted(paths, key=lambda item: item.relative_to(package).as_posix()):
-              digest.update(path.relative_to(package).as_posix().encode("utf-8"))
-              digest.update(path.read_bytes())
-          expected = digest.hexdigest()[:16]
-          deadline = time.monotonic() + 15 * 60
-          attempt = 0
-          last = "no response"
-          while time.monotonic() < deadline:
-              attempt += 1
-              try:
-                  request = Request(
-                      "https://progressive-ui9q.onrender.com/api/health",
-                      headers={
-                          "Accept": "application/json",
-                          "Origin": "https://tetizz.github.io",
-                          "User-Agent": "Progressive-Pages-readiness/1",
-                      },
-                  )
-                  with urlopen(request, timeout=30) as response:
-                      content_type = response.headers.get("Content-Type", "")
-                      allowed_origin = response.headers.get("Access-Control-Allow-Origin")
-                      if "application/json" not in content_type:
-                          raise ValueError(f"non-JSON response: {content_type!r}")
-                      health = json.load(response)
-                  actual = health.get("source_fingerprint")
-                  limits = health.get("analysis_limits", {})
-                  runtime = health.get("runtime", {})
-                  contract_ready = (
-                      limits.get("maximum_depth") == 5
-                      and limits.get("maximum_seconds") == 30.0
-                      and limits.get("maximum_generation_positions") == 10_000_000
-                      and runtime.get("cpu_count_source") == "RENDER_CPU_COUNT"
-                      and runtime.get("cpu_count")
-                      and limits.get("native_threads") == 1
-                      and runtime.get("native_threads") == limits.get("native_threads")
-                      and runtime.get("native_threads_policy")
-                      == "single-thread-pool-avoidance"
-                  )
-                  if (
-                      health.get("ok") is True
-                      and actual == expected
-                      and allowed_origin == "https://tetizz.github.io"
-                      and contract_ready
-                  ):
-                      print(
-                          f"Render engine ready: fingerprint {actual}, "
-                          f"limits={limits}, runtime={runtime} (attempt {attempt})"
-                      )
-                      break
-                  last = (
-                      f"fingerprint={actual!r}, ok={health.get('ok')!r}, "
-                      f"cors={allowed_origin!r}, contract={contract_ready!r}, "
-                      f"limits={limits!r}, runtime={runtime!r}"
-                  )
-              except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError) as error:
-                  last = f"{type(error).__name__}: {error}"
-              print(f"Render not ready (attempt {attempt}): {last}")
-              time.sleep(10)
-          else:
-              raise SystemExit(
-                  f"Render did not publish engine fingerprint {expected} within 15 minutes; last={last}"
-              )
 
       - name: Build commit-addressed Pages artifact
         run: >-

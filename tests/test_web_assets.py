@@ -54,7 +54,7 @@ def test_public_assets_are_project_pages_safe_and_keep_local_same_origin() -> No
     assert 'PUBLIC_ENGINE_RECONNECT_DELAYS_MS[reconnectAttempt]' in app
 
 
-def test_deployment_manifests_keep_pages_and_render_on_the_same_commit() -> None:
+def test_pages_uses_the_local_certified_bundle_without_waiting_for_render() -> None:
     render = (ROOT / "render.yaml").read_text(encoding="utf-8")
     workflow = (ROOT / ".github" / "workflows" / "pages.yml").read_text(
         encoding="utf-8"
@@ -67,8 +67,10 @@ def test_deployment_manifests_keep_pages_and_render_on_the_same_commit() -> None
     assert "branches: [main]" in workflow
     assert "src/scottish_progressive/web/static" in workflow
     assert "actions/deploy-pages@v4" in workflow
-    assert "Wait for matching deployed engine" in workflow
-    assert "Validate certified browser engine bundle" in workflow
+    assert "Wait for matching deployed engine" not in workflow
+    assert "progressive-ui9q.onrender.com/api/health" not in workflow
+    assert "time.monotonic() + 15 * 60" not in workflow
+    assert "Validate local certified browser engine release authority" in workflow
     assert "--validate-existing src/scottish_progressive/web/static/engine" in workflow
     for asset in (
         "browser-prefix-contract.js",
@@ -78,15 +80,6 @@ def test_deployment_manifests_keep_pages_and_render_on_the_same_commit() -> None
         "engine/browser-engine-manifest.json",
     ):
         assert asset in workflow
-    assert "actual == expected" in workflow
-    assert 'limits.get("maximum_depth") == 5' in workflow
-    assert 'limits.get("maximum_seconds") == 30.0' in workflow
-    assert (
-        'limits.get("maximum_generation_positions") == 10_000_000' in workflow
-    )
-    assert 'runtime.get("cpu_count_source") == "RENDER_CPU_COUNT"' in workflow
-    assert 'limits.get("native_threads") == 1' in workflow
-    assert '== "single-thread-pool-avoidance"' in workflow
     assert "Build commit-addressed Pages artifact" in workflow
     assert "python scripts/build_pages_site.py" in workflow
     assert '--version "$GITHUB_SHA"' in workflow
