@@ -22,6 +22,14 @@
   const PUBLIC_HEALTH_TIMEOUT_MS = 20_000;
   const PUBLIC_HEALTH_WAKE_DELAYS_MS = [1_500, 3_000, 5_000, 8_000, 12_000, 16_000, 20_000];
   const PUBLIC_ENGINE_RECONNECT_DELAYS_MS = [1_000, 2_500, 5_000];
+  const LOCAL_ENGINE_FIRST_PROBE_TIMEOUT_MS = 12_000;
+  const LOCAL_ENGINE_BOOTSTRAP_TIMEOUT_MS = 30_000;
+  const TRANSIENT_LOCAL_ENGINE_FAILURES = new Set([
+    "browser-worker-crashed",
+    "browser-worker-post-failed",
+    "browser-worker-timeout",
+    "browser-worker-unavailable",
+  ]);
   const EVALUATION = globalThis.ScottishProgressiveEvaluation;
   const PLAY_HANDOFF = globalThis.ScottishProgressivePlayHandoff.createGate();
   const PLAY_TIMELINE = globalThis.ScottishProgressivePlayTimeline;
@@ -1075,7 +1083,13 @@
           && existing.revision === playSessionRevision
           && storedPlayLedgerExtends(candidate, existing);
         if (existing.revision !== baseRevision && !followsOwnQueuedWrite) {
-          const stateAlreadyDurable = sameStoredPlayState(candidate, existing);
+          // A matching write owned by another page is not this page's durable
+          // claim. The loser of two simultaneous reloads must stay stale.
+          const stateAlreadyDurable = sameStoredPlayState(candidate, existing)
+            && (
+              existing.ownerId === playSessionTabId
+              || claimOwnership === false
+            );
           if (stateAlreadyDurable) playSessionRevision = existing.revision;
           return stateAlreadyDurable;
         }
@@ -1391,7 +1405,9 @@
       if (restored) {
         playSessionReplayBlocked = false;
         await requireDurablePlaySession(
-          { claimOwnership: false },
+          // A reload has a new page owner. Claim the unchanged saved revision
+          // only after its full move ledger passes authoritative replay.
+          { claimOwnership: true },
           { capture: true },
         );
         renderAll();
@@ -4831,27 +4847,74 @@
     renderPlaySurface();
   }
 
+  function browserRuntimeCanSearch(runtime) {
+    return runtime?.ready === true
+      && (runtime.analysis_ready === true || runtime.root_iteration_ready === true);
+  }
+
+  function browserRuntimeMatchesHostedIdentity(runtime, health) {
+    if (runtime?.ready !== true) return false;
+    const expected = [
+      [first(health.source_fingerprint, health.fingerprint), runtime.source_fingerprint],
+      [first(health.engine_version, health.version, null), runtime.engine_version],
+      [first(health.ruleset_version, health.rules_version, health.ruleset, null), runtime.ruleset_version],
+    ];
+    return expected.every(([hosted, local]) => (
+      typeof hosted === "string" && hosted.length > 0 && hosted === local
+    ));
+  }
+
+  async function preflightCertifiedBrowserRuntime({ deadlineMs = null } = {}) {
+    if (!browserEngineClient) return { ready: false, reason: "browser-kernel-unavailable" };
+    try {
+      // The Pages bundle is independently certified. Never bind its identity
+      // to a hosted fallback that may still be deploying an older commit.
+      return await browserEngineClient.preflight({ deadlineMs });
+    } catch (error) {
+      if (error?.name === "AbortError") throw error;
+      return {
+        ready: false,
+        reason: error?.code === "browser-analysis-deadline"
+          ? "browser-worker-timeout"
+          : String(error?.code || "browser-kernel-unavailable"),
+      };
+    }
+  }
+
   async function checkHealth() {
     try {
+      const browserBootstrapDeadlineMs = monotonicNow() + LOCAL_ENGINE_BOOTSTRAP_TIMEOUT_MS;
+      let browserRuntime = { ready: false, reason: "browser-kernel-unavailable" };
       if (browserEngineClient) {
         dom.engine_status.classList.remove("is-online", "is-offline");
         dom.engine_status_text.textContent = "Loading native engine…";
-        const localRuntime = await browserEngineClient.preflight({});
-        state.play.browserPrefixReady = localRuntime.ready === true
-          && localRuntime.prefix_ready === true;
-        state.play.browserRootReady = localRuntime.ready === true
-          && localRuntime.root_iteration_ready === true;
+        browserRuntime = await preflightCertifiedBrowserRuntime({
+          deadlineMs: Math.min(
+            browserBootstrapDeadlineMs,
+            monotonicNow() + LOCAL_ENGINE_FIRST_PROBE_TIMEOUT_MS,
+          ),
+        });
         if (
-          localRuntime.ready === true
-          && (localRuntime.analysis_ready === true
-            || localRuntime.root_iteration_ready === true)
+          browserRuntime.ready !== true
+          && TRANSIENT_LOCAL_ENGINE_FAILURES.has(String(browserRuntime.reason || ""))
+          && monotonicNow() < browserBootstrapDeadlineMs
         ) {
-          applyCertifiedBrowserRuntime(localRuntime);
+          dom.engine_status_text.textContent = "Restarting native engine…";
+          browserRuntime = await preflightCertifiedBrowserRuntime({
+            deadlineMs: browserBootstrapDeadlineMs,
+          });
+        }
+        state.play.browserPrefixReady = browserRuntime.ready === true
+          && browserRuntime.prefix_ready === true;
+        state.play.browserRootReady = browserRuntime.ready === true
+          && browserRuntime.root_iteration_ready === true;
+        if (browserRuntimeCanSearch(browserRuntime)) {
+          applyCertifiedBrowserRuntime(browserRuntime);
           return;
         }
         state.play.browserWasmReady = false;
         state.play.browserWasmReason = String(
-          localRuntime.reason || "browser-kernel-unavailable",
+          browserRuntime.reason || "browser-kernel-unavailable",
         );
       }
       if (isPublicPagesSite) {
@@ -4910,23 +4973,15 @@
         health.ruleset,
       );
       state.play.rulesetVersion = rulesetVersion;
-      let browserRuntime = { ready: false, reason: "not-public-pages" };
-      if (browserEngineClient) {
-        try {
-          browserRuntime = await browserEngineClient.preflight({
-            sourceFingerprint: state.play.engineFingerprint,
-            engineProfileId: state.play.engineProfileId,
-            engineProfileName: state.play.engineName,
-            engineVersion: state.play.engineVersion,
-            rulesetVersion,
-          });
-        } catch (error) {
-          if (error?.name === "AbortError") throw error;
-          browserRuntime = {
-            ready: false,
-            reason: String(error?.code || "browser-kernel-unavailable"),
-          };
-        }
+      if (
+        browserRuntime.ready === true
+        && !browserRuntimeMatchesHostedIdentity(browserRuntime, health)
+      ) {
+        browserEngineClient.close("browser/server engine identities differ");
+        browserRuntime = {
+          ready: false,
+          reason: "browser-hosted-engine-identity-mismatch",
+        };
       }
       state.play.browserWasmReady = browserRuntime.ready === true
         && (browserRuntime.analysis_ready === true
@@ -5044,6 +5099,9 @@
           : state.play.browserPrefixReady
             ? "hosted search · certified local move validation"
             : "hosted engine fallback",
+        state.play.browserWasmReady
+          ? null
+          : `local engine: ${state.play.browserWasmReason}`,
       ].filter(Boolean).join(" · ");
       renderPlaySurface();
     } catch (error) {

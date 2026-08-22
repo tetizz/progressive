@@ -26,6 +26,13 @@ def _load_bundle_builder():
     return module
 
 
+def _module_wrapper(wasm_name: str = "kernel.wasm") -> str:
+    return (
+        f'function findWasmBinary() {{ return locateFile("{wasm_name}"); }}\n'
+        "export default async () => ({});\n"
+    )
+
+
 def test_engine_source_fingerprint_is_line_ending_stable(tmp_path: Path) -> None:
     builder = _load_bundle_builder()
     package = tmp_path / "package"
@@ -362,7 +369,7 @@ def test_bundle_builder_stages_only_a_certified_identity_bound_single_lane(
     module_js = tmp_path / "kernel.mjs"
     certificate_path = tmp_path / "certificate.json"
     wasm.write_bytes(b"\0asm\x01\0\0\0")
-    module_js.write_text("export default async () => ({});\n", encoding="utf-8")
+    module_js.write_text(_module_wrapper(), encoding="utf-8")
     certificate_path.write_text(
         json.dumps(
             _certificate(
@@ -391,8 +398,43 @@ def test_bundle_builder_stages_only_a_certified_identity_bound_single_lane(
         ["analysis_limits"]["default_depth"]
         == 5
     )
-    assert (output / "single" / "spc-engine.wasm").read_bytes() == wasm.read_bytes()
+    assert manifest["variants"]["single"]["wasm"] == "kernel.wasm"
+    assert (output / "single" / "kernel.wasm").read_bytes() == wasm.read_bytes()
     assert (output / "browser-engine-manifest.json").is_file()
+
+
+def test_bundle_builder_rejects_a_wrapper_bound_to_another_wasm_basename(
+    tmp_path: Path,
+) -> None:
+    builder = _load_bundle_builder()
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "core.cpp").write_text("int engine = 1;\n", encoding="utf-8")
+    wasm = tmp_path / "kernel.wasm"
+    module_js = tmp_path / "kernel.mjs"
+    certificate_path = tmp_path / "certificate.json"
+    wasm.write_bytes(b"\0asm\x01\0\0\0")
+    module_js.write_text(_module_wrapper("different.wasm"), encoding="utf-8")
+    certificate_path.write_text(
+        json.dumps(
+            _certificate(
+                builder,
+                source_package=package,
+                wasm=wasm,
+                module_js=module_js,
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="WASM dependency does not match"):
+        builder.build_bundle(
+            single_wasm=wasm,
+            single_module_js=module_js,
+            single_certificate_path=certificate_path,
+            source_package=package,
+            output=tmp_path / "engine",
+        )
 
 
 def test_bundle_builder_stages_an_independently_certified_prefix_lane(
@@ -406,7 +448,7 @@ def test_bundle_builder_stages_an_independently_certified_prefix_lane(
     module_js = tmp_path / "kernel.mjs"
     prefix_certificate_path = tmp_path / "prefix-certificate.json"
     wasm.write_bytes(b"\0asm\x01\0\0\0")
-    module_js.write_text("export default async () => ({});\n", encoding="utf-8")
+    module_js.write_text(_module_wrapper(), encoding="utf-8")
     prefix_certificate_path.write_text(
         json.dumps(
             _prefix_certificate(
@@ -451,7 +493,7 @@ def test_bundle_builder_stages_one_identity_bound_root_and_mate_artifact(
     root_path = tmp_path / "root-certificate.json"
     mate_path = tmp_path / "mate-certificate.json"
     wasm.write_bytes(b"\0asm\x01\0\0\0")
-    module_js.write_text("export default async () => ({});\n", encoding="utf-8")
+    module_js.write_text(_module_wrapper(), encoding="utf-8")
     root_path.write_text(
         json.dumps(
             _root_session_certificate(
@@ -516,7 +558,7 @@ def test_browser_adapter_accepts_the_exact_builder_root_prefix_mate_manifest(
     wasm = tmp_path / "kernel.wasm"
     module_js = tmp_path / "kernel.mjs"
     wasm.write_bytes(b"\0asm\x01\0\0\0")
-    module_js.write_text("export default async () => ({});\n", encoding="utf-8")
+    module_js.write_text(_module_wrapper(), encoding="utf-8")
     certificates = {
         "prefix": _prefix_certificate(
             builder,
@@ -948,7 +990,7 @@ def test_existing_bundle_validator_rejects_artifact_drift(tmp_path: Path) -> Non
     module_js = tmp_path / "kernel.mjs"
     certificate_path = tmp_path / "certificate.json"
     wasm.write_bytes(b"\0asm\x01\0\0\0")
-    module_js.write_text("export default async () => ({});\n", encoding="utf-8")
+    module_js.write_text(_module_wrapper(), encoding="utf-8")
     certificate_path.write_text(
         json.dumps(
             _certificate(
@@ -978,6 +1020,53 @@ def test_existing_bundle_validator_rejects_artifact_drift(tmp_path: Path) -> Non
         builder.validate_existing_bundle(output, package)
 
 
+def test_existing_bundle_validator_rejects_a_rebound_wrapper_dependency(
+    tmp_path: Path,
+) -> None:
+    builder = _load_bundle_builder()
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "core.cpp").write_text("int engine = 1;\n", encoding="utf-8")
+    wasm = tmp_path / "kernel.wasm"
+    module_js = tmp_path / "kernel.mjs"
+    certificate_path = tmp_path / "certificate.json"
+    wasm.write_bytes(b"\0asm\x01\0\0\0")
+    module_js.write_text(_module_wrapper(), encoding="utf-8")
+    certificate_path.write_text(
+        json.dumps(
+            _certificate(
+                builder,
+                source_package=package,
+                wasm=wasm,
+                module_js=module_js,
+            )
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "engine"
+    builder.build_bundle(
+        single_wasm=wasm,
+        single_module_js=module_js,
+        single_certificate_path=certificate_path,
+        source_package=package,
+        output=output,
+    )
+
+    staged_module = output / "single" / "spc-engine.js"
+    staged_module.write_text(_module_wrapper("different.wasm"), encoding="utf-8")
+    manifest_path = output / "browser-engine-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    rebound_hash = builder.sha256_file(staged_module)
+    manifest["variants"]["single"]["module_js_sha256"] = rebound_hash
+    manifest["variants"]["single"]["safety_certificate"][
+        "module_js_sha256"
+    ] = rebound_hash
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="WASM dependency does not match"):
+        builder.validate_existing_bundle(output, package)
+
+
 @pytest.mark.skipif(NODE is None, reason="Node.js is required for browser contract tests")
 def test_adapter_loads_verified_prefix_only_artifact_and_checks_native_contract() -> None:
     script = r"""
@@ -987,7 +1076,10 @@ import { pathToFileURL } from "node:url";
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 const api = await import(pathToFileURL(process.argv[1]).href);
 const wasmBytes = Uint8Array.from([0, 97, 115, 109, 1, 0, 0, 0]);
-const moduleBytes = new TextEncoder().encode("export default async () => ({});\n");
+const moduleBytes = new TextEncoder().encode(
+  'function findWasmBinary() { return locateFile("kernel.wasm"); }\n'
+  + "export default async () => ({});\n",
+);
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const source = "a".repeat(16);
 const memory = {
@@ -1015,7 +1107,7 @@ const manifest = {
   variants: {
     single: {
       thread_count: 1,
-      wasm: "spc-engine.wasm",
+      wasm: "kernel.wasm",
       wasm_sha256: hash(wasmBytes),
       module_js: "spc-engine.js",
       module_js_sha256: hash(moduleBytes),
@@ -1060,7 +1152,7 @@ globalThis.fetch = async (url) => {
   if (text.includes("browser-engine-manifest.json")) {
     return { ok: true, status: 200, json: async () => manifest };
   }
-  const bytes = text.includes("spc-engine.wasm") ? wasmBytes : moduleBytes;
+  const bytes = text.includes("kernel.wasm") ? wasmBytes : moduleBytes;
   return { ok: true, status: 200, arrayBuffer: async () => copyBuffer(bytes) };
 };
 
@@ -1095,15 +1187,31 @@ const module = {
   },
 };
 let importedVerifiedBytes = false;
+let locatedWasmUrl = null;
+let unboundWasmRejected = false;
 const kernel = await api.loadCertifiedBrowserKernel({
   expectedSourceFingerprint: source,
   manifestUrl: new URL("https://example.test/engine/browser-engine-manifest.json"),
   moduleImporter: async (bytes) => {
     importedVerifiedBytes = Buffer.from(bytes).equals(Buffer.from(moduleBytes));
-    return { default: async () => module };
+    return { default: async (options) => {
+      locatedWasmUrl = options.locateFile("kernel.wasm");
+      try {
+        options.locateFile("unbound.wasm");
+      } catch (error) {
+        unboundWasmRejected = error.code === "browser-support-file-uncertified";
+      }
+      return module;
+    } };
   },
 });
 if (!importedVerifiedBytes) throw new Error("unverified wrapper bytes executed");
+const expectedWasmUrl = new URL("https://example.test/engine/single/kernel.wasm");
+expectedWasmUrl.searchParams.set("sha256", hash(wasmBytes));
+if (locatedWasmUrl !== expectedWasmUrl.href) {
+  throw new Error(`certified WASM URL drifted: ${locatedWasmUrl}`);
+}
+if (!unboundWasmRejected) throw new Error("unbound WASM dependency was accepted");
 if (kernel.identity.analysis_ready !== false || kernel.identity.prefix_ready !== true) {
   throw new Error("prefix-only capability drifted");
 }
@@ -1157,6 +1265,8 @@ process.stdout.write(JSON.stringify({
   analysisReady: kernel.identity.analysis_ready,
   searchRejected,
   nativeMismatchRejected,
+  locatedWasmUrl,
+  unboundWasmRejected,
   freed,
 }));
 """
@@ -1178,6 +1288,11 @@ process.stdout.write(JSON.stringify({
         "analysisReady": False,
         "searchRejected": True,
         "nativeMismatchRejected": True,
+        "locatedWasmUrl": (
+            "https://example.test/engine/single/kernel.wasm?sha256="
+            + "93a44bbb96c751218e4c00d479e4c14358122a389acca16205b1e4d0dc5f9476"
+        ),
+        "unboundWasmRejected": True,
         "freed": 4,
     }
 
@@ -1784,7 +1899,13 @@ class WorkerDouble {
       engine_version: "engine-v1",
       ruleset_version: "rules-v1",
     },
-    request: async () => { remoteCalls += 1; throw new Error("unexpected fallback"); },
+    request: async () => {
+      remoteCalls += 1;
+      return {
+        ...remote.identity,
+        hosted: true,
+      };
+    },
   };
   const controller = new AbortController();
   const cancelled = prefixApi.routePrefixRequest({
@@ -1813,10 +1934,25 @@ class WorkerDouble {
     throw new Error(`replacement prefix worker was not reprobed: ${workers.length}`);
   }
   if (remoteCalls !== 0) throw new Error("successful local replay reached hosted fallback");
+  client.close("browser/server engine identities differ");
+  const workerCountAfterClose = workers.length;
+  const hosted = await prefixApi.routePrefixRequest({
+    payload,
+    localClient: client,
+    remote,
+  });
+  if (workers.length !== workerCountAfterClose) {
+    throw new Error("identity-mismatch close spawned another local worker");
+  }
+  if (remoteCalls !== 1 || hosted.hosted !== true) {
+    throw new Error("identity-mismatch close did not route exactly once to hosted prefix");
+  }
   process.stdout.write(JSON.stringify({
     cancelledName,
     remoteCalls,
     ready: client.ready,
+    workerCountAfterClose,
+    hosted: hosted.hosted,
     replacementMessages: workers[1].messages,
   }));
 })().catch((error) => { console.error(error); process.exit(1); });
@@ -1836,8 +1972,10 @@ class WorkerDouble {
 
     assert json.loads(completed.stdout) == {
         "cancelledName": "AbortError",
-        "remoteCalls": 0,
-        "ready": True,
+        "remoteCalls": 1,
+        "ready": False,
+        "workerCountAfterClose": 2,
+        "hosted": True,
         "replacementMessages": ["probe", "prefix"],
     }
 

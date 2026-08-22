@@ -94,6 +94,36 @@ def test_pages_uses_the_local_certified_bundle_without_waiting_for_render() -> N
     assert "path: _site" in workflow
 
 
+def test_pages_never_binds_the_certified_local_engine_to_render_identity() -> None:
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    health = app[app.index("async function checkHealth") : app.index("function bindEvents")]
+
+    assert "preflightCertifiedBrowserRuntime" in health
+    assert "browserRuntimeCanSearch(browserRuntime)" in health
+    assert "browserRuntimeMatchesHostedIdentity(browserRuntime, health)" in health
+    assert "sourceFingerprint:" not in health
+    assert "engineProfileId:" not in health
+    identity_matcher = app[
+        app.index("function browserRuntimeMatchesHostedIdentity") :
+        app.index("async function preflightCertifiedBrowserRuntime")
+    ]
+    assert "engine_profile_id" not in identity_matcher
+    assert "engine_profile_name" not in identity_matcher
+    assert "runtime.source_fingerprint" in identity_matcher
+    assert "runtime.engine_version" in identity_matcher
+    assert "runtime.ruleset_version" in identity_matcher
+    assert 'browserEngineClient.close("browser/server engine identities differ")' in health
+    assert 'reason: "browser-hosted-engine-identity-mismatch"' in health
+    assert 'local engine: ${state.play.browserWasmReason}' in health
+    assert "LOCAL_ENGINE_BOOTSTRAP_TIMEOUT_MS" in health
+    assert "LOCAL_ENGINE_FIRST_PROBE_TIMEOUT_MS" in health
+    assert "deadlineMs: browserBootstrapDeadlineMs" in health
+    assert health.index("deadlineMs: browserBootstrapDeadlineMs") < health.index(
+        'requestJson("/api/health"'
+    )
+    assert 'error?.code === "browser-analysis-deadline"' in app
+
+
 def test_pages_artifact_versions_every_executable_asset(
     tmp_path: Path,
 ) -> None:
@@ -153,9 +183,10 @@ def test_browser_engine_assets_are_fail_closed_and_receipted() -> None:
     )
     adapter = (STATIC / "wasm-kernel-adapter.js").read_text(encoding="utf-8")
 
-    assert app.index("await browserEngineClient.preflight({})") < app.index(
+    assert app.index("browserRuntime = await preflightCertifiedBrowserRuntime") < app.index(
         'requestJson("/api/health"'
     )
+    assert "return await browserEngineClient.preflight({ deadlineMs })" in app
     assert 'result.publishable !== true' in client
     assert 'result.safety_certified !== true' in client
     assert 'result.legal_series_certified !== true' in client
@@ -313,17 +344,26 @@ const completed = {
     series: 6,
     quiet_series: 0,
     ep_targets: [],
+    promoted_hex: "0000000000000040",
+    chess960: true,
   },
   nextState: {
     fen: "s7-boundary",
     series: 7,
     quiet_series: 0,
     ep_targets: [],
+    promoted_hex: "0000000000000080",
+    chess960: true,
   },
   prefix: ["d7d6", "d6e5", "e5e4", "f8d6", "b8c6", "e4e3"],
   prefixSan: ["d6", "dxe5", "e4", "Bd6", "Nc6", "e3+"],
 };
 const plan = handoff.prepareCompletedSeries(completed);
+const unknownPlan = handoff.prepareCompletedSeries({
+  ...completed,
+  boundary: { ...completed.boundary, promoted_hex: null, chess960: false },
+  nextState: { ...completed.nextState, promoted_hex: null, chess960: false },
+});
 const gate = handoff.createGate();
 let starts = 0;
 let release;
@@ -334,6 +374,7 @@ release();
 Promise.all([first, duplicate]).then(([left, right]) => {
   process.stdout.write(JSON.stringify({
     plan,
+    unknownPlan,
     starts,
     sameResult: left === right,
     active: gate.isActive(),
@@ -356,7 +397,20 @@ Promise.all([first, duplicate]).then(([left, right]) => {
         "b8c6",
         "e4e3",
     ]
+    assert (
+        payload["plan"]["historyEntry"]["boundary"]["promoted_hex"]
+        == "0000000000000040"
+    )
+    assert payload["plan"]["historyEntry"]["boundary"]["chess960"] is True
     assert payload["plan"]["nextBoundary"]["series"] == 7
+    assert payload["plan"]["nextBoundary"]["promoted_hex"] == "0000000000000080"
+    assert payload["plan"]["nextBoundary"]["chess960"] is True
+    assert (
+        payload["unknownPlan"]["historyEntry"]["boundary"]["promoted_hex"]
+        is None
+    )
+    assert payload["unknownPlan"]["nextBoundary"]["promoted_hex"] is None
+    assert "unknown-promoted-provenance" in payload["unknownPlan"]["key"]
     assert payload["plan"]["movesRemaining"] == 7
     assert payload["starts"] == 1
     assert payload["sameResult"] is True
@@ -561,6 +615,18 @@ def test_play_session_reload_uses_an_authoritatively_replayed_uci_ledger() -> No
     assert "storedPlayLedgerExtends(candidate, existing)" in persistence
     assert "existing.revision !== baseRevision" in persistence
     assert "sameStoredPlayState(candidate, existing)" in persistence
+    stale_revision_start = persistence.index(
+        "if (existing.revision !== baseRevision"
+    )
+    stale_revision = persistence[
+        stale_revision_start : persistence.index(
+            "if (!storedPlayLedgerExtends",
+            stale_revision_start,
+        )
+    ]
+    assert "existing.ownerId === playSessionTabId" in stale_revision
+    assert "claimOwnership === false" in stale_revision
+    assert "The loser of two simultaneous reloads must stay stale" in stale_revision
     assert "existing.ownerId !== playSessionTabId && !claimOwnership" in persistence
     assert "navigator.locks.request(PLAY_SESSION_WRITE_LOCK, commit)" in persistence
     assert "playSessionLastWriteDurable = false" in persistence
@@ -571,7 +637,9 @@ def test_play_session_reload_uses_an_authoritatively_replayed_uci_ledger() -> No
     assert "const playSessionTabId = randomStorageId(\"page\")" in app
     assert "sessionStorage.setItem(PLAY_SESSION_TAB_STORAGE_KEY" not in app
     assert "await requireDurablePlaySession(" in app
-    assert "{ claimOwnership: false }," in persistence
+    restore_commit = persistence[persistence.index("if (restored)") :]
+    assert "{ claimOwnership: true }," in restore_commit
+    assert "only after its full move ledger passes authoritative replay" in restore_commit
     assert "{ capture: true }," in persistence
     assert "replaceExpectedSessionId" in persistence
     assert "replaceExpectedRevision" in persistence

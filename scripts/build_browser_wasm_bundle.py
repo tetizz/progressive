@@ -32,6 +32,10 @@ PREFIX_HARD_LIMITS = {
 }
 HEX_16 = re.compile(r"[0-9a-f]{16}")
 HEX_64 = re.compile(r"[0-9a-f]{64}")
+LOCATE_FILE_CALL = re.compile(r"(?<![\w$.])locateFile\s*\(")
+LOCATE_FILE_LITERAL_CALL = re.compile(
+    r'''(?<![\w$.])locateFile\s*\(\s*(?P<quote>["'])(?P<asset>[^"'\\]*)(?P=quote)\s*\)'''
+)
 MAX_INITIAL_MEMORY_BYTES = 128 * 1024 * 1024
 MAXIMUM_MEMORY_BYTES = 256 * 1024 * 1024
 MAX_ESTIMATED_PEAK_MEMORY_BYTES = 192 * 1024 * 1024
@@ -870,6 +874,37 @@ def _safe_support_file(path: Path) -> None:
         raise ValueError(f"unsafe WebAssembly support-file name: {path.name!r}")
 
 
+def _validate_module_wasm_dependency(module_js: Path, wasm_name: str) -> None:
+    expected_name = _manifest_asset_name(wasm_name, ".wasm")
+    try:
+        wrapper = module_js.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ValueError(f"could not read Emscripten module wrapper: {error}") from error
+    wasm_requests: list[str] = []
+    for call in LOCATE_FILE_CALL.finditer(wrapper):
+        declaration_prefix = wrapper[max(0, call.start() - 32) : call.start()]
+        if re.search(r"\bfunction\s*$", declaration_prefix):
+            continue
+        literal = LOCATE_FILE_LITERAL_CALL.match(wrapper, call.start())
+        if literal is None:
+            raise ValueError(
+                "verified Emscripten wrapper must bind locateFile dependencies "
+                "with literal asset names"
+            )
+        asset = literal.group("asset")
+        if asset.endswith(".wasm"):
+            wasm_requests.append(_manifest_asset_name(asset, ".wasm"))
+    if not wasm_requests:
+        raise ValueError(
+            "verified Emscripten wrapper has no literal locateFile WASM dependency"
+        )
+    if set(wasm_requests) != {expected_name}:
+        raise ValueError(
+            "verified Emscripten wrapper WASM dependency does not match the input "
+            f"basename: expected {expected_name!r}, found {sorted(set(wasm_requests))!r}"
+        )
+
+
 def _build_variant(
     *,
     runtime_variant: str,
@@ -915,6 +950,7 @@ def _build_variant(
     for path, label in required_paths:
         if not path.is_file():
             raise FileNotFoundError(f"{runtime_variant} {label} is missing: {path}")
+    wasm_name = _manifest_asset_name(wasm.name, ".wasm")
     certificate = load_certificate(certificate_path) if certificate_path else None
     prefix_certificate = (
         load_certificate(prefix_certificate_path)
@@ -1116,15 +1152,16 @@ def _build_variant(
     ):
         raise ValueError("root-session and mate certificates have different runtimes")
 
+    _validate_module_wasm_dependency(module_js, wasm_name)
     destination.mkdir(parents=True)
-    shutil.copyfile(wasm, destination / "spc-engine.wasm")
+    shutil.copyfile(wasm, destination / wasm_name)
     shutil.copyfile(module_js, destination / "spc-engine.js")
     by_name = {path.name: path for path in support_paths}
     for item in support_files:
         shutil.copyfile(by_name[item["name"]], destination / item["name"])
     variant: dict[str, Any] = {
         "thread_count": thread_count,
-        "wasm": "spc-engine.wasm",
+        "wasm": wasm_name,
         "wasm_sha256": wasm_sha256,
         "module_js": "spc-engine.js",
         "module_js_sha256": module_js_sha256,
@@ -1387,6 +1424,7 @@ def validate_existing_bundle(bundle: Path, source_package: Path) -> Mapping[str,
         or variant.get("module_js_sha256") != module_js_sha256
     ):
         raise ValueError("browser engine bundle artifact hash mismatch")
+    _validate_module_wasm_dependency(module_js, wasm_name)
     certificate_value = variant.get("safety_certificate")
     prefix_certificate_value = variant.get("prefix_certificate")
     root_certificate_value = variant.get("root_session_certificate")

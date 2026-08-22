@@ -7,6 +7,8 @@
       series: Number(boundary.series),
       quiet_series: Number(boundary.quiet_series || 0),
       ep_targets: [...(boundary.ep_targets || [])],
+      promoted_hex: boundary.promoted_hex == null ? null : String(boundary.promoted_hex),
+      chess960: boundary.chess960 === true,
     };
   }
 
@@ -22,6 +24,8 @@
       boundary.series,
       boundary.quiet_series || 0,
       (boundary.ep_targets || []).join(","),
+      boundary.promoted_hex ?? "unknown-promoted-provenance",
+      boundary.chess960 === true ? "chess960" : "orthodox",
       prefix.join(","),
     ].join("|");
     return {

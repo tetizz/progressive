@@ -80,7 +80,10 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
     artifact_directory.mkdir()
     module_js = artifact_directory / "spc-root-session.mjs"
     wasm = artifact_directory / "spc-root-session.wasm"
-    module_js.write_text("export default async () => ({});\n", encoding="utf-8")
+    module_js.write_text(
+        'export default async () => ({ wasm: locateFile("spc-root-session.wasm") });\n',
+        encoding="utf-8",
+    )
     wasm.write_bytes(b"\0asm\x01\0\0\0")
 
     source_records = [

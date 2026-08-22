@@ -337,7 +337,7 @@
       },
       "support_files": [],
       "thread_count": 1,
-      "wasm": "spc-engine.wasm",
+      "wasm": "spc-root-session.wasm",
       "wasm_sha256": "46c1340248d891df46fee397dfef3b0cc00cfcd754162fbda75e8e35ae520a8d"
     }
   }
