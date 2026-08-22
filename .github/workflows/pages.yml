@@ -44,6 +44,10 @@ jobs:
               "evaluation-format.js",
               "play-handoff.js",
               "play-timeline.js",
+              "browser-engine-client.js",
+              "browser-engine-worker.js",
+              "wasm-kernel-adapter.js",
+              "engine/browser-engine-manifest.json",
               "app.js",
               "THIRD_PARTY_NOTICES.txt",
           ]
@@ -56,6 +60,12 @@ jobs:
               raise SystemExit("public API routing is not enabled")
           if 'src="/' in index or 'href="/styles.css"' in index:
               raise SystemExit("root-relative assets would break the project Pages path")
+
+      - name: Validate certified browser engine bundle
+        run: >-
+          python scripts/build_browser_wasm_bundle.py
+          --validate-existing src/scottish_progressive/web/static/engine
+          --source-package src/scottish_progressive
 
       - name: Wait for matching deployed engine
         shell: python

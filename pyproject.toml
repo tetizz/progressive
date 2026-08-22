@@ -32,6 +32,8 @@ where = ["src"]
 "scottish_progressive" = ["*.cpp", "*.hpp", "*.h"]
 "scottish_progressive.web" = [
     "static/*",
+    "static/engine/*",
+    "static/engine/*/*",
     "static/pieces/cburnett/*.svg",
 ]
 

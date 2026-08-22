@@ -326,9 +326,51 @@ def state_from_payload(payload: Mapping[str, object]) -> ProgressiveState:
         maximum=1_000_000,
     )
     ep_value = source.get("ep_targets", source.get("progressive_ep"))
+    chess960 = source.get("chess960", False)
+    if not isinstance(chess960, bool):
+        raise APIError(422, "invalid-field", "chess960 must be a boolean")
+    if chess960:
+        raise APIError(422, "invalid-state", "Chess960 boundaries are not supported")
     try:
-        return ProgressiveState.from_fen(
-            fen.strip(),
+        board = chess.Board(fen.strip(), chess960=False)
+        promoted_hex = source.get("promoted_hex")
+        if promoted_hex is not None:
+            if not isinstance(promoted_hex, str):
+                raise APIError(
+                    422,
+                    "invalid-field",
+                    "promoted_hex must be a hexadecimal string",
+                )
+            promoted_text = promoted_hex.strip().lower()
+            if promoted_text.startswith("0x"):
+                promoted_text = promoted_text[2:]
+            if (
+                not promoted_text
+                or len(promoted_text) > 16
+                or any(character not in "0123456789abcdef" for character in promoted_text)
+            ):
+                raise APIError(
+                    422,
+                    "invalid-field",
+                    "promoted_hex must contain at most 16 hexadecimal digits",
+                )
+            promoted = int(promoted_text, 16)
+            occupied = board.occupied
+            if promoted & ~occupied or promoted & (board.pawns | board.kings):
+                raise APIError(
+                    422,
+                    "invalid-state",
+                    "promoted_hex must name occupied non-pawn, non-king squares",
+                )
+            if board.promoted and board.promoted != promoted:
+                raise APIError(
+                    422,
+                    "invalid-state",
+                    "promoted_hex conflicts with promoted markers in the FEN",
+                )
+            board.promoted = promoted
+        return ProgressiveState(
+            board,
             series,
             quiet_series=quiet_series,
             ep_targets=_parse_ep_targets(ep_value),
@@ -374,6 +416,8 @@ def _boundary_payload(state: ProgressiveState) -> dict[str, object]:
         "side_to_move": "white" if state.board.turn == chess.WHITE else "black",
         "quiet_series": state.quiet_series,
         "quiet_draw_pending": state.quiet_draw_pending,
+        "promoted_hex": f"{state.board.promoted:016x}",
+        "chess960": bool(state.board.chess960),
         "ep_targets": [chess.square_name(square) for square in state.ep_targets],
         "progressive_ep": [chess.square_name(square) for square in state.ep_targets],
     }

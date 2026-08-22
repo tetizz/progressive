@@ -2,6 +2,7 @@
   "use strict";
 
   const START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+  const ZERO_PROMOTED_HEX = "0000000000000000";
   const FILES = "abcdefgh";
   const STUDY_STORAGE_KEY = "scottish-progressive-analysis-study-v1";
   const POSITION_STORAGE_KEY = "scottish-progressive-saved-positions-v1";
@@ -30,7 +31,15 @@
   const isPublicPagesSite = globalThis.location.hostname.toLowerCase() === PUBLIC_SITE_HOST
     && (publicPath === expectedPublicPath
       || publicPath.startsWith(`${expectedPublicPath}/`));
+  const staticHostCanRunLocalEngine = globalThis.location.protocol === "https:"
+    || ["localhost", "127.0.0.1", "::1"].includes(
+      globalThis.location.hostname.toLowerCase(),
+    );
   const API_ORIGIN = isPublicPagesSite ? configuredApiOrigin : "";
+  const BROWSER_ENGINE_API = globalThis.ScottishProgressiveBrowserEngine;
+  const browserEngineClient = staticHostCanRunLocalEngine && BROWSER_ENGINE_API
+    ? BROWSER_ENGINE_API.createClient()
+    : null;
   const EVALUATION_SCALE_HELP = "About 100 evaluation points equals one pawn. This is a heuristic Progressive evaluation, not calibrated Stockfish centipawns.";
   const ANALYSIS_PRESETS = {
     quick: { depth: 4, cap: 48, seconds: 1.25, alternatives: 2, generationPositions: 150_000 },
@@ -45,7 +54,7 @@
   };
 
   const dom = Object.fromEntries([
-    "board", "board-shell", "board-arrows", "board-loading", "drag-piece",
+    "board", "board-shell", "board-arrows", "board-loading", "board-loading-text", "drag-piece",
     "engine-status", "engine-status-text", "rules-version", "series-number",
     "turn-label", "moves-heading", "series-status", "move-chips", "boundary-pill",
     "boundary-notice", "boundary-notice-text", "eval-rail", "eval-fill", "eval-marker",
@@ -84,6 +93,8 @@
       series: 1,
       quiet_series: 0,
       ep_targets: [],
+      promoted_hex: ZERO_PROMOTED_HEX,
+      chess960: false,
     },
     prefix: [],
     prefixSan: [],
@@ -155,6 +166,10 @@
       runtimeCpuCountSource: null,
       nativeThreads: 1,
       nativeThreadsPolicy: null,
+      runtimeMode: "server",
+      browserWasmReady: false,
+      browserWasmReason: null,
+      browserWasmArtifact: null,
       healthReady: false,
       recommendedDepth: 2,
       recommendedBranchCap: 32,
@@ -163,6 +178,7 @@
       lastEngineSeries: null,
       strength: "strong",
       activeSearch: null,
+      activeSearchRuntime: null,
       lastSearch: null,
       timelineIndex: null,
     },
@@ -206,57 +222,165 @@
     return error?.message || String(error) || "Unknown error";
   }
 
-  async function requestJson(path, options = {}) {
+  function monotonicNow() {
+    return globalThis.performance?.now?.() ?? Date.now();
+  }
+
+  function analysisDeadlineError() {
+    const error = new Error("The engine reached the analysis deadline.");
+    error.name = "TimeoutError";
+    error.code = "analysis-deadline";
+    return error;
+  }
+
+  async function requestRemoteJson(path, options = {}) {
     if (!path.startsWith("/api/")) throw new Error("API path must start with /api/");
-    const headers = { ...(options.headers || {}) };
-    if (options.body !== undefined && !Object.keys(headers).some(
+    const {
+      onTransport: _onTransport,
+      analysisDeadlineMs,
+      ...requestOptions
+    } = options;
+    const headers = { ...(requestOptions.headers || {}) };
+    if (requestOptions.body !== undefined && !Object.keys(headers).some(
       (name) => name.toLowerCase() === "content-type",
     )) {
       headers["Content-Type"] = "application/json";
     }
-    const response = await fetch(`${API_ORIGIN}${path}`, {
-      ...options,
-      headers,
-    });
-    const type = response.headers.get("content-type") || "";
-    if (!type.includes("application/json")) {
-      await response.text();
-      const error = new Error(response.ok
-        ? "The engine service returned a non-API response."
-        : `${response.status} ${response.statusText}`);
-      error.status = response.status;
-      error.code = "invalid-api-response";
-      throw error;
+    const parentSignal = requestOptions.signal;
+    let deadlineController = null;
+    let deadlineTimer = null;
+    let deadlineReached = false;
+    let onParentAbort = null;
+    if (Number.isFinite(analysisDeadlineMs)) {
+      const remainingMs = analysisDeadlineMs - monotonicNow();
+      if (remainingMs <= 0) throw analysisDeadlineError();
+      deadlineController = new AbortController();
+      if (parentSignal?.aborted) throw new DOMException("Request cancelled", "AbortError");
+      onParentAbort = () => deadlineController.abort(parentSignal?.reason);
+      parentSignal?.addEventListener?.("abort", onParentAbort, { once: true });
+      if (parentSignal?.aborted) onParentAbort();
+      deadlineTimer = window.setTimeout(() => {
+        deadlineReached = true;
+        deadlineController.abort();
+      }, remainingMs);
+      requestOptions.signal = deadlineController.signal;
     }
-    let payload;
     try {
-      payload = await response.json();
-    } catch {
-      const error = new Error("The engine service returned invalid JSON.");
-      error.status = response.status;
-      error.code = "invalid-api-response";
+      const response = await fetch(`${API_ORIGIN}${path}`, {
+        ...requestOptions,
+        headers,
+      });
+      const type = response.headers.get("content-type") || "";
+      if (!type.includes("application/json")) {
+        await response.text();
+        const error = new Error(response.ok
+          ? "The engine service returned a non-API response."
+          : `${response.status} ${response.statusText}`);
+        error.status = response.status;
+        error.code = "invalid-api-response";
+        throw error;
+      }
+      let payload;
+      try {
+        payload = await response.json();
+      } catch (error) {
+        if (deadlineReached) throw analysisDeadlineError();
+        const invalid = new Error("The engine service returned invalid JSON.");
+        invalid.status = response.status;
+        invalid.code = "invalid-api-response";
+        invalid.cause = error;
+        throw invalid;
+      }
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+        const error = new Error("The engine service returned an invalid API payload.");
+        error.status = response.status;
+        error.code = "invalid-api-response";
+        throw error;
+      }
+      if (!response.ok) {
+        const detail = first(
+          payload.detail,
+          payload.error?.message,
+          typeof payload.error === "string" ? payload.error : undefined,
+          payload.message,
+          `${response.status} ${response.statusText}`,
+        );
+        const error = new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+        error.status = response.status;
+        error.code = first(payload.error?.code, payload.code, null);
+        throw error;
+      }
+      return payload;
+    } catch (error) {
+      if (deadlineReached) throw analysisDeadlineError();
       throw error;
+    } finally {
+      if (deadlineTimer !== null) window.clearTimeout(deadlineTimer);
+      if (onParentAbort) {
+        parentSignal?.removeEventListener?.("abort", onParentAbort);
+      }
     }
-    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-      const error = new Error("The engine service returned an invalid API payload.");
-      error.status = response.status;
-      error.code = "invalid-api-response";
-      throw error;
+  }
+
+  async function requestJson(path, options = {}) {
+    if (!path.startsWith("/api/")) throw new Error("API path must start with /api/");
+    let analysisBody = null;
+    let analysisDeadlineMs = Number(options.analysisDeadlineMs);
+    if (path === "/api/analyze" && options.body !== undefined) {
+      try {
+        analysisBody = typeof options.body === "string"
+          ? JSON.parse(options.body)
+          : options.body;
+      } catch {
+        analysisBody = null;
+      }
+      if (!analysisBody || typeof analysisBody !== "object" || Array.isArray(analysisBody)) {
+        analysisBody = null;
+      }
+      if (!Number.isFinite(analysisDeadlineMs) && analysisBody) {
+        const seconds = Math.max(0.01, asNumber(analysisBody.time_limit, 0.01));
+        analysisDeadlineMs = monotonicNow() + seconds * 1000;
+      }
     }
-    if (!response.ok) {
-      const detail = first(
-        payload.detail,
-        payload.error?.message,
-        typeof payload.error === "string" ? payload.error : undefined,
-        payload.message,
-        `${response.status} ${response.statusText}`,
-      );
-      const error = new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
-      error.status = response.status;
-      error.code = first(payload.error?.code, payload.code, null);
-      throw error;
+    if (path === "/api/analyze" && browserEngineClient && options.body !== undefined) {
+      if (browserEngineClient.canAnalyze(analysisBody)) {
+        try {
+          options.onTransport?.("browser-wasm");
+          return await browserEngineClient.analyze(analysisBody, {
+            signal: options.signal,
+            deadlineMs: analysisDeadlineMs,
+          });
+        } catch (error) {
+          if (
+            error?.name === "AbortError"
+            || error?.name === "TimeoutError"
+            || error?.code === "browser-analysis-deadline"
+          ) throw error;
+          if (error?.fallbackRequired !== true) throw error;
+          // The server remains the fail-closed path for an unsupported,
+          // uncertified, stale, interrupted, or malformed local result.
+        }
+      }
     }
-    return payload;
+    const remoteOptions = {
+      ...options,
+      analysisDeadlineMs: Number.isFinite(analysisDeadlineMs)
+        ? analysisDeadlineMs
+        : options.analysisDeadlineMs,
+    };
+    if (path === "/api/analyze" && analysisBody && Number.isFinite(analysisDeadlineMs)) {
+      const remainingSeconds = (analysisDeadlineMs - monotonicNow()) / 1000;
+      if (remainingSeconds < 0.01) throw analysisDeadlineError();
+      remoteOptions.body = JSON.stringify({
+        ...analysisBody,
+        time_limit: Math.min(
+          Math.max(0.01, asNumber(analysisBody.time_limit, remainingSeconds)),
+          remainingSeconds,
+        ),
+      });
+    }
+    options.onTransport?.("render-server");
+    return requestRemoteJson(path, remoteOptions);
   }
 
   function isPublicServiceWakeError(error, { includeAbort = false } = {}) {
@@ -267,8 +391,30 @@
       || (includeAbort && ["AbortError", "TimeoutError"].includes(error?.name));
   }
 
-  function waitForRetry(milliseconds) {
-    return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+  function waitForRetry(milliseconds, { signal = null, deadlineMs = null } = {}) {
+    if (signal?.aborted) return Promise.reject(new DOMException("Request cancelled", "AbortError"));
+    const remainingMs = Number.isFinite(deadlineMs)
+      ? deadlineMs - monotonicNow()
+      : null;
+    if (remainingMs !== null && remainingMs <= 0) return Promise.reject(analysisDeadlineError());
+    const waitMs = remainingMs === null ? milliseconds : Math.min(milliseconds, remainingMs);
+    return new Promise((resolve, reject) => {
+      let timer = null;
+      const onAbort = () => {
+        if (timer !== null) window.clearTimeout(timer);
+        reject(new DOMException("Request cancelled", "AbortError"));
+      };
+      signal?.addEventListener?.("abort", onAbort, { once: true });
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      timer = window.setTimeout(() => {
+        signal?.removeEventListener?.("abort", onAbort);
+        if (remainingMs !== null && remainingMs <= milliseconds) reject(analysisDeadlineError());
+        else resolve();
+      }, waitMs);
+    });
   }
 
   function boundaryPayload() {
@@ -278,6 +424,8 @@
       quiet_series: state.boundary.quiet_series,
       ep_targets: [...state.boundary.ep_targets],
       progressive_ep: [...state.boundary.ep_targets],
+      promoted_hex: state.boundary.promoted_hex,
+      chess960: state.boundary.chess960 === true,
     };
   }
 
@@ -354,6 +502,8 @@
       series: asNumber(first(raw.series, raw.series_number), state.boundary.series + 1),
       quiet_series: asNumber(first(raw.quiet_series, raw.quiet), 0),
       ep_targets: normalizeEpTargets(ep),
+      promoted_hex: normalizePromotedHex(raw.promoted_hex),
+      chess960: raw.chess960 === true,
     };
   }
 
@@ -366,12 +516,22 @@
     return [];
   }
 
+  function normalizePromotedHex(value) {
+    const text = String(value ?? "").trim().toLowerCase().replace(/^0x/, "");
+    if (!/^[0-9a-f]{1,16}$/.test(text)) return null;
+    return text.replace(/^0+(?=[0-9a-f])/, "").padStart(16, "0");
+  }
+
   function cloneBoundary(boundary) {
+    const fen = String(boundary?.fen || START_FEN);
     return {
-      fen: String(boundary?.fen || START_FEN),
+      fen,
       series: Math.max(1, Math.floor(asNumber(boundary?.series, 1))),
       quiet_series: Math.max(0, Math.floor(asNumber(boundary?.quiet_series, 0))),
       ep_targets: normalizeEpTargets(boundary?.ep_targets).map((square) => square.toLowerCase()),
+      promoted_hex: normalizePromotedHex(boundary?.promoted_hex)
+        || (fen === START_FEN ? ZERO_PROMOTED_HEX : null),
+      chess960: boundary?.chess960 === true,
     };
   }
 
@@ -531,6 +691,7 @@
 
   function playSearchEvidence(result, requested) {
     const stats = result?.stats || {};
+    const runtimeReceipt = result?.runtime_receipt || {};
     const completedRaw = first(result?.completed_depth, stats.completed_depth);
     const requestedRaw = first(result?.requested_depth, stats.requested_depth, requested.depth);
     const elapsedRaw = first(result?.elapsed_seconds, stats.elapsed_seconds);
@@ -547,6 +708,12 @@
       rootSearchMode: String(first(result?.root_search_mode, "")),
       rootScoresComplete: asBoolean(first(result?.root_scores_complete, stats.root_scores_complete)),
       elapsedSeconds: Number.isFinite(Number(elapsedRaw)) ? Number(elapsedRaw) : null,
+      runtime: String(first(runtimeReceipt.runtime, "render-server")),
+      artifactFingerprint: first(runtimeReceipt.artifact_fingerprint, null),
+      threadCount: Math.max(1, Math.floor(asNumber(
+        first(runtimeReceipt.thread_count, state.play.nativeThreads),
+        1,
+      ))),
     };
   }
 
@@ -561,10 +728,14 @@
       }
       const seconds = optionLimits.seconds.toLocaleString();
       const work = compactNumber(optionLimits.generationPositions);
-      const threads = `${state.play.nativeThreads} native search thread${state.play.nativeThreads === 1 ? "" : "s"}${state.play.nativeThreadsPolicy === "single-thread-pool-avoidance" ? " in host-safe mode" : ""}`;
-      const allocation = state.play.runtimeCpuCount === null
-        ? "the server's reported allocation"
-        : `${state.play.runtimeCpuCount} allocated CPU`;
+      const threads = state.play.runtimeMode === "browser-wasm"
+        ? `${state.play.nativeThreads} on-device WebAssembly thread${state.play.nativeThreads === 1 ? "" : "s"}`
+        : `${state.play.nativeThreads} native search thread${state.play.nativeThreads === 1 ? "" : "s"}${state.play.nativeThreadsPolicy === "single-thread-pool-avoidance" ? " in host-safe mode" : ""}`;
+      const allocation = state.play.runtimeMode === "browser-wasm"
+        ? `${state.play.runtimeCpuCount || "available"} logical processors on this device`
+        : state.play.runtimeCpuCount === null
+          ? "the server's reported allocation"
+          : `${state.play.runtimeCpuCount} allocated CPU`;
       if (detail) detail.textContent = `Depth ${optionLimits.depth} · up to ${seconds}s · ${work} work`;
       node.title = `Searches toward depth ${optionLimits.depth} for up to ${seconds} ${optionLimits.seconds === 1 ? "second" : "seconds"}, capped at ${work} generated positions, using ${threads} on ${allocation}.`;
     };
@@ -577,7 +748,13 @@
     dom.play_strength_status.textContent = `${limits.label} · target depth ${limits.depth} · up to ${limits.seconds.toLocaleString()}s · ${compactNumber(limits.generationPositions)} work cap`;
     if (state.play.activeSearch) {
       const active = state.play.activeSearch;
-      dom.play_search_depth.textContent = `Searching · requested depth ${active.depth}`;
+      if (state.play.activeSearchRuntime === "browser-wasm") {
+        const threads = Math.max(1, state.play.nativeThreads);
+        dom.play_search_depth.textContent = `Searching locally · WASM · ${threads} thread${threads === 1 ? "" : "s"}`;
+      } else {
+        const threads = Math.max(1, state.play.nativeThreads);
+        dom.play_search_depth.textContent = `Searching on hosted engine · ${threads} thread${threads === 1 ? "" : "s"}`;
+      }
       dom.play_search_status.textContent = `Best-move alpha-beta across up to ${active.maxSeries} retained series per node · up to ${active.seconds.toLocaleString()}s · ${compactNumber(active.generationPositions)} position work cap`;
       return;
     }
@@ -591,6 +768,9 @@
       ? `Requested depth ${evidence.requestedDepth} · completion not reported`
       : `Depth ${evidence.completedDepth} complete · requested ${evidence.requestedDepth}`;
     const status = [
+      evidence.runtime === "browser-wasm"
+        ? `On-device WebAssembly · ${evidence.threadCount} thread${evidence.threadCount === 1 ? "" : "s"}`
+        : `Hosted engine · ${evidence.threadCount} thread${evidence.threadCount === 1 ? "" : "s"}`,
       evidence.rootSearchMode === "best-move"
         ? `Best-move alpha-beta across up to ${evidence.maxSeries} retained series per node`
         : "All retained alternatives scored",
@@ -638,6 +818,7 @@
     state.play.thinking = false;
     state.play.animating = false;
     state.play.activeSearch = null;
+    state.play.activeSearchRuntime = null;
   }
 
   function safeBoundary(value) {
@@ -646,15 +827,31 @@
     const series = Math.floor(asNumber(value.series, 0));
     const quiet = Math.floor(asNumber(value.quiet_series, -1));
     const epTargets = normalizeEpTargets(value.ep_targets).map((square) => square.toLowerCase());
+    const promotedHex = normalizePromotedHex(value.promoted_hex)
+      || (fen === START_FEN ? ZERO_PROMOTED_HEX : null);
     if (!fen || fen.length > 180 || fen.split("/").length !== 8) return null;
     if (series < 1 || series > 1000000 || quiet < 0 || quiet > 1000000) return null;
     if (epTargets.length > 8 || epTargets.some((square) => !/^[a-h][1-8]$/.test(square))) return null;
-    return { fen, series, quiet_series: quiet, ep_targets: epTargets };
+    return {
+      fen,
+      series,
+      quiet_series: quiet,
+      ep_targets: epTargets,
+      promoted_hex: promotedHex,
+      chess960: value.chess960 === true,
+    };
   }
 
   function boundaryKey(boundary) {
     const safe = cloneBoundary(boundary);
-    return [safe.fen, safe.series, safe.quiet_series, [...safe.ep_targets].sort().join(",")].join("|");
+    return [
+      safe.fen,
+      safe.series,
+      safe.quiet_series,
+      [...safe.ep_targets].sort().join(","),
+      safe.promoted_hex || "unknown-promoted-provenance",
+      safe.chess960 ? "chess960" : "orthodox",
+    ].join("|");
   }
 
   function safeMovePrefix(value, boundary) {
@@ -937,11 +1134,12 @@
     return state.currentTreeNodeId ? state.study?.nodes[state.currentTreeNodeId] || null : null;
   }
 
-  function setBoardBusy(busy) {
+  function setBoardBusy(busy, label = "Loading board…") {
     state.positionBusy = busy;
     dom.board.setAttribute("aria-busy", String(busy));
     dom.board_loading.classList.toggle("is-hidden", !busy);
     dom.board_shell.classList.toggle("is-checking", busy);
+    if (busy) dom.board_loading_text.textContent = label;
     if (busy) state.selected = null;
   }
 
@@ -2018,8 +2216,10 @@
       status = {
         title: "Champion is thinking",
         detail: state.play.animating
-          ? `Playing a server-checked Series ${state.boundary.series}.`
-          : `${search.label} search requested depth ${search.depth}, up to ${search.seconds.toLocaleString()}s.`,
+          ? `Playing an engine-validated Series ${state.boundary.series}.`
+          : state.play.activeSearchRuntime === "browser-wasm"
+            ? `Searching locally · WASM · ${state.play.nativeThreads} thread${state.play.nativeThreads === 1 ? "" : "s"}. Requested depth ${search.depth}, up to ${search.seconds.toLocaleString()}s.`
+            : `${search.label} hosted search requested depth ${search.depth}, up to ${search.seconds.toLocaleString()}s.`,
         kind: "thinking",
       };
     } else if (!status && activeColor === humanColor) {
@@ -2052,7 +2252,9 @@
     dom.play_engine_id.textContent = state.play.engineProfileId || "—";
     dom.play_engine_version.textContent = [state.play.engineVersion, state.play.engineFingerprint].filter(Boolean).join(" · ") || "—";
     dom.play_runtime_status.textContent = state.play.healthReady
-      ? `${state.play.runtimeCpuCount === null ? "CPU allocation unavailable" : `${state.play.runtimeCpuCount} CPU allocated`} · ${state.play.nativeThreads} native search thread${state.play.nativeThreads === 1 ? "" : "s"}${state.play.nativeThreadsPolicy === "single-thread-pool-avoidance" ? " · host-safe mode" : ""}`
+      ? state.play.runtimeMode === "browser-wasm"
+        ? `This device · ${state.play.runtimeCpuCount || "available"} logical processors · ${state.play.nativeThreads} WebAssembly thread${state.play.nativeThreads === 1 ? "" : "s"}`
+        : `${state.play.runtimeCpuCount === null ? "CPU allocation unavailable" : `${state.play.runtimeCpuCount} CPU allocated`} · ${state.play.nativeThreads} native search thread${state.play.nativeThreads === 1 ? "" : "s"}${state.play.nativeThreadsPolicy === "single-thread-pool-avoidance" ? " · host-safe mode" : ""}`
       : "Checking CPU allocation…";
     renderPlaySearchEvidence();
     renderPlayHistory();
@@ -2092,20 +2294,29 @@
     }
   }
 
-  async function requestEngineAnalysis(body, controller, sequence) {
+  async function requestEngineAnalysis(body, controller, sequence, deadlineMs) {
     let reconnectAttempt = 0;
     while (sequence === state.play.sequence && state.mode === "play") {
       try {
         return await requestJson("/api/analyze", {
           method: "POST",
           signal: controller.signal,
+          analysisDeadlineMs: deadlineMs,
           body: JSON.stringify(body),
+          onTransport: (runtime) => {
+            if (sequence !== state.play.sequence || state.mode !== "play") return;
+            state.play.activeSearchRuntime = runtime;
+            renderPlaySearchEvidence();
+          },
         });
       } catch (error) {
         if (error.name === "AbortError") throw error;
         if (error.status === 429) {
           dom.play_status_detail.textContent = "The engine is busy; your game is first in the retry queue.";
-          await waitForRetry(AUTO_ANALYSIS_RETRY_MS);
+          await waitForRetry(AUTO_ANALYSIS_RETRY_MS, {
+            signal: controller.signal,
+            deadlineMs,
+          });
           continue;
         }
         if (
@@ -2113,7 +2324,10 @@
           && reconnectAttempt < PUBLIC_ENGINE_RECONNECT_DELAYS_MS.length
         ) {
           dom.play_status_detail.textContent = "Reconnecting to the engine…";
-          await waitForRetry(PUBLIC_ENGINE_RECONNECT_DELAYS_MS[reconnectAttempt]);
+          await waitForRetry(PUBLIC_ENGINE_RECONNECT_DELAYS_MS[reconnectAttempt], {
+            signal: controller.signal,
+            deadlineMs,
+          });
           reconnectAttempt += 1;
           continue;
         }
@@ -2145,23 +2359,33 @@
     const sequence = ++state.play.sequence;
     const key = playPositionKey();
     const search = playSearchLimits();
+    const deadlineMs = monotonicNow() + search.seconds * 1000;
+    const analysisBody = {
+      ...boundaryPayload(),
+      prefix: [],
+      depth: search.depth,
+      max_series: search.maxSeries,
+      time_limit: search.seconds,
+      max_generation_positions: search.generationPositions,
+      alternatives: 0,
+      best_move_only: true,
+      rate_move: false,
+      save: false,
+    };
     state.play.thinking = true;
     state.play.activeSearch = search;
+    state.play.activeSearchRuntime = browserEngineClient?.canAnalyze(analysisBody)
+      ? "browser-wasm"
+      : "render-server";
     state.play.error = null;
     renderAll();
     try {
-      const analysis = await requestEngineAnalysis({
-        ...boundaryPayload(),
-        prefix: [],
-        depth: search.depth,
-        max_series: search.maxSeries,
-        time_limit: search.seconds,
-        max_generation_positions: search.generationPositions,
-        alternatives: 0,
-        best_move_only: true,
-        rate_move: false,
-        save: false,
-      }, controller, sequence);
+      const analysis = await requestEngineAnalysis(
+        analysisBody,
+        controller,
+        sequence,
+        deadlineMs,
+      );
       if (sequence !== state.play.sequence || key !== playPositionKey() || state.mode !== "play") return;
       state.play.lastSearch = playSearchEvidence(analysis, search);
       state.play.activeSearch = null;
@@ -2173,11 +2397,21 @@
       }
       const moves = engineSeriesFromAnalysis(analysis);
       if (!moves.length) throw new Error("The engine returned no legal series for this non-terminal position.");
-      const checked = await requestJson("/api/prefix", {
-        method: "POST",
-        signal: controller.signal,
-        body: JSON.stringify({ ...boundaryPayload(), prefix: moves }),
-      });
+      const localReplay = analysis.runtime_receipt?.runtime === "browser-wasm";
+      if (localReplay && (
+        analysis.legal_series_certified !== true
+        || analysis.authoritative_replay_certified !== true
+        || analysis.legal_validation_runtime !== "compiled-wasm"
+      )) {
+        throw new Error("The local engine did not certify its legal series replay.");
+      }
+      const checked = localReplay
+        ? analysis.checked_prefix
+        : await requestJson("/api/prefix", {
+          method: "POST",
+          signal: controller.signal,
+          body: JSON.stringify({ ...boundaryPayload(), prefix: moves }),
+        });
       if (sequence !== state.play.sequence || key !== playPositionKey() || state.mode !== "play") return;
       const canonical = Array.isArray(checked.prefix) ? checked.prefix.map(String) : [];
       if (canonical.length !== moves.length || canonical.some((move, index) => move !== moves[index])) {
@@ -2208,6 +2442,7 @@
         state.play.thinking = false;
         state.play.animating = false;
         state.play.activeSearch = null;
+        state.play.activeSearchRuntime = null;
         renderAll();
       }
     }
@@ -2227,7 +2462,14 @@
     state.play.activeSearch = null;
     state.play.lastSearch = null;
     state.play.timelineIndex = null;
-    state.boundary = { fen: START_FEN, series: 1, quiet_series: 0, ep_targets: [] };
+    state.boundary = {
+      fen: START_FEN,
+      series: 1,
+      quiet_series: 0,
+      ep_targets: [],
+      promoted_hex: ZERO_PROMOTED_HEX,
+      chess960: false,
+    };
     state.prefix = [];
     state.prefixSan = [];
     state.prefixFrames = [];
@@ -3048,7 +3290,14 @@
   }
 
   async function loadOpeningMove(uci) {
-    state.boundary = { fen: START_FEN, series: 1, quiet_series: 0, ep_targets: [] };
+    state.boundary = {
+      fen: START_FEN,
+      series: 1,
+      quiet_series: 0,
+      ep_targets: [],
+      promoted_hex: ZERO_PROMOTED_HEX,
+      chess960: false,
+    };
     state.history = [];
     state.prefix = [];
     state.prefixSan = [];
@@ -3084,7 +3333,14 @@
       if (series < 1) throw new Error("Series number must be at least 1.");
       if (quiet < 0) throw new Error("Quiet series cannot be negative.");
       if (epTargets.some((square) => !/^[a-h][1-8]$/i.test(square))) throw new Error("En-passant targets must be squares such as e3 or c6.");
-      const candidate = { fen, series, quiet_series: quiet, ep_targets: epTargets.map((square) => square.toLowerCase()) };
+      const candidate = {
+        fen,
+        series,
+        quiet_series: quiet,
+        ep_targets: epTargets.map((square) => square.toLowerCase()),
+        promoted_hex: null,
+        chess960: false,
+      };
       state.prefixAbort?.abort();
       state.positionReady = false;
       cancelAutoAnalysis(true);
@@ -3103,9 +3359,9 @@
         }),
       });
       if (sequence !== state.prefixSequence) return;
-      state.boundary = candidate;
+      state.boundary = cloneBoundary(first(payload.boundary_state, candidate));
       state.history = [];
-      state.study = createStudy(candidate);
+      state.study = createStudy(state.boundary);
       state.currentTreeNodeId = null;
       state.seriesParentNodeId = null;
       state.viewingHistorical = false;
@@ -3449,8 +3705,94 @@
     state.toastTimer = window.setTimeout(() => { dom.toast.hidden = true; }, 3200);
   }
 
+  function applyCertifiedBrowserRuntime(runtime) {
+    const limits = runtime.analysis_limits || {};
+    state.play.engineName = String(runtime.engine_profile_name);
+    state.play.engineProfileId = runtime.engine_profile_id;
+    state.play.engineVersion = runtime.engine_version;
+    state.play.engineFingerprint = runtime.source_fingerprint;
+    state.play.browserWasmReady = true;
+    state.play.browserWasmReason = null;
+    state.play.browserWasmArtifact = runtime.wasm_sha256;
+    state.play.runtimeMode = "browser-wasm";
+    state.play.runtimeCpuCount = Math.max(
+      1,
+      Math.floor(asNumber(globalThis.navigator?.hardwareConcurrency, 1)),
+    );
+    state.play.runtimeCpuCountSource = "navigator.hardwareConcurrency";
+    state.play.nativeThreads = Math.max(1, Math.floor(asNumber(runtime.thread_count, 1)));
+    state.play.nativeThreadsPolicy = "browser-wasm-single";
+    state.maximumAnalysisDepth = Math.max(1, Math.floor(asNumber(
+      limits.maximum_depth,
+      state.maximumAnalysisDepth,
+    )));
+    state.maximumAnalysisSeconds = Math.max(0.1, asNumber(
+      limits.maximum_seconds,
+      state.maximumAnalysisSeconds,
+    ));
+    state.maximumBranchCap = Math.max(1, Math.floor(asNumber(
+      limits.maximum_max_series,
+      state.maximumBranchCap,
+    )));
+    state.maximumGenerationPositions = Math.max(1_000, Math.floor(asNumber(
+      limits.maximum_generation_positions,
+      state.maximumGenerationPositions,
+    )));
+    state.play.recommendedDepth = Math.max(1, Math.floor(asNumber(
+      limits.default_depth,
+      state.play.recommendedDepth,
+    )));
+    state.play.recommendedBranchCap = Math.max(1, Math.floor(asNumber(
+      limits.default_max_series,
+      state.play.recommendedBranchCap,
+    )));
+    state.play.timeLimitSeconds = Math.max(0.1, Math.min(
+      state.maximumAnalysisSeconds,
+      asNumber(limits.default_seconds, state.play.timeLimitSeconds),
+    ));
+    state.play.generationPositions = Math.max(1_000, Math.min(
+      state.maximumGenerationPositions,
+      Math.floor(asNumber(
+        limits.default_generation_positions,
+        state.play.generationPositions,
+      )),
+    ));
+    PLAY_STRENGTHS.strong.seconds = state.play.timeLimitSeconds;
+    PLAY_STRENGTHS.strong.generationPositions = state.play.generationPositions;
+    dom.depth_control.max = String(state.maximumAnalysisDepth);
+    dom.cap_control.max = String(state.maximumBranchCap);
+    dom.time_control.max = String(state.maximumAnalysisSeconds);
+    dom.rules_version.textContent = String(runtime.ruleset_version);
+    state.play.healthReady = true;
+    dom.engine_status.classList.add("is-online");
+    dom.engine_status.classList.remove("is-offline");
+    dom.engine_status_text.textContent = "Engine on this device";
+    dom.engine_status.title = [
+      runtime.engine_profile_name,
+      runtime.engine_version,
+      runtime.source_fingerprint,
+      `WASM ${runtime.runtime_variant}`,
+      `${runtime.thread_count} thread${runtime.thread_count === 1 ? "" : "s"}`,
+      `certificate ${runtime.certificate_id}`,
+    ].filter(Boolean).join(" · ");
+    renderPlaySurface();
+  }
+
   async function checkHealth() {
     try {
+      if (browserEngineClient) {
+        dom.engine_status.classList.remove("is-online", "is-offline");
+        dom.engine_status_text.textContent = "Loading native engine…";
+        const localRuntime = await browserEngineClient.preflight({});
+        if (localRuntime.ready === true) {
+          applyCertifiedBrowserRuntime(localRuntime);
+          return;
+        }
+        state.play.browserWasmReady = false;
+        state.play.browserWasmReason = String(
+          localRuntime.reason || "browser-kernel-unavailable",
+        );
+      }
       if (isPublicPagesSite) {
         dom.engine_status.classList.remove("is-online", "is-offline");
         dom.engine_status_text.textContent = "Waking engine…";
@@ -3501,6 +3843,51 @@
         health.runtime?.native_threads_policy,
         null,
       );
+      const rulesetVersion = first(
+        health.ruleset_version,
+        health.rules_version,
+        health.ruleset,
+      );
+      let browserRuntime = { ready: false, reason: "not-public-pages" };
+      if (browserEngineClient) {
+        try {
+          browserRuntime = await browserEngineClient.preflight({
+            sourceFingerprint: state.play.engineFingerprint,
+            engineProfileId: state.play.engineProfileId,
+            engineProfileName: state.play.engineName,
+            engineVersion: state.play.engineVersion,
+            rulesetVersion,
+          });
+        } catch (error) {
+          if (error?.name === "AbortError") throw error;
+          browserRuntime = {
+            ready: false,
+            reason: String(error?.code || "browser-kernel-unavailable"),
+          };
+        }
+      }
+      state.play.browserWasmReady = browserRuntime.ready === true;
+      state.play.browserWasmReason = browserRuntime.ready
+        ? null
+        : String(browserRuntime.reason || "browser-kernel-unavailable");
+      state.play.browserWasmArtifact = browserRuntime.ready
+        ? browserRuntime.wasm_sha256
+        : null;
+      if (browserRuntime.ready) {
+        state.play.runtimeMode = "browser-wasm";
+        state.play.runtimeCpuCount = Math.max(
+          1,
+          Math.floor(asNumber(globalThis.navigator?.hardwareConcurrency, 1)),
+        );
+        state.play.runtimeCpuCountSource = "navigator.hardwareConcurrency";
+        state.play.nativeThreads = Math.max(
+          1,
+          Math.floor(asNumber(browserRuntime.thread_count, 1)),
+        );
+        state.play.nativeThreadsPolicy = "browser-wasm-single";
+      } else {
+        state.play.runtimeMode = "server";
+      }
       state.play.recommendedDepth = Math.max(1, Math.floor(asNumber(
         health.engine_profile_recommended_depth,
         state.play.recommendedDepth,
@@ -3510,9 +3897,9 @@
         state.play.recommendedBranchCap,
       )));
       dom.engine_status_text.textContent = first(health.status, "ok") === "ok"
-        ? "Engine online"
+        ? browserRuntime.ready ? "Engine on this device" : "Engine online"
         : String(first(health.status, "Engine online"));
-      const version = first(health.ruleset_version, health.rules_version, health.ruleset);
+      const version = rulesetVersion;
       if (version) dom.rules_version.textContent = String(version);
       const maximumSeconds = first(health.analysis_limits?.maximum_seconds, health.analysis_limits?.max_seconds);
       if (maximumSeconds !== undefined) {
@@ -3572,7 +3959,12 @@
         )),
       ));
       state.play.healthReady = true;
-      dom.engine_status.title = [profileName, first(health.engine_version, health.version), first(health.source_fingerprint, health.fingerprint)].filter(Boolean).join(" · ");
+      dom.engine_status.title = [
+        profileName,
+        first(health.engine_version, health.version),
+        first(health.source_fingerprint, health.fingerprint),
+        browserRuntime.ready ? "certified on-device WebAssembly" : "hosted engine fallback",
+      ].filter(Boolean).join(" · ");
       renderPlaySurface();
     } catch (error) {
       dom.engine_status.classList.add("is-offline");

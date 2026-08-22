@@ -20,17 +20,29 @@ def test_public_assets_are_project_pages_safe_and_keep_local_same_origin() -> No
 
     assert 'name="spc-api-origin" content="https://progressive-ui9q.onrender.com"' in index
     assert "connect-src 'self' https://progressive-ui9q.onrender.com" in index
+    assert "script-src 'self' blob: 'wasm-unsafe-eval'" in index
+    assert "worker-src 'self';" in index
+    assert "worker-src 'self' blob:" not in index
     assert 'href="./styles.css"' in index
     assert 'href="./" aria-label="Scottish Progressive home"' in index
     assert 'href="./THIRD_PARTY_NOTICES.txt"' in index
     assert 'src="/app.js"' not in index
     assert 'src="./app.js"' in index
+    assert index.index('src="./browser-engine-client.js"') < index.index(
+        'src="./app.js"'
+    )
+    assert "Checking legal moves" not in index
+    assert 'id="board-loading-text">Loading board…</span>' in index
+    assert 'dom.engine_status_text.textContent = "Loading native engine…"' in app
+    assert "Searching locally · WASM · ${threads} thread" in app
+    assert 'analysis.legal_validation_runtime !== "compiled-wasm"' in app
+    assert "? analysis.checked_prefix" in app
     assert 'return `./pieces/cburnett/' in app
     assert 'const PUBLIC_SITE_HOST = "tetizz.github.io"' in app
     assert 'const PUBLIC_SITE_PATH = "/progressive"' in app
     assert 'const API_ORIGIN = isPublicPagesSite ? configuredApiOrigin : ""' in app
     assert 'fetch(`${API_ORIGIN}${path}`' in app
-    assert 'if (options.body !== undefined' in app
+    assert 'if (requestOptions.body !== undefined' in app
     assert 'error.code = "invalid-api-response"' in app
     assert 'const PUBLIC_HEALTH_TIMEOUT_MS = 20_000' in app
     assert 'const PUBLIC_HEALTH_WAKE_DELAYS_MS = [' in app
@@ -53,6 +65,15 @@ def test_deployment_manifests_keep_pages_and_render_on_the_same_commit() -> None
     assert "src/scottish_progressive/web/static" in workflow
     assert "actions/deploy-pages@v4" in workflow
     assert "Wait for matching deployed engine" in workflow
+    assert "Validate certified browser engine bundle" in workflow
+    assert "--validate-existing src/scottish_progressive/web/static/engine" in workflow
+    for asset in (
+        "browser-engine-client.js",
+        "browser-engine-worker.js",
+        "wasm-kernel-adapter.js",
+        "engine/browser-engine-manifest.json",
+    ):
+        assert asset in workflow
     assert "actual == expected" in workflow
     assert 'limits.get("maximum_depth") == 5' in workflow
     assert 'limits.get("maximum_seconds") == 30.0' in workflow
@@ -95,6 +116,7 @@ def test_pages_artifact_versions_every_executable_asset(
         ("src", "evaluation-format.js"),
         ("src", "play-handoff.js"),
         ("src", "play-timeline.js"),
+        ("src", "browser-engine-client.js"),
         ("src", "app.js"),
     )
     for attribute, asset in assets:
@@ -102,6 +124,56 @@ def test_pages_artifact_versions_every_executable_asset(
         assert f'{attribute}="./{asset}?v={version}"' in deployed_index
     assert deployed_index.count(f"?v={version}") == len(assets)
     assert (output / "app.js").read_bytes() == (STATIC / "app.js").read_bytes()
+    assert (output / "browser-engine-worker.js").is_file()
+    assert (output / "wasm-kernel-adapter.js").is_file()
+
+
+def test_browser_engine_assets_are_fail_closed_and_receipted() -> None:
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    client = (STATIC / "browser-engine-client.js").read_text(encoding="utf-8")
+    adapter = (STATIC / "wasm-kernel-adapter.js").read_text(encoding="utf-8")
+
+    assert app.index("await browserEngineClient.preflight({})") < app.index(
+        'requestJson("/api/health"'
+    )
+    assert 'result.publishable !== true' in client
+    assert 'result.safety_certified !== true' in client
+    assert 'result.legal_series_certified !== true' in client
+    assert 'result.authoritative_replay_certified !== true' in client
+    assert 'runtime: "browser-wasm"' in client
+    assert "wall_time_seconds: wallTimeSeconds" in client
+    assert "completed_depth: completedDepth" in client
+    assert "artifact_fingerprint: this.identity.wasm_sha256" in client
+    assert "certificate_schema: this.identity.certificate_schema" in client
+    assert "canonical_replay_certified: true" in client
+    assert "raw?.publishable === true" in adapter
+    assert "raw?.legal_series_certified === true" in adapter
+    assert "raw?.authoritative_replay_certified === true" in adapter
+    assert "_spc_boundary_kernel_search_json" in adapter
+    assert 'const runtimeVariant = "single"' in adapter
+    assert "pthreadAvailable" not in adapter
+    assert "browser-wasm-pthread" not in app
+    assert "await moduleImporter(moduleBytes, moduleUrl)" in adapter
+    assert "await import(moduleUrl.href)" not in adapter
+    assert "new Blob(" in adapter
+    assert "URL.createObjectURL" in adapter
+    assert "URL.revokeObjectURL" in adapter
+    assert "validateRuntimeMemory(module, variant.memory_limits" in adapter
+    assert "module_js_sha256: identity.module_js_sha256" in adapter
+    assert "certificate_schema: variant.safety_certificate.schema" in adapter
+    assert "evidence.differential_cases < 1" in adapter
+    assert "limits.depth > certified.maximum_depth" in adapter
+    assert "limits.max_generation_positions > certified.maximum_generation_positions" in adapter
+    assert "nextState.quiet_series" in client
+    assert "nextStateEp === null" in client
+    assert "nextStateFen[1] === requestFen?.[1]" in client
+    assert "sameFenPositionExceptEp" in client
+    assert "memoryBytes > memory.estimated_peak_bytes" in client
+    assert "this.ready = false" in client
+    assert "browser-analysis-deadline" in client
+    assert "analysisDeadlineMs" in app
+    assert "worker?.terminate()" in client
+    assert "Synchronous WebAssembly cannot consume a queued cancel message" in client
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js is required for browser asset tests")
@@ -402,7 +474,7 @@ def test_saved_position_guard_loads_before_the_board_application() -> None:
     )
 
 
-def test_play_mode_uses_the_loaded_engine_and_server_replays_its_series() -> None:
+def test_play_mode_uses_compiled_replay_locally_and_server_replay_as_fallback() -> None:
     index = (STATIC / "index.html").read_text(encoding="utf-8")
     app = (STATIC / "app.js").read_text(encoding="utf-8")
     styles = (STATIC / "styles.css").read_text(encoding="utf-8")
@@ -423,14 +495,16 @@ def test_play_mode_uses_the_loaded_engine_and_server_replays_its_series() -> Non
     ):
         assert required_id in index
 
-    assert 'requestEngineAnalysis({' in engine_turn
+    assert "requestEngineAnalysis(" in engine_turn
     assert 'requestJson("/api/prefix"' in engine_turn
-    assert engine_turn.index('requestEngineAnalysis({') < engine_turn.index(
+    assert engine_turn.index("requestEngineAnalysis(") < engine_turn.index(
         'requestJson("/api/prefix"'
     )
     assert engine_turn.index('requestJson("/api/prefix"') < engine_turn.index(
         "applyPrefixPayload(checked"
     )
+    assert "? analysis.checked_prefix" in engine_turn
+    assert 'analysis.legal_validation_runtime !== "compiled-wasm"' in engine_turn
     assert "analysis.engine_profile_id !== state.play.engineProfileId" in engine_turn
     assert "analysis.source_fingerprint !== state.play.engineFingerprint" in engine_turn
     assert 'state.mode !== "analyze"' in app

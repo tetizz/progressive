@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark">
     <meta name="theme-color" content="#262522">
     <meta name="spc-api-origin" content="https://progressive-ui9q.onrender.com">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://progressive-ui9q.onrender.com; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://progressive-ui9q.onrender.com; object-src 'none'; base-uri 'none'; form-action 'none'">
     <title>Scottish Progressive</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="./styles.css">
@@ -58,7 +58,7 @@
                 <marker id="arrow-alt" markerWidth="3.8" markerHeight="3.8" refX="3.15" refY="1.9" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L3.8,1.9 L0,3.8 Z" fill="context-stroke"></path></marker>
               </defs>
             </svg>
-            <div class="board-loading" id="board-loading"><span class="spinner" aria-hidden="true"></span><span>Checking legal moves…</span></div>
+            <div class="board-loading" id="board-loading"><span class="spinner" aria-hidden="true"></span><span id="board-loading-text">Loading board…</span></div>
             <div class="drag-piece" id="drag-piece" aria-hidden="true"></div>
           </div>
         </div>
@@ -207,7 +207,7 @@
 
         <section class="tab-panel setup-panel" id="setup-panel" role="tabpanel" aria-labelledby="tab-setup" hidden>
           <div class="panel-heading"><div><p class="section-kicker">EXACT BOUNDARY</p><h2>Position setup</h2></div></div>
-          <p class="panel-intro">Enter an orthodox FEN and the progressive counters. The server validates the position before it reaches the board.</p>
+          <p class="panel-intro">Enter an orthodox FEN and the progressive counters. The trusted engine validates the position before it reaches the board.</p>
           <form id="setup-form" novalidate>
             <label class="field-label" for="fen-input">FEN</label><textarea id="fen-input" rows="3" spellcheck="false" required></textarea>
             <div class="setup-grid"><label><span>Series number</span><input id="series-input" type="number" inputmode="numeric" min="1" step="1" required></label><label><span>Quiet series</span><input id="quiet-input" type="number" inputmode="numeric" min="0" step="1" required></label></div>
@@ -221,7 +221,7 @@
 
     <dialog class="saved-dialog" id="saved-dialog" aria-labelledby="saved-dialog-title">
       <div class="dialog-heading"><div><p class="section-kicker">THIS DEVICE</p><h2 id="saved-dialog-title">Saved positions</h2></div><button class="dialog-close" id="saved-dialog-close" type="button" aria-label="Close saved positions">×</button></div>
-      <form class="save-position-form" id="save-position-form"><label for="saved-name">Position name</label><div class="save-position-row"><input id="saved-name" type="text" maxlength="60" autocomplete="off" placeholder="e.g. Main line after Series 4"><button class="primary" id="save-current-position" type="submit">Save current</button></div><p>Only the trusted boundary and legal move prefix are stored. The server rechecks them when loaded.</p></form>
+      <form class="save-position-form" id="save-position-form"><label for="saved-name">Position name</label><div class="save-position-row"><input id="saved-name" type="text" maxlength="60" autocomplete="off" placeholder="e.g. Main line after Series 4"><button class="primary" id="save-current-position" type="submit">Save current</button></div><p>Only the trusted boundary and legal move prefix are stored. The engine rechecks them when loaded.</p></form>
       <div class="saved-position-status" id="saved-position-status" role="status" aria-live="polite"></div><div class="saved-positions-list" id="saved-positions-list" aria-label="Saved positions"></div>
     </dialog>
     <dialog class="promotion-dialog" id="promotion-dialog" aria-labelledby="promotion-title"><form method="dialog"><div class="dialog-heading"><div><p class="section-kicker">PROMOTION</p><h2 id="promotion-title">Choose a piece</h2></div><button class="dialog-close" value="cancel" aria-label="Cancel promotion">×</button></div><div class="promotion-options" id="promotion-options"></div></form></dialog>
@@ -230,6 +230,7 @@
     <script src="./evaluation-format.js" defer></script>
     <script src="./play-handoff.js" defer></script>
     <script src="./play-timeline.js" defer></script>
+    <script src="./browser-engine-client.js" defer></script>
     <script src="./app.js" defer></script>
   </body>
 </html>
