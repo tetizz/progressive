@@ -20,6 +20,14 @@ ASSET_REFERENCES = (
         "src=\"./browser-prefix-contract.js?v={version}\"",
     ),
     (
+        "src=\"./root-iteration-coordinator.js\"",
+        "src=\"./root-iteration-coordinator.js?v={version}\"",
+    ),
+    (
+        "src=\"./browser-root-iteration-client.js\"",
+        "src=\"./browser-root-iteration-client.js?v={version}\"",
+    ),
+    (
         "src=\"./browser-engine-client.js\"",
         "src=\"./browser-engine-client.js?v={version}\"",
     ),

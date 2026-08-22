@@ -100,8 +100,8 @@
           <fieldset class="play-strength-picker">
             <legend>Engine strength</legend>
             <div class="play-strength-options">
-              <button class="play-strength-option is-active" id="play-strength-strong" type="button" aria-pressed="true" title="Checking this server's search limits."><span class="strength-mark" aria-hidden="true">◆</span><span><strong>Strong</strong><small>Checking server limits…</small></span></button>
-              <button class="play-strength-option" id="play-strength-faster" type="button" aria-pressed="false" title="Checking this server's search limits."><span class="strength-mark" aria-hidden="true">›</span><span><strong>Faster</strong><small>Checking server limits…</small></span></button>
+              <button class="play-strength-option is-active" id="play-strength-strong" type="button" aria-pressed="true" title="Preparing the on-device WebAssembly engine."><span class="strength-mark" aria-hidden="true">◆</span><span><strong>Strong</strong><small>Loading local engine…</small></span></button>
+              <button class="play-strength-option" id="play-strength-faster" type="button" aria-pressed="false" title="Preparing the on-device WebAssembly engine."><span class="strength-mark" aria-hidden="true">›</span><span><strong>Faster</strong><small>Loading local engine…</small></span></button>
             </div>
           </fieldset>
 
@@ -136,7 +136,7 @@
             <div><dt>Opponent</dt><dd id="play-engine-name">Connecting…</dd></div>
             <div><dt>Profile</dt><dd id="play-engine-id">—</dd></div>
             <div><dt>Engine</dt><dd id="play-engine-version">—</dd></div>
-            <div><dt>Runtime</dt><dd id="play-runtime-status">Checking CPU allocation…</dd></div>
+            <div><dt>Runtime</dt><dd id="play-runtime-status">Preparing on-device WebAssembly…</dd></div>
             <div><dt>Strength</dt><dd id="play-strength-status">Strong · target depth 5</dd></div>
             <div><dt>Last search</dt><dd id="play-search-depth" aria-live="polite">No engine move yet</dd></div>
             <div><dt>Search status</dt><dd id="play-search-status">Waiting for the champion</dd></div>
@@ -231,6 +231,8 @@
     <script src="./play-handoff.js" defer></script>
     <script src="./play-timeline.js" defer></script>
     <script src="./browser-prefix-contract.js" defer></script>
+    <script src="./root-iteration-coordinator.js" defer></script>
+    <script src="./browser-root-iteration-client.js" defer></script>
     <script src="./browser-engine-client.js" defer></script>
     <script src="./app.js" defer></script>
   </body>

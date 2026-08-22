@@ -163,6 +163,12 @@ Opera, not evidence of full-product safety or an under-60-second Strong mode.
 
 ## Browser shell integration status (2026-08-22)
 
+> Historical prefix-lane snapshot. The current root-iteration shell, independent
+> Pages deployment, persistent Worker pool, and still-closed release state are
+> documented in `reports/browser-wasm-integration-20260822.md`; that report
+> supersedes the shell/deployment statements below. The benchmark receipts above
+> remain historical evidence and were not rerun by the shell integration.
+
 The browser shell now has an independent, fail-closed prefix capability path.
 Its bundle builder accepts a prefix-only certificate or a separate search
 certificate plus prefix certificate. Both certificate types are artifact-bound;

@@ -7,7 +7,9 @@
   const PROMOTED_FINGERPRINT = /^[0-9a-f]{16}$/;
   const UCI_MOVE = /^[a-h][1-8][a-h][1-8][qrbn]?$/;
   const EP_SQUARE = /^[a-h][1-8]$/;
-  const KNOWN_OUTCOMES = new Set(["checkmate", "stalemate", "ten-series-draw"]);
+  const KNOWN_OUTCOMES = new Set([
+    "checkmate", "stalemate", "ten-series-draw", "ten_series_draw",
+  ]);
   const TRANSIENT_WORKER_ERRORS = new Set([
     "browser-worker-crashed",
     "browser-worker-post-failed",
@@ -20,6 +22,7 @@
   const MAXIMUM_MEMORY_BYTES = 256 * 1024 * 1024;
   const MAX_ESTIMATED_PEAK_MEMORY_BYTES = 192 * 1024 * 1024;
   const PREFIX_API = globalThis.ScottishProgressiveBrowserPrefix || null;
+  const ROOT_RUNNER_API = globalThis.ScottishProgressiveBrowserRootIteration || null;
   const scriptVersion = (() => {
     try {
       const source = globalThis.document?.currentScript?.src;
@@ -48,6 +51,10 @@
   function finiteNumber(value) {
     const number = Number(value);
     return Number.isFinite(number) ? number : null;
+  }
+
+  function immutableJsonCopy(value) {
+    return Object.freeze(JSON.parse(JSON.stringify(value)));
   }
 
   function monotonicNow() {
@@ -267,6 +274,7 @@
     if (!commonIdentity) return false;
     const analysisReady = identity.analysis_ready === true;
     const prefixReady = identity.prefix_ready === true;
+    const rootReady = identity.root_iteration_ready === true;
     const validAnalysis = analysisReady ? (
       identity.certificate_schema === CERTIFICATE_SCHEMA
       && identity.certificate_status === "certified"
@@ -292,7 +300,34 @@
       identity.prefix_certificate_id === null
       && identity.prefix_contract === null
     );
-    return (analysisReady || prefixReady) && validAnalysis && validPrefix;
+    const validRoot = rootReady ? (
+      ROOT_RUNNER_API !== null
+      && identity.root_session_ready === true
+      && identity.mate_ready === true
+      && ARTIFACT_FINGERPRINT.test(String(identity.kernel_sha256 || ""))
+      && typeof identity.root_session_certificate_id === "string"
+      && Boolean(identity.root_session_certificate_id)
+      && typeof identity.mate_certificate_id === "string"
+      && Boolean(identity.mate_certificate_id)
+      && typeof identity.profile_id === "string"
+      && Boolean(identity.profile_id)
+      && identity.root_session_contract
+      && typeof identity.root_session_contract === "object"
+      && identity.root_geometry
+      && typeof identity.root_geometry === "object"
+    ) : (
+      identity.root_session_ready !== true
+      && identity.mate_ready !== true
+      && (identity.root_session_certificate_id === null
+        || identity.root_session_certificate_id === undefined)
+      && (identity.mate_certificate_id === null
+        || identity.mate_certificate_id === undefined)
+      && (identity.root_session_contract === null
+        || identity.root_session_contract === undefined)
+      && (identity.root_geometry === null || identity.root_geometry === undefined)
+    );
+    return (analysisReady || prefixReady || rootReady)
+      && validAnalysis && validPrefix && validRoot;
   }
 
   function validateCompiledReplay(result, request) {
@@ -473,6 +508,95 @@
     return { requestedDepth, completedDepth };
   }
 
+  function validatePublishedRootAnalysis(result, payload, identity) {
+    const request = normalizedKernelRequest(
+      payload,
+      String(result?.checked_prefix?.request_id || "root-result-validation"),
+      null,
+    );
+    const requestedDepth = Number(result?.requested_depth);
+    const completedDepth = Number(result?.completed_depth);
+    const receipt = result?.runtime_receipt;
+    const mateCache = receipt?.mate_cache;
+    if (
+      !result
+      || typeof result !== "object"
+      || Array.isArray(result)
+      || result.ok !== true
+      || result.status !== "complete"
+      || result.publishable !== true
+      || result.safety_certified !== true
+      || result.legal_series_certified !== true
+      || result.authoritative_replay_certified !== true
+      || result.legal_validation_runtime !== "compiled-wasm"
+      || result.source_fingerprint !== identity.source_fingerprint
+      || result.wasm_sha256 !== identity.wasm_sha256
+      || result.kernel_sha256 !== identity.kernel_sha256
+      || result.module_js_sha256 !== identity.module_js_sha256
+      || result.certificate_id !== identity.root_session_certificate_id
+      || result.mate_certificate_id !== identity.mate_certificate_id
+      || result.prefix_certificate_id !== identity.prefix_certificate_id
+      || result.runtime_variant !== "single"
+      || result.thread_count !== 1
+      || !exactInteger(requestedDepth, 1, 5)
+      || requestedDepth !== request.limits.depth
+      || !exactInteger(completedDepth, 1, requestedDepth)
+      || !Array.isArray(result.best_full_series)
+      || result.best_full_series.length < 1
+      || result.best_full_series.length > request.boundary.series
+      || result.best_full_series.some((move) => !UCI_MOVE.test(String(move)))
+      || result.root_search_mode !== "streaming-root-iteration"
+      || typeof result.root_scores_complete !== "boolean"
+      || result.root_bound_coverage_complete !== true
+      || result.stats?.coverage_complete !== true
+      || !receipt
+      || receipt.runtime !== "browser-wasm"
+      || receipt.search_mode !== "streaming-root-iteration"
+      || receipt.requested_depth !== requestedDepth
+      || receipt.completed_depth !== completedDepth
+      || receipt.worker_count !== identity.root_geometry?.desktop_workers
+        && !identity.root_geometry?.supported_lower_geometries?.some(
+          (geometry) => geometry.workers === receipt.worker_count,
+        )
+      || !exactInteger(receipt.worker_count, 1, 8)
+      || !exactInteger(receipt.initial_full_wave, 1, receipt.worker_count)
+      || receipt.aggregate_memory_cap_bytes
+        !== receipt.worker_count * identity.memory_limits.maximum_bytes
+      || !exactInteger(
+        receipt.aggregate_memory_peak_bytes,
+        0,
+        receipt.aggregate_memory_cap_bytes,
+      )
+      || receipt.canonical_replay_certified !== true
+      || receipt.mate_safety_certified !== true
+      || receipt.root_bound_coverage_complete !== true
+      || !exactInteger(
+        receipt.safety_reserve_positions,
+        1,
+        identity.root_geometry?.play_limits?.safety_reserve_positions,
+      )
+      || result.stats?.safety_reserve_positions !== receipt.safety_reserve_positions
+      || !mateCache
+      || mateCache.schema !== "spc-root-mate-proof-cache-summary-v1"
+      || !exactInteger(mateCache.hits, 0, Number.MAX_SAFE_INTEGER)
+      || !exactInteger(mateCache.misses, 0, Number.MAX_SAFE_INTEGER)
+      || !exactInteger(mateCache.entries, 0, 256)
+      || mateCache.complete_proofs_only !== true
+      || result.stats?.mate_cache_hits !== mateCache.hits
+      || result.stats?.mate_cache_misses !== mateCache.misses
+      || result.stats?.mate_cache_entries !== mateCache.entries
+    ) {
+      throw new BrowserEngineError(
+        "The iterative browser root result is not fully certificate-bound.",
+        "browser-root-result-invalid",
+        { fallbackRequired: true },
+      );
+    }
+    validateReportedMemory(result, identity);
+    validateCompiledReplay(result, request);
+    return { requestedDepth, completedDepth };
+  }
+
   function expectedIdentityMatches(identity, {
     engineProfileId,
     engineProfileName,
@@ -480,12 +604,16 @@
     rulesetVersion,
   }) {
     if (!identity) return true;
+    const rootOnly = identity.root_iteration_ready === true
+      && identity.analysis_ready !== true;
     const expected = [
       [engineVersion, identity.engine_version],
       [rulesetVersion, identity.ruleset_version],
-      ...(identity.analysis_ready === true ? [
-        [engineProfileId, identity.engine_profile_id],
-        [engineProfileName, identity.engine_profile_name],
+      ...(identity.analysis_ready === true || identity.root_iteration_ready === true ? [
+        [engineProfileId, rootOnly
+          ? (identity.profile_id || identity.engine_profile_id)
+          : identity.engine_profile_id],
+        ...(rootOnly ? [] : [[engineProfileName, identity.engine_profile_name]]),
       ] : []),
     ];
     return expected.every(([wanted, actual]) => (
@@ -497,6 +625,7 @@
     constructor({
       workerUrl,
       workerFactory,
+      navigatorValue,
       probeTimeoutMs = DEFAULT_PROBE_TIMEOUT_MS,
     } = {}) {
       this.workerUrl = workerUrl || `./browser-engine-worker.js${scriptVersion}`;
@@ -515,6 +644,13 @@
       this.probePromise = null;
       this.activeAnalysis = null;
       this.activePrefix = null;
+      this.rootRunner = ROOT_RUNNER_API
+        ? new ROOT_RUNNER_API.RootIterationRunner({
+          workerUrl: this.workerUrl,
+          workerFactory: this.workerFactory,
+          navigatorValue,
+        })
+        : null;
     }
 
     canAnalyze(payload) {
@@ -522,6 +658,7 @@
         && this.disabledReason === null
         && this.identity.analysis_ready === true
         && this.activePrefix === null
+        && this.rootRunner?.active !== true
         && isLocalBestMoveRequest(payload, this.identity.analysis_limits);
     }
 
@@ -533,6 +670,7 @@
         || this.identity.prefix_ready !== true
         || this.activeAnalysis !== null
         || this.activePrefix !== null
+        || this.rootRunner?.active === true
       ) return false;
       try {
         PREFIX_API.normalizePrefixRequest(
@@ -544,6 +682,14 @@
       } catch {
         return false;
       }
+    }
+
+    canAnalyzeRoot(payload) {
+      return this.identity !== null
+        && this.disabledReason === null
+        && this.activeAnalysis === null
+        && this.activePrefix === null
+        && this.rootRunner?.canAnalyze(payload, this.identity) === true;
     }
 
     _spawnWorker() {
@@ -616,6 +762,17 @@
         entry.cleanup();
         entry.reject(error);
       }
+    }
+
+    _releaseRootPoolForSingleWorker() {
+      if (this.rootRunner?.active === true) return false;
+      if (this.rootRunner?.hasLivePool?.() === true) {
+        this.rootRunner.releasePool(
+          "Switching from the certified root pool to the single-Worker lane.",
+        );
+        this.ready = false;
+      }
+      return true;
     }
 
     _call(type, payload, {
@@ -713,6 +870,20 @@
         engineVersion,
         rulesetVersion,
       });
+      if (this.rootRunner?.active === true) {
+        const sourceMatches = !hasExpectedSource
+          || this.identity?.source_fingerprint === sourceFingerprint;
+        return this.identity && sourceMatches && expectedProfileMatches
+          ? { ready: true, ...this.identity }
+          : { ready: false, reason: "browser-root-busy" };
+      }
+      if (this.rootRunner?.hasLivePool?.() === true) {
+        const sourceMatches = !hasExpectedSource
+          || this.identity?.source_fingerprint === sourceFingerprint;
+        return this.identity && sourceMatches && expectedProfileMatches
+          ? { ready: true, ...this.identity }
+          : { ready: false, reason: "browser-root-worker-identity-mismatch" };
+      }
       if (
         this.ready
         && (!hasExpectedSource || this.identity?.source_fingerprint === sourceFingerprint)
@@ -780,6 +951,9 @@
             module_js_sha256: response.module_js_sha256,
             analysis_ready: response.analysis_ready === true,
             prefix_ready: response.prefix_ready === true,
+            root_session_ready: response.root_session_ready === true,
+            mate_ready: response.mate_ready === true,
+            root_iteration_ready: response.root_iteration_ready === true,
             safety_certified: response.safety_certified === true,
             certificate_id: response.certificate_id === null
               ? null
@@ -787,23 +961,41 @@
             prefix_certificate_id: response.prefix_certificate_id === null
               ? null
               : String(response.prefix_certificate_id || ""),
+            root_session_certificate_id: response.root_session_certificate_id === null
+              ? null
+              : String(response.root_session_certificate_id || ""),
+            mate_certificate_id: response.mate_certificate_id === null
+              ? null
+              : String(response.mate_certificate_id || ""),
+            kernel_sha256: response.kernel_sha256 === null
+              ? null
+              : String(response.kernel_sha256 || ""),
             runtime_variant: response.runtime_variant,
             thread_count: response.thread_count,
-            engine_profile_id: response.engine_profile_id,
-            engine_profile_name: response.engine_profile_name,
+            engine_profile_id: response.engine_profile_id || response.profile_id,
+            engine_profile_name: response.engine_profile_name || response.profile_id,
             engine_version: response.engine_version,
             ruleset_version: response.ruleset_version,
+            profile_id: response.profile_id === null
+              ? null
+              : String(response.profile_id || ""),
             analysis_limits: response.analysis_ready
               ? Object.freeze(normalizedAnalysisLimits(response.analysis_limits))
               : null,
             prefix_contract: response.prefix_ready
               ? PREFIX_API.validateCertifiedPrefixContract(response.prefix_contract)
               : null,
+            root_session_contract: response.root_iteration_ready
+              ? immutableJsonCopy(response.root_session_contract)
+              : null,
+            root_geometry: response.root_iteration_ready
+              ? immutableJsonCopy(response.root_geometry)
+              : null,
             memory_limits: Object.freeze(normalizedMemoryLimits(response.memory_limits)),
           });
           this.profile = Object.freeze({
-            engine_profile_id: response.engine_profile_id,
-            engine_profile_name: response.engine_profile_name,
+            engine_profile_id: response.engine_profile_id || response.profile_id,
+            engine_profile_name: response.engine_profile_name || response.profile_id,
             engine_version: response.engine_version,
             ruleset_version: response.ruleset_version,
           });
@@ -832,6 +1024,13 @@
     }
 
     async analyze(payload, { signal, deadlineMs = null } = {}) {
+      if (!this._releaseRootPoolForSingleWorker()) {
+        throw new BrowserEngineError(
+          "The certified root pool is already searching.",
+          "browser-engine-busy",
+          { fallbackRequired: true },
+        );
+      }
       if (!this.ready && this.identity) {
         await this.preflight({
           sourceFingerprint: this.identity.source_fingerprint,
@@ -931,6 +1130,45 @@
       }
     }
 
+    async analyzeRoot(payload, { signal, deadlineMs = null } = {}) {
+      if (!this.canAnalyzeRoot(payload)) {
+        throw new BrowserEngineError(
+          "The certified iterative browser root engine is unavailable for this request.",
+          "browser-root-analysis-unavailable",
+          { fallbackRequired: true },
+        );
+      }
+      try {
+        if (this.worker) {
+          this._dropWorker(new BrowserEngineError(
+            "The preflight Worker was released before admitting the certified root pool.",
+            "browser-worker-released-for-root",
+            { fallbackRequired: true },
+          ));
+        }
+        this.ready = false;
+        const result = await this.rootRunner.analyze(payload, this.identity, {
+          signal,
+          deadlineMs,
+        });
+        validatePublishedRootAnalysis(result, payload, this.identity);
+        return {
+          ...result,
+          engine_profile_id: this.profile?.engine_profile_id,
+          engine_profile_name: this.profile?.engine_profile_name,
+          engine_version: this.profile?.engine_version,
+          ruleset_version: this.profile?.ruleset_version,
+        };
+      } catch (error) {
+        if (error?.name === "AbortError") throw error;
+        throw new BrowserEngineError(
+          String(error?.message || "The iterative browser root engine failed closed."),
+          String(error?.code || "browser-root-analysis-failed"),
+          { fallbackRequired: error?.fallbackRequired !== false, cause: error },
+        );
+      }
+    }
+
     async inspectPrefix(payload, { signal } = {}) {
       if (!PREFIX_API) {
         throw new BrowserEngineError(
@@ -939,7 +1177,8 @@
           { fallbackRequired: true },
         );
       }
-      if (!this.ready && this.identity) {
+      const pooledPrefix = this.rootRunner?.hasLivePool?.() === true;
+      if (!pooledPrefix && !this.ready && this.identity) {
         await this.preflight({
           sourceFingerprint: this.identity.source_fingerprint,
           engineProfileId: this.profile?.engine_profile_id,
@@ -949,14 +1188,18 @@
           signal,
         });
       }
-      if (this.activeAnalysis !== null || this.activePrefix !== null) {
+      if (
+        this.activeAnalysis !== null
+        || this.activePrefix !== null
+        || this.rootRunner?.active === true
+      ) {
         throw new BrowserEngineError(
           "The browser engine is busy with synchronous work.",
           "browser-engine-busy",
           { fallbackRequired: true },
         );
       }
-      if (!this.ready || !this.canInspectPrefix(payload)) {
+      if ((!this.ready && !pooledPrefix) || !this.canInspectPrefix(payload)) {
         throw new BrowserEngineError(
           "The certified browser prefix engine is unavailable for this request.",
           "browser-prefix-unavailable",
@@ -971,10 +1214,16 @@
       );
       this.activePrefix = requestId;
       try {
-        const result = await this._call("prefix", request, {
-          signal,
-          timeoutMs: this.probeTimeoutMs,
-        });
+        const result = pooledPrefix
+          ? await this.rootRunner.inspectPrefix(payload, this.identity, {
+            signal,
+            timeoutMs: this.probeTimeoutMs,
+            requestId,
+          })
+          : await this._call("prefix", request, {
+            signal,
+            timeoutMs: this.probeTimeoutMs,
+          });
         PREFIX_API.validatePrefixResult(result, request, this.identity);
         validateReportedMemory(result, this.identity);
         return result;
@@ -987,6 +1236,7 @@
       this.disabledReason = reason;
       this.ready = false;
       this.identity = null;
+      this.rootRunner?.close(reason);
       this._dropWorker(new BrowserEngineError(
         reason,
         "browser-engine-closed",
@@ -1004,6 +1254,7 @@
     validateReportedMemory,
     validateCompiledReplay,
     validatePublishedAnalysis,
+    validatePublishedRootAnalysis,
   });
   globalThis.ScottishProgressiveBrowserEngine = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

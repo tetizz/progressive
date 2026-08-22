@@ -65,18 +65,42 @@ function request(workerCount, overrides = {}) {
 
 
 function manifest(definitions, { white = true, width = 32, complete = false } = {}) {
+  const series = white ? 1 : 2;
+  const moves = white ? ["e2e4"] : ["e7e5", "g8f6"];
+  const childFen = white ? BLACK_FEN : WHITE_FEN;
   return {
     enumeration_identity: `manifest-${white ? "w" : "b"}-${definitions.map((item) => item.id).join("-")}`,
     root_white_to_move: white,
     requested_width: width,
+    retained_count: definitions.length,
     width_complete: complete,
+    preferred_series: [],
     candidates: definitions.map((item, orderIndex) => ({
       candidate_identity: item.id,
       order_index: orderIndex,
       order_key: item.key,
       terminal_score: item.terminalScore ?? null,
       terminal_proof_bounds: item.terminalProof ?? [-1, 1],
-      root_series: { machine_notation: item.key },
+      root_series: {
+        moves: [...moves],
+        machine_notation: moves.join("/"),
+        transposition_count: 1,
+        child_boundary: {
+          fen: childFen,
+          board_fen: childFen,
+          series: series + 1,
+          series_number: series + 1,
+          side_to_move: white ? "black" : "white",
+          quiet_series: 0,
+          quiet_draw_pending: false,
+          ep_targets: [],
+          progressive_ep: [],
+          promoted_hex: "0000000000000000",
+          chess960: false,
+        },
+        outcome: item.terminalScore === undefined ? null : "checkmate",
+        ended_by_check: item.terminalScore !== undefined,
+      },
     })),
   };
 }
@@ -593,6 +617,28 @@ async function testProtocolFaults() {
     safetyProbe: exhaustedSafety(),
   }), "root-worker-bound-invalid");
 
+  const mutateManifest = (mutate) => {
+    const value = JSON.parse(JSON.stringify(manifest(single)));
+    mutate(value);
+    return value;
+  };
+  for (const invalid of [
+    mutateManifest((value) => { delete value.candidates[0].root_series; }),
+    mutateManifest((value) => { delete value.candidates[0].root_series.child_boundary.promoted_hex; }),
+    mutateManifest((value) => { value.candidates[0].root_series.moves = ["e2e5"]; }),
+    mutateManifest((value) => { value.candidates[0].root_series.child_boundary.fen = WHITE_FEN; }),
+    mutateManifest((value) => { value.candidates[0].root_series.child_boundary.series_number = 99; }),
+    mutateManifest((value) => { delete value.preferred_series; }),
+    mutateManifest((value) => { value.retained_count = 2; }),
+  ]) {
+    await assert.rejects(api.runRootIteration({
+      request: request(1),
+      manifest: invalid,
+      workers: workers(1, single),
+      safetyProbe: exhaustedSafety(),
+    }), (error) => String(error?.code || "").startsWith("root-manifest"));
+  }
+
   const safetyUnknown = async (task) => ({
     request_id: task.request_id,
     iteration_id: task.iteration_id,
@@ -913,6 +959,7 @@ process.stdout.write(`${JSON.stringify({
   same_worker_threat_research: true,
   selected_owner_certification: true,
   malformed_missing_duplicate_unknown_fail_closed: true,
+  root_series_boundary_mutations_fail_closed: true,
   dynamic_credit_required: true,
   lost_worker_full_charge: true,
   exact_at_cap_accepted: true,

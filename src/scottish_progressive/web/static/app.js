@@ -170,6 +170,8 @@
       nativeThreadsPolicy: null,
       runtimeMode: "server",
       browserWasmReady: false,
+      browserRootReady: false,
+      browserRootWorkerCount: 0,
       browserPrefixReady: false,
       browserWasmReason: null,
       browserWasmArtifact: null,
@@ -245,6 +247,30 @@
     return Object.values(authority).every((value) => (
       typeof value === "string" && Boolean(value)
     )) ? authority : null;
+  }
+
+  function validateHostedAnalysisIdentity(payload) {
+    const analysis = first(payload?.analysis, payload?.result, payload);
+    const expected = {
+      source_fingerprint: state.play.engineFingerprint,
+      engine_profile_id: state.play.engineProfileId,
+      engine_version: state.play.engineVersion,
+      ruleset_version: state.play.rulesetVersion,
+    };
+    const mismatched = Object.entries(expected).some(([key, wanted]) => (
+      typeof wanted === "string"
+      && Boolean(wanted)
+      && analysis?.[key] !== wanted
+    ));
+    if (mismatched) {
+      const error = new Error(
+        "The hosted fallback did not echo the loaded engine identity.",
+      );
+      error.code = "hosted-engine-identity-mismatch";
+      error.fallbackRequired = false;
+      throw error;
+    }
+    return payload;
   }
 
   async function requestRemoteJson(path, options = {}) {
@@ -380,6 +406,24 @@
       }
     }
     if (path === "/api/analyze" && browserEngineClient && options.body !== undefined) {
+      if (browserEngineClient.canAnalyzeRoot(analysisBody)) {
+        try {
+          options.onTransport?.("browser-wasm");
+          return await browserEngineClient.analyzeRoot(analysisBody, {
+            signal: options.signal,
+            deadlineMs: analysisDeadlineMs,
+          });
+        } catch (error) {
+          if (
+            error?.name === "AbortError"
+            || error?.name === "TimeoutError"
+            || error?.code === "browser-root-deadline"
+          ) throw error;
+          if (error?.fallbackRequired !== true) throw error;
+          // A failed or uncertified depth may use the hosted lane only while
+          // the same absolute deadline and loaded identity remain valid.
+        }
+      }
       if (browserEngineClient.canAnalyze(analysisBody)) {
         try {
           options.onTransport?.("browser-wasm");
@@ -417,7 +461,10 @@
       });
     }
     options.onTransport?.("render-server");
-    return requestRemoteJson(path, remoteOptions);
+    const remotePayload = await requestRemoteJson(path, remoteOptions);
+    return path === "/api/analyze"
+      ? validateHostedAnalysisIdentity(remotePayload)
+      : remotePayload;
   }
 
   function isPublicServiceWakeError(error, { includeAbort = false } = {}) {
@@ -731,7 +778,12 @@
     const runtimeReceipt = result?.runtime_receipt || {};
     const completedRaw = first(result?.completed_depth, stats.completed_depth);
     const requestedRaw = first(result?.requested_depth, stats.requested_depth, requested.depth);
-    const elapsedRaw = first(result?.elapsed_seconds, stats.elapsed_seconds);
+    const elapsedRaw = first(
+      result?.elapsed_seconds,
+      stats.elapsed_seconds,
+      runtimeReceipt.wall_time_seconds,
+    );
+    const workerCountRaw = first(runtimeReceipt.worker_count, stats.root_workers, null);
     return {
       strength: requested.strength,
       maxSeries: requested.maxSeries,
@@ -744,6 +796,11 @@
       workLimitReached: asBoolean(first(result?.work_limit_reached, stats.work_limit_reached)),
       rootSearchMode: String(first(result?.root_search_mode, "")),
       rootScoresComplete: asBoolean(first(result?.root_scores_complete, stats.root_scores_complete)),
+      rootBoundCoverageComplete: asBoolean(first(
+        result?.root_bound_coverage_complete,
+        runtimeReceipt.root_bound_coverage_complete,
+        stats.coverage_complete,
+      )),
       elapsedSeconds: Number.isFinite(Number(elapsedRaw)) ? Number(elapsedRaw) : null,
       runtime: String(first(runtimeReceipt.runtime, "render-server")),
       artifactFingerprint: first(runtimeReceipt.artifact_fingerprint, null),
@@ -751,6 +808,9 @@
         first(runtimeReceipt.thread_count, state.play.nativeThreads),
         1,
       ))),
+      workerCount: Number.isFinite(Number(workerCountRaw))
+        ? Math.max(1, Math.floor(Number(workerCountRaw)))
+        : null,
     };
   }
 
@@ -759,14 +819,16 @@
     const renderStrengthOption = (node, optionLimits) => {
       const detail = node.querySelector("small");
       if (!state.play.healthReady) {
-        if (detail) detail.textContent = "Checking server limits…";
-        node.title = "Checking this server's search limits.";
+        if (detail) detail.textContent = "Loading local engine…";
+        node.title = "Preparing the on-device WebAssembly engine.";
         return;
       }
       const seconds = optionLimits.seconds.toLocaleString();
       const work = compactNumber(optionLimits.generationPositions);
       const threads = state.play.runtimeMode === "browser-wasm"
-        ? `${state.play.nativeThreads} on-device WebAssembly thread${state.play.nativeThreads === 1 ? "" : "s"}`
+        ? state.play.browserRootReady
+          ? `${state.play.browserRootWorkerCount} certified single-thread WebAssembly workers`
+          : `${state.play.nativeThreads} on-device WebAssembly thread${state.play.nativeThreads === 1 ? "" : "s"}`
         : `${state.play.nativeThreads} native search thread${state.play.nativeThreads === 1 ? "" : "s"}${state.play.nativeThreadsPolicy === "single-thread-pool-avoidance" ? " in host-safe mode" : ""}`;
       const allocation = state.play.runtimeMode === "browser-wasm"
         ? `${state.play.runtimeCpuCount || "available"} logical processors on this device`
@@ -786,8 +848,12 @@
     if (state.play.activeSearch) {
       const active = state.play.activeSearch;
       if (state.play.activeSearchRuntime === "browser-wasm") {
-        const threads = Math.max(1, state.play.nativeThreads);
-        dom.play_search_depth.textContent = `Searching locally · WASM · ${threads} thread${threads === 1 ? "" : "s"}`;
+        const workers = state.play.browserRootReady
+          ? Math.max(1, state.play.browserRootWorkerCount)
+          : Math.max(1, state.play.nativeThreads);
+        dom.play_search_depth.textContent = state.play.browserRootReady
+          ? `Searching locally · WASM · ${workers} workers · streaming root scouts`
+          : `Searching locally · WASM · ${workers} thread${workers === 1 ? "" : "s"}`;
       } else {
         const threads = Math.max(1, state.play.nativeThreads);
         dom.play_search_depth.textContent = `Searching on hosted engine · ${threads} thread${threads === 1 ? "" : "s"}`;
@@ -806,17 +872,28 @@
       : `Depth ${evidence.completedDepth} complete · requested ${evidence.requestedDepth}`;
     const status = [
       evidence.runtime === "browser-wasm"
-        ? `On-device WebAssembly · ${evidence.threadCount} thread${evidence.threadCount === 1 ? "" : "s"}`
+        ? evidence.rootSearchMode === "streaming-root-iteration" && evidence.workerCount !== null
+          ? `On-device WebAssembly · ${evidence.workerCount} single-thread Worker${evidence.workerCount === 1 ? "" : "s"}`
+          : `On-device WebAssembly · ${evidence.threadCount} thread${evidence.threadCount === 1 ? "" : "s"}`
         : `Hosted engine · ${evidence.threadCount} thread${evidence.threadCount === 1 ? "" : "s"}`,
-      evidence.rootSearchMode === "best-move"
-        ? `Best-move alpha-beta across up to ${evidence.maxSeries} retained series per node`
-        : "All retained alternatives scored",
+      evidence.rootSearchMode === "streaming-root-iteration"
+        ? `Best-move streaming root alpha-beta across up to ${evidence.maxSeries} retained series per node`
+        : evidence.rootSearchMode === "best-move"
+          ? `Best-move alpha-beta across up to ${evidence.maxSeries} retained series per node`
+          : "All retained alternatives scored",
+      evidence.rootSearchMode === "streaming-root-iteration"
+        ? evidence.rootScoresComplete === true
+          ? "All retained root scores exact"
+          : evidence.rootBoundCoverageComplete === true
+            ? "Best move exact; alternatives certified by alpha-beta bounds"
+            : "Root bound coverage not certified"
+        : null,
       evidence.exactWidth === true ? "Exact width" : evidence.exactWidth === false ? "Selective width" : "Width not reported",
       evidence.timedOut === true ? "Time limit reached" : evidence.timedOut === false ? "Within time limit" : "Time status not reported",
     ];
     if (evidence.workLimitReached === true) status.push("Work limit reached");
     if (evidence.elapsedSeconds !== null) status.push(`${evidence.elapsedSeconds.toFixed(1)}s elapsed`);
-    dom.play_search_status.textContent = status.join(" · ");
+    dom.play_search_status.textContent = status.filter(Boolean).join(" · ");
   }
 
   function selectPlayStrength(strength) {
@@ -2255,7 +2332,9 @@
         detail: state.play.animating
           ? `Playing an engine-validated Series ${state.boundary.series}.`
           : state.play.activeSearchRuntime === "browser-wasm"
-            ? `Searching locally · WASM · ${state.play.nativeThreads} thread${state.play.nativeThreads === 1 ? "" : "s"}. Requested depth ${search.depth}, up to ${search.seconds.toLocaleString()}s.`
+            ? state.play.browserRootReady
+              ? `Searching locally · WASM · ${state.play.browserRootWorkerCount} certified single-thread Workers. Requested depth ${search.depth}, up to ${search.seconds.toLocaleString()}s.`
+              : `Searching locally · WASM · ${state.play.nativeThreads} thread${state.play.nativeThreads === 1 ? "" : "s"}. Requested depth ${search.depth}, up to ${search.seconds.toLocaleString()}s.`
             : `${search.label} hosted search requested depth ${search.depth}, up to ${search.seconds.toLocaleString()}s.`,
         kind: "thinking",
       };
@@ -2290,9 +2369,11 @@
     dom.play_engine_version.textContent = [state.play.engineVersion, state.play.engineFingerprint].filter(Boolean).join(" · ") || "—";
     dom.play_runtime_status.textContent = state.play.healthReady
       ? state.play.runtimeMode === "browser-wasm"
-        ? `This device · ${state.play.runtimeCpuCount || "available"} logical processors · ${state.play.nativeThreads} WebAssembly thread${state.play.nativeThreads === 1 ? "" : "s"}`
+        ? state.play.browserRootReady
+          ? `This device · ${state.play.runtimeCpuCount || "available"} logical processors · ${state.play.browserRootWorkerCount} certified single-thread Workers`
+          : `This device · ${state.play.runtimeCpuCount || "available"} logical processors · ${state.play.nativeThreads} WebAssembly thread${state.play.nativeThreads === 1 ? "" : "s"}`
         : `${state.play.runtimeCpuCount === null ? "CPU allocation unavailable" : `${state.play.runtimeCpuCount} CPU allocated`} · ${state.play.nativeThreads} native search thread${state.play.nativeThreads === 1 ? "" : "s"}${state.play.nativeThreadsPolicy === "single-thread-pool-avoidance" ? " · host-safe mode" : ""}`
-      : "Checking CPU allocation…";
+      : "Preparing on-device WebAssembly…";
     renderPlaySearchEvidence();
     renderPlayHistory();
     renderPlayNavigation(timeline);
@@ -2411,7 +2492,10 @@
     };
     state.play.thinking = true;
     state.play.activeSearch = search;
-    state.play.activeSearchRuntime = browserEngineClient?.canAnalyze(analysisBody)
+    state.play.activeSearchRuntime = (
+      browserEngineClient?.canAnalyzeRoot(analysisBody)
+      || browserEngineClient?.canAnalyze(analysisBody)
+    )
       ? "browser-wasm"
       : "render-server";
     state.play.error = null;
@@ -3746,13 +3830,54 @@
   }
 
   function applyCertifiedBrowserRuntime(runtime) {
-    const limits = runtime.analysis_limits || {};
-    state.play.engineName = String(runtime.engine_profile_name);
-    state.play.engineProfileId = runtime.engine_profile_id;
+    const rootReady = runtime.root_iteration_ready === true;
+    const rootConfig = runtime.root_geometry?.session_config;
+    const rootPlayLimits = runtime.root_geometry?.play_limits;
+    if (rootReady && (
+      !rootConfig
+      || !rootPlayLimits
+      || rootConfig.max_depth !== 5
+      || rootConfig.width !== 32
+      || !Number.isFinite(rootPlayLimits.maximum_seconds)
+      || rootPlayLimits.maximum_seconds <= 0
+      || !Number.isFinite(rootPlayLimits.default_seconds)
+      || rootPlayLimits.default_seconds <= 0
+      || rootPlayLimits.default_seconds > rootPlayLimits.maximum_seconds
+      || !Number.isSafeInteger(rootPlayLimits.default_generation_positions)
+      || rootPlayLimits.default_generation_positions < 1_000
+      || rootPlayLimits.default_generation_positions > rootConfig.max_work
+      || !Number.isSafeInteger(rootPlayLimits.safety_reserve_positions)
+      || rootPlayLimits.safety_reserve_positions < 1
+      || rootPlayLimits.safety_reserve_positions > rootConfig.max_work
+    )) {
+      throw new Error("The certified browser root play limits are incomplete.");
+    }
+    const rootLimits = rootReady ? {
+      maximum_depth: Math.min(5, rootConfig.max_depth),
+      maximum_max_series: rootConfig.width,
+      maximum_seconds: rootPlayLimits.maximum_seconds,
+      maximum_generation_positions: rootConfig.max_work,
+      default_depth: Math.min(5, rootConfig.max_depth),
+      default_max_series: rootConfig.width,
+      default_seconds: rootPlayLimits.default_seconds,
+      default_generation_positions: rootPlayLimits.default_generation_positions,
+    } : null;
+    const limits = rootReady ? rootLimits : runtime.analysis_limits;
+    state.play.engineName = String(
+      runtime.engine_profile_name || runtime.profile_id || "Progressive engine",
+    );
+    state.play.engineProfileId = runtime.engine_profile_id || runtime.profile_id;
     state.play.engineVersion = runtime.engine_version;
     state.play.rulesetVersion = runtime.ruleset_version;
     state.play.engineFingerprint = runtime.source_fingerprint;
     state.play.browserWasmReady = true;
+    state.play.browserRootReady = runtime.root_iteration_ready === true;
+    state.play.browserRootWorkerCount = runtime.root_iteration_ready === true
+      ? Math.max(1, Math.floor(asNumber(
+        runtime.root_geometry?.desktop_workers,
+        1,
+      )))
+      : 0;
     state.play.browserWasmReason = null;
     state.play.browserWasmArtifact = runtime.wasm_sha256;
     state.play.runtimeMode = "browser-wasm";
@@ -3814,7 +3939,7 @@
       runtime.source_fingerprint,
       `WASM ${runtime.runtime_variant}`,
       `${runtime.thread_count} thread${runtime.thread_count === 1 ? "" : "s"}`,
-      `certificate ${runtime.certificate_id}`,
+      `certificate ${runtime.root_session_certificate_id || runtime.certificate_id}`,
     ].filter(Boolean).join(" · ");
     renderPlaySurface();
   }
@@ -3827,7 +3952,13 @@
         const localRuntime = await browserEngineClient.preflight({});
         state.play.browserPrefixReady = localRuntime.ready === true
           && localRuntime.prefix_ready === true;
-        if (localRuntime.ready === true && localRuntime.analysis_ready === true) {
+        state.play.browserRootReady = localRuntime.ready === true
+          && localRuntime.root_iteration_ready === true;
+        if (
+          localRuntime.ready === true
+          && (localRuntime.analysis_ready === true
+            || localRuntime.root_iteration_ready === true)
+        ) {
           applyCertifiedBrowserRuntime(localRuntime);
           return;
         }
@@ -3911,7 +4042,16 @@
         }
       }
       state.play.browserWasmReady = browserRuntime.ready === true
-        && browserRuntime.analysis_ready === true;
+        && (browserRuntime.analysis_ready === true
+          || browserRuntime.root_iteration_ready === true);
+      state.play.browserRootReady = browserRuntime.ready === true
+        && browserRuntime.root_iteration_ready === true;
+      state.play.browserRootWorkerCount = state.play.browserRootReady
+        ? Math.max(1, Math.floor(asNumber(
+          browserRuntime.root_geometry?.desktop_workers,
+          1,
+        )))
+        : 0;
       state.play.browserPrefixReady = browserRuntime.ready === true
         && browserRuntime.prefix_ready === true;
       state.play.browserWasmReason = state.play.browserWasmReady

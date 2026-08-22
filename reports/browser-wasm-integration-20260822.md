@@ -1,170 +1,137 @@
 # Browser WebAssembly integration handoff — 2026-08-22
 
-## Outcome
+## Current outcome
 
-This lab contains a fail-closed browser WebAssembly shell for the Progressive
-engine. It does not contain a publishable engine bundle. In particular, no
-under-60-second width-32 depth-5 certificate has been created or inferred from
-an incomplete search. Render remains the production fallback and its existing
-deployment gate remains in the Pages workflow.
+This branch contains a fail-closed browser shell for a certified Progressive
+root-search bundle. It does **not** contain a release WASM bundle or certificate,
+and it makes no under-60-second depth-5 claim. The static `engine/` directory is
+absent, so the Pages bundle-validation gate correctly remains closed.
 
-The browser lane can become selectable only after the checked-out engine source,
-single-thread WASM binary, exact Emscripten wrapper bytes, manifest, certificate,
-analysis envelope, and memory envelope all validate. The current experimental
-kernel is not copied into the static site because it is uncertified.
+The implemented local lane uses persistent ordinary module Workers, not
+pthreads. A desktop certificate binds eight single-thread Workers with a
+four-Worker initial full-window wave. Certified lower geometries may be selected
+when they fit reported hardware and memory; unknown device memory never admits
+the desktop geometry.
 
-The separate compiled prefix-ABI workstream owns local human micro-move routing.
-This shell accepts an engine move only when the search result includes a complete
-compiled authoritative replay. It does not weaken `/api/prefix` for boundaries
-that are not covered by that separately integrated ABI.
+## Trust and capability gates
 
-## Files and trust root
+The builder and runtime require three separately truthful capabilities in one
+byte-identical artifact before local root search is selectable:
 
-- `browser-engine-client.js` validates worker identity, certified request limits,
-  replay completeness, result identity, memory receipts, deadlines, and crashes.
-- `browser-engine-worker.js` owns one persistent certified module instance and
-  the probe/analyze message boundary.
-- `wasm-kernel-adapter.js` validates the manifest and certificate, hashes the
-  fetched binary and wrapper, imports the verified wrapper bytes, instantiates
-  the verified WASM bytes, and calls ABI version 1.
-- `build_browser_wasm_bundle.py` builds and revalidates a source-bound bundle.
-- `app.js` shares one absolute play-search deadline across local execution,
-  permitted fallback, Render fetch/body parsing, and retry waits.
-- `pages.yml` requires the browser assets and validates the complete engine bundle
-  before upload while retaining the matching-Render deployment gate.
+- compiled prefix replay, including exact Progressive EP and promoted provenance;
+- root-session ABI v2 for enumerate, exact manifest import, and candidate search;
+- reply-mate ABI v1 with Python-parity evidence.
 
-The deployment commit and same-origin Pages artifact are the trust root. Artifact
-hashes prevent the executed bytes from drifting from the reviewed manifest; they
-are not a signature against an attacker who can replace the entire deployment.
+Root-session certification alone explicitly has `reply_mate_safety:false` and
+`product_publishable:false`. Publication requires the separate mate and prefix
+certificates, identical artifact/kernel/runtime/engine/memory identity, the exact
+combined export list, and a full runtime contract match. Pthreads stay disabled.
 
-## Certificate and request envelope
-
-The certificate must use `spc-browser-wasm-certificate-v1`, status `certified`,
-contract version 1, ABI version 1, the exact checked-out source fingerprint,
-and exact wrapper/WASM hashes. It must also bind the engine profile, ruleset,
-single-thread runtime, support-file list, analysis limits, memory limits, positive
-differential case count, safety gates, and a real completed width-32 depth-5
-receipt below 60 seconds.
-
-The builder and runtime reject out-of-range depth, width, duration, and work caps.
-The client independently refuses requests outside the certified analysis envelope.
-Pthread publication and selection are disabled until its wrapper and bootstrap
-support code can be executed from equivalently verified bytes.
-
-The current worker request is:
+The certificate also binds the exact session config, Worker geometry, memory
+envelope, and `geometry.play_limits`:
 
 ```text
-{
-  contract_version,
-  request_id,
-  boundary: {
-    fen, series, quiet_series, ep_targets,
-    promoted_hex, chess960: false, prefix: []
-  },
-  limits: {
-    depth, max_series, time_limit_seconds,
-    max_generation_positions, best_move_only: true
-  }
-}
+maximum_seconds
+default_seconds
+default_generation_positions
+safety_reserve_positions
 ```
 
-## Publication and replay
+The live Strong button takes its depth-5 time/work defaults from those promoted
+fields. It no longer inherits legacy Render limits or a hardcoded 10M work cap.
+No defaults are promoted in this branch because there is no real certificate.
 
-A local result is publishable only when its source, WASM hash, wrapper hash,
-certificate ID, runtime, and thread count remain pinned and all of these are true:
+## D1 through D5 root execution
 
-```text
-ok
-&& publishable
-&& safety_certified
-&& legal_series_certified
-&& authoritative_replay_certified
-&& legal_validation_runtime == "compiled-wasm"
-&& 1 <= completed_depth <= requested_depth
-```
+Each play request creates a fresh native session in every retained Worker, then
+keeps those sessions alive throughout iterative D1→D5. Worker modules remain
+loaded across game turns, while the old native sessions are destroyed and new
+sessions bind the next exact boundary and deadline. This preserves module/code
+warmth without leaking request boundary, generation, or work state.
 
-The client also requires the returned requested depth to equal the requested
-depth. It does not relabel an interrupted depth-5 search as a depth-5 completion.
+At every depth the primary session authoritatively enumerates the exact root
+manifest once. Peers import that manifest byte-structurally, including
+`preferred_series` and each candidate's exact child boundary. The coordinator
+runs the certified initial full wave, streams scouts after the first exact
+result, retains worker affinity for re-search, and performs the final full-window
+certification on the selected candidate's warm owning Worker.
 
-`checked_prefix` must reproduce the exact original boundary, including progressive
-en-passant targets, promoted-piece provenance, quiet clock, and orthodox mode. Its
-UCI, SAN, and frame arrays must align one-for-one. The final frame must match the
-reported final board position, apart from the explicit progressive en-passant
-representation. A non-terminal replay must provide a complete next state with the
-exact final FEN, next series, quiet clock, en-passant targets, promoted bitboard,
-side-to-move transition, and `chess960: false`. Missing or inconsistent state is
-rejected before the app can play it.
+Scout-pruned alternatives may remain alpha-beta bounds. A result can publish
+when root bound coverage is complete even when every alternative does not have
+an exact score. The UI says “Best move exact; alternatives certified by
+alpha-beta bounds” in that case. Missing bound coverage fails closed. An
+immediate checkmate can publish with other retained candidates without claiming
+that all root scores are exact.
 
-## Wrapper execution and CSP
+Only the last fully completed depth is exposed. Every selected series is replayed
+through the compiled prefix ABI from the original boundary, and the exact final
+state must match the enumerated child boundary before the result reaches the app.
 
-The adapter downloads both the WASM binary and single-lane module wrapper as
-bytes, hashes both with SHA-256, and imports the verified wrapper from a temporary
-Blob URL. It never hashes one wrapper and then imports a second URL by name. The
-single lane may not declare external support scripts.
+## Reply-mate safety cache
 
-The static CSP permits this exact wrapper execution path while keeping worker
-creation same-origin:
+Complete `found` and `exhausted` reply-mate proofs are cached by the exact
+authoritative child boundary plus source, artifact, kernel, module, certificate,
+engine, ruleset, profile, runtime, thread, ABI, and mate-score identity. `unknown`
+is never cached. A cache hit charges zero mate-search work and rebinds the current
+task envelope. A cached `found` line is still freshly replayed through the
+compiled prefix ABI with the current request ID before it can affect the root.
 
-```text
-script-src 'self' blob: 'wasm-unsafe-eval'; worker-src 'self'
-```
+The cache is bounded to 256 entries and is cleared when the browser engine client
+closes. It may survive compatible game turns because every lookup is exact-keyed;
+an incompatible Worker probe or identity change fails closed.
 
-All browser URLs are relative to the deployed scripts, so GitHub Pages project
-subpaths are preserved. The Pages artifact builder versions document scripts
-without converting them to root-relative paths.
+## Work, deadline, cancellation, and crash contracts
 
-## Deadline, cancellation, and crash behavior
+Native root work and separately consumed mate-safety work share one cumulative
+global ledger. Enumerate and import calls include prior safety work in their
+`external_work` snapshots, preventing D2+ external-work regression. The
+certificate-bound safety reserve reaches the coordinator directly, bounded only
+by the work remaining while retaining at least one search credit.
 
-Play creates one absolute monotonic analysis deadline. Local probe/search time,
-any allowed Render fallback, response-body parsing, service-wake retries, and
-queue retries all consume that same budget. Expiry or user cancellation terminates
-the synchronous WASM worker and does not start another full search. A local
-certification or availability failure may fall back only with time still remaining.
+The Window transports an absolute epoch deadline derived from its monotonic time
+origin. Each Worker clamps caller-reported remaining time against its own
+`performance.timeOrigin + performance.now()` and strips the transport-only epoch
+before calling native code. Raw `performance.now()` values are never compared
+across Window and Worker contexts.
 
-Unexpected `error` or `messageerror` events immediately set `ready = false`,
-terminate the worker, and reject its pending calls. The pinned identity is retained
-only to require an identical fresh probe before another local analysis. Transient
-worker crashes, post failures, and probe timeouts do not make a stale worker ready.
+User cancellation terminates synchronous Workers and never starts hosted
+fallback. Deadline expiry shares the same absolute budget and cannot start a
+second full search. A crash discards the whole pool; the last already certified
+depth may be returned, and the next request must create and probe a replacement
+pool. An idle retained root Worker handles local human prefix replay, avoiding an
+uncertified JavaScript legality path and avoiding an extra N+1 WASM heap.
 
-## Memory contract
+Hosted analysis and prefix remain optional fallbacks. Their responses must echo
+the already loaded source/engine/rules/profile authority; stale Render identity
+cannot contaminate a local result. Pages deployment no longer waits for Render.
 
-Every certificate declares page-aligned `initial_bytes`, `maximum_bytes`,
-`estimated_peak_bytes`, and `growth_enabled`. Current hard JavaScript/builder caps
-are 128 MiB initial, 192 MiB estimated peak, and 256 MiB maximum. The builder
-rejects inconsistent or excessive declarations.
+## Memory, wrapper bytes, CSP, and Pages paths
 
-After module initialization, the adapter compares `HEAPU8.buffer.byteLength`
-exactly with the certified initial size. It checks the current heap again after
-every search against the certified peak and maximum, and the client validates the
-reported current heap before accepting a result. WebAssembly's declared maximum
-is not reliably introspectable from an instantiated Emscripten module, so the
-maximum remains certificate-bound build evidence plus a hard JavaScript cap; it
-is not described as runtime-proven.
+Every capability has the same page-aligned memory envelope under 128 MiB initial,
+192 MiB estimated-peak, and 256 MiB maximum hard caps. The adapter validates the
+instantiated initial/current Emscripten heap,
+and the root runner admits only a certificate-bound aggregate Worker geometry.
+WebAssembly maximum memory is certificate-bound build evidence plus a hard
+JavaScript cap; it is not described as runtime-introspected proof.
 
-## Deployment state
+The module wrapper and WASM bytes are fetched and SHA-256 checked before use. The
+verified single-lane wrapper bytes execute from a temporary Blob URL. CSP permits
+that exact path with `script-src 'self' blob: 'wasm-unsafe-eval'`, while
+`worker-src 'self'` keeps ordinary Worker creation same-origin. All script and
+artifact URLs remain relative for GitHub Pages project paths, and the Pages build
+versions the coordinator and root-client assets with the deployment commit.
 
-Pages now requires `engine/browser-engine-manifest.json` and runs
-`build_browser_wasm_bundle.py --validate-existing` before upload. Validation
-recomputes the checked-out source fingerprint and artifact hashes, requires exactly
-the single certified lane, rejects extra files, and revalidates the certificate.
+## Verification state
 
-No such certified bundle is present in this lab. Therefore the workflow is wired
-to stop rather than silently deploy an uncertified or incomplete browser engine.
-The Render fingerprint/limits readiness gate remains in place until a real bundle
-and the separate prefix integration are released together.
+Focused checks cover strict coordinator/root-series mutation rejection, the
+builder/runtime root-prefix-mate manifest boundary, an eight-Worker mock pool,
+4-of-8 initial dispatch, streamed scouts, fresh sessions across two turns,
+pooled prefix replay, cumulative D1→D2 safety work, D1→D5 complete-proof cache,
+UNKNOWN non-caching, White/Black mate mapping, immediate mate publication,
+incomplete bound rejection, mismatched time origins, crash last-safe/reprobe,
+Pages load order/CSP/versioning, and independent Pages deployment.
 
-## Verification
-
-The focused browser shell tests cover bundle validation and drift, certificate
-and memory caps, pthread rejection, request limits, full replay state, verified
-wrapper/CSP wiring, hard cancellation, absolute deadline termination, worker crash
-reprobe, promoted provenance, Pages paths, and fail-closed UI wiring. JavaScript
-syntax, Python compilation, workflow embedded-Python syntax, patch whitespace, and
-staged secret checks are release checks for this commit.
-
-```text
-25 passed in 0.90s
-```
-
-No performance benchmark was run for this hardening change, and no product speed
-or strength claim is made from the shell alone.
+These are contract and mock-Worker tests, not a D5 performance receipt. Real
+Opera timing and product promotion remain blocked on corrected native semantics,
+the complete combined artifact, exact differential/parity evidence, memory
+evidence, and all certificate gates.

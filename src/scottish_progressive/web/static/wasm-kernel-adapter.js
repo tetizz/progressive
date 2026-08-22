@@ -2,6 +2,48 @@ const MANIFEST_SCHEMA = "spc-browser-wasm-manifest-v1";
 const CERTIFICATE_SCHEMA = "spc-browser-wasm-certificate-v1";
 const PREFIX_CONTRACT_SCHEMA = "spc-boundary-prefix-contract-v1";
 const PREFIX_RESULT_SCHEMA = "spc-boundary-prefix-v1";
+const ROOT_SESSION_CERTIFICATE_SCHEMA = "spc-root-session-certificate-v1";
+const MATE_CERTIFICATE_SCHEMA = "spc-series-mate-certificate-v1";
+const ROOT_SESSION_ABI_VERSION = 2;
+const MATE_ABI_VERSION = 1;
+const COMBINED_EXPORTS = Object.freeze([
+  "_spc_start_kernel_search_json",
+  "_spc_boundary_kernel_search_json",
+  "_spc_boundary_prefix_json",
+  "_spc_boundary_prefix_contract_json",
+  "_spc_start_kernel_abi_version",
+  "_spc_root_session_contract_json",
+  "_spc_root_session_create_json",
+  "_spc_root_session_enumerate_json",
+  "_spc_root_session_import_json",
+  "_spc_root_session_search_json",
+  "_spc_root_session_destroy",
+  "_spc_root_session_abi_version",
+  "_spc_series_mate_search_json",
+  "_spc_series_mate_abi_version",
+  "_malloc",
+  "_free",
+]);
+const ROOT_SESSION_WEIGHT_KEYS = Object.freeze([
+  "boundary_check",
+  "immediate_vulnerability",
+  "king_space",
+  "material",
+  "promotion_corridors",
+  "series_reach",
+  "useful_mobility",
+]);
+const ROOT_SESSION_IDENTITY_KEYS = Object.freeze([
+  "certificate_id",
+  "engine_version",
+  "kernel_sha256",
+  "module_js_sha256",
+  "profile_id",
+  "ruleset_version",
+  "runtime_variant",
+  "source_fingerprint",
+  "thread_count",
+]);
 const MIN_PREFIX_DIFFERENTIAL_CASES = 14;
 const PREFIX_HARD_LIMITS = Object.freeze({
   maximum_fen_utf8_bytes: 512,
@@ -171,8 +213,19 @@ function validateRuntimeMemory(module, memory, { initial = false } = {}) {
   return bytes;
 }
 
+function canonicalJsonValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value).sort().map((key) => [key, canonicalJsonValue(value[key])]),
+    );
+  }
+  return value;
+}
+
 function sameJson(left, right) {
-  return JSON.stringify(left) === JSON.stringify(right);
+  return JSON.stringify(canonicalJsonValue(left))
+    === JSON.stringify(canonicalJsonValue(right));
 }
 
 function validatePrefixContract(value, { native = false } = {}) {
@@ -234,6 +287,46 @@ function certificateMatchesArtifact(certificate, value, {
     && certificate.certificate_id
     && sameJson(certificate.support_files, supportFiles)
   );
+}
+
+function validateCombinedRuntimeIdentity(certificate) {
+  const exceptionStrategy = certificate?.exception_strategy;
+  const wasmSimd = certificate?.wasm_simd;
+  const allocator = certificate?.allocator;
+  const requirements = certificate?.runtime_requirements;
+  const requirementKeys = [
+    "cross_origin_isolated",
+    "native_wasm_exception_handling",
+    "ordinary_module_worker",
+    "pthreads",
+    "wasm_simd",
+  ];
+  if (
+    !["emscripten", "wasm"].includes(exceptionStrategy)
+    || typeof wasmSimd !== "boolean"
+    || !["dlmalloc", "emmalloc"].includes(allocator)
+    || !requirements
+    || typeof requirements !== "object"
+    || Array.isArray(requirements)
+    || !sameJson(Object.keys(requirements).sort(), requirementKeys)
+    || requirements.ordinary_module_worker !== true
+    || requirements.pthreads !== false
+    || requirements.cross_origin_isolated !== false
+    || requirements.native_wasm_exception_handling !== (exceptionStrategy === "wasm")
+    || requirements.wasm_simd !== wasmSimd
+  ) return null;
+  return Object.freeze({
+    exception_strategy: exceptionStrategy,
+    wasm_simd: wasmSimd,
+    allocator,
+    runtime_requirements: Object.freeze({
+      ordinary_module_worker: true,
+      pthreads: false,
+      cross_origin_isolated: false,
+      native_wasm_exception_handling: exceptionStrategy === "wasm",
+      wasm_simd: wasmSimd,
+    }),
+  });
 }
 
 function validateSafetyCertificate(certificate, value, context) {
@@ -304,6 +397,250 @@ function validatePrefixCertificate(certificate, value, context) {
   return { certificate, contract, engine, memory };
 }
 
+function validateRootSessionConfig(value, contract) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const expectedKeys = [
+    "external_cache_weight", "mate_score", "max_depth", "max_work",
+    "root_contract_eval_capacity", "root_contract_tt_capacity",
+    "root_tactical_protection", "series_cache_capacity", "weights",
+    "width", "worker_threads",
+  ];
+  const hard = contract?.hard_limits;
+  if (
+    !sameJson(Object.keys(value).sort(), expectedKeys)
+    || !hard
+    || typeof hard !== "object"
+    || Array.isArray(hard)
+  ) return null;
+  const hardInteger = (name) => Number.isInteger(hard[name]) && hard[name] >= 1
+    ? hard[name]
+    : null;
+  const maximumDepth = hardInteger("maximum_depth");
+  const maximumWidth = hardInteger("maximum_width");
+  const maximumCache = hardInteger("maximum_series_cache_capacity");
+  const maximumTt = hardInteger("maximum_tt_capacity");
+  const maximumEval = hardInteger("maximum_eval_capacity");
+  const maximumWorkers = hardInteger("worker_threads");
+  const bounded = (candidate, minimum, maximum) => Number.isSafeInteger(candidate)
+    && candidate >= minimum
+    && candidate <= maximum;
+  if (
+    maximumDepth === null
+    || maximumWidth === null
+    || maximumCache === null
+    || maximumTt === null
+    || maximumEval === null
+    || maximumWorkers === null
+    || value.max_depth !== 5
+    || !bounded(value.max_depth, 1, maximumDepth)
+    || value.width !== 32
+    || !bounded(value.width, 1, maximumWidth)
+    || !bounded(value.max_work, 1, Number.MAX_SAFE_INTEGER)
+    || !bounded(value.mate_score, 1, 1_000_000_000)
+    || !bounded(value.series_cache_capacity, 1, maximumCache)
+    || !bounded(value.external_cache_weight, 0, value.series_cache_capacity)
+    || value.worker_threads !== 1
+    || !bounded(value.worker_threads, 1, maximumWorkers)
+    || !bounded(value.root_contract_tt_capacity, 1, maximumTt)
+    || !bounded(value.root_contract_eval_capacity, 1, maximumEval)
+    || typeof value.root_tactical_protection !== "boolean"
+    || !value.weights
+    || typeof value.weights !== "object"
+    || Array.isArray(value.weights)
+    || !sameJson(Object.keys(value.weights).sort(), ROOT_SESSION_WEIGHT_KEYS)
+    || Object.values(value.weights).some((weight) => (
+      !Number.isSafeInteger(weight) || weight < 25 || weight > 300
+    ))
+  ) return null;
+  return Object.freeze({
+    ...value,
+    weights: Object.freeze({ ...value.weights }),
+  });
+}
+
+function validateRootPlayLimits(value, config) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || !config) return null;
+  const expectedKeys = [
+    "default_generation_positions", "default_seconds", "maximum_seconds",
+    "safety_reserve_positions",
+  ];
+  if (
+    !sameJson(Object.keys(value).sort(), expectedKeys)
+    || !Number.isFinite(value.maximum_seconds)
+    || value.maximum_seconds <= 0
+    || value.maximum_seconds > 0xffffffff / 1000
+    || !Number.isFinite(value.default_seconds)
+    || value.default_seconds <= 0
+    || value.default_seconds > value.maximum_seconds
+    || !Number.isSafeInteger(value.default_generation_positions)
+    || value.default_generation_positions < 1_000
+    || value.default_generation_positions > config.max_work
+    || !Number.isSafeInteger(value.safety_reserve_positions)
+    || value.safety_reserve_positions < 1
+    || value.safety_reserve_positions > config.max_work
+  ) return null;
+  return Object.freeze({ ...value });
+}
+
+function validateRootGeometry(value, memory, contract) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const expectedKeys = [
+    "aggregate_maximum_bytes",
+    "desktop_initial_full_wave",
+    "desktop_workers",
+    "play_limits",
+    "session_config",
+    "supported_lower_geometries",
+  ];
+  if (!sameJson(Object.keys(value).sort(), expectedKeys)) return null;
+  const config = validateRootSessionConfig(value.session_config, contract);
+  const playLimits = validateRootPlayLimits(value.play_limits, config);
+  if (
+    !Number.isInteger(value.desktop_workers)
+    || value.desktop_workers !== 8
+    || !Number.isInteger(value.desktop_initial_full_wave)
+    || value.desktop_initial_full_wave !== 4
+    || value.aggregate_maximum_bytes !== value.desktop_workers * memory.maximum_bytes
+    || !Array.isArray(value.supported_lower_geometries)
+    || !config
+    || !playLimits
+  ) return null;
+  let lastWorkers = value.desktop_workers;
+  for (const geometry of value.supported_lower_geometries) {
+    if (
+      !geometry
+      || typeof geometry !== "object"
+      || Array.isArray(geometry)
+      || !sameJson(
+        Object.keys(geometry).sort(),
+        ["aggregate_maximum_bytes", "initial_full_wave", "workers"],
+      )
+      || !Number.isInteger(geometry.workers)
+      || geometry.workers < 1
+      || geometry.workers >= lastWorkers
+      || !Number.isInteger(geometry.initial_full_wave)
+      || geometry.initial_full_wave < 1
+      || geometry.initial_full_wave > geometry.workers
+      || geometry.aggregate_maximum_bytes !== geometry.workers * memory.maximum_bytes
+    ) return null;
+    lastWorkers = geometry.workers;
+  }
+  return Object.freeze({
+    ...value,
+    play_limits: playLimits,
+    session_config: config,
+    supported_lower_geometries: Object.freeze(
+      value.supported_lower_geometries.map((geometry) => Object.freeze({ ...geometry })),
+    ),
+  });
+}
+
+function validateRootSessionCertificate(certificate, value, context) {
+  if (certificate === undefined || certificate === null) return null;
+  const evidence = certificate?.evidence;
+  const engine = certificate?.engine;
+  const memory = validateMemoryLimits(certificate?.memory);
+  const contract = certificate?.root_session_contract;
+  const exportsList = certificate?.exports;
+  const runtime = validateCombinedRuntimeIdentity(certificate);
+  const geometry = memory && contract
+    ? validateRootGeometry(certificate?.geometry, memory, contract)
+    : null;
+  const requiredEvidence = [
+    "deterministic_node_smoke", "combined_artifact", "enumerate_import_search",
+    "exact_manifest_import", "persistent_d1_d2_session",
+    "cumulative_work_and_cache_receipts", "configured_max_depth_rejected",
+    "per_call_work_credit", "deadline_fail_closed", "work_limit_fail_closed",
+    "browser_worker_smoke", "opera_worker_smoke",
+    "selected_owner_warm_exact_certification",
+  ];
+  if (
+    !certificateMatchesArtifact(certificate, value, context)
+    || certificate.schema !== ROOT_SESSION_CERTIFICATE_SCHEMA
+    || certificate.abi_version !== ROOT_SESSION_ABI_VERSION
+    || certificate.root_session_certified !== true
+    || certificate.reply_mate_safety !== false
+    || certificate.product_publishable !== false
+    || !SHA256.test(String(certificate.kernel_sha256 || ""))
+    || certificate.kernel_sha256 !== value.kernel_sha256
+    || !runtime
+    || !Array.isArray(exportsList)
+    || !sameJson(exportsList, COMBINED_EXPORTS)
+    || !contract
+    || typeof contract !== "object"
+    || Array.isArray(contract)
+    || contract.abi_version !== ROOT_SESSION_ABI_VERSION
+    || contract.reply_mate_safety !== false
+    || contract.product_publishable !== false
+    || contract.capabilities?.selected_owner_certification !== true
+    || !geometry
+    || !evidence
+    || evidence.failures !== 0
+    || !Number.isInteger(evidence.differential_cases)
+    || evidence.differential_cases < 1
+    || requiredEvidence.some((key) => evidence[key] !== true)
+    || evidence.start_w32_d5_completed_depth !== 5
+    || evidence.start_w32_d5_width !== 32
+    || !Number.isFinite(Number(evidence.start_w32_d5_elapsed_seconds))
+    || Number(evidence.start_w32_d5_elapsed_seconds) < 0
+    || Number(evidence.start_w32_d5_elapsed_seconds) >= 60
+    || !engine
+    || !["engine_version", "ruleset_version", "profile_id"].every(
+      (key) => typeof engine[key] === "string" && Boolean(engine[key]),
+    )
+    || !memory
+  ) {
+    throw new KernelAdapterError(
+      `The ${context.name} artifact has no matching root-session certificate.`,
+      "browser-root-session-uncertified",
+    );
+  }
+  return { certificate, contract, engine, geometry, memory, runtime };
+}
+
+function validateMateCertificate(certificate, value, context) {
+  if (certificate === undefined || certificate === null) return null;
+  const evidence = certificate?.evidence;
+  const engine = certificate?.engine;
+  const memory = validateMemoryLimits(certificate?.memory);
+  const exportsList = certificate?.exports;
+  const runtime = validateCombinedRuntimeIdentity(certificate);
+  const requiredEvidence = [
+    "combined_artifact", "python_parity", "authoritative_replay", "white_found",
+    "black_found", "exhausted", "work_limit_unknown", "deadline_unknown",
+    "signed_mate_distance_overrides", "proof_bounds", "work_receipts",
+    "deadline_receipts", "browser_worker_smoke",
+  ];
+  if (
+    !certificateMatchesArtifact(certificate, value, context)
+    || certificate.schema !== MATE_CERTIFICATE_SCHEMA
+    || certificate.abi_version !== MATE_ABI_VERSION
+    || certificate.mate_capability_certified !== true
+    || certificate.reply_mate_safety !== true
+    || certificate.product_publishable !== false
+    || certificate.kernel_sha256 !== value.kernel_sha256
+    || !runtime
+    || !Array.isArray(exportsList)
+    || !sameJson(exportsList, COMBINED_EXPORTS)
+    || !evidence
+    || evidence.failures !== 0
+    || !Number.isInteger(evidence.differential_cases)
+    || evidence.differential_cases < 5
+    || requiredEvidence.some((key) => evidence[key] !== true)
+    || !engine
+    || !["engine_version", "ruleset_version", "profile_id"].every(
+      (key) => typeof engine[key] === "string" && Boolean(engine[key]),
+    )
+    || !memory
+  ) {
+    throw new KernelAdapterError(
+      `The ${context.name} artifact has no matching compiled mate certificate.`,
+      "browser-root-mate-uncertified",
+    );
+  }
+  return { certificate, engine, memory, runtime };
+}
+
 function validateVariant(name, value, sourceFingerprint) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new KernelAdapterError(
@@ -315,6 +652,8 @@ function validateVariant(name, value, sourceFingerprint) {
   if (
     !SHA256.test(String(value.wasm_sha256 || ""))
     || !SHA256.test(String(value.module_js_sha256 || ""))
+    || ((value.root_session_certificate || value.mate_certificate)
+      && !SHA256.test(String(value.kernel_sha256 || "")))
     || !Number.isInteger(threadCount)
     || threadCount < 1
     || (name === "single" && threadCount !== 1)
@@ -349,25 +688,48 @@ function validateVariant(name, value, sourceFingerprint) {
   const context = { name, sourceFingerprint, threadCount, supportFiles };
   const analysis = validateSafetyCertificate(value.safety_certificate, value, context);
   const prefix = validatePrefixCertificate(value.prefix_certificate, value, context);
-  if (!analysis && !prefix) {
+  const rootSession = validateRootSessionCertificate(
+    value.root_session_certificate,
+    value,
+    context,
+  );
+  const mate = validateMateCertificate(value.mate_certificate, value, context);
+  if ((rootSession === null) !== (mate === null)) {
+    throw new KernelAdapterError(
+      "Root-session and compiled-mate certificates must be paired.",
+      "browser-root-certificate-pair-invalid",
+    );
+  }
+  if (rootSession && mate && (
+    rootSession.certificate.kernel_sha256 !== mate.certificate.kernel_sha256
+    || rootSession.engine.profile_id !== mate.engine.profile_id
+    || !sameJson(rootSession.runtime, mate.runtime)
+  )) {
+    throw new KernelAdapterError(
+      "Root-session and compiled-mate certificates have different runtime identities.",
+      "browser-root-certificate-pair-invalid",
+    );
+  }
+  if (!analysis && !prefix && !rootSession && !mate) {
     throw new KernelAdapterError(
       `The ${name} WebAssembly artifact has no certified capability.`,
       "browser-kernel-not-certified",
     );
   }
-  if (analysis && prefix) {
-    if (!sameJson(analysis.memory, prefix.memory)) {
+  const capabilities = [analysis, prefix, rootSession, mate].filter(Boolean);
+  if (capabilities.length > 1) {
+    if (capabilities.some((capability) => !sameJson(capability.memory, capabilities[0].memory))) {
       throw new KernelAdapterError(
-        "Search and prefix certificates have different memory envelopes.",
+        "Browser capability certificates have different memory envelopes.",
         "browser-memory-envelope-mismatch",
       );
     }
-    if (
-      analysis.engine.engine_version !== prefix.engine.engine_version
-      || analysis.engine.ruleset_version !== prefix.engine.ruleset_version
-    ) {
+    if (capabilities.some((capability) => (
+      capability.engine.engine_version !== capabilities[0].engine.engine_version
+      || capability.engine.ruleset_version !== capabilities[0].engine.ruleset_version
+    ))) {
       throw new KernelAdapterError(
-        "Search and prefix certificates have different engine identities.",
+        "Browser capability certificates have different engine identities.",
         "browser-manifest-identity-mismatch",
       );
     }
@@ -380,12 +742,17 @@ function validateVariant(name, value, sourceFingerprint) {
     support_files: supportFiles,
     analysis_ready: analysis !== null,
     prefix_ready: prefix !== null,
+    root_session_ready: rootSession !== null,
+    mate_ready: mate !== null,
+    root_iteration_ready: rootSession !== null && mate !== null && prefix !== null,
     analysis_certificate: analysis,
     prefix_capability: prefix,
+    root_session_capability: rootSession,
+    mate_capability: mate,
     analysis_limits: analysis?.limits ?? null,
     prefix_contract: prefix?.contract ?? null,
-    memory_limits: analysis?.memory ?? prefix?.memory ?? null,
-    engine_identity: analysis?.engine ?? prefix?.engine ?? null,
+    memory_limits: capabilities[0]?.memory ?? null,
+    engine_identity: capabilities[0]?.engine ?? null,
   };
 }
 
@@ -610,6 +977,231 @@ function validateNativePrefixContract(module, certifiedContract) {
   return nativeContract;
 }
 
+function validateNativeRootSessionContract(module, certifiedContract) {
+  let pointer;
+  try {
+    pointer = module._spc_root_session_contract_json();
+  } catch (cause) {
+    throw new KernelAdapterError(
+      `The compiled root-session contract could not be read: ${cause?.message || cause}`,
+      "browser-root-session-abi-mismatch",
+    );
+  }
+  if (!pointer) {
+    throw new KernelAdapterError(
+      "The compiled root-session contract returned a null pointer.",
+      "browser-root-session-abi-mismatch",
+    );
+  }
+  let nativeContract;
+  try {
+    nativeContract = JSON.parse(module.UTF8ToString(pointer));
+  } catch {
+    nativeContract = null;
+  }
+  if (
+    !nativeContract
+    || typeof nativeContract !== "object"
+    || Array.isArray(nativeContract)
+    || nativeContract.abi_version !== ROOT_SESSION_ABI_VERSION
+    || nativeContract.reply_mate_safety !== false
+    || nativeContract.product_publishable !== false
+    || !sameJson(nativeContract, certifiedContract)
+  ) {
+    throw new KernelAdapterError(
+      "The compiled root-session ABI differs from its certified contract.",
+      "browser-root-session-abi-mismatch",
+    );
+  }
+  return Object.freeze(nativeContract);
+}
+
+function parseFacadeJson(module, pointer, label, code) {
+  if (!pointer) {
+    throw new KernelAdapterError(`${label} returned a null result.`, code);
+  }
+  try {
+    const value = JSON.parse(module.UTF8ToString(pointer));
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error();
+    return value;
+  } catch {
+    throw new KernelAdapterError(`${label} returned invalid JSON.`, code);
+  }
+}
+
+function withJsonArgument(module, value, invoke, label) {
+  const encoded = JSON.stringify(value);
+  const pointer = module.stringToNewUTF8(encoded);
+  if (!pointer) {
+    throw new KernelAdapterError(
+      `${label} could not allocate its JSON request.`,
+      "browser-root-allocation-failed",
+    );
+  }
+  try {
+    return invoke(pointer, utf8Length(encoded));
+  } finally {
+    module._free(pointer);
+  }
+}
+
+function rootIdentityEnvelope(identity) {
+  return {
+    source_fingerprint: identity.source_fingerprint,
+    kernel_sha256: identity.kernel_sha256,
+    module_js_sha256: identity.module_js_sha256,
+    certificate_id: identity.root_session_certificate_id,
+    runtime_variant: identity.runtime_variant,
+    thread_count: identity.thread_count,
+    engine_version: identity.engine_version,
+    ruleset_version: identity.ruleset_version,
+    profile_id: identity.profile_id,
+  };
+}
+
+function nativeRootRequest(request, identity, schema, fields) {
+  if (!request || typeof request !== "object" || Array.isArray(request)) {
+    throw new KernelAdapterError(
+      "The native root-session request is not a JSON object.",
+      "browser-root-request-invalid",
+    );
+  }
+  const {
+    session_id: _sessionId,
+    deadline_epoch_ms: _deadlineEpochMs,
+    ...nativeRequestValue
+  } = request;
+  const expectedKeys = [
+    "generation",
+    "iteration_id",
+    "request_id",
+    "schema",
+    ...ROOT_SESSION_IDENTITY_KEYS,
+    ...fields,
+  ].sort();
+  if (
+    nativeRequestValue.schema !== schema
+    || !sameJson(Object.keys(nativeRequestValue).sort(), expectedKeys)
+    || typeof nativeRequestValue.request_id !== "string"
+    || !nativeRequestValue.request_id
+    || typeof nativeRequestValue.iteration_id !== "string"
+    || !nativeRequestValue.iteration_id
+    || !Number.isSafeInteger(nativeRequestValue.generation)
+    || nativeRequestValue.generation < 0
+    || ROOT_SESSION_IDENTITY_KEYS.some((key) => (
+      nativeRequestValue[key] !== rootIdentityEnvelope(identity)[key]
+    ))
+  ) {
+    throw new KernelAdapterError(
+      "The native root-session request differs from its exact certified schema.",
+      "browser-root-request-invalid",
+    );
+  }
+  return nativeRequestValue;
+}
+
+function validateRootIdentityEcho(raw, request, identity, expectedSchema) {
+  const expectedIdentity = rootIdentityEnvelope(identity);
+  if (
+    raw?.schema !== expectedSchema
+    || raw.abi_version !== ROOT_SESSION_ABI_VERSION
+    || raw.request_id !== request.request_id
+    || raw.iteration_id !== request.iteration_id
+    || raw.generation !== request.generation
+    || ROOT_SESSION_IDENTITY_KEYS.some((key) => raw?.[key] !== expectedIdentity[key])
+    || raw.product_publishable !== false
+    || raw.safety_certified !== false
+  ) {
+    throw new KernelAdapterError(
+      "The native root-session reply did not echo its exact certified identity.",
+      "browser-root-reply-identity-invalid",
+    );
+  }
+}
+
+function clampRootRemainingTime(request) {
+  if (
+    typeof globalThis.performance?.now !== "function"
+    || !Number.isFinite(globalThis.performance.timeOrigin)
+  ) {
+    throw new KernelAdapterError(
+      "The browser has no monotonic clock for the certified root deadline.",
+      "browser-root-clock-unavailable",
+    );
+  }
+  if (
+    !Number.isSafeInteger(request.remaining_time_ms)
+    || request.remaining_time_ms < 0
+    || !Number.isFinite(request.deadline_monotonic_ms)
+    || !Number.isFinite(request.deadline_epoch_ms)
+  ) {
+    throw new KernelAdapterError(
+      "The native root-session request has no bounded monotonic deadline.",
+      "browser-root-deadline-invalid",
+    );
+  }
+  return {
+    ...request,
+    remaining_time_ms: Math.max(0, Math.min(
+      request.remaining_time_ms,
+      Math.floor(
+        request.deadline_epoch_ms
+        - (globalThis.performance.timeOrigin + globalThis.performance.now()),
+      ),
+      0xffffffff,
+    )),
+  };
+}
+
+function validExactBoundaryState(value) {
+  const expectedKeys = [
+    "board_fen", "chess960", "ep_targets", "fen", "progressive_ep",
+    "promoted_hex", "quiet_draw_pending", "quiet_series", "series",
+    "series_number", "side_to_move",
+  ];
+  const fen = typeof value?.fen === "string" ? value.fen.split(" ") : [];
+  return Boolean(
+    value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && sameJson(Object.keys(value).sort(), expectedKeys)
+    && fen.length === 6
+    && ["w", "b"].includes(fen[1])
+    && value.board_fen === value.fen
+    && Number.isInteger(value.series)
+    && value.series >= 1
+    && value.series <= 256
+    && value.series_number === value.series
+    && value.side_to_move === (fen[1] === "w" ? "white" : "black")
+    && ((value.series % 2 === 1 && fen[1] === "w")
+      || (value.series % 2 === 0 && fen[1] === "b"))
+    && Number.isInteger(value.quiet_series)
+    && value.quiet_series >= 0
+    && value.quiet_series <= 1_000_000
+    && value.quiet_draw_pending === (value.quiet_series >= 10)
+    && Array.isArray(value.ep_targets)
+    && value.ep_targets.length <= 8
+    && value.ep_targets.every((square, index) => (
+      typeof square === "string"
+      && /^[a-h][1-8]$/.test(square)
+      && (index === 0 || value.ep_targets[index - 1] < square)
+    ))
+    && sameJson(value.progressive_ep, value.ep_targets)
+    && PROMOTED_HEX.test(String(value.promoted_hex || ""))
+    && value.chess960 === false
+  );
+}
+
+function exactBoundaryMatchesRequest(value, requestBoundary) {
+  return validExactBoundaryState(value)
+    && value.fen === requestBoundary?.fen
+    && value.series === requestBoundary?.series
+    && value.quiet_series === requestBoundary?.quiet_series
+    && sameJson(value.ep_targets, requestBoundary?.ep_targets)
+    && value.promoted_hex === requestBoundary?.promoted_hex
+    && value.chess960 === requestBoundary?.chess960;
+}
+
 function normalizeKernelResult(raw, request, identity) {
   const stats = raw?.stats && typeof raw.stats === "object" ? raw.stats : {};
   const requestedDepth = Number(raw?.requested_depth);
@@ -693,6 +1285,55 @@ async function importVerifiedModuleBytes(moduleBytes) {
   }
 }
 
+function browserSupportsWasmSimd() {
+  if (typeof globalThis.WebAssembly?.validate !== "function") return false;
+  // A minimal module whose function contains i8x16.splat followed by drop.
+  const probe = Uint8Array.from([
+    0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0,
+    10, 9, 1, 7, 0, 65, 0, 253, 15, 26, 11,
+  ]);
+  try {
+    return globalThis.WebAssembly.validate(probe);
+  } catch {
+    return false;
+  }
+}
+
+function validateCertifiedRuntimeSupport(variant) {
+  const runtime = variant.root_session_capability?.runtime
+    ?? variant.mate_capability?.runtime
+    ?? null;
+  if (!runtime) return;
+  if (
+    runtime.runtime_requirements.ordinary_module_worker !== true
+    || runtime.runtime_requirements.pthreads !== false
+    || runtime.runtime_requirements.cross_origin_isolated !== false
+  ) {
+    throw new KernelAdapterError(
+      "The certified root runtime cannot execute in an ordinary single Worker.",
+      "browser-root-runtime-unsupported",
+    );
+  }
+  if (runtime.wasm_simd && !browserSupportsWasmSimd()) {
+    throw new KernelAdapterError(
+      "This browser does not support the certified WebAssembly SIMD runtime.",
+      "browser-root-runtime-unsupported",
+    );
+  }
+  if (
+    runtime.exception_strategy === "wasm"
+    && (
+      typeof globalThis.WebAssembly?.Tag !== "function"
+      || typeof globalThis.WebAssembly?.Exception !== "function"
+    )
+  ) {
+    throw new KernelAdapterError(
+      "This browser does not support the certified native WebAssembly exception runtime.",
+      "browser-root-runtime-unsupported",
+    );
+  }
+}
+
 export async function loadCertifiedBrowserKernel({
   expectedSourceFingerprint,
   manifestUrl = new URL("./engine/browser-engine-manifest.json", import.meta.url),
@@ -723,6 +1364,7 @@ export async function loadCertifiedBrowserKernel({
   // execution boundary. Keep them unselectable until that boundary exists.
   const runtimeVariant = "single";
   const variant = manifest.variants[runtimeVariant];
+  validateCertifiedRuntimeSupport(variant);
   const engineRoot = new URL(`./${runtimeVariant}/`, manifestUrl);
   const wasmUrl = new URL(variant.wasm, engineRoot);
   const moduleUrl = new URL(variant.module_js, engineRoot);
@@ -809,6 +1451,17 @@ export async function loadCertifiedBrowserKernel({
       typeof module?._spc_boundary_prefix_json !== "function"
       || typeof module?._spc_boundary_prefix_contract_json !== "function"
     ))
+    || (variant.root_session_ready && (
+      typeof module?._spc_root_session_abi_version !== "function"
+      || module._spc_root_session_abi_version() !== ROOT_SESSION_ABI_VERSION
+    ))
+    || (variant.mate_ready && (
+      typeof module?._spc_series_mate_abi_version !== "function"
+      || module._spc_series_mate_abi_version() !== MATE_ABI_VERSION
+    ))
+    || ((variant.root_session_ready || variant.mate_ready) && (
+      COMBINED_EXPORTS.some((name) => typeof module?.[name] !== "function")
+    ))
   ) {
     throw new KernelAdapterError(
       "The browser engine module does not implement ABI version 1.",
@@ -818,9 +1471,17 @@ export async function loadCertifiedBrowserKernel({
   if (variant.prefix_ready) {
     validateNativePrefixContract(module, variant.prefix_contract);
   }
+  if (variant.root_session_ready) {
+    validateNativeRootSessionContract(
+      module,
+      variant.root_session_capability.contract,
+    );
+  }
 
   const safetyCertificate = variant.analysis_certificate?.certificate ?? null;
   const prefixCertificate = variant.prefix_capability?.certificate ?? null;
+  const rootSessionCertificate = variant.root_session_capability?.certificate ?? null;
+  const mateCertificate = variant.mate_capability?.certificate ?? null;
   const engineIdentity = variant.engine_identity;
   const identity = Object.freeze({
     certificate_schema: safetyCertificate?.schema ?? null,
@@ -834,22 +1495,274 @@ export async function loadCertifiedBrowserKernel({
     thread_count: variant.thread_count,
     analysis_ready: variant.analysis_ready,
     prefix_ready: variant.prefix_ready,
+    root_session_ready: variant.root_session_ready,
+    mate_ready: variant.mate_ready,
+    root_iteration_ready: variant.root_iteration_ready,
     safety_certified: variant.analysis_ready,
     certificate_id: safetyCertificate?.certificate_id ?? null,
     prefix_certificate_id: prefixCertificate?.certificate_id ?? null,
+    root_session_certificate_id: rootSessionCertificate?.certificate_id ?? null,
+    mate_certificate_id: mateCertificate?.certificate_id ?? null,
+    kernel_sha256: rootSessionCertificate?.kernel_sha256
+      ?? mateCertificate?.kernel_sha256
+      ?? null,
     engine_profile_id: safetyCertificate?.engine?.engine_profile_id ?? null,
     engine_profile_name: safetyCertificate?.engine?.engine_profile_name ?? null,
+    profile_id: rootSessionCertificate?.engine?.profile_id
+      ?? mateCertificate?.engine?.profile_id
+      ?? safetyCertificate?.engine?.engine_profile_id
+      ?? null,
     engine_version: engineIdentity.engine_version,
     ruleset_version: engineIdentity.ruleset_version,
     analysis_limits: variant.analysis_limits
       ? Object.freeze({ ...variant.analysis_limits })
       : null,
     prefix_contract: variant.prefix_contract,
+    root_session_contract: variant.root_session_capability?.contract ?? null,
+    root_geometry: variant.root_session_capability?.geometry ?? null,
     memory_limits: Object.freeze({ ...variant.memory_limits }),
     initial_memory_bytes: initialMemoryBytes,
   });
+  let rootSessionId = null;
+  let rootMemoryPeakBytes = initialMemoryBytes;
+  const rootMemoryReceipt = () => {
+    const memoryBytes = validateRuntimeMemory(module, identity.memory_limits);
+    rootMemoryPeakBytes = Math.max(rootMemoryPeakBytes, memoryBytes);
+    return { memory_bytes: memoryBytes, memory_peak_bytes: rootMemoryPeakBytes };
+  };
   return Object.freeze({
     identity,
+    createRootSession(request) {
+      if (!identity.root_iteration_ready) {
+        throw new KernelAdapterError(
+          "This artifact has no complete certified root-session/mate/prefix capability.",
+          "browser-root-session-unavailable",
+        );
+      }
+      if (rootSessionId !== null) {
+        throw new KernelAdapterError(
+          "A native root session is already active in this Worker.",
+          "browser-root-session-active",
+        );
+      }
+      const nativeRequest = nativeRootRequest(
+        request,
+        identity,
+        "spc-root-session-create-v1",
+        ["boundary", "config"],
+      );
+      if (
+        !sameJson(nativeRequest.config, identity.root_geometry.session_config)
+        || !request.boundary
+        || request.boundary.chess960 !== false
+      ) {
+        throw new KernelAdapterError(
+          "The root-session create request differs from its certified configuration.",
+          "browser-root-session-create-invalid",
+        );
+      }
+      const pointer = withJsonArgument(
+        module,
+        nativeRequest,
+        (jsonPointer, jsonLength) => module._spc_root_session_create_json(
+          jsonPointer,
+          jsonLength,
+        ),
+        "The native root-session create ABI",
+      );
+      const raw = parseFacadeJson(
+        module,
+        pointer,
+        "The native root-session create ABI",
+        "browser-root-session-create-invalid",
+      );
+      validateRootIdentityEcho(
+        raw,
+        nativeRequest,
+        identity,
+        "spc-root-session-create-result-v1",
+      );
+      if (
+        raw.status !== "ready"
+        || !Number.isInteger(raw.session_id)
+        || raw.session_id < 1
+        || !exactBoundaryMatchesRequest(raw.boundary, nativeRequest.boundary)
+        || !sameJson(raw.config, identity.root_geometry.session_config)
+        || raw.configured_max_depth !== identity.root_geometry.session_config.max_depth
+        || raw.native_work_after !== 0
+        || raw.capabilities?.selected_owner_certification !== true
+        || raw.capabilities?.reply_mate_safety !== false
+      ) {
+        throw new KernelAdapterError(
+          "The native root-session create ABI returned an invalid session envelope.",
+          "browser-root-session-create-invalid",
+        );
+      }
+      rootSessionId = raw.session_id;
+      return {
+        ...raw,
+        status: raw.status,
+        source_fingerprint: identity.source_fingerprint,
+        kernel_sha256: identity.kernel_sha256,
+        module_js_sha256: identity.module_js_sha256,
+        certificate_id: identity.root_session_certificate_id,
+        runtime_variant: identity.runtime_variant,
+        thread_count: identity.thread_count,
+        engine_version: identity.engine_version,
+        ruleset_version: identity.ruleset_version,
+        profile_id: identity.profile_id,
+        config: identity.root_geometry.session_config,
+        native_work_after: Number.isSafeInteger(raw.native_work_after)
+          ? raw.native_work_after
+          : 0,
+        ...rootMemoryReceipt(),
+      };
+    },
+    enumerateRoot(request) {
+      if (rootSessionId === null || request?.session_id !== rootSessionId) {
+        throw new KernelAdapterError(
+          "The native root enumeration used no active session.",
+          "browser-root-session-mismatch",
+        );
+      }
+      const nativeRequest = nativeRootRequest(
+        clampRootRemainingTime(request),
+        identity,
+        "spc-root-session-enumerate-v1",
+        [
+          "call_work_credit", "deadline_monotonic_ms", "external_work",
+          "native_work_before", "preferred_series", "remaining_time_ms",
+        ],
+      );
+      const pointer = withJsonArgument(
+        module,
+        nativeRequest,
+        (jsonPointer, jsonLength) => module._spc_root_session_enumerate_json(
+          rootSessionId,
+          jsonPointer,
+          jsonLength,
+        ),
+        "The native retained-root enumeration ABI",
+      );
+      const raw = parseFacadeJson(
+          module,
+          pointer,
+          "The native retained-root enumeration ABI",
+          "browser-root-enumeration-invalid",
+        );
+      validateRootIdentityEcho(
+        raw,
+        nativeRequest,
+        identity,
+        "spc-root-session-enumeration-result-v1",
+      );
+      return {
+        ...raw,
+        ...rootMemoryReceipt(),
+      };
+    },
+    importRoot(request) {
+      if (rootSessionId === null || request?.session_id !== rootSessionId) {
+        throw new KernelAdapterError(
+          "The native root import used no active session.",
+          "browser-root-session-mismatch",
+        );
+      }
+      const nativeRequest = nativeRootRequest(
+        clampRootRemainingTime(request),
+        identity,
+        "spc-root-session-import-v1",
+        [
+          "call_work_credit", "deadline_monotonic_ms", "external_work",
+          "manifest", "native_work_before", "remaining_time_ms",
+        ],
+      );
+      const pointer = withJsonArgument(
+        module,
+        nativeRequest,
+        (jsonPointer, jsonLength) => module._spc_root_session_import_json(
+          rootSessionId,
+          jsonPointer,
+          jsonLength,
+        ),
+        "The native retained-root import ABI",
+      );
+      const raw = parseFacadeJson(
+          module,
+          pointer,
+          "The native retained-root import ABI",
+          "browser-root-import-invalid",
+        );
+      validateRootIdentityEcho(
+        raw,
+        nativeRequest,
+        identity,
+        "spc-root-session-import-result-v1",
+      );
+      return {
+        ...raw,
+        ...rootMemoryReceipt(),
+      };
+    },
+    searchRootCandidate(request) {
+      if (rootSessionId === null || request?.session_id !== rootSessionId) {
+        throw new KernelAdapterError(
+          "The native root candidate search used no active session.",
+          "browser-root-session-mismatch",
+        );
+      }
+      const nativeRequest = nativeRootRequest(
+        clampRootRemainingTime(request),
+        identity,
+        "spc-root-candidate-task-v1",
+        [
+          "alpha", "beta", "call_work_credit", "candidate_identity",
+          "child_depth", "deadline_monotonic_ms", "enumeration_identity",
+          "external_work", "incumbent_epoch", "mate_score", "mover",
+          "native_work_before", "order_index", "order_key", "purpose",
+          "remaining_time_ms", "safety_revision", "task_id", "tt_persistence",
+        ],
+      );
+      const pointer = withJsonArgument(
+        module,
+        nativeRequest,
+        (jsonPointer, jsonLength) => module._spc_root_session_search_json(
+          rootSessionId,
+          jsonPointer,
+          jsonLength,
+        ),
+        "The native root-candidate search ABI",
+      );
+      const raw = parseFacadeJson(
+          module,
+          pointer,
+          "The native root-candidate search ABI",
+          "browser-root-search-invalid",
+        );
+      validateRootIdentityEcho(
+        raw,
+        nativeRequest,
+        identity,
+        "spc-root-candidate-result-v1",
+      );
+      return {
+        ...raw,
+        ...rootMemoryReceipt(),
+      };
+    },
+    destroyRootSession() {
+      if (rootSessionId === null) return { status: "not_found" };
+      const sessionId = rootSessionId;
+      const status = module._spc_root_session_destroy(sessionId);
+      rootSessionId = null;
+      if (status !== 1) {
+        throw new KernelAdapterError(
+          "The native root session could not be destroyed cleanly.",
+          "browser-root-session-destroy-failed",
+        );
+      }
+      return { status: "destroyed", session_id: sessionId, ...rootMemoryReceipt() };
+    },
     analyze(request) {
       if (!identity.analysis_ready) {
         throw new KernelAdapterError(
@@ -991,11 +1904,183 @@ export async function loadCertifiedBrowserKernel({
         memory_bytes: validateRuntimeMemory(module, identity.memory_limits),
       };
     },
+    probeRootSafety(request) {
+      if (!identity.root_iteration_ready) {
+        throw new KernelAdapterError(
+          "The combined artifact has no certified compiled root-mate authority.",
+          "browser-root-mate-unavailable",
+        );
+      }
+      const child = request?.authoritative_child_boundary;
+      const rootReplay = request?.authoritative_root_replay;
+      const rootMoves = request?.candidate?.root_series?.moves;
+      const expectedRootIdentity = rootIdentityEnvelope(identity);
+      if (
+        rootSessionId === null
+        || request?.session_id !== rootSessionId
+        || request?.schema !== "spc-root-safety-task-v1"
+        || ROOT_SESSION_IDENTITY_KEYS.some((key) => (
+          request?.[key] !== expectedRootIdentity[key]
+        ))
+        || !Number.isInteger(request.call_work_credit)
+        || request.call_work_credit < 1
+        || request.call_work_credit > 0xffffffff
+        || !Number.isInteger(request.remaining_time_ms)
+        || request.remaining_time_ms < 0
+        || !validExactBoundaryState(child)
+        || !Array.isArray(rootMoves)
+        || !rootReplay
+        || rootReplay.complete !== true
+        || rootReplay.outcome !== null
+        || !sameJson(rootReplay.prefix, rootMoves)
+        || !validExactBoundaryState(rootReplay.next_state)
+        || !sameJson(rootReplay.next_state, child)
+      ) {
+        throw new KernelAdapterError(
+          "The root mate probe has no authoritative compiled child boundary.",
+          "browser-root-safety-boundary-invalid",
+        );
+      }
+      const remainingMs = clampRootRemainingTime(request).remaining_time_ms;
+      if (remainingMs <= 0) {
+        return { ...request, status: "unknown", work_used: 0 };
+      }
+      const allocated = [];
+      let pointer;
+      try {
+        for (const value of [
+          child.fen,
+          child.ep_targets.join(",") || "-",
+          child.promoted_hex,
+        ]) {
+          const allocatedValue = module.stringToNewUTF8(value);
+          if (!allocatedValue) {
+            throw new KernelAdapterError(
+              "The compiled mate probe could not allocate its boundary.",
+              "browser-root-mate-allocation-failed",
+            );
+          }
+          allocated.push(allocatedValue);
+        }
+        pointer = module._spc_series_mate_search_json(
+          allocated[0],
+          child.series,
+          allocated[1],
+          allocated[2],
+          0,
+          request.call_work_credit,
+          remainingMs,
+        );
+      } finally {
+        allocated.forEach((value) => module._free(value));
+      }
+      const raw = parseFacadeJson(
+        module,
+        pointer,
+        "The compiled root reply-mate ABI",
+        "browser-root-mate-invalid",
+      );
+      const workUsed = Number(raw?.stats?.positions_visited)
+        + Number(raw?.stats?.moves_generated);
+      if (
+        raw.schema !== "spc-series-mate-proof-v1"
+        || raw.abi_version !== MATE_ABI_VERSION
+        || !Number.isSafeInteger(workUsed)
+        || workUsed < 0
+        || workUsed > request.call_work_credit
+        || !Array.isArray(raw.moves)
+      ) {
+        throw new KernelAdapterError(
+          "The compiled root reply-mate receipt is malformed or over credit.",
+          "browser-root-mate-invalid",
+        );
+      }
+      const safetyMemory = rootMemoryReceipt();
+      if (raw.kernel_status === "exhausted" && raw.complete === true) {
+        if (raw.moves.length !== 0) {
+          throw new KernelAdapterError(
+            "An exhausted mate proof carried a line.",
+            "browser-root-mate-invalid",
+          );
+        }
+        return {
+          ...request,
+          status: "exhausted",
+          work_used: workUsed,
+          ...safetyMemory,
+        };
+      }
+      if (raw.kernel_status !== "found" || raw.complete !== true) {
+        return {
+          ...request,
+          status: "unknown",
+          work_used: workUsed,
+          ...safetyMemory,
+        };
+      }
+      if (
+        raw.moves.length < 1
+        || raw.moves.some((move) => typeof move !== "string"
+          || !/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(move))
+      ) {
+        throw new KernelAdapterError(
+          "A FOUND mate proof carried no valid progressive line.",
+          "browser-root-mate-invalid",
+        );
+      }
+      const replayRequest = {
+        contract_version: 1,
+        operation: "prefix-replay",
+        request_id: `${request.iteration_id}:${request.safety_revision}:mate-replay`,
+        boundary: {
+          fen: child.fen,
+          series: child.series,
+          quiet_series: child.quiet_series,
+          ep_targets: [...child.ep_targets],
+          promoted_hex: child.promoted_hex,
+          chess960: false,
+        },
+        prefix: raw.moves.map(String),
+      };
+      const replyMate = this.inspectPrefix(replayRequest);
+      if (
+        replyMate.complete !== true
+        || replyMate.outcome !== "checkmate"
+        || replyMate.ended_by_check !== true
+        || !sameJson(replyMate.prefix, raw.moves)
+      ) {
+        throw new KernelAdapterError(
+          "The compiled mate line failed authoritative compiled replay.",
+          "browser-root-mate-replay-invalid",
+        );
+      }
+      const childWhite = child.side_to_move === "white";
+      const overrideScore = childWhite
+        ? identity.root_geometry.session_config.mate_score - 2
+        : -identity.root_geometry.session_config.mate_score + 2;
+      const proof = childWhite ? [1, 1] : [-1, -1];
+      return {
+        ...request,
+        status: "found",
+        work_used: workUsed,
+        override_score: overrideScore,
+        proof_bounds: proof,
+        ...rootMemoryReceipt(),
+        reply_mate: {
+          moves: [...raw.moves],
+          machine_notation: raw.moves.join("/"),
+          outcome: "checkmate",
+          ended_by_check: true,
+          checked_prefix: replyMate,
+        },
+      };
+    },
   });
 }
 
 export {
   KernelAdapterError,
+  clampRootRemainingTime,
   importVerifiedModuleBytes,
   normalizeKernelResult,
   validatePrefixContract,

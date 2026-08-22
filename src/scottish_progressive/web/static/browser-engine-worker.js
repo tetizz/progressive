@@ -65,6 +65,48 @@ self.addEventListener("message", async (event) => {
       self.postMessage({ id, ok: true, payload: result });
       return;
     }
+    if (message.type === "root-session-create") {
+      if (!kernelPromise) throw notReadyError();
+      const kernel = await kernelPromise;
+      const result = kernel.createRootSession(message.payload);
+      self.postMessage({ id, ok: true, payload: result });
+      return;
+    }
+    if (message.type === "root-enumerate") {
+      if (!kernelPromise) throw notReadyError();
+      const kernel = await kernelPromise;
+      const result = kernel.enumerateRoot(message.payload);
+      self.postMessage({ id, ok: true, payload: result });
+      return;
+    }
+    if (message.type === "root-import") {
+      if (!kernelPromise) throw notReadyError();
+      const kernel = await kernelPromise;
+      const result = kernel.importRoot(message.payload);
+      self.postMessage({ id, ok: true, payload: result });
+      return;
+    }
+    if (message.type === "root-search") {
+      if (!kernelPromise) throw notReadyError();
+      const kernel = await kernelPromise;
+      const result = kernel.searchRootCandidate(message.payload);
+      self.postMessage({ id, ok: true, payload: result });
+      return;
+    }
+    if (message.type === "root-safety") {
+      if (!kernelPromise) throw notReadyError();
+      const kernel = await kernelPromise;
+      const result = kernel.probeRootSafety(message.payload);
+      self.postMessage({ id, ok: true, payload: result });
+      return;
+    }
+    if (message.type === "root-session-destroy") {
+      if (!kernelPromise) throw notReadyError();
+      const kernel = await kernelPromise;
+      const result = kernel.destroyRootSession();
+      self.postMessage({ id, ok: true, payload: result });
+      return;
+    }
     const error = new Error("Unknown browser engine worker message.");
     error.code = "browser-worker-message-invalid";
     throw error;

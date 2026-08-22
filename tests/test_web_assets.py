@@ -29,6 +29,12 @@ def test_public_assets_are_project_pages_safe_and_keep_local_same_origin() -> No
     assert 'src="/app.js"' not in index
     assert 'src="./app.js"' in index
     assert index.index('src="./browser-prefix-contract.js"') < index.index(
+        'src="./root-iteration-coordinator.js"'
+    )
+    assert index.index('src="./root-iteration-coordinator.js"') < index.index(
+        'src="./browser-root-iteration-client.js"'
+    )
+    assert index.index('src="./browser-root-iteration-client.js"') < index.index(
         'src="./browser-engine-client.js"'
     )
     assert index.index('src="./browser-engine-client.js"') < index.index(
@@ -37,7 +43,7 @@ def test_public_assets_are_project_pages_safe_and_keep_local_same_origin() -> No
     assert "Checking legal moves" not in index
     assert 'id="board-loading-text">Loading board…</span>' in index
     assert 'dom.engine_status_text.textContent = "Loading native engine…"' in app
-    assert "Searching locally · WASM · ${threads} thread" in app
+    assert "certified single-thread Workers" in app
     assert 'analysis.legal_validation_runtime !== "compiled-wasm"' in app
     assert "? analysis.checked_prefix" in app
     assert 'return `./pieces/cburnett/' in app
@@ -74,6 +80,8 @@ def test_pages_uses_the_local_certified_bundle_without_waiting_for_render() -> N
     assert "--validate-existing src/scottish_progressive/web/static/engine" in workflow
     for asset in (
         "browser-prefix-contract.js",
+        "root-iteration-coordinator.js",
+        "browser-root-iteration-client.js",
         "browser-engine-client.js",
         "browser-engine-worker.js",
         "wasm-kernel-adapter.js",
@@ -114,6 +122,8 @@ def test_pages_artifact_versions_every_executable_asset(
         ("src", "play-handoff.js"),
         ("src", "play-timeline.js"),
         ("src", "browser-prefix-contract.js"),
+        ("src", "root-iteration-coordinator.js"),
+        ("src", "browser-root-iteration-client.js"),
         ("src", "browser-engine-client.js"),
         ("src", "app.js"),
     )
@@ -125,6 +135,12 @@ def test_pages_artifact_versions_every_executable_asset(
     assert (output / "browser-prefix-contract.js").read_bytes() == (
         STATIC / "browser-prefix-contract.js"
     ).read_bytes()
+    assert (output / "root-iteration-coordinator.js").read_bytes() == (
+        STATIC / "root-iteration-coordinator.js"
+    ).read_bytes()
+    assert (output / "browser-root-iteration-client.js").read_bytes() == (
+        STATIC / "browser-root-iteration-client.js"
+    ).read_bytes()
     assert (output / "browser-engine-worker.js").is_file()
     assert (output / "wasm-kernel-adapter.js").is_file()
 
@@ -132,6 +148,9 @@ def test_pages_artifact_versions_every_executable_asset(
 def test_browser_engine_assets_are_fail_closed_and_receipted() -> None:
     app = (STATIC / "app.js").read_text(encoding="utf-8")
     client = (STATIC / "browser-engine-client.js").read_text(encoding="utf-8")
+    root_client = (STATIC / "browser-root-iteration-client.js").read_text(
+        encoding="utf-8"
+    )
     adapter = (STATIC / "wasm-kernel-adapter.js").read_text(encoding="utf-8")
 
     assert app.index("await browserEngineClient.preflight({})") < app.index(
@@ -181,7 +200,31 @@ def test_browser_engine_assets_are_fail_closed_and_receipted() -> None:
     assert "validateNativePrefixContract(module, variant.prefix_contract)" in adapter
     assert 'this._call("prefix", request' in client
     assert "PREFIX_API.validatePrefixResult(result, request, this.identity)" in client
-    assert "this.activeAnalysis !== null || this.activePrefix !== null" in client
+    assert "this.activeAnalysis !== null" in client
+    assert "this.activePrefix !== null" in client
+    assert "this.rootRunner?.active === true" in client
+    assert 'typeof result.root_scores_complete !== "boolean"' in client
+    assert "result.root_bound_coverage_complete !== true" in client
+    assert "receipt.root_bound_coverage_complete !== true" in client
+    assert "this.rootRunner.inspectPrefix" in client
+    assert "const pooledPrefix = this.rootRunner?.hasLivePool?.() === true" in client
+    assert 'root_search_mode: "streaming-root-iteration"' in root_client
+    assert "root_bound_coverage_complete: iteration.coverage_complete" in root_client
+    assert "deadline_epoch_ms: deadlineEpochMs" in root_client
+    assert "safetyWork" in root_client
+    assert "mateProofCacheKey" in root_client
+    assert "playLimits.safety_reserve_positions" in root_client
+    assert '"_spc_root_session_search_json"' in adapter
+    assert '"_spc_series_mate_search_json"' in adapter
+    assert "clampRootRemainingTime" in adapter
+    assert "deadline_epoch_ms" in adapter
+    assert "Best move exact; alternatives certified by alpha-beta bounds" in app
+    certified_runtime = app[
+        app.index("function applyCertifiedBrowserRuntime") :
+        app.index("async function checkHealth")
+    ]
+    assert "root_geometry?.play_limits" in certified_runtime
+    assert "Math.min(10_000_000" not in certified_runtime
     assert 'path === "/api/prefix"' in app
     assert "BROWSER_PREFIX.routePrefixRequest" in app
     assert "currentPrefixAuthority()" in app
@@ -361,7 +404,13 @@ def test_play_strength_is_explicit_and_reports_completed_not_claimed_depth() -> 
     assert 'id="play-strength-faster"' in index
     assert 'id="play-runtime-status"' in index
     assert "Deeper · up to 30s" not in index
-    assert index.count("Checking server limits…") == 2
+    assert index.count("Loading local engine…") == 2
+    assert "Checking server limits" not in index
+    assert "Checking CPU allocation" not in index
+    assert "Checking legal moves" not in index
+    assert "Checking server limits" not in app
+    assert "Checking CPU allocation" not in app
+    assert "Checking legal moves" not in app
     assert 'id="play-search-depth"' in index
     assert 'id="play-search-status"' in index
     assert 'strong: { label: "Strong", minimumDepth: 5, seconds: 30' in app

@@ -490,6 +490,110 @@ def test_bundle_builder_stages_one_identity_bound_root_and_mate_artifact(
     builder.validate_existing_bundle(output, package)
 
 
+@pytest.mark.skipif(NODE is None, reason="Node.js is required for browser contract tests")
+def test_browser_adapter_accepts_the_exact_builder_root_prefix_mate_manifest(
+    tmp_path: Path,
+) -> None:
+    builder = _load_bundle_builder()
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "core.cpp").write_text("int engine = 1;\n", encoding="utf-8")
+    wasm = tmp_path / "kernel.wasm"
+    module_js = tmp_path / "kernel.mjs"
+    wasm.write_bytes(b"\0asm\x01\0\0\0")
+    module_js.write_text("export default async () => ({});\n", encoding="utf-8")
+    certificates = {
+        "prefix": _prefix_certificate(
+            builder,
+            source_package=package,
+            wasm=wasm,
+            module_js=module_js,
+        ),
+        "root": _root_session_certificate(
+            builder,
+            source_package=package,
+            wasm=wasm,
+            module_js=module_js,
+        ),
+        "mate": _mate_certificate(
+            builder,
+            source_package=package,
+            wasm=wasm,
+            module_js=module_js,
+        ),
+    }
+    paths: dict[str, Path] = {}
+    for name, certificate in certificates.items():
+        path = tmp_path / f"{name}-certificate.json"
+        path.write_text(json.dumps(certificate), encoding="utf-8")
+        paths[name] = path
+    output = tmp_path / "engine"
+    manifest = builder.build_bundle(
+        single_wasm=wasm,
+        single_module_js=module_js,
+        single_prefix_certificate_path=paths["prefix"],
+        single_root_session_certificate_path=paths["root"],
+        single_mate_certificate_path=paths["mate"],
+        source_package=package,
+        output=output,
+    )
+    adapter = tmp_path / "wasm-kernel-adapter.mjs"
+    adapter.write_bytes((STATIC / "wasm-kernel-adapter.js").read_bytes())
+    script = r"""
+import fs from "node:fs";
+import { pathToFileURL } from "node:url";
+const adapter = await import(pathToFileURL(process.argv[1]));
+const manifest = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const expectedSource = process.argv[3];
+const normalized = adapter.validateManifest(manifest, expectedSource);
+const variant = normalized.variants.single;
+let missingLimitsRejected = false;
+const mutated = structuredClone(manifest);
+delete mutated.variants.single.root_session_certificate.geometry.play_limits.safety_reserve_positions;
+try {
+  adapter.validateManifest(mutated, expectedSource);
+} catch (error) {
+  missingLimitsRejected = error.code === "browser-root-session-uncertified";
+}
+process.stdout.write(JSON.stringify({
+  rootIterationReady: variant.root_iteration_ready,
+  prefixReady: variant.prefix_ready,
+  rootReady: variant.root_session_ready,
+  mateReady: variant.mate_ready,
+  playLimits: variant.root_session_capability.geometry.play_limits,
+  missingLimitsRejected,
+}));
+"""
+    completed = subprocess.run(
+        [
+            str(NODE),
+            "--input-type=module",
+            "-e",
+            script,
+            str(adapter),
+            str(output / "browser-engine-manifest.json"),
+            str(manifest["source_fingerprint"]),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    receipt = json.loads(completed.stdout)
+    assert receipt == {
+        "rootIterationReady": True,
+        "prefixReady": True,
+        "rootReady": True,
+        "mateReady": True,
+        "playLimits": {
+            "maximum_seconds": 60,
+            "default_seconds": 45,
+            "default_generation_positions": 100_000_000,
+            "safety_reserve_positions": 1_000_000,
+        },
+        "missingLimitsRejected": True,
+    }
+
+
 def test_root_and_mate_certificates_fail_closed_on_contract_and_identity_drift(
     tmp_path: Path,
 ) -> None:
