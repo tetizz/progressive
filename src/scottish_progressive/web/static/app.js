@@ -41,7 +41,7 @@
   const browserEngineClient = staticHostCanRunLocalEngine && BROWSER_ENGINE_API
     ? BROWSER_ENGINE_API.createClient()
     : null;
-  const EVALUATION_SCALE_HELP = "About 100 evaluation points equals one pawn. This is a heuristic Progressive evaluation, not calibrated Stockfish centipawns.";
+  const EVALUATION_SCALE_HELP = "Scores are White-centric heuristic points, not pawns or Stockfish centipawns. Human labels are qualitative; the raw engine score remains visible separately.";
   const ANALYSIS_PRESETS = {
     quick: { depth: 4, cap: 48, seconds: 1.25, alternatives: 2, generationPositions: 150_000 },
     strong: { depth: 8, cap: 256, seconds: 5, alternatives: 3, generationPositions: 5_000_000 },
@@ -64,7 +64,7 @@
     "new-variation", "delete-variation", "clear-study", "tree-help",
     "depth-control", "cap-control", "time-control", "alternatives-control",
     "analysis-empty", "analysis-loading", "analysis-error", "analysis-error-text",
-    "analysis-results", "result-score", "result-classification", "result-confidence",
+    "analysis-results", "result-score", "result-raw-score", "result-classification", "result-confidence",
     "proof-strip", "result-side", "best-series", "best-notation", "pv-line",
     "result-choice-heading",
     "pv-controls", "pv-previous", "pv-next", "pv-exit", "pv-indicator",
@@ -3268,6 +3268,9 @@
     dom.result_score.textContent = evaluation.label;
     dom.result_score.title = `${evaluation.spoken}. ${EVALUATION_SCALE_HELP}`;
     dom.result_score.setAttribute("aria-label", evaluation.spoken);
+    dom.result_raw_score.textContent = evaluation.rawLabel === null
+      ? "Raw engine score unavailable"
+      : `Raw engine score ${evaluation.rawLabel}`;
     dom.result_classification.textContent = String(first(result.classification, "Unclassified"));
     dom.result_confidence.textContent = String(first(result.confidence, "Confidence not reported"));
     const analyzedSeries = Math.floor(asNumber(

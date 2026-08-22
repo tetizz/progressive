@@ -237,13 +237,14 @@ def test_browser_engine_assets_are_fail_closed_and_receipted() -> None:
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js is required for browser asset tests")
-def test_player_evaluations_use_pawns_sides_and_sound_mate_notation() -> None:
+def test_player_evaluations_use_human_bands_raw_scores_and_sound_mate_notation() -> None:
     script = r"""
 require(process.argv[1]);
 const evaluation = globalThis.ScottishProgressiveEvaluation;
 const values = {
   white: evaluation.describe(84),
   black: evaluation.describe(-152),
+  currentStart: evaluation.describe(951),
   equal: evaluation.describe(0),
   whiteMate: evaluation.describe(999999, { proof: "white", mate_score: 1000000 }),
   blackMate: evaluation.describe(-999997, { proven_result: "black", mate_score: 1000000 }),
@@ -261,18 +262,23 @@ process.stdout.write(JSON.stringify(values));
     )
     values = json.loads(completed.stdout)
 
-    assert values["white"]["label"] == "White +0.84"
-    assert values["black"]["label"] == "Black +1.52"
-    assert values["equal"]["label"] == "Equal"
+    assert values["white"]["label"] == "White: Small edge"
+    assert values["white"]["rawLabel"] == "+84"
+    assert values["black"]["label"] == "Black: Moderate edge"
+    assert values["black"]["rawLabel"] == "-152"
+    assert values["currentStart"]["label"] == "White: Large edge"
+    assert values["currentStart"]["rawLabel"] == "+951"
+    assert values["equal"]["label"] == "Roughly balanced"
+    assert values["equal"]["rawLabel"] == "0"
     assert values["whiteMate"]["label"] == "Mate for White (M1)"
     assert values["whiteMate"]["spoken"] == "White mates in 1 complete series"
     assert values["blackMate"]["label"] == "Mate for Black (M3)"
     assert values["blackMate"]["spoken"] == "Black mates in 3 complete series"
     assert values["mismatchedProof"]["mate"] is False
-    assert values["mismatchedProof"]["label"] == "White +9999.99"
+    assert values["mismatchedProof"]["label"] == "White: Extreme score (unproven)"
     assert values["noProof"]["mate"] is False
-    assert values["noProof"]["label"] == "Black +9999.97"
-    assert values["loss"] == "0.35 pawn-equivalent Progressive loss"
+    assert values["noProof"]["label"] == "Black: Extreme score (unproven)"
+    assert values["loss"] == "35 raw heuristic-point loss"
 
 
 def test_visible_evaluation_surfaces_share_the_human_formatter() -> None:
@@ -282,11 +288,13 @@ def test_visible_evaluation_surfaces_share_the_human_formatter() -> None:
     assert index.index('src="./evaluation-format.js"') < index.index(
         'src="./app.js"'
     )
-    assert "About 100 evaluation points equals one pawn" in index
-    assert "not calibrated Stockfish centipawns" in index
-    assert 'id="result-score">Equal<' in index
+    assert "not pawns or Stockfish centipawns" in index
+    assert "raw engine score remains visible separately" in index
+    assert 'id="result-score">Roughly balanced<' in index
+    assert 'id="result-raw-score">Raw engine score 0<' in index
     assert "formatPoints(" not in app
     assert "dom.result_score.textContent = evaluation.label" in app
+    assert "dom.result_raw_score.textContent = evaluation.rawLabel" in app
     assert "dom.eval_marker.textContent = evaluation.compact" in app
     assert "score.textContent = evaluation.label" in app
     assert "value.textContent = evaluation.label" in app

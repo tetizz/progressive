@@ -47,7 +47,7 @@
         </div>
 
         <div class="board-layout">
-          <div class="eval-rail" id="eval-rail" aria-label="Progressive evaluation not reported" aria-describedby="evaluation-scale-help" title="About 100 evaluation points equals one pawn. This is a heuristic Progressive evaluation, not calibrated Stockfish centipawns.">
+          <div class="eval-rail" id="eval-rail" aria-label="Progressive evaluation not reported" aria-describedby="evaluation-scale-help" title="Scores are White-centric heuristic points, not pawns or Stockfish centipawns. Human labels are qualitative; the raw engine score remains visible separately.">
             <span class="eval-side eval-black">B</span><div class="eval-fill" id="eval-fill"></div><span class="eval-marker" id="eval-marker">?</span><span class="eval-side eval-white">W</span>
           </div>
           <div class="board-shell" id="board-shell">
@@ -175,8 +175,8 @@
           <div class="analysis-error" id="analysis-error" hidden role="alert"><strong>Automatic analysis stopped</strong><span id="analysis-error-text"></span></div>
 
           <div class="analysis-results" id="analysis-results" hidden>
-            <div class="result-hero"><div><span class="result-label">Progressive evaluation</span><strong class="result-score" id="result-score">Equal</strong></div><div class="classification-block"><span class="classification" id="result-classification">Balanced</span><span class="confidence" id="result-confidence">Depth-limited</span></div></div>
-            <p class="evaluation-help" id="evaluation-scale-help">About 100 evaluation points equals one pawn. This is a heuristic Progressive evaluation, not calibrated Stockfish centipawns.</p>
+            <div class="result-hero"><div><span class="result-label">Progressive evaluation</span><strong class="result-score" id="result-score">Roughly balanced</strong><span class="result-raw-score" id="result-raw-score">Raw engine score 0</span></div><div class="classification-block"><span class="classification" id="result-classification">Balanced</span><span class="confidence" id="result-confidence">Depth-limited</span></div></div>
+            <p class="evaluation-help" id="evaluation-scale-help">Scores are White-centric heuristic points, not pawns or Stockfish centipawns. Human labels are qualitative; the raw engine score remains visible separately.</p>
             <div class="proof-strip" id="proof-strip" aria-label="Search reliability"></div>
             <section class="result-section best-series-section"><div class="section-heading"><h3 id="result-choice-heading">Best series</h3><span class="side-to-move" id="result-side">White to move</span></div><div class="best-series" id="best-series"></div><p class="best-notation" id="best-notation"></p></section>
             <section class="result-section">

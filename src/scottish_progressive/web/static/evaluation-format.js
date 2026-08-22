@@ -3,7 +3,7 @@
 
   const DEFAULT_MATE_SCORE = 1_000_000;
   const MATE_WINDOW = 10_000;
-  const POINTS_PER_PAWN = 100;
+  const BALANCED_THRESHOLD = 25;
 
   function finiteNumber(value) {
     const number = Number(value);
@@ -16,13 +16,19 @@
       .find((value) => value === "white" || value === "black") || null;
   }
 
-  function plainLanguage(pawns) {
-    if (pawns < 0.005) return "Equal";
-    if (pawns < 0.25) return "Roughly equal";
-    if (pawns < 0.75) return "Small edge";
-    if (pawns < 2) return "Clear edge";
-    if (pawns < 4) return "Strong advantage";
-    return "Winning heuristic advantage";
+  function rawLabel(score) {
+    const magnitude = Number.isInteger(score)
+      ? String(Math.abs(score))
+      : String(Math.round(Math.abs(score) * 100) / 100);
+    return score > 0 ? `+${magnitude}` : score < 0 ? `-${magnitude}` : "0";
+  }
+
+  function advantageBand(points) {
+    if (points < 100) return { label: "Small edge", compact: "+" };
+    if (points < 300) return { label: "Moderate edge", compact: "+" };
+    if (points < 600) return { label: "Clear edge", compact: "++" };
+    if (points < 1_000) return { label: "Large edge", compact: "++" };
+    return { label: "Overwhelming heuristic edge", compact: "+++" };
   }
 
   function describe(value, evidence = {}) {
@@ -35,7 +41,8 @@
         plain: "Evaluation not reported",
         spoken: "Progressive evaluation not reported",
         side: null,
-        pawns: null,
+        rawScore: null,
+        rawLabel: null,
         mate: false,
         mateDistance: null,
       };
@@ -62,41 +69,63 @@
         plain: "Forced mate",
         spoken,
         side,
-        pawns: null,
+        rawScore: score,
+        rawLabel: rawLabel(score),
         mate: true,
         mateDistance: hasDistance ? distance : null,
       };
     }
 
-    const pawns = Math.abs(score) / POINTS_PER_PAWN;
-    if (!side || pawns < 0.005) {
+    const points = Math.abs(score);
+    const scoreLabel = rawLabel(score);
+    const rawSpoken = score > 0
+      ? `plus ${scoreLabel.slice(1)}`
+      : score < 0
+        ? `minus ${scoreLabel.slice(1)}`
+        : "zero";
+    const unprovenMateLikeScore = Boolean(side)
+      && points >= mateScore - MATE_WINDOW
+      && points <= mateScore;
+    if (unprovenMateLikeScore) {
       return {
         available: true,
-        label: "Equal",
-        compact: "=",
-        plain: "Equal",
-        spoken: "Equal, heuristic Progressive evaluation",
-        side: null,
-        pawns: 0,
+        label: `${side}: Extreme score (unproven)`,
+        compact: `${side === "White" ? "W" : "B"}?`,
+        plain: `Unproven extreme score for ${side}`,
+        spoken: `${side} has an extreme score without a mate proof. Raw engine score ${rawSpoken} heuristic points`,
+        side,
+        rawScore: score,
+        rawLabel: scoreLabel,
         mate: false,
         mateDistance: null,
       };
     }
 
-    const magnitude = pawns.toFixed(2);
-    const compactMagnitude = pawns < 10
-      ? pawns.toFixed(1)
-      : pawns < 100
-        ? String(Math.round(pawns))
-        : "99+";
+    if (!side || points < BALANCED_THRESHOLD) {
+      return {
+        available: true,
+        label: "Roughly balanced",
+        compact: "=",
+        plain: "Roughly balanced",
+        spoken: `Roughly balanced. Raw engine score ${rawSpoken} heuristic points`,
+        side: null,
+        rawScore: score,
+        rawLabel: scoreLabel,
+        mate: false,
+        mateDistance: null,
+      };
+    }
+
+    const band = advantageBand(points);
     return {
       available: true,
-      label: `${side} +${magnitude}`,
-      compact: `${side === "White" ? "W" : "B"}+${compactMagnitude}`,
-      plain: `${plainLanguage(pawns)} for ${side}`,
-      spoken: `${side} plus ${magnitude} pawns, heuristic Progressive evaluation`,
+      label: `${side}: ${band.label}`,
+      compact: `${side === "White" ? "W" : "B"}${band.compact}`,
+      plain: `${band.label} for ${side}`,
+      spoken: `${side} has a ${band.label.toLowerCase()}. Raw engine score ${rawSpoken} heuristic points`,
       side,
-      pawns,
+      rawScore: score,
+      rawLabel: scoreLabel,
       mate: false,
       mateDistance: null,
     };
@@ -105,12 +134,12 @@
   function loss(value) {
     const points = finiteNumber(value);
     if (points === null) return "Loss not reported";
-    return `${(Math.abs(points) / POINTS_PER_PAWN).toFixed(2)} pawn-equivalent Progressive loss`;
+    return `${rawLabel(Math.abs(points)).replace(/^\+/, "")} raw heuristic-point loss`;
   }
 
   globalThis.ScottishProgressiveEvaluation = Object.freeze({
     DEFAULT_MATE_SCORE,
-    POINTS_PER_PAWN,
+    BALANCED_THRESHOLD,
     describe,
     loss,
   });
