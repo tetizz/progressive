@@ -1726,12 +1726,17 @@ RetainedRootEnumerationResult SubtreeSearchSession::import_retained_root(
     const RetainedRootImportRequest& request
 ) {
     const SubtreeSearchStats before = impl_->stats;
+    // Peer import is transactional with respect to the retained manifest. A
+    // malformed, interrupted, or over-credit replacement must not strand a
+    // persistent Worker without the last authoritatively verified candidate
+    // set. Verification builds a local canonical set and assigns retained_*
+    // only after every candidate and the enumeration identity pass. Search and
+    // evaluation cache work remains cumulative and receipted.
     RetainedRootEnumerationResult result;
     result.root_white_to_move = request.root_white_to_move;
     result.requested_width = request.requested_width;
     result.width_complete = request.width_complete;
     result.preferred_series = request.preferred_series;
-    impl_->clear_retained_root();
     try {
         impl_->configure_root_contract_call(
             request.external_work,
@@ -1835,7 +1840,6 @@ RetainedRootEnumerationResult SubtreeSearchSession::import_retained_root(
         impl_->retained_root_candidates = std::move(canonical);
         impl_->retained_width_complete = request.width_complete;
     } catch (const StopSearch& stopped) {
-        impl_->clear_retained_root();
         result.status = stopped.status;
         result.message = stopped.message;
         result.enumeration_identity.clear();

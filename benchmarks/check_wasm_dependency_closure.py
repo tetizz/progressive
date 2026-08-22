@@ -12,8 +12,11 @@ REQUIRED = (
     "src/scottish_progressive/native_eval.hpp",
     "src/scottish_progressive/native_subtree.cpp",
     "src/scottish_progressive/native_subtree.hpp",
+    "src/scottish_progressive/native_root_session_wasm.cpp",
+    "src/scottish_progressive/native_root_session_wasm.hpp",
     "src/scottish_progressive/native_subtree_wasm.cpp",
     "src/scottish_progressive/native_subtree_wasm.hpp",
+    "src/scottish_progressive/native_subtree_wasm_support.hpp",
 )
 
 

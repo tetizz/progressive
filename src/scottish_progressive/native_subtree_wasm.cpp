@@ -1,6 +1,7 @@
 #include "native_subtree_wasm.hpp"
 
 #include "native_subtree.hpp"
+#include "native_subtree_wasm_support.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1447,6 +1448,36 @@ void write_stats(
 thread_local std::string last_result;
 
 }  // namespace
+
+namespace spc::wasm {
+
+bool parse_exact_boundary(
+    const char* fen,
+    std::int32_t series_number,
+    std::int32_t quiet_series,
+    const char* progressive_ep,
+    const char* promoted_hex_value,
+    native::SubtreeState& state,
+    std::string& error
+) {
+    return parse_boundary(
+        fen,
+        series_number,
+        quiet_series,
+        progressive_ep,
+        promoted_hex_value,
+        state,
+        error
+    );
+}
+
+std::string exact_boundary_json(const native::SubtreeState& state) {
+    std::ostringstream stream;
+    write_boundary_payload(stream, state);
+    return stream.str();
+}
+
+}  // namespace spc::wasm
 
 extern "C" const char* spc_start_kernel_search_json(
     std::int32_t depth_series,

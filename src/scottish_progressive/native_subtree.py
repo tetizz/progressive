@@ -523,8 +523,9 @@ class NativeSubtreeSession:
         result = _enumeration_result(state, raw)
         if result.status == 0:
             self._root_states = {result.enumeration_identity: state}
-        else:
-            self._root_states.clear()
+        # Native peer import is transactional: an invalid/interrupted
+        # replacement leaves the previously verified manifest searchable.
+        # Preserve the matching Python replay boundary on the same rule.
         return result
 
     def search_root_candidate(

@@ -348,6 +348,53 @@ def test_manifest_import_rejects_tampering_and_leaves_no_searchable_root() -> No
     assert not mismatched_ceiling.enumeration_identity
 
 
+def test_failed_reimport_preserves_prior_verified_manifest_transactionally() -> None:
+    root = ProgressiveState.initial()
+    manifest = _session(width=4).enumerate_root(
+        root,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    worker = _session(width=4)
+    imported = worker.import_root(
+        root,
+        manifest,
+        external_work=manifest.work.native_work_after,
+        remaining_nanoseconds=None,
+    )
+    assert imported.status == 0
+
+    candidate = manifest.candidates[0]
+    raw = list(candidate.transport)
+    raw[2] = "a1a1"  # canonical order key
+    corrupted = replace(candidate, transport=tuple(raw))
+    rejected = worker.import_root(
+        root,
+        replace(
+            manifest,
+            candidates=(corrupted,) + manifest.candidates[1:],
+        ),
+        external_work=manifest.work.native_work_after,
+        remaining_nanoseconds=None,
+    )
+    assert rejected.status == 4
+    assert not rejected.enumeration_identity
+
+    still_searchable = worker.search_root_candidate(
+        enumeration_identity=imported.enumeration_identity,
+        candidate_identity=imported.candidates[0].candidate_identity,
+        child_depth=0,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=manifest.work.native_work_after,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+    )
+    assert still_searchable.status == 0
+    assert still_searchable.candidate_identity == candidate.candidate_identity
+
+
 def test_raw_boundary_contract_rejects_invalid_state_fields() -> None:
     root = ProgressiveState.initial()
     board = root.board
