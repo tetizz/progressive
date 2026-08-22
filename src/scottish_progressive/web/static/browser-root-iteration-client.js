@@ -1037,7 +1037,11 @@
       return { manifest, enumeration: rawEnumeration, imports: importResults };
     }
 
-    async analyze(payload, identity, { signal, deadlineMs } = {}) {
+    async analyze(payload, identity, {
+      signal,
+      deadlineMs,
+      receiptDeadlineMs = deadlineMs,
+    } = {}) {
       if (signal?.aborted) throw abortError();
       if (!canRunRequest(payload, identity)) {
         throw new RootIterationClientError(
@@ -1054,6 +1058,9 @@
       const absoluteDeadline = Number.isFinite(deadlineMs)
         ? deadlineMs
         : monotonicNow() + Number(payload.time_limit) * 1_000;
+      const absoluteReceiptDeadline = Number.isFinite(receiptDeadlineMs)
+        ? Math.max(absoluteDeadline, receiptDeadlineMs)
+        : absoluteDeadline;
       const deadlineEpochMs = monotonicDeadlineEpoch(absoluteDeadline);
       if (absoluteDeadline <= monotonicNow()) {
         throw new RootIterationClientError(
@@ -1192,7 +1199,7 @@
                   remaining_time_ms: Math.max(0, Math.floor(
                     task.deadline_monotonic_ms - monotonicNow(),
                   )),
-                }, { signal: taskSignal, deadlineMs: task.deadline_monotonic_ms });
+                }, { signal: taskSignal, deadlineMs: absoluteReceiptDeadline });
                 if (reply?.work && exactInteger(reply.work.native_work_after, 0)) {
                   channel.nativeWorkAfter = reply.work.native_work_after;
                 }
@@ -1211,7 +1218,7 @@
               }, `${task.iteration_id}:${task.safety_revision}:safety-replay`, identity.prefix_contract);
               const replay = await channel.call("prefix", replayRequest, {
                 signal: taskSignal,
-                deadlineMs: task.deadline_monotonic_ms,
+                deadlineMs: absoluteReceiptDeadline,
               });
               PREFIX_API.validatePrefixResult(replay, replayRequest, identity);
               const authoritativeChild = normalizeExactBoundaryState(replay.next_state || {});
@@ -1245,7 +1252,7 @@
                   }, `${task.iteration_id}:${task.safety_revision}:mate-replay`, identity.prefix_contract);
                   const checkedMate = await channel.call("prefix", mateReplayRequest, {
                     signal: taskSignal,
-                    deadlineMs: task.deadline_monotonic_ms,
+                    deadlineMs: absoluteReceiptDeadline,
                   });
                   PREFIX_API.validatePrefixResult(checkedMate, mateReplayRequest, identity);
                   recordChannelMemory(checkedMate, channel);
@@ -1294,7 +1301,7 @@
                   remaining_time_ms: Math.max(0, Math.floor(
                     task.deadline_monotonic_ms - monotonicNow(),
                   )),
-                }, { signal: taskSignal, deadlineMs: task.deadline_monotonic_ms });
+                }, { signal: taskSignal, deadlineMs: absoluteReceiptDeadline });
                 safety = {
                   ...safety,
                   mate_cache: {
@@ -1370,6 +1377,7 @@
               workers: adapters,
               safetyProbe,
               signal,
+              receiptDeadlineMs: absoluteReceiptDeadline,
             });
             if (
               iteration.status !== "complete"
@@ -1389,7 +1397,7 @@
             }, `${iterationId}:replay`, identity.prefix_contract);
             const checkedPrefix = await this.pool[0].call("prefix", prefixRequest, {
               signal,
-              deadlineMs: absoluteDeadline,
+              deadlineMs: absoluteReceiptDeadline,
             });
             PREFIX_API.validatePrefixResult(checkedPrefix, prefixRequest, identity);
             if (exactInteger(checkedPrefix.memory_bytes, 1)) {

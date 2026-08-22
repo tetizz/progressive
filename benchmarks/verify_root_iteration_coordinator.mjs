@@ -874,6 +874,33 @@ async function testCancellationAndDeadline() {
   }), "root-deadline");
   assert.equal(deadlinePool[0].cancelCalls.length, 1);
 
+  const receiptPool = workers(1, single);
+  const receiptSearchDeadline = performance.now() + 50;
+  let safetyStartedBeforeSearchDeadline = false;
+  const receiptGrace = await api.runRootIteration({
+    request: request(1, { deadline_monotonic_ms: receiptSearchDeadline }),
+    manifest: manifest(single),
+    workers: receiptPool,
+    safetyProbe: async (task) => {
+      safetyStartedBeforeSearchDeadline = performance.now() < receiptSearchDeadline;
+      await sleep(75);
+      return exhaustedSafety()(task);
+    },
+    receiptDeadlineMs: receiptSearchDeadline + 200,
+  });
+  assert.equal(receiptGrace.status, "complete");
+  assert.equal(safetyStartedBeforeSearchDeadline, true);
+  assert(performance.now() >= receiptSearchDeadline);
+  assert.equal(receiptPool[0].cancelCalls.length, 0);
+
+  await expectCode(api.runRootIteration({
+    request: request(1, { deadline_monotonic_ms: performance.now() + 100 }),
+    manifest: manifest(single),
+    workers: workers(1, single),
+    safetyProbe: exhaustedSafety(),
+    receiptDeadlineMs: performance.now() + 50,
+  }), "root-receipt-deadline-invalid");
+
   const neverStarted = workers(1, single);
   await expectCode(api.runRootIteration({
     request: request(1, { deadline_monotonic_ms: performance.now() - 1 }),
@@ -972,7 +999,7 @@ await testUnsupportedEnvelope();
 
 process.stdout.write(`${JSON.stringify({
   schema: "spc-root-iteration-coordinator-verifier-v1",
-  scenarios: 13,
+  scenarios: 14,
   response_order_permutations: 8,
   response_order_worker_count: 8,
   streaming_first_wave: true,
@@ -992,6 +1019,7 @@ process.stdout.write(`${JSON.stringify({
   memory_admission_and_receipt_caps: true,
   cancellation_generation_invalidated: true,
   deadline_generation_invalidated: true,
+  deadline_receipt_grace_without_extra_dispatch: true,
   monotonic_deadline_contract: true,
   full_artifact_identity_bound: true,
   prefix_hard_limits_mirrored: true,

@@ -6,10 +6,13 @@
   const FILES = "abcdefgh";
   const STUDY_STORAGE_KEY = "scottish-progressive-analysis-study-v1";
   const POSITION_STORAGE_KEY = "scottish-progressive-saved-positions-v1";
-  const PLAY_SESSION_STORAGE_KEY = "scottish-progressive-play-session-v1";
+  const PLAY_SESSION_STORAGE_KEY = "scottish-progressive-play-session-v2";
+  const LEGACY_PLAY_SESSION_STORAGE_KEY = "scottish-progressive-play-session-v1";
+  const PLAY_SESSION_WRITE_LOCK = "scottish-progressive-play-session-v2-write";
   const STUDY_SCHEMA_VERSION = 1;
   const POSITION_SCHEMA_VERSION = 1;
-  const PLAY_SESSION_SCHEMA_VERSION = 1;
+  const PLAY_SESSION_SCHEMA_VERSION = 2;
+  const LEGACY_PLAY_SESSION_SCHEMA_VERSION = 1;
   const MAX_STORED_NODES = 800;
   const MAX_SAVED_POSITIONS = 50;
   const MAX_STORED_PLAY_SESSION_BYTES = 1_000_000;
@@ -54,6 +57,9 @@
   // deliberately far beyond the work reachable during one play search.
   const STRONG_PLAY_TECHNICAL_WORK_CEILING = 4_000_000_000;
   const PLAY_ANALYSIS_RESPONSE_GRACE_MS = 1_500;
+  const PLAY_PREFIX_RECEIPT_TIMEOUT_MS = 10_000;
+  const PLAY_RESTORE_PER_SERIES_TIMEOUT_MS = 1_500;
+  const PLAY_RESTORE_MAX_TIMEOUT_MS = 120_000;
   const PLAY_STRENGTHS = {
     strong: { label: "Strong", minimumDepth: 5, seconds: 30, generationPositions: STRONG_PLAY_TECHNICAL_WORK_CEILING },
     faster: { label: "Faster", minimumDepth: 1, seconds: 5, generationPositions: 500_000 },
@@ -160,6 +166,7 @@
     playWorkspace: null,
     play: {
       active: false,
+      sessionId: null,
       humanColor: "white",
       thinking: false,
       animating: false,
@@ -199,6 +206,22 @@
   let playSessionReplayBlocked = false;
   let playSessionReplayPromise = null;
   let playSessionLastWriteDurable = false;
+  let playSessionExternalUpdate = false;
+  let playSessionSaveBlocked = false;
+  let playSessionPendingWriteOptions = null;
+  let playSessionRevision = 0;
+  let playSessionWriteQueue = Promise.resolve();
+  let playSessionWriteSequence = 0;
+
+  function randomStorageId(prefix) {
+    const random = globalThis.crypto?.randomUUID?.()
+      || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    return `${prefix}-${random}`;
+  }
+
+  // A page identity must not survive reload or tab duplication. The saved
+  // session identity is separate and remains stable across either operation.
+  const playSessionTabId = randomStorageId("page");
 
   function first(...values) {
     return values.find((value) => value !== undefined && value !== null);
@@ -400,6 +423,7 @@
     }
     let analysisBody = null;
     let analysisDeadlineMs = Number(options.analysisDeadlineMs);
+    let analysisSearchDeadlineMs = Number(options.analysisSearchDeadlineMs);
     if (path === "/api/analyze" && options.body !== undefined) {
       try {
         analysisBody = typeof options.body === "string"
@@ -411,9 +435,12 @@
       if (!analysisBody || typeof analysisBody !== "object" || Array.isArray(analysisBody)) {
         analysisBody = null;
       }
-      if (!Number.isFinite(analysisDeadlineMs) && analysisBody) {
+      if (!Number.isFinite(analysisSearchDeadlineMs) && analysisBody) {
         const seconds = Math.max(0.01, asNumber(analysisBody.time_limit, 0.01));
-        analysisDeadlineMs = monotonicNow() + seconds * 1000;
+        analysisSearchDeadlineMs = monotonicNow() + seconds * 1000;
+      }
+      if (!Number.isFinite(analysisDeadlineMs)) {
+        analysisDeadlineMs = analysisSearchDeadlineMs;
       }
     }
     if (path === "/api/analyze" && browserEngineClient && options.body !== undefined) {
@@ -422,7 +449,8 @@
           options.onTransport?.("browser-wasm");
           return await browserEngineClient.analyzeRoot(analysisBody, {
             signal: options.signal,
-            deadlineMs: analysisDeadlineMs,
+            searchDeadlineMs: analysisSearchDeadlineMs,
+            receiptDeadlineMs: analysisDeadlineMs,
           });
         } catch (error) {
           if (
@@ -440,7 +468,8 @@
           options.onTransport?.("browser-wasm");
           return await browserEngineClient.analyze(analysisBody, {
             signal: options.signal,
-            deadlineMs: analysisDeadlineMs,
+            searchDeadlineMs: analysisSearchDeadlineMs,
+            receiptDeadlineMs: analysisDeadlineMs,
           });
         } catch (error) {
           if (
@@ -460,8 +489,12 @@
         ? analysisDeadlineMs
         : options.analysisDeadlineMs,
     };
-    if (path === "/api/analyze" && analysisBody && Number.isFinite(analysisDeadlineMs)) {
-      const remainingSeconds = (analysisDeadlineMs - monotonicNow()) / 1000;
+    if (
+      path === "/api/analyze"
+      && analysisBody
+      && Number.isFinite(analysisSearchDeadlineMs)
+    ) {
+      const remainingSeconds = (analysisSearchDeadlineMs - monotonicNow()) / 1000;
       if (remainingSeconds < 0.01) throw analysisDeadlineError();
       remoteOptions.body = JSON.stringify({
         ...analysisBody,
@@ -476,6 +509,49 @@
     return path === "/api/analyze"
       ? validateHostedAnalysisIdentity(remotePayload)
       : remotePayload;
+  }
+
+  function playPrefixDeadlineError() {
+    const error = new DOMException("Saved-game validation timed out.", "TimeoutError");
+    error.code = "prefix-deadline";
+    return error;
+  }
+
+  async function requestPlayPrefixJson(
+    body,
+    { signal = null, deadlineMs = null, analysisReceipt = false } = {},
+  ) {
+    const effectiveDeadlineMs = Number.isFinite(deadlineMs)
+      ? deadlineMs
+      : monotonicNow() + PLAY_PREFIX_RECEIPT_TIMEOUT_MS;
+    const remainingMs = effectiveDeadlineMs - monotonicNow();
+    if (remainingMs <= 0) {
+      throw analysisReceipt ? analysisDeadlineError() : playPrefixDeadlineError();
+    }
+    const controller = new AbortController();
+    let deadlineReached = false;
+    const onParentAbort = () => controller.abort(signal?.reason);
+    if (signal?.aborted) onParentAbort();
+    else signal?.addEventListener?.("abort", onParentAbort, { once: true });
+    const timer = window.setTimeout(() => {
+      deadlineReached = true;
+      controller.abort();
+    }, remainingMs);
+    try {
+      return await requestJson("/api/prefix", {
+        method: "POST",
+        signal: controller.signal,
+        body: JSON.stringify(body),
+      });
+    } catch (error) {
+      if (deadlineReached) {
+        throw analysisReceipt ? analysisDeadlineError() : playPrefixDeadlineError();
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timer);
+      signal?.removeEventListener?.("abort", onParentAbort);
+    }
   }
 
   function isPublicServiceWakeError(error, { includeAbort = false } = {}) {
@@ -678,7 +754,7 @@
   }
 
   function stepPlayTimeline(delta) {
-    if (state.mode !== "play" || state.play.animating) return;
+    if (state.mode !== "play" || state.play.animating || blockStalePlayMutation()) return;
     const timeline = playTimeline();
     const current = playTimelineCursor(timeline);
     const target = Math.max(0, Math.min(timeline.length - 1, current + delta));
@@ -785,10 +861,12 @@
   }
 
   function sanitizeStoredPlaySession(value) {
+    const supportedVersion = value?.version === PLAY_SESSION_SCHEMA_VERSION
+      || value?.version === LEGACY_PLAY_SESSION_SCHEMA_VERSION;
     if (
       !value
       || typeof value !== "object"
-      || value.version !== PLAY_SESSION_SCHEMA_VERSION
+      || !supportedVersion
       || !["white", "black"].includes(value.humanColor)
       || !PLAY_STRENGTHS[value.strength]
       || value.active !== true
@@ -800,6 +878,18 @@
       ))
       || !isStoredUciList(value.currentPrefix, value.completedSeries.length + 1)
     ) return null;
+    const legacy = value.version === LEGACY_PLAY_SESSION_SCHEMA_VERSION;
+    const sessionId = legacy ? "legacy-play-session" : value.sessionId;
+    const ownerId = legacy ? playSessionTabId : value.ownerId;
+    const revision = legacy ? 0 : value.revision;
+    if (
+      typeof sessionId !== "string"
+      || !/^[A-Za-z0-9._:-]{8,160}$/.test(sessionId)
+      || typeof ownerId !== "string"
+      || !/^[A-Za-z0-9._:-]{8,160}$/.test(ownerId)
+      || !Number.isSafeInteger(revision)
+      || revision < 0
+    ) return null;
     const timelineIndex = value.timelineIndex === null
       ? null
       : Number.isInteger(value.timelineIndex) && value.timelineIndex >= 0
@@ -809,6 +899,9 @@
       ? value.error.slice(0, 1_000)
       : null;
     return {
+      sessionId,
+      ownerId,
+      revision,
       humanColor: value.humanColor,
       strength: value.strength,
       active: value.active,
@@ -827,26 +920,80 @@
   }
 
   function readPersistedPlaySession() {
+    for (const key of [PLAY_SESSION_STORAGE_KEY, LEGACY_PLAY_SESSION_STORAGE_KEY]) {
+      try {
+        const stored = localStorage.getItem(key);
+        if (!stored || stored.length > MAX_STORED_PLAY_SESSION_BYTES) continue;
+        const saved = sanitizeStoredPlaySession(JSON.parse(stored));
+        if (!saved) continue;
+        playSessionLastWriteDurable = true;
+        playSessionExternalUpdate = false;
+        playSessionSaveBlocked = false;
+        playSessionPendingWriteOptions = null;
+        playSessionRevision = saved.revision;
+        return saved;
+      } catch {
+        // A corrupt newer record must not hide a valid legacy game.
+      }
+    }
+    playSessionLastWriteDurable = false;
+    return null;
+  }
+
+  function sameStoredSeries(left, right) {
+    return left.length === right.length
+      && left.every((move, index) => move === right[index]);
+  }
+
+  function storedPlayLedgerExtends(candidate, existing) {
+    if (candidate.completedSeries.length < existing.completedSeries.length) {
+      return false;
+    }
+    for (let index = 0; index < existing.completedSeries.length; index += 1) {
+      if (!sameStoredSeries(candidate.completedSeries[index], existing.completedSeries[index])) {
+        return false;
+      }
+    }
+    const continuation = candidate.completedSeries.length === existing.completedSeries.length
+      ? candidate.currentPrefix
+      : candidate.completedSeries[existing.completedSeries.length];
+    return existing.currentPrefix.every((move, index) => continuation[index] === move);
+  }
+
+  function sameStoredPlayLedger(left, right) {
+    return left.completedSeries.length === right.completedSeries.length
+      && sameStoredSeries(left.currentPrefix, right.currentPrefix)
+      && left.completedSeries.every((series, index) => (
+        sameStoredSeries(series, right.completedSeries[index])
+      ));
+  }
+
+  function sameStoredPlayState(left, right) {
+    return sameStoredPlayLedger(left, right)
+      && left.humanColor === right.humanColor
+      && left.strength === right.strength
+      && left.active === right.active
+      && left.resigned === right.resigned
+      && left.flipped === right.flipped
+      && left.timelineIndex === right.timelineIndex
+      && left.error === right.error
+      && left.rulesetVersion === right.rulesetVersion;
+  }
+
+  function persistedPlaySessionWithoutSideEffects() {
     try {
       const stored = localStorage.getItem(PLAY_SESSION_STORAGE_KEY);
-      if (!stored || stored.length > MAX_STORED_PLAY_SESSION_BYTES) {
-        playSessionLastWriteDurable = false;
-        return null;
-      }
-      const saved = sanitizeStoredPlaySession(JSON.parse(stored));
-      playSessionLastWriteDurable = Boolean(saved);
-      return saved;
+      if (!stored || stored.length > MAX_STORED_PLAY_SESSION_BYTES) return null;
+      return sanitizeStoredPlaySession(JSON.parse(stored));
     } catch {
-      playSessionLastWriteDurable = false;
       return null;
     }
   }
 
-  function persistPlaySession() {
-    if (playSessionReplayBlocked) return playSessionLastWriteDurable;
+  function preparePlaySessionWrite() {
     if (!state.playWorkspace || !state.play.active) {
       playSessionLastWriteDurable = false;
-      return false;
+      return null;
     }
     const completedSeries = (state.playWorkspace.history || [])
       .map((entry) => Array.isArray(entry?.prefix) ? [...entry.prefix] : null);
@@ -861,40 +1008,199 @@
       || !isStoredUciList(currentPrefix, completedSeries.length + 1)
     ) {
       playSessionLastWriteDurable = false;
-      return false;
+      return null;
     }
-    try {
-      const serialized = JSON.stringify({
+    const sessionId = state.play.sessionId;
+    if (typeof sessionId !== "string" || !/^[A-Za-z0-9._:-]{8,160}$/.test(sessionId)) {
+      playSessionLastWriteDurable = false;
+      return null;
+    }
+    return {
+      baseRevision: playSessionRevision,
+      candidate: {
         version: PLAY_SESSION_SCHEMA_VERSION,
         savedAt: new Date().toISOString(),
+        sessionId,
+        ownerId: playSessionTabId,
+        revision: playSessionRevision + 1,
         humanColor: state.play.humanColor,
         strength: state.play.strength,
         active: state.play.active,
         resigned: state.play.resigned,
-        flipped: Boolean(state.flipped),
+        flipped: Boolean(state.playWorkspace.flipped),
         timelineIndex: state.play.timelineIndex,
         error: state.play.error,
         rulesetVersion: state.play.rulesetVersion,
         completedSeries,
         currentPrefix,
-      });
+      },
+    };
+  }
+
+  function storedSessionMatchesReplacementExpectation(existing, options = {}) {
+    if (!existing || options.replaceSession !== true) return false;
+    if (existing.sessionId !== options.replaceExpectedSessionId) return false;
+    if (existing.revision === options.replaceExpectedRevision) return true;
+    return existing.ownerId === playSessionTabId
+      && Number.isSafeInteger(options.replaceExpectedRevision)
+      && existing.revision >= options.replaceExpectedRevision;
+  }
+
+  function commitPreparedPlaySession(
+    prepared,
+    {
+      replaceSession = false,
+      replaceExpectedSessionId = null,
+      replaceExpectedRevision = null,
+      claimOwnership = true,
+    } = {},
+  ) {
+    const { candidate, baseRevision } = prepared;
+    const sessionId = candidate.sessionId;
+    try {
+      const existing = persistedPlaySessionWithoutSideEffects();
+      if (existing && existing.sessionId !== sessionId) {
+        const expectedReplacement = storedSessionMatchesReplacementExpectation(
+          existing,
+          {
+            replaceSession,
+            replaceExpectedSessionId,
+            replaceExpectedRevision,
+          },
+        );
+        if (!expectedReplacement) return false;
+      }
+      if (existing && existing.sessionId === sessionId) {
+        const followsOwnQueuedWrite = existing.ownerId === playSessionTabId
+          && existing.revision === playSessionRevision
+          && storedPlayLedgerExtends(candidate, existing);
+        if (existing.revision !== baseRevision && !followsOwnQueuedWrite) {
+          const stateAlreadyDurable = sameStoredPlayState(candidate, existing);
+          if (stateAlreadyDurable) playSessionRevision = existing.revision;
+          return stateAlreadyDurable;
+        }
+        if (!storedPlayLedgerExtends(candidate, existing)) {
+          return false;
+        }
+        if (existing.ownerId !== playSessionTabId && !claimOwnership) {
+          return sameStoredPlayState(candidate, existing);
+        }
+        candidate.revision = Math.max(existing.revision, playSessionRevision) + 1;
+      }
+      const serialized = JSON.stringify(candidate);
       if (serialized.length > MAX_STORED_PLAY_SESSION_BYTES) {
-        playSessionLastWriteDurable = false;
         return false;
       }
       localStorage.setItem(PLAY_SESSION_STORAGE_KEY, serialized);
-      playSessionLastWriteDurable = true;
+      if (state.play.sessionId === sessionId) playSessionRevision = candidate.revision;
       return true;
     } catch {
-      playSessionLastWriteDurable = false;
       return false;
     }
   }
 
-  function captureAndPersistPlayWorkspace() {
+  function persistPlaySession(options = {}) {
+    if (playSessionReplayBlocked) return playSessionLastWriteDurable;
+    const prepared = preparePlaySessionWrite();
+    if (!prepared) return false;
+    const sessionId = prepared.candidate.sessionId;
+    const commit = () => commitPreparedPlaySession(prepared, options);
+    if (!navigator.locks?.request) {
+      const durable = commit();
+      if (state.play.sessionId === sessionId) {
+        playSessionLastWriteDurable = durable;
+        if (durable) playSessionExternalUpdate = false;
+      }
+      return durable;
+    }
+    const writeSequence = ++playSessionWriteSequence;
+    playSessionLastWriteDurable = false;
+    playSessionWriteQueue = playSessionWriteQueue
+      .catch(() => false)
+      .then(() => navigator.locks.request(PLAY_SESSION_WRITE_LOCK, commit))
+      .catch(() => commit());
+    void playSessionWriteQueue.then((durable) => {
+      if (
+        state.play.sessionId === sessionId
+        && writeSequence === playSessionWriteSequence
+      ) {
+        playSessionLastWriteDurable = durable;
+        if (durable) playSessionExternalUpdate = false;
+      }
+    });
+    return false;
+  }
+
+  async function persistPlaySessionDurably(options = {}) {
+    const sessionId = state.play.sessionId;
+    const previousWriteSequence = playSessionWriteSequence;
+    const immediate = persistPlaySession(options);
+    if (!navigator.locks?.request) return immediate;
+    if (playSessionWriteSequence === previousWriteSequence) return immediate;
+    const writeSequence = playSessionWriteSequence;
+    const queuedWrite = playSessionWriteQueue;
+    try {
+      const durable = Boolean(await queuedWrite);
+      if (
+        state.play.sessionId === sessionId
+        && writeSequence === playSessionWriteSequence
+      ) {
+        playSessionLastWriteDurable = durable;
+        if (durable) playSessionExternalUpdate = false;
+      }
+      return durable;
+    } catch {
+      return false;
+    }
+  }
+
+  function captureAndPersistPlayWorkspace(options = {}) {
     state.playWorkspace = captureWorkspace();
-    persistPlaySession();
+    persistPlaySession(options);
     return state.playWorkspace;
+  }
+
+  async function captureAndPersistPlayWorkspaceDurably(options = {}) {
+    state.playWorkspace = captureWorkspace();
+    return persistPlaySessionDurably(options);
+  }
+
+  function markPlaySessionSaveBlocked(options = {}) {
+    const stored = persistedPlaySessionWithoutSideEffects();
+    const expectedReplacementPredecessor = storedSessionMatchesReplacementExpectation(
+      stored,
+      options,
+    );
+    const advancedElsewhere = stored
+      && !expectedReplacementPredecessor
+      && (
+        stored.sessionId !== state.play.sessionId
+        || (
+          stored.ownerId !== playSessionTabId
+          && stored.revision > playSessionRevision
+        )
+      );
+    if (advancedElsewhere) {
+      lockPlaySessionForExternalUpdate();
+      return;
+    }
+    playSessionSaveBlocked = true;
+    playSessionPendingWriteOptions = { ...options };
+    playSessionLastWriteDurable = false;
+    renderAll();
+  }
+
+  async function requireDurablePlaySession(options = {}, { capture = false } = {}) {
+    const durable = capture
+      ? await captureAndPersistPlayWorkspaceDurably(options)
+      : await persistPlaySessionDurably(options);
+    if (!durable) {
+      markPlaySessionSaveBlocked(options);
+      return false;
+    }
+    playSessionSaveBlocked = false;
+    playSessionPendingWriteOptions = null;
+    return true;
   }
 
   function authoritativeBoundaryEchoMatches(payload, expectedBoundary) {
@@ -966,95 +1272,111 @@
         }
       };
       try {
-      state.mode = "play";
-      state.play.humanColor = saved.humanColor;
-      state.play.strength = saved.strength;
-      state.play.active = saved.active;
-      state.play.resigned = saved.resigned;
-      state.play.timelineIndex = null;
-      state.play.error = saved.error;
-      state.play.lastEngineSeries = null;
-      state.play.lastSearch = null;
-      state.play.activeSearch = null;
-      state.play.activeSearchRuntime = null;
-      state.play.thinking = false;
-      state.play.animating = false;
-      state.flipped = saved.flipped;
-      state.focusSquare = state.flipped ? "e7" : "e2";
+        state.mode = "play";
+        state.play.sessionId = saved.sessionId;
+        state.play.humanColor = saved.humanColor;
+        state.play.strength = saved.strength;
+        state.play.active = saved.active;
+        state.play.resigned = saved.resigned;
+        state.play.timelineIndex = null;
+        state.play.error = saved.error;
+        state.play.lastEngineSeries = null;
+        state.play.lastSearch = null;
+        state.play.activeSearch = null;
+        state.play.activeSearchRuntime = null;
+        state.play.thinking = false;
+        state.play.animating = false;
+        state.flipped = saved.flipped;
+        state.focusSquare = state.flipped ? "e7" : "e2";
 
-      let boundary = initialPlayBoundary();
-      const history = [];
-      for (let index = 0; index < saved.completedSeries.length; index += 1) {
-        const moves = saved.completedSeries[index];
+        let boundary = initialPlayBoundary();
+        const history = [];
+        const replayCallCount = saved.completedSeries.length + 1;
+        const replayBudgetMs = Math.min(
+          PLAY_RESTORE_MAX_TIMEOUT_MS,
+          PLAY_PREFIX_RECEIPT_TIMEOUT_MS
+            + replayCallCount * PLAY_RESTORE_PER_SERIES_TIMEOUT_MS,
+        );
+        const replayDeadlineMs = monotonicNow() + replayBudgetMs;
+        const nextReplayCallDeadline = () => Math.min(
+          replayDeadlineMs,
+          monotonicNow() + PLAY_PREFIX_RECEIPT_TIMEOUT_MS,
+        );
+        for (let index = 0; index < saved.completedSeries.length; index += 1) {
+          const moves = saved.completedSeries[index];
+          state.boundary = cloneBoundary(boundary);
+          state.boardFen = boundary.fen;
+          const payload = await requestPlayPrefixJson(
+            { ...boundary, prefix: moves },
+            {
+              signal: controller.signal,
+              deadlineMs: nextReplayCallDeadline(),
+            },
+          );
+          ensureCurrentReplay();
+          const canonical = Array.isArray(payload.prefix) ? payload.prefix.map(String) : [];
+          const nextBoundary = normalizeNextState(payload.next_state);
+          if (
+            canonical.length !== moves.length
+            || canonical.some((move, moveIndex) => move !== moves[moveIndex])
+            || !payload.complete
+            || payload.outcome
+            || !nextBoundary
+            || nextBoundary.series !== boundary.series + 1
+            || !authoritativeBoundaryEchoMatches(payload, boundary)
+          ) throw new Error(`Saved Series ${index + 1} failed authoritative replay.`);
+          const prefixSan = notationArray(payload, canonical, canonical);
+          history.push({
+            boundary: cloneBoundary(boundary),
+            prefix: canonical,
+            prefixSan,
+            frames: prefixFramesFromPayload(payload, canonical, prefixSan),
+            check: Boolean(payload.check),
+            unusedMoves: Math.max(0, asNumber(payload.unused_moves, 0)),
+            completionReason: first(payload.completion_reason, null),
+            treeNodeId: null,
+            seriesParentNodeId: null,
+            handoffKey: `restored-${index + 1}`,
+          });
+          boundary = nextBoundary;
+        }
+
         state.boundary = cloneBoundary(boundary);
         state.boardFen = boundary.fen;
-        const payload = await requestJson("/api/prefix", {
-          method: "POST",
-          signal: controller.signal,
-          body: JSON.stringify({ ...boundary, prefix: moves }),
-        });
+        state.history = history;
+        state.prefix = [];
+        state.prefixSan = [];
+        state.prefixFrames = [];
+        state.study = createStudy(boundary);
+        state.currentTreeNodeId = null;
+        state.seriesParentNodeId = null;
+        state.branching = false;
+        state.viewingHistorical = false;
+        state.handoffNotice = null;
+        const current = await requestPlayPrefixJson(
+          { ...boundary, prefix: saved.currentPrefix },
+          {
+            signal: controller.signal,
+            deadlineMs: nextReplayCallDeadline(),
+          },
+        );
         ensureCurrentReplay();
-        const canonical = Array.isArray(payload.prefix) ? payload.prefix.map(String) : [];
-        const nextBoundary = normalizeNextState(payload.next_state);
+        const canonicalCurrent = Array.isArray(current.prefix)
+          ? current.prefix.map(String)
+          : [];
         if (
-          canonical.length !== moves.length
-          || canonical.some((move, moveIndex) => move !== moves[moveIndex])
-          || !payload.complete
-          || payload.outcome
-          || !nextBoundary
-          || nextBoundary.series !== boundary.series + 1
-          || !authoritativeBoundaryEchoMatches(payload, boundary)
-        ) throw new Error(`Saved Series ${index + 1} failed authoritative replay.`);
-        const prefixSan = notationArray(payload, canonical, canonical);
-        history.push({
-          boundary: cloneBoundary(boundary),
-          prefix: canonical,
-          prefixSan,
-          frames: prefixFramesFromPayload(payload, canonical, prefixSan),
-          check: Boolean(payload.check),
-          unusedMoves: Math.max(0, asNumber(payload.unused_moves, 0)),
-          completionReason: first(payload.completion_reason, null),
-          treeNodeId: null,
-          seriesParentNodeId: null,
-          handoffKey: `restored-${index + 1}`,
-        });
-        boundary = nextBoundary;
-      }
-
-      state.boundary = cloneBoundary(boundary);
-      state.boardFen = boundary.fen;
-      state.history = history;
-      state.prefix = [];
-      state.prefixSan = [];
-      state.prefixFrames = [];
-      state.study = createStudy(boundary);
-      state.currentTreeNodeId = null;
-      state.seriesParentNodeId = null;
-      state.branching = false;
-      state.viewingHistorical = false;
-      state.handoffNotice = null;
-      const current = await requestJson("/api/prefix", {
-        method: "POST",
-        signal: controller.signal,
-        body: JSON.stringify({ ...boundary, prefix: saved.currentPrefix }),
-      });
-      ensureCurrentReplay();
-      const canonicalCurrent = Array.isArray(current.prefix)
-        ? current.prefix.map(String)
-        : [];
-      if (
-        canonicalCurrent.length !== saved.currentPrefix.length
-        || canonicalCurrent.some((move, index) => move !== saved.currentPrefix[index])
-        || !authoritativeBoundaryEchoMatches(current, boundary)
-      ) throw new Error("Saved current series failed authoritative replay.");
-      applyPrefixPayload(current, canonicalCurrent, canonicalCurrent);
-      if (seriesColor(state.boundary.series) === saved.humanColor) {
-        state.play.error = null;
-      }
-      const maximumTimelineIndex = Math.max(0, playTimeline().length - 1);
-      state.play.timelineIndex = saved.timelineIndex === null
-        ? null
-        : Math.min(saved.timelineIndex, maximumTimelineIndex);
+          canonicalCurrent.length !== saved.currentPrefix.length
+          || canonicalCurrent.some((move, index) => move !== saved.currentPrefix[index])
+          || !authoritativeBoundaryEchoMatches(current, boundary)
+        ) throw new Error("Saved current series failed authoritative replay.");
+        applyPrefixPayload(current, canonicalCurrent, canonicalCurrent);
+        if (seriesColor(state.boundary.series) === saved.humanColor) {
+          state.play.error = null;
+        }
+        const maximumTimelineIndex = Math.max(0, playTimeline().length - 1);
+        state.play.timelineIndex = saved.timelineIndex === null
+          ? null
+          : Math.min(saved.timelineIndex, maximumTimelineIndex);
         restored = true;
       } catch (error) {
         if (sequence !== state.prefixSequence) return true;
@@ -1068,10 +1390,13 @@
 
       if (restored) {
         playSessionReplayBlocked = false;
-        captureAndPersistPlayWorkspace();
+        await requireDurablePlaySession(
+          { claimOwnership: false },
+          { capture: true },
+        );
         renderAll();
         showToast("Game restored after reload");
-        if (!state.play.error) void continuePlayFlow();
+        if (!state.play.error && !playSessionSaveBlocked) void continuePlayFlow();
       } else {
         renderAll();
       }
@@ -1095,17 +1420,19 @@
     const desiredDepth = strength === "strong"
       ? Math.max(setting.minimumDepth, profileDepth)
       : profileDepth;
+    const generationPositions = Math.max(1_000, Math.min(
+      state.maximumGenerationPositions,
+      setting.generationPositions,
+    ));
     return {
       strength,
       label: setting.label,
       depth: Math.max(1, Math.min(state.maximumAnalysisDepth, desiredDepth)),
       maxSeries: Math.max(1, Math.min(state.maximumBranchCap, state.play.recommendedBranchCap)),
       seconds: Math.max(0.1, Math.min(state.maximumAnalysisSeconds, setting.seconds)),
-      generationPositions: Math.max(1_000, Math.min(
-        state.maximumGenerationPositions,
-        setting.generationPositions,
-      )),
-      timeLimitedOnly: strength === "strong",
+      generationPositions,
+      timeLimitedOnly: strength === "strong"
+        && generationPositions >= STRONG_PLAY_TECHNICAL_WORK_CEILING,
     };
   }
 
@@ -1241,9 +1568,9 @@
   }
 
   function selectPlayStrength(strength) {
-    if (!PLAY_STRENGTHS[strength]) return;
+    if (!PLAY_STRENGTHS[strength] || blockStalePlayMutation()) return;
     if (state.play.strength === strength) {
-      if (state.play.error) retryEngineTurn();
+      if (state.play.error || playSessionSaveBlocked) void retryEngineTurn();
       return;
     }
     state.play.strength = strength;
@@ -1253,7 +1580,20 @@
     void continuePlayFlow();
   }
 
-  function retryEngineTurn() {
+  async function retryEngineTurn() {
+    if (blockStalePlayMutation()) return;
+    if (playSessionSaveBlocked) {
+      const options = playSessionPendingWriteOptions || {};
+      if (!await requireDurablePlaySession(options, { capture: true })) return;
+      if (playSessionExternalUpdate) return;
+      renderAll();
+      if (!state.positionReady) {
+        void restorePersistedPlaySession();
+        return;
+      }
+      void continuePlayFlow();
+      return;
+    }
     if (state.mode === "play" && state.play.active && !state.positionReady) {
       if (state.positionBusy) return;
       void restorePersistedPlaySession();
@@ -1269,7 +1609,8 @@
       || seriesColor() === state.play.humanColor
     ) return;
     state.play.error = null;
-    persistPlaySession();
+    if (!await requireDurablePlaySession()) return;
+    if (playSessionExternalUpdate) return;
     renderAll();
     void continuePlayFlow();
   }
@@ -1286,6 +1627,8 @@
     if (state.mode !== "play") return true;
     return Boolean(
       state.play.active
+      && !playSessionExternalUpdate
+      && !playSessionSaveBlocked
       && !playReviewActive()
       && !state.play.thinking
       && !state.play.animating
@@ -1303,6 +1646,27 @@
     state.play.animating = false;
     state.play.activeSearch = null;
     state.play.activeSearchRuntime = null;
+  }
+
+  function blockStalePlayMutation() {
+    if (!playSessionExternalUpdate) return false;
+    showToast("Reload to continue from the game updated in another tab");
+    return true;
+  }
+
+  function lockPlaySessionForExternalUpdate() {
+    if (playSessionExternalUpdate || !state.play.active) return;
+    playSessionExternalUpdate = true;
+    playSessionSaveBlocked = false;
+    playSessionPendingWriteOptions = null;
+    playSessionLastWriteDurable = false;
+    cancelEngineTurn();
+    state.prefixAbort?.abort();
+    state.prefixAbort = null;
+    state.prefixSequence += 1;
+    setBoardBusy(false);
+    state.play.error = "This game changed in another tab. Reload this tab to continue from the newest saved position.";
+    renderAll();
   }
 
   function safeBoundary(value) {
@@ -2659,7 +3023,8 @@
     const review = playReviewPosition(timeline);
     const reviewing = Boolean(review);
     const recoveryBlocked = Boolean(state.play.error) && !state.positionReady;
-    const effectiveGameEnded = playGameEnded() && !recoveryBlocked;
+    const saveBlocked = playSessionSaveBlocked;
+    const effectiveGameEnded = playGameEnded() && !recoveryBlocked && !saveBlocked;
     const activeColor = review?.side || seriesColor();
     setPlayerColor(dom.play_top_color, engineColor);
     setPlayerColor(dom.play_bottom_color, humanColor);
@@ -2672,6 +3037,8 @@
       ? "Review"
       : recoveryBlocked
       ? "Restore paused"
+      : saveBlocked
+      ? "Save paused"
       : effectiveGameEnded
       ? "Game over"
       : activeColor === engineColor
@@ -2681,6 +3048,8 @@
       ? "Review"
       : recoveryBlocked
       ? "Restore paused"
+      : saveBlocked
+      ? "Save paused"
       : effectiveGameEnded
       ? "Game over"
       : activeColor === humanColor ? "Your series" : "Waiting";
@@ -2690,19 +3059,21 @@
     dom.play_as_white.setAttribute("aria-pressed", String(humanColor === "white"));
     dom.play_as_black.setAttribute("aria-pressed", String(humanColor === "black"));
     dom.play_new_game.textContent = `New game as ${humanColor === "white" ? "White" : "Black"}`;
-    dom.play_resign.disabled = reviewing || recoveryBlocked || !state.play.active || effectiveGameEnded;
-    dom.play_analyze_position.disabled = reviewing || !state.positionReady || state.positionBusy || state.play.thinking || state.play.animating;
-    const retryableEngineTurn = Boolean(state.play.error)
+    dom.play_resign.disabled = reviewing || recoveryBlocked || saveBlocked || !state.play.active || effectiveGameEnded;
+    dom.play_analyze_position.disabled = reviewing || saveBlocked || !state.positionReady || state.positionBusy || state.play.thinking || state.play.animating;
+    const retryableEngineTurn = (Boolean(state.play.error) || saveBlocked)
       && !reviewing
       && state.play.active
-      && (recoveryBlocked || (!effectiveGameEnded && seriesColor() !== humanColor));
+      && (saveBlocked || recoveryBlocked || (!effectiveGameEnded && seriesColor() !== humanColor));
     dom.play_retry_engine.hidden = !retryableEngineTurn;
     dom.play_retry_engine.disabled = !retryableEngineTurn || state.play.thinking || state.play.animating;
-    dom.play_retry_engine.textContent = state.positionReady
+    dom.play_retry_engine.textContent = saveBlocked
+      ? "Retry saving game"
+      : state.positionReady
       ? "Retry engine move"
       : "Retry saved game";
 
-    const outcome = reviewing || recoveryBlocked ? null : playOutcomeStatus();
+    const outcome = reviewing || recoveryBlocked || saveBlocked ? null : playOutcomeStatus();
     let status = reviewing ? {
       title: "Reviewing game",
       detail: review.lastSan
@@ -2710,7 +3081,19 @@
         : `Position 1 of ${timeline.length} · initial setup. Return to the latest position to continue.`,
       kind: "review",
     } : outcome;
-    if (!status && state.play.error) {
+    if (!status && playSessionExternalUpdate) {
+      status = {
+        title: "Game updated in another tab",
+        detail: "Reload this tab to continue from the newest saved position.",
+        kind: "warning",
+      };
+    } else if (!status && saveBlocked) {
+      status = {
+        title: "Game not saved yet",
+        detail: "Browser storage rejected the latest position. Keep this tab open and retry saving before continuing.",
+        kind: "warning",
+      };
+    } else if (!status && state.play.error) {
       status = {
         title: playSessionLastWriteDurable
           ? "Search stopped — game saved"
@@ -2757,6 +3140,8 @@
         : `Position before Series ${review.series}`
       : recoveryBlocked
       ? "Saved game waiting for validation"
+      : saveBlocked
+      ? "Game waiting for a durable save"
       : effectiveGameEnded
       ? humanize(state.play.resigned ? "resigned" : state.outcome)
       : `${state.movesRemaining} move${state.movesRemaining === 1 ? "" : "s"} remaining`;
@@ -2811,14 +3196,21 @@
     }
   }
 
-  async function requestEngineAnalysis(body, controller, sequence, deadlineMs) {
+  async function requestEngineAnalysis(
+    body,
+    controller,
+    sequence,
+    searchDeadlineMs,
+    receiptDeadlineMs,
+  ) {
     let reconnectAttempt = 0;
     while (sequence === state.play.sequence && state.mode === "play") {
       try {
         return await requestJson("/api/analyze", {
           method: "POST",
           signal: controller.signal,
-          analysisDeadlineMs: deadlineMs,
+          analysisDeadlineMs: receiptDeadlineMs,
+          analysisSearchDeadlineMs: searchDeadlineMs,
           body: JSON.stringify(body),
           onTransport: (runtime) => {
             if (sequence !== state.play.sequence || state.mode !== "play") return;
@@ -2832,7 +3224,7 @@
           dom.play_status_detail.textContent = "The engine is busy; your game is first in the retry queue.";
           await waitForRetry(AUTO_ANALYSIS_RETRY_MS, {
             signal: controller.signal,
-            deadlineMs,
+            deadlineMs: searchDeadlineMs,
           });
           continue;
         }
@@ -2843,7 +3235,7 @@
           dom.play_status_detail.textContent = "Reconnecting to the engine…";
           await waitForRetry(PUBLIC_ENGINE_RECONNECT_DELAYS_MS[reconnectAttempt], {
             signal: controller.signal,
-            deadlineMs,
+            deadlineMs: searchDeadlineMs,
           });
           reconnectAttempt += 1;
           continue;
@@ -2857,6 +3249,8 @@
   async function maybeRunEngineTurn() {
     if (
       state.mode !== "play"
+      || playSessionExternalUpdate
+      || playSessionSaveBlocked
       || !state.play.active
       || state.play.thinking
       || state.play.animating
@@ -2876,11 +3270,11 @@
     const sequence = ++state.play.sequence;
     const key = playPositionKey();
     const search = playSearchLimits();
-    // Let a result completed at the search boundary cross the transport and
-    // replay-validation boundary instead of aborting it in flight.
-    const deadlineMs = monotonicNow()
-      + search.seconds * 1000
-      + PLAY_ANALYSIS_RESPONSE_GRACE_MS;
+    // Native work stops at the advertised search boundary. A separate receipt
+    // deadline lets an already-completed result cross transport and replay
+    // validation without silently granting the engine more thinking time.
+    const searchDeadlineMs = monotonicNow() + search.seconds * 1000;
+    const receiptDeadlineMs = searchDeadlineMs + PLAY_ANALYSIS_RESPONSE_GRACE_MS;
     const analysisBody = {
       ...boundaryPayload(),
       prefix: [],
@@ -2908,7 +3302,8 @@
         analysisBody,
         controller,
         sequence,
-        deadlineMs,
+        searchDeadlineMs,
+        receiptDeadlineMs,
       );
       if (sequence !== state.play.sequence || key !== playPositionKey() || state.mode !== "play") return;
       state.play.lastSearch = playSearchEvidence(analysis, search);
@@ -2931,11 +3326,14 @@
       }
       const checked = localReplay
         ? analysis.checked_prefix
-        : await requestJson("/api/prefix", {
-          method: "POST",
-          signal: controller.signal,
-          body: JSON.stringify({ ...boundaryPayload(), prefix: moves }),
-        });
+        : await requestPlayPrefixJson(
+          { ...boundaryPayload(), prefix: moves },
+          {
+            signal: controller.signal,
+            deadlineMs: receiptDeadlineMs,
+            analysisReceipt: true,
+          },
+        );
       if (sequence !== state.play.sequence || key !== playPositionKey() || state.mode !== "play") return;
       const canonical = Array.isArray(checked.prefix) ? checked.prefix.map(String) : [];
       if (canonical.length !== moves.length || canonical.some((move, index) => move !== moves[index])) {
@@ -2955,15 +3353,17 @@
       };
       state.play.thinking = false;
       state.play.animating = false;
-      captureAndPersistPlayWorkspace();
+      if (!await requireDurablePlaySession({}, { capture: true })) return;
+      if (playSessionExternalUpdate) return;
       if (checked.complete && checked.next_state && !checked.outcome) await advanceSeries(true);
-      captureAndPersistPlayWorkspace();
+      if (playSessionExternalUpdate || playSessionSaveBlocked) return;
+      if (!await requireDurablePlaySession({}, { capture: true })) return;
     } catch (error) {
       if (error.name === "AbortError" || sequence !== state.play.sequence) return;
       state.play.error = error?.code === "analysis-deadline"
         ? "The engine used its full search time before the reply receipt arrived."
         : displayError(error);
-      persistPlaySession();
+      await requireDurablePlaySession();
     } finally {
       if (state.play.engineAbort === controller) state.play.engineAbort = null;
       if (sequence === state.play.sequence) {
@@ -2977,7 +3377,12 @@
   }
 
   async function startNewPlayGame({ announce = true } = {}) {
+    const replaceExpectedSessionId = state.play.sessionId;
+    const replaceExpectedRevision = playSessionRevision;
     playSessionReplayBlocked = false;
+    playSessionExternalUpdate = false;
+    playSessionSaveBlocked = false;
+    playSessionPendingWriteOptions = null;
     cancelEngineTurn();
     cancelAutoAnalysis(true);
     state.prefixAbort?.abort();
@@ -2987,6 +3392,8 @@
     const sequence = state.play.sequence;
     state.mode = "play";
     state.play.active = true;
+    state.play.sessionId = randomStorageId("game");
+    playSessionRevision = 0;
     state.play.resigned = false;
     state.play.error = null;
     state.play.lastEngineSeries = null;
@@ -3023,11 +3430,21 @@
     state.branching = false;
     state.viewingHistorical = false;
     state.handoffNotice = null;
+    state.positionReady = false;
     clearAnalysisDisplay();
+    state.playWorkspace = captureWorkspace();
+    const replacementOptions = {
+      replaceSession: true,
+      replaceExpectedSessionId,
+      replaceExpectedRevision,
+    };
+    if (!await requireDurablePlaySession(replacementOptions)) return;
+    if (playSessionExternalUpdate) return;
     renderAll();
     const payload = await refreshPrefix([], []);
     if (!payload || sequence !== state.play.sequence || state.mode !== "play") return;
-    captureAndPersistPlayWorkspace();
+    if (!await requireDurablePlaySession({}, { capture: true })) return;
+    if (playSessionExternalUpdate) return;
     if (announce) showToast(`New game as ${state.play.humanColor === "white" ? "White" : "Black"}`);
     renderAll();
     void continuePlayFlow();
@@ -3039,17 +3456,25 @@
     await startNewPlayGame();
   }
 
-  function resignPlayGame() {
-    if (state.mode !== "play" || !state.play.active || playReviewActive() || playGameEnded()) return;
+  async function resignPlayGame() {
+    if (
+      state.mode !== "play"
+      || !state.play.active
+      || blockStalePlayMutation()
+      || playReviewActive()
+      || playGameEnded()
+    ) return;
     cancelEngineTurn();
     state.play.resigned = true;
     state.selected = null;
-    persistPlaySession();
+    if (!await requireDurablePlaySession()) return;
+    if (playSessionExternalUpdate) return;
     renderAll();
   }
 
   async function switchWorkspaceMode(mode, { importPlayPosition = false } = {}) {
     if (!new Set(["play", "analyze"]).has(mode)) return;
+    if (state.mode === "play" && mode !== "play" && blockStalePlayMutation()) return;
     if (state.positionBusy) {
       showToast("Wait for the saved game validation to finish");
       return;
@@ -3063,7 +3488,8 @@
           ? state.playWorkspace
           : captureWorkspace();
         state.playWorkspace = stablePlay;
-        persistPlaySession();
+        if (!await requireDurablePlaySession()) return;
+        if (playSessionExternalUpdate || playSessionSaveBlocked) return;
         const imported = importPlayPosition ? stablePlay : null;
         cancelEngineTurn();
         if (imported) {
@@ -3159,7 +3585,14 @@
   }
 
   async function submitMove(move) {
-    if (!boardInputAllowed() || state.positionBusy || state.outcome || state.complete || state.previewIndex !== null) return;
+    if (
+      !boardInputAllowed()
+      || playSessionExternalUpdate
+      || state.positionBusy
+      || state.outcome
+      || state.complete
+      || state.previewIndex !== null
+    ) return;
     const boundaryAtMove = cloneBoundary(state.boundary);
     const parentId = state.currentTreeNodeId;
     const seriesParentId = state.seriesParentNodeId;
@@ -3171,15 +3604,18 @@
     state.handoffNotice = null;
     const payload = await refreshPrefix(nextPrefix, nextSan);
     if (!payload) return;
+    if (state.mode === "play" && playSessionExternalUpdate) return;
     if (state.mode === "analyze") {
       attachMoveToStudy(move, payload, boundaryAtMove, parentId, seriesParentId);
     }
     if (state.mode === "play") {
-      captureAndPersistPlayWorkspace();
+      if (!await requireDurablePlaySession({}, { capture: true })) return;
+      if (playSessionExternalUpdate) return;
     }
     if (payload.complete && payload.next_state && !payload.outcome) await advanceSeries(true);
     if (state.mode === "play") {
-      captureAndPersistPlayWorkspace();
+      if (playSessionExternalUpdate || playSessionSaveBlocked) return;
+      if (!await requireDurablePlaySession({}, { capture: true })) return;
       renderPlaySurface();
     }
   }
@@ -4021,6 +4457,7 @@
   }
 
   async function performSeriesHandoff(plan, automatic, context) {
+    if (state.mode === "play" && playSessionExternalUpdate) return false;
     const { completedSeries, completedByCheck, unusedMoves, playSequence } = context;
     const historyEntry = {
       ...plan.historyEntry,
@@ -4051,12 +4488,27 @@
     state.handoffNotice = completedByCheck && unusedMoves > 0
       ? `Series ${completedSeries} ended by check; ${unusedMoves} unused move${unusedMoves === 1 ? "" : "s"} were forfeited.`
       : `Series ${completedSeries} complete. Series ${state.boundary.series} started automatically.`;
-    if (state.mode === "play") captureAndPersistPlayWorkspace();
+    if (state.mode === "play") {
+      if (!await requireDurablePlaySession({}, { capture: true })) return false;
+      if (
+        playSessionExternalUpdate
+        || playSessionSaveBlocked
+        || state.play.sequence !== playSequence
+      ) return false;
+    }
     renderAll();
 
     const expectedBoundaryKey = boundaryKey(plan.nextBoundary);
     const firstAttemptSequence = state.prefixSequence + 1;
     let payload = await refreshPrefix([], []);
+    if (
+      state.mode === "play"
+      && (
+        playSessionExternalUpdate
+        || playSessionSaveBlocked
+        || state.play.sequence !== playSequence
+      )
+    ) return false;
     const retryablePlayHandoff = !payload
       && state.mode === "play"
       && state.play.sequence === playSequence
@@ -4082,7 +4534,8 @@
       renderStudyTree();
     } else {
       state.play.error = null;
-      captureAndPersistPlayWorkspace();
+      if (!await requireDurablePlaySession({}, { capture: true })) return false;
+      if (playSessionExternalUpdate || state.play.sequence !== playSequence) return false;
     }
     showToast(completedByCheck && unusedMoves > 0
       ? `Check ended Series ${completedSeries} early · ${unusedMoves} unused move${unusedMoves === 1 ? "" : "s"}`
@@ -4091,7 +4544,13 @@
   }
 
   function advanceSeries(automatic = false) {
-    if (!state.complete || !state.nextState || state.outcome) return Promise.resolve(false);
+    if (
+      (state.mode === "play" && playSessionExternalUpdate)
+      || (state.mode === "play" && playSessionSaveBlocked)
+      || !state.complete
+      || !state.nextState
+      || state.outcome
+    ) return Promise.resolve(false);
     if (PLAY_HANDOFF.isActive()) return PLAY_HANDOFF.wait();
     const completedSeries = state.boundary.series;
     const completedByCheck = state.check;
@@ -4127,7 +4586,14 @@
   }
 
   async function continuePlayFlow() {
-    if (state.mode !== "play" || !state.play.active || playReviewActive() || playGameEnded()) return;
+    if (
+      state.mode !== "play"
+      || !state.play.active
+      || playSessionExternalUpdate
+      || playSessionSaveBlocked
+      || playReviewActive()
+      || playGameEnded()
+    ) return;
     if (state.complete && state.nextState) {
       await advanceSeries(true);
       return;
@@ -4346,8 +4812,6 @@
         state.play.generationPositions,
       )),
     ));
-    PLAY_STRENGTHS.strong.seconds = state.play.timeLimitSeconds;
-    PLAY_STRENGTHS.strong.generationPositions = state.play.generationPositions;
     dom.depth_control.max = String(state.maximumAnalysisDepth);
     dom.cap_control.max = String(state.maximumBranchCap);
     dom.time_control.max = String(state.maximumAnalysisSeconds);
@@ -4597,14 +5061,26 @@
     window.addEventListener("pointermove", onPointerMove, { passive: false });
     window.addEventListener("pointerup", onPointerUp);
     window.addEventListener("pointercancel", endDrag);
-    window.addEventListener("pagehide", () => {
-      if (
-        state.mode === "play"
-        && state.play.active
-        && !state.play.animating
-        && !state.positionBusy
-      ) captureAndPersistPlayWorkspace();
-      else persistPlaySession();
+    window.addEventListener("storage", (event) => {
+      if (event.key !== PLAY_SESSION_STORAGE_KEY || typeof event.newValue !== "string") return;
+      try {
+        const saved = sanitizeStoredPlaySession(JSON.parse(event.newValue));
+        if (!saved || saved.ownerId === playSessionTabId || !state.play.active) return;
+        const current = persistedPlaySessionWithoutSideEffects();
+        if (
+          !current
+          || current.sessionId !== saved.sessionId
+          || current.ownerId !== saved.ownerId
+          || current.revision !== saved.revision
+          || !sameStoredPlayState(current, saved)
+        ) return;
+        const sessionReplaced = saved.sessionId !== state.play.sessionId;
+        const sameSessionAdvanced = !sessionReplaced
+          && saved.revision > playSessionRevision;
+        if (sessionReplaced || sameSessionAdvanced) lockPlaySessionForExternalUpdate();
+      } catch {
+        // The next write still passes the schema, size, and ledger guards.
+      }
     });
 
     dom.mode_play.addEventListener("click", () => { void switchWorkspaceMode("play"); });
@@ -4614,15 +5090,17 @@
     dom.play_strength_strong.addEventListener("click", () => selectPlayStrength("strong"));
     dom.play_strength_faster.addEventListener("click", () => selectPlayStrength("faster"));
     dom.play_new_game.addEventListener("click", () => { void startNewPlayGame(); });
-    dom.play_retry_engine.addEventListener("click", retryEngineTurn);
+    dom.play_retry_engine.addEventListener("click", () => { void retryEngineTurn(); });
     dom.play_analyze_position.addEventListener("click", () => { void switchWorkspaceMode("analyze", { importPlayPosition: true }); });
-    dom.play_resign.addEventListener("click", resignPlayGame);
+    dom.play_resign.addEventListener("click", () => { void resignPlayGame(); });
     dom.play_history_previous.addEventListener("click", () => stepPlayTimeline(-1));
     dom.play_history_next.addEventListener("click", () => stepPlayTimeline(1));
 
     dom.flip_board.addEventListener("click", () => {
+      if (state.mode === "play" && blockStalePlayMutation()) return;
       state.flipped = !state.flipped;
       renderBoard();
+      if (state.mode === "play") captureAndPersistPlayWorkspace();
     });
     dom.undo_move.addEventListener("click", undoMove);
     dom.reset_series.addEventListener("click", resetCurrentSeries);

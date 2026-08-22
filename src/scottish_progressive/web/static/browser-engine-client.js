@@ -1023,7 +1023,12 @@
       return this.probePromise;
     }
 
-    async analyze(payload, { signal, deadlineMs = null } = {}) {
+    async analyze(payload, {
+      signal,
+      deadlineMs = null,
+      searchDeadlineMs = deadlineMs,
+      receiptDeadlineMs = searchDeadlineMs,
+    } = {}) {
       if (!this._releaseRootPoolForSingleWorker()) {
         throw new BrowserEngineError(
           "The certified root pool is already searching.",
@@ -1039,7 +1044,7 @@
           engineVersion: this.profile?.engine_version,
           rulesetVersion: this.profile?.ruleset_version,
           signal,
-          deadlineMs,
+          deadlineMs: searchDeadlineMs,
         });
       }
       if (!this.ready || !this.canAnalyze(payload)) {
@@ -1057,8 +1062,21 @@
         );
       }
       const requestId = `browser-${this.nextRequestId++}`;
+      const remainingSearchMs = Number.isFinite(searchDeadlineMs)
+        ? searchDeadlineMs - monotonicNow()
+        : null;
+      if (remainingSearchMs !== null && remainingSearchMs < 10) throw deadlineError();
+      const searchPayload = remainingSearchMs === null
+        ? payload
+        : {
+          ...payload,
+          time_limit: Math.min(
+            Number(payload.time_limit),
+            remainingSearchMs / 1000,
+          ),
+        };
       const request = normalizedKernelRequest(
-        payload,
+        searchPayload,
         requestId,
         this.identity.analysis_limits,
       );
@@ -1068,15 +1086,14 @@
         const requestTimeoutMs = Math.ceil(
           request.limits.time_limit_seconds * 1000,
         ) + REQUEST_GRACE_MS;
-        const remainingMs = Number.isFinite(deadlineMs)
-          ? deadlineMs - monotonicNow()
+        const remainingMs = Number.isFinite(receiptDeadlineMs)
+          ? receiptDeadlineMs - monotonicNow()
           : null;
         if (remainingMs !== null && remainingMs <= 0) throw deadlineError();
         const timeoutMs = remainingMs === null
           ? requestTimeoutMs
-          : Math.min(requestTimeoutMs, remainingMs);
-        const deadlineBoundsAnalysis = remainingMs !== null
-          && remainingMs <= requestTimeoutMs;
+          : remainingMs;
+        const deadlineBoundsAnalysis = remainingMs !== null;
         const result = await this._call("analyze", request, {
           signal,
           timeoutMs,
@@ -1130,7 +1147,12 @@
       }
     }
 
-    async analyzeRoot(payload, { signal, deadlineMs = null } = {}) {
+    async analyzeRoot(payload, {
+      signal,
+      deadlineMs = null,
+      searchDeadlineMs = deadlineMs,
+      receiptDeadlineMs = searchDeadlineMs,
+    } = {}) {
       if (!this.canAnalyzeRoot(payload)) {
         throw new BrowserEngineError(
           "The certified iterative browser root engine is unavailable for this request.",
@@ -1149,7 +1171,8 @@
         this.ready = false;
         const result = await this.rootRunner.analyze(payload, this.identity, {
           signal,
-          deadlineMs,
+          deadlineMs: searchDeadlineMs,
+          receiptDeadlineMs,
         });
         validatePublishedRootAnalysis(result, payload, this.identity);
         return {

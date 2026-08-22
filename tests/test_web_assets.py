@@ -429,7 +429,15 @@ def test_play_strength_is_explicit_and_reports_completed_not_claimed_depth() -> 
     assert "max_series: search.maxSeries" in engine_turn
     assert "time_limit: search.seconds" in engine_turn
     assert "max_generation_positions: search.generationPositions" in engine_turn
-    assert "+ PLAY_ANALYSIS_RESPONSE_GRACE_MS" in engine_turn
+    assert "const searchDeadlineMs = monotonicNow() + search.seconds * 1000" in engine_turn
+    assert "const receiptDeadlineMs = searchDeadlineMs + PLAY_ANALYSIS_RESPONSE_GRACE_MS" in engine_turn
+    assert "analysisSearchDeadlineMs: searchDeadlineMs" in app
+    assert "analysisDeadlineMs: receiptDeadlineMs" in app
+    assert "searchDeadlineMs: analysisSearchDeadlineMs" in app
+    assert "receiptDeadlineMs: analysisDeadlineMs" in app
+    assert "PLAY_STRENGTHS.strong.seconds = state.play.timeLimitSeconds" not in app
+    assert "PLAY_STRENGTHS.strong.generationPositions = state.play.generationPositions" not in app
+    assert "generationPositions >= STRONG_PLAY_TECHNICAL_WORK_CEILING" in app
     assert "best_move_only: true" in engine_turn
     assert "state.play.lastSearch = playSearchEvidence(analysis, search)" in engine_turn
     assert "Last completed search · depth ${evidence.completedDepth} · requested ${evidence.requestedDepth}" in evidence
@@ -448,7 +456,7 @@ def test_play_strength_is_explicit_and_reports_completed_not_claimed_depth() -> 
     assert "state.play.healthReady = true;" in app
     assert 'if (state.play.thinking) cancelEngineTurn();' in app
     assert "function retryEngineTurn()" in app
-    assert 'dom.play_retry_engine.addEventListener("click", retryEngineTurn)' in app
+    assert 'dom.play_retry_engine.addEventListener("click", () => { void retryEngineTurn(); })' in app
     assert "Search stopped — game saved" in app
 
 
@@ -470,15 +478,25 @@ def test_play_session_reload_uses_an_authoritatively_replayed_uci_ledger() -> No
             "function advanceSeries"
         )
     ]
+    engine_turn = app[
+        app.index("async function maybeRunEngineTurn") : app.index(
+            "async function startNewPlayGame"
+        )
+    ]
     initialize = app[app.index("async function initialize"):]
 
-    assert 'PLAY_SESSION_STORAGE_KEY = "scottish-progressive-play-session-v1"' in app
+    assert 'PLAY_SESSION_STORAGE_KEY = "scottish-progressive-play-session-v2"' in app
+    assert 'LEGACY_PLAY_SESSION_STORAGE_KEY = "scottish-progressive-play-session-v1"' in app
     assert "completedSeries" in persistence
     assert "currentPrefix" in persistence
     assert "workspace: state.playWorkspace" not in persistence
     assert "fen: START_FEN" in persistence
     assert "for (let index = 0; index < saved.completedSeries.length; index += 1)" in persistence
-    assert 'requestJson("/api/prefix"' in persistence
+    assert "requestPlayPrefixJson(" in persistence
+    assert "const replayCallCount = saved.completedSeries.length + 1" in persistence
+    assert "PLAY_RESTORE_PER_SERIES_TIMEOUT_MS" in persistence
+    assert "PLAY_RESTORE_MAX_TIMEOUT_MS" in persistence
+    assert "deadlineMs: nextReplayCallDeadline()" in persistence
     assert "canonical.some((move, moveIndex) => move !== moves[moveIndex])" in persistence
     assert "nextBoundary.series !== boundary.series + 1" in persistence
     assert "authoritativeBoundaryEchoMatches(payload, boundary)" in persistence
@@ -487,14 +505,14 @@ def test_play_session_reload_uses_an_authoritatively_replayed_uci_ledger() -> No
     assert "Saved current series failed authoritative replay" in persistence
     assert "playSessionReplayBlocked = true" in persistence
     assert persistence.index("playSessionReplayBlocked = true") < persistence.index(
-        'await requestJson("/api/prefix"'
+        "await requestPlayPrefixJson("
     )
     assert "playSessionReplayPromise" in app
     assert 'setBoardBusy(true, "Restoring saved game…")' in persistence
     assert persistence.count("signal: controller.signal") == 2
     assert "sequence !== state.prefixSequence" in persistence
     assert "completedSeries.length > 511" in persistence
-    assert "flipped: Boolean(state.flipped)" in persistence
+    assert "flipped: Boolean(state.playWorkspace.flipped)" in persistence
     assert "state.flipped = saved.flipped" in persistence
     assert "seriesColor(state.boundary.series) === saved.humanColor" in persistence
     for cleared_field in (
@@ -515,11 +533,11 @@ def test_play_session_reload_uses_an_authoritatively_replayed_uci_ledger() -> No
     assert "playSessionLastWriteDurable = false" in persistence
     assert "Search stopped — reload may lose this game" in play_surface
     assert "recoveryBlocked || (!effectiveGameEnded" in play_surface
-    assert "reviewing || recoveryBlocked ? null : playOutcomeStatus()" in play_surface
-    assert submit_move.index("captureAndPersistPlayWorkspace()") < submit_move.index(
+    assert "reviewing || recoveryBlocked || saveBlocked ? null : playOutcomeStatus()" in play_surface
+    assert submit_move.index("await requireDurablePlaySession({}, { capture: true })") < submit_move.index(
         "await advanceSeries(true)"
     )
-    assert handoff.index("captureAndPersistPlayWorkspace()") < handoff.index(
+    assert handoff.index("await requireDurablePlaySession({}, { capture: true })") < handoff.index(
         "await refreshPrefix([], [])"
     )
     switch_mode = app[
@@ -533,7 +551,66 @@ def test_play_session_reload_uses_an_authoritatively_replayed_uci_ledger() -> No
     assert "dom.mode_play.disabled = state.positionBusy" in app
     assert "dom.mode_analyze.disabled = state.positionBusy" in app
     assert "Game restored after reload" in persistence
-    assert 'window.addEventListener("pagehide"' in app
+    assert 'window.addEventListener("storage"' in app
+    assert "PLAY_SESSION_SCHEMA_VERSION = 2" in app
+    assert "LEGACY_PLAY_SESSION_SCHEMA_VERSION = 1" in app
+    assert "sessionId: state.play.sessionId" not in app
+    assert "sessionId," in persistence
+    assert "ownerId: playSessionTabId" in persistence
+    assert "revision: playSessionRevision + 1" in persistence
+    assert "storedPlayLedgerExtends(candidate, existing)" in persistence
+    assert "existing.revision !== baseRevision" in persistence
+    assert "sameStoredPlayState(candidate, existing)" in persistence
+    assert "existing.ownerId !== playSessionTabId && !claimOwnership" in persistence
+    assert "navigator.locks.request(PLAY_SESSION_WRITE_LOCK, commit)" in persistence
+    assert "playSessionLastWriteDurable = false" in persistence
+    assert "async function persistPlaySessionDurably" in persistence
+    assert "const queuedWrite = playSessionWriteQueue" in persistence
+    assert "writeSequence === playSessionWriteSequence" in persistence
+    assert "return false;" in persistence
+    assert "const playSessionTabId = randomStorageId(\"page\")" in app
+    assert "sessionStorage.setItem(PLAY_SESSION_TAB_STORAGE_KEY" not in app
+    assert "await requireDurablePlaySession(" in app
+    assert "{ claimOwnership: false }," in persistence
+    assert "{ capture: true }," in persistence
+    assert "replaceExpectedSessionId" in persistence
+    assert "replaceExpectedRevision" in persistence
+    assert "function storedSessionMatchesReplacementExpectation" in persistence
+    assert "const expectedReplacementPredecessor" in persistence
+    assert "state.play.sessionId = saved.sessionId" in persistence
+    assert "state.play.sessionId = randomStorageId(\"game\")" in app
+    assert "if (!await requireDurablePlaySession(replacementOptions)) return" in app
+    assert "function markPlaySessionSaveBlocked" in persistence
+    assert "if (!state.positionReady)" in app
+    assert "void restorePersistedPlaySession()" in app
+    assert "Game not saved yet" in play_surface
+    assert "Retry saving game" in play_surface
+    assert "function requestPlayPrefixJson" in app
+    assert "Saved-game validation timed out." in app
+    assert "This game changed in another tab." in app
+    assert "Game updated in another tab" in play_surface
+    assert "const sessionReplaced = saved.sessionId !== state.play.sessionId" in app
+    assert "const current = persistedPlaySessionWithoutSideEffects()" in app
+    assert "current.ownerId !== saved.ownerId" in app
+    assert "current.revision !== saved.revision" in app
+    assert "lockPlaySessionForExternalUpdate()" in app
+    assert "function blockStalePlayMutation" in app
+    board_input = app[
+        app.index("function boardInputAllowed") : app.index(
+            "function cancelEngineTurn"
+        )
+    ]
+    assert "&& !playSessionExternalUpdate" in board_input
+    assert "|| playSessionExternalUpdate" in engine_turn
+    assert "await requireDurablePlaySession()" in engine_turn
+    browser_client = (STATIC / "browser-engine-client.js").read_text(encoding="utf-8")
+    assert "if (remainingSearchMs !== null && remainingSearchMs < 10)" in browser_client
+    assert "time_limit: Math.min(" in browser_client
+    assert "remainingSearchMs / 1000" in browser_client
+    assert "const timeoutMs = remainingMs === null" in browser_client
+    assert ": remainingMs;" in browser_client
+    assert "Math.min(requestTimeoutMs, remainingMs)" not in browser_client
+    assert "Math.max(0.01, remainingSearchMs / 1000)" not in browser_client
     assert "if (!await restorePersistedPlaySession())" in initialize
     assert "await startNewPlayGame({ announce: false })" in initialize
 
@@ -659,13 +736,15 @@ def test_play_mode_uses_compiled_replay_locally_and_server_replay_as_fallback() 
         assert required_id in index
 
     assert "requestEngineAnalysis(" in engine_turn
-    assert 'requestJson("/api/prefix"' in engine_turn
+    assert "requestPlayPrefixJson(" in engine_turn
     assert engine_turn.index("requestEngineAnalysis(") < engine_turn.index(
-        'requestJson("/api/prefix"'
+        "requestPlayPrefixJson("
     )
-    assert engine_turn.index('requestJson("/api/prefix"') < engine_turn.index(
+    assert engine_turn.index("requestPlayPrefixJson(") < engine_turn.index(
         "applyPrefixPayload(checked"
     )
+    assert "deadlineMs: receiptDeadlineMs" in engine_turn
+    assert "analysisReceipt: true" in engine_turn
     assert "? analysis.checked_prefix" in engine_turn
     assert 'analysis.legal_validation_runtime !== "compiled-wasm"' in engine_turn
     assert "analysis.engine_profile_id !== state.play.engineProfileId" in engine_turn

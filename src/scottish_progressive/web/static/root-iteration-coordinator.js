@@ -725,8 +725,18 @@
     safetyProbe,
     signal,
     now = defaultMonotonicNow,
+    receiptDeadlineMs = null,
   }) {
     const request = normalizeRequest(rawRequest);
+    const receiptDeadline = Number.isFinite(receiptDeadlineMs)
+      ? receiptDeadlineMs
+      : request.deadline_monotonic_ms;
+    if (receiptDeadline < request.deadline_monotonic_ms) {
+      throw new RootCoordinatorError(
+        "The root receipt deadline precedes the search deadline.",
+        "root-receipt-deadline-invalid",
+      );
+    }
     const manifest = normalizeManifest(rawManifest, request);
     const workerContract = normalizeWorkers(rawWorkers, request);
     const workers = workerContract.states;
@@ -852,7 +862,7 @@
       signal?.addEventListener("abort", externalAbortListener, { once: true });
       deadlineTimer = setTimeout(
         () => invalidate("deadline"),
-        Math.min(2_147_483_647, Math.max(0, request.deadline_monotonic_ms - now())),
+        Math.min(2_147_483_647, Math.max(0, receiptDeadline - now())),
       );
 
       const immediateMateScore = whiteToMove
@@ -906,7 +916,13 @@
         .map((candidate) => candidate.candidate_identity);
 
       const dispatch = (worker, record, purpose) => {
-        if (now() >= request.deadline_monotonic_ms) invalidate("deadline");
+        if (now() >= request.deadline_monotonic_ms) {
+          throw new RootCoordinatorError(
+            "The common root search deadline expired before dispatch.",
+            "root-deadline",
+            { work: ledger.snapshot() },
+          );
+        }
         if (invalidated || internalAbort.signal.aborted) {
           throw new RootCoordinatorError(
             "The root iteration is no longer active.",
@@ -1010,7 +1026,6 @@
         const outcome = await raceInvalidation(
           Promise.race([...active.values()].map((item) => item.promise)),
         );
-        if (now() >= request.deadline_monotonic_ms) invalidate("deadline");
         if (invalidated) throw invalidationError();
         const live = active.get(outcome.worker.id);
         if (!live || live.task.task_id !== outcome.task.task_id) {
@@ -1209,6 +1224,13 @@
             "root-safety-unavailable",
           );
         }
+        if (now() >= request.deadline_monotonic_ms) {
+          throw new RootCoordinatorError(
+            "The common root search deadline expired before safety dispatch.",
+            "root-deadline",
+            { work: ledger.snapshot() },
+          );
+        }
         const reservation = ledger.reserve({
           phase: "safety",
           desired: request.caps.safety_call_work_credit,
@@ -1322,7 +1344,7 @@
       }
 
       recomputeIncumbent();
-      if (now() >= request.deadline_monotonic_ms) {
+      if (now() >= receiptDeadline) {
         invalidate("deadline");
         throw invalidationError();
       }
