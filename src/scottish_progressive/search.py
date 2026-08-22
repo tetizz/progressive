@@ -56,7 +56,7 @@ QUIET_ADJUDICATION_POSITION_LIMIT = 4_096
 # single moves. Iterative deepening revisits the same boundary frontiers, but
 # retaining every frontier would multiply memory across league workers. Bound
 # reuse by the number of retained SeriesResult objects, not by node count.
-SERIES_GENERATION_CACHE_CAPACITY = 4_096
+SERIES_GENERATION_CACHE_CAPACITY = 16_384
 # Best-only play may otherwise accept a root series whose opponent reply mate
 # was discarded by the ordinary width-32 child beam. This second screen is
 # deliberately much wider and globally bounded. It is invoked only after a
@@ -255,6 +255,7 @@ class SearchStats:
     series_generation_cache_hits: int = 0
     series_generation_cache_evictions: int = 0
     series_generation_cache_peak: int = 0
+    series_generation_cache_entries_peak: int = 0
     promotion_mate_positions: int = 0
     promotion_mate_setup_states: int = 0
     promotion_mate_candidates: int = 0
@@ -1823,6 +1824,10 @@ class SeriesSearcher:
         self.stats.series_generation_cache_peak = max(
             self.stats.series_generation_cache_peak,
             self._series_generation_cache_weight,
+        )
+        self.stats.series_generation_cache_entries_peak = max(
+            self.stats.series_generation_cache_entries_peak,
+            len(self._series_generation_cache),
         )
         self._prefer_series(ordered, preferred_series)
         return self._apply_root_promotion_mate_lane(

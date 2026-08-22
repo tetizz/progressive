@@ -1366,7 +1366,7 @@ def test_root_tactical_protection_keeps_depth_three_opening_result() -> None:
     assert result.best_series.moves == ("e2e4",)
     assert result.score == 848
     assert result.completed_depth == 3
-    assert result.stats.work_positions == 245_028
+    assert result.stats.work_positions == 244_372
     assert result.stats.root_pvs_zero_window_searches > 0
     assert result.stats.native_series_mate_calls == 3
     assert result.stats.native_series_mate_exhausted == 3
