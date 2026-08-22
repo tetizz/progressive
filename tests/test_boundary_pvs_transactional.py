@@ -364,7 +364,10 @@ def test_hard_s4_depth_five_completes_with_exact_safety_under_production_work() 
         ),
         baseline_profile(),
     )
-    assert result.stats.work_positions == 8_666_067
+    # Later-root transactional scouts reject 31 non-improving S4 candidates
+    # without changing the exact D5 result.
+    assert result.stats.work_positions == 8_663_967
+    assert result.stats.root_pvs_zero_window_searches == 31
     assert result.stats.root_safety_screen_positions == 831_549
     assert (
         result.stats.native_series_mate_positions

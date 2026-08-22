@@ -109,10 +109,11 @@ TACTICAL_DESCENDANT_PROMOTION_MAX_PLY = 2
 # ratio synchronized with FINAL_ORDINARY_QUOTA_DENOMINATOR in _native_eval.cpp.
 TACTICAL_FINAL_ORDINARY_QUOTA_DENOMINATOR = 2
 ROOT_PVS_ENABLED = True
-# A Series-1 root is ordinary single-move chess. Multi-move Progressive roots
-# retain the canonical full-window path because a scout can otherwise alter
-# tied descendant PVs exposed through exact root alternatives.
-ROOT_PVS_MAX_ROOT_SERIES = 1
+# Root scouts are transactional and concrete PV caches include the exact FEN
+# clocks, promoted provenance, and Chess960 mode.  That makes the same
+# fail-soft one-point probe safe at later Progressive roots as well as the
+# single-move opening root; failed probes cannot leak bound PV ordering into
+# the canonical full-window result.
 
 
 def _tactical_frontier_protection_eligible(
@@ -497,8 +498,12 @@ class SeriesSearcher:
         self._evaluation_work_limit_reached = False
         self._root_scores_complete = True
         self._preferred_root_series: str | None = None
-        self._promotion_mate_checked = False
-        self._promotion_mate_series: SeriesResult | None = None
+        # Root promotion results are concrete replay objects. Memoize by the
+        # exact boundary and prefix rather than with a searcher-wide singleton,
+        # so a reused searcher cannot return clocks or moves from another root.
+        self._root_promotion_mate_cache: dict[
+            tuple[_TTKey, tuple[str, ...]], SeriesResult | None
+        ] = {}
         # Tactical beam protection is selected from the search root, not from
         # the deepest descendant reached by iterative minimax.  Otherwise an
         # ordinary Series-4 root silently switches to the much wider reserve
@@ -506,14 +511,17 @@ class SeriesSearcher:
         # to beam work.  ``None`` keeps direct private-generation probes useful:
         # their first state is treated as their root.
         self._root_tactical_frontier_protection: bool | None = None
+        # These caches retain concrete SeriesResult objects, so their keys must
+        # preserve every state field that affects replayed PFEN output. The
+        # position-only transposition key deliberately omits FEN clocks and
+        # would let a mate found at one clock pair leak stale final-state clocks
+        # into an otherwise identical boundary reached later in the same run.
         self._root_child_mate_screen_cache: dict[
-            tuple[int, str, int, int], SeriesResult | None
+            _TTKey, SeriesResult | None
         ] = {}
-        self._root_child_native_mate_cache_keys: set[
-            tuple[int, str, int, int]
-        ] = set()
+        self._root_child_native_mate_cache_keys: set[_TTKey] = set()
         self._root_child_promotion_mate_cache: dict[
-            tuple[int, str, int, int], SeriesResult | None
+            _TTKey, SeriesResult | None
         ] = {}
         self._root_child_proven_mate_keys: set[
             tuple[int, str, int, int]
@@ -727,11 +735,12 @@ class SeriesSearcher:
         required_prefix: tuple[str, ...],
         reserve_positions: int,
     ) -> SeriesResult | None:
-        """Runs the separately bounded current-series mate lane at most once."""
+        """Runs the bounded current-series mate lane once per exact root/prefix."""
 
-        if self._promotion_mate_checked:
-            return self._promotion_mate_series
-        self._promotion_mate_checked = True
+        cache_key = (self._tt_key(state), required_prefix)
+        if cache_key in self._root_promotion_mate_cache:
+            return self._root_promotion_mate_cache[cache_key]
+        self._root_promotion_mate_cache[cache_key] = None
         if (
             self.limits.max_series_per_node is None
             or not promotion_mate_eligible(
@@ -775,7 +784,7 @@ class SeriesSearcher:
             return None
         if probe.series is None:
             return None
-        self._promotion_mate_series = probe.series
+        self._root_promotion_mate_cache[cache_key] = probe.series
         self._selective = True
         return probe.series
 
@@ -1080,7 +1089,7 @@ class SeriesSearcher:
     ) -> SeriesResult | None:
         """Runs the established promotion proof before broader reply search."""
 
-        key = state.transposition_key
+        key = self._tt_key(state)
         if key in self._root_child_promotion_mate_cache:
             self.stats.root_safety_promotion_cache_hits += 1
             return self._root_child_promotion_mate_cache[key]
@@ -1219,31 +1228,32 @@ class SeriesSearcher:
         ):
             return None
 
-        key = state.transposition_key
-        if key in self._root_child_mate_screen_cache:
+        cache_key = self._tt_key(state)
+        position_key = state.transposition_key
+        if cache_key in self._root_child_mate_screen_cache:
             self.stats.root_safety_screen_cache_hits += 1
-            if key in self._root_child_native_mate_cache_keys:
+            if cache_key in self._root_child_native_mate_cache_keys:
                 self.stats.native_series_mate_cache_hits += 1
-            return self._root_child_mate_screen_cache[key]
+            return self._root_child_mate_screen_cache[cache_key]
         self.stats.root_safety_screen_calls += 1
 
         persistent = self._persistent_mate_proof(state)
         if persistent is not None:
             status, mate = persistent
-            self._root_child_mate_screen_cache[key] = mate
+            self._root_child_mate_screen_cache[cache_key] = mate
             if status == "found":
                 assert mate is not None
-                self._mark_root_child_proven_mate(key)
+                self._mark_root_child_proven_mate(position_key)
             else:
-                self._mark_root_child_exact_exhausted(key)
+                self._mark_root_child_exact_exhausted(position_key)
             return mate
 
         proof_work_start = self.stats.work_positions
 
         promotion_mate = self._root_child_promotion_mate(state)
         if promotion_mate is not None:
-            self._root_child_mate_screen_cache[key] = promotion_mate
-            self._mark_root_child_proven_mate(key)
+            self._root_child_mate_screen_cache[cache_key] = promotion_mate
+            self._mark_root_child_proven_mate(position_key)
             self._store_persistent_mate_proof(
                 state,
                 promotion_mate,
@@ -1257,8 +1267,8 @@ class SeriesSearcher:
             tactical_protection=True,
         )
         if mate is not None:
-            self._root_child_mate_screen_cache[key] = mate
-            self._mark_root_child_proven_mate(key)
+            self._root_child_mate_screen_cache[cache_key] = mate
+            self._mark_root_child_proven_mate(position_key)
             self._store_persistent_mate_proof(
                 state,
                 mate,
@@ -1277,12 +1287,12 @@ class SeriesSearcher:
                 "incomplete exact mate lane must be classified as unknown"
             )
         if native_complete:
-            self._root_child_mate_screen_cache[key] = mate
-            self._root_child_native_mate_cache_keys.add(key)
+            self._root_child_mate_screen_cache[cache_key] = mate
+            self._root_child_native_mate_cache_keys.add(cache_key)
             if mate is None:
-                self._mark_root_child_exact_exhausted(key)
+                self._mark_root_child_exact_exhausted(position_key)
             else:
-                self._mark_root_child_proven_mate(key)
+                self._mark_root_child_proven_mate(position_key)
             self._store_persistent_mate_proof(
                 state,
                 mate,
@@ -1302,7 +1312,7 @@ class SeriesSearcher:
             if native_unknown or not completed:
                 self.stats.root_safety_unknown_interruptions += 1
                 raise _WorkLimit
-            self._root_child_mate_screen_cache[key] = None
+            self._root_child_mate_screen_cache[cache_key] = None
             return None
         mate, wide_completed = self._root_child_mate_screen_stage(
             state,
@@ -1315,9 +1325,9 @@ class SeriesSearcher:
             else:
                 self.stats.root_safety_unknown_interruptions += 1
             raise _WorkLimit
-        self._root_child_mate_screen_cache[key] = mate
+        self._root_child_mate_screen_cache[cache_key] = mate
         if mate is not None:
-            self._mark_root_child_proven_mate(key)
+            self._mark_root_child_proven_mate(position_key)
             self._store_persistent_mate_proof(
                 state,
                 mate,
@@ -1655,11 +1665,13 @@ class SeriesSearcher:
 
         if ply_from_root != 1:
             return series
-        if self._promotion_mate_checked:
-            if self._promotion_mate_series is None:
+        cache_key = (self._tt_key(state), required_prefix)
+        if cache_key in self._root_promotion_mate_cache:
+            promotion_mate = self._root_promotion_mate_cache[cache_key]
+            if promotion_mate is None:
                 return series
             return _GeneratedSeriesList(
-                [self._promotion_mate_series],
+                [promotion_mate],
                 width_complete=False,
             )
         if (
@@ -1673,7 +1685,7 @@ class SeriesSearcher:
             # overwhelming ordinary-position path. Metadata scanning below
             # materializes a reference, so do it only when the specialized
             # lane could actually run.
-            self._promotion_mate_checked = True
+            self._root_promotion_mate_cache[cache_key] = None
             return series
 
         for candidate in series:
@@ -1689,7 +1701,7 @@ class SeriesSearcher:
             if replayed.outcome == Outcome.CHECKMATE and replayed.ended_by_check:
                 # Ordinary bounded generation already retained an authoritative
                 # current-series mate. The specialized lane cannot improve it.
-                self._promotion_mate_checked = True
+                self._root_promotion_mate_cache[cache_key] = None
                 return series
 
         promotion_mate = self._root_promotion_mate(
@@ -2029,12 +2041,11 @@ class SeriesSearcher:
         state: ProgressiveState,
         depth: int,
     ) -> bool:
-        """Limits root scouts to the final ordinary single-move iteration."""
+        """Limits root scouts to the final best-move-only iteration."""
 
         return (
             ROOT_PVS_ENABLED
             and not self.limits.collect_all_root_scores
-            and state.series_number <= ROOT_PVS_MAX_ROOT_SERIES
             and depth == self.limits.depth_series
         )
 
@@ -2257,10 +2268,7 @@ class SeriesSearcher:
         state: ProgressiveState,
         depth: int,
         required_prefix: tuple[str, ...],
-        root_mate_overrides: Mapping[
-            tuple[int, str, int, int],
-            SeriesResult,
-        ],
+        root_mate_overrides: Mapping[_TTKey, SeriesResult],
     ) -> tuple[
         int,
         tuple[SeriesResult, ...],
@@ -2302,7 +2310,7 @@ class SeriesSearcher:
                 if terminal is None:
                     child_state = result.final_state
                     reply_override = root_mate_overrides.get(
-                        child_state.transposition_key
+                        self._tt_key(child_state)
                     )
                     if reply_override is not None:
                         score = self._terminal_score(
@@ -2727,7 +2735,7 @@ class SeriesSearcher:
                 _proof_from_bounds(proof_bounds),
             )
 
-        overrides: dict[tuple[int, str, int, int], SeriesResult] = {}
+        overrides: dict[_TTKey, SeriesResult] = {}
         last_exact_exhausted: SeriesResult | None = None
         last_unknown: SeriesResult | None = None
 
@@ -2775,11 +2783,12 @@ class SeriesSearcher:
                 return score, pv, alternatives, proof
             child_state = provisional.final_state
             child_key = child_state.transposition_key
+            override_key = self._tt_key(child_state)
             if child_key in self._root_child_native_mate_exhausted_keys:
                 last_exact_exhausted = provisional
             elif child_key not in self._root_child_proven_mate_keys:
                 last_unknown = provisional
-            if child_key in overrides:
+            if override_key in overrides:
                 # The best root choice still loses after every root bound was
                 # repaired around its authoritative reply mate. If every
                 # retained choice has the same replay-proven defect, widen the
@@ -2838,7 +2847,7 @@ class SeriesSearcher:
                 and last_unknown.final_state.transposition_key == child_key
             ):
                 last_unknown = None
-            overrides[child_key] = reply_mate
+            overrides[override_key] = reply_mate
             self.stats.root_safety_retries += 1
 
     def run(

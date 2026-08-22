@@ -197,6 +197,33 @@ def test_wide_native_child_screen_replays_the_human_mate() -> None:
     assert searcher.stats.root_safety_screen_cache_hits == 1
 
 
+def test_process_local_mate_cache_separates_exact_fen_clocks() -> None:
+    first = ProgressiveState.from_fen(
+        "7k/8/5KQ1/8/8/8/8/8 w - - 0 1",
+        1,
+    )
+    second = ProgressiveState.from_fen(
+        "7k/8/5KQ1/8/8/8/8/8 w - - 9 7",
+        1,
+    )
+    assert first.transposition_key == second.transposition_key
+
+    searcher = _live_searcher()
+    first_mate = searcher._root_child_immediate_mate(first)
+    second_mate = searcher._root_child_immediate_mate(second)
+
+    assert first_mate is not None
+    assert second_mate is not None
+    assert first_mate.moves == second_mate.moves == ("g6g7",)
+    assert first_mate.final_state.pfen != second_mate.final_state.pfen
+    assert second_mate.final_state.pfen == play_series(
+        second,
+        second_mate.moves,
+    ).final_state.pfen
+    assert searcher.stats.root_safety_screen_calls == 2
+    assert searcher.stats.root_safety_screen_cache_hits == 0
+
+
 def test_early_s4_child_screen_replays_the_exact_s5_mate() -> None:
     """A concrete early mate must not be hidden by the Series-7 risk gate."""
 
@@ -643,20 +670,21 @@ def test_exact_lane_no_call_or_unknown_status_never_caches_a_selective_miss(
         else:
             assert searcher._root_child_immediate_mate(state) is None
 
-    key = state.transposition_key
+    position_key = state.transposition_key
+    cache_key = searcher._tt_key(state)
     if remaining == 2 and native_status is SeriesMateStatus.EXHAUSTED:
         assert stage_calls == 1
         assert exact_work_limits == [1]
-        assert key in searcher._root_child_mate_screen_cache
-        assert key in searcher._root_child_native_mate_cache_keys
-        assert key in searcher._root_child_native_mate_exhausted_keys
+        assert cache_key in searcher._root_child_mate_screen_cache
+        assert cache_key in searcher._root_child_native_mate_cache_keys
+        assert position_key in searcher._root_child_native_mate_exhausted_keys
         assert searcher.stats.native_series_mate_cache_hits == 1
         assert searcher.stats.root_safety_exact_exhausted_children == 1
     else:
         assert stage_calls >= 2
-        assert key not in searcher._root_child_mate_screen_cache
-        assert key not in searcher._root_child_native_mate_cache_keys
-        assert key not in searcher._root_child_native_mate_exhausted_keys
+        assert cache_key not in searcher._root_child_mate_screen_cache
+        assert cache_key not in searcher._root_child_native_mate_cache_keys
+        assert position_key not in searcher._root_child_native_mate_exhausted_keys
         assert searcher.stats.native_series_mate_cache_hits == 0
         assert searcher.stats.root_safety_exact_exhausted_children == 0
         assert searcher.stats.root_safety_proven_mate_children == 0
@@ -697,7 +725,7 @@ def test_incomplete_exact_lane_cannot_omit_unknown_classification(
 
     with pytest.raises(RuntimeError, match="must be classified as unknown"):
         searcher._root_child_immediate_mate(state)
-    assert state.transposition_key not in searcher._root_child_mate_screen_cache
+    assert searcher._tt_key(state) not in searcher._root_child_mate_screen_cache
     assert (
         state.transposition_key
         not in searcher._root_child_native_mate_exhausted_keys
@@ -846,7 +874,7 @@ def test_early_promotion_risk_uses_width832_only_to_recover_unknown_native_mate(
     assert searcher.stats.native_series_mate_calls == 1
     assert searcher.stats.native_series_mate_unsupported == 1
     assert searcher.stats.root_safety_unknown_interruptions == 1
-    assert state.transposition_key not in searcher._root_child_mate_screen_cache
+    assert searcher._tt_key(state) not in searcher._root_child_mate_screen_cache
 
 
 def test_interrupted_safety_retry_keeps_the_last_completed_root_depth(

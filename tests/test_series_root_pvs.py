@@ -245,17 +245,84 @@ def test_initial_depth_three_preserves_exact_search_signature(
     assert candidate.stats.root_pvs_zero_window_searches > 0
 
 
-def test_root_pvs_is_only_eligible_for_final_series_one_iteration() -> None:
+@pytest.mark.parametrize("series_number", range(1, 9))
+def test_root_pvs_is_eligible_for_final_iteration_at_later_roots(
+    series_number: int,
+) -> None:
     searcher = _searcher()
-    initial = ProgressiveState.initial()
-    series_two = ProgressiveState.from_fen(
-        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1",
-        2,
+    all_scores_searcher = SeriesSearcher(
+        SearchLimits(depth_series=4, collect_all_root_scores=True),
+        baseline_profile(),
+    )
+    turn = "w" if series_number % 2 else "b"
+    state = ProgressiveState.from_fen(
+        f"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR {turn} KQkq - 0 1",
+        series_number,
     )
 
-    assert not searcher._root_pvs_eligible(initial, 3)
-    assert searcher._root_pvs_eligible(initial, 4)
-    assert not searcher._root_pvs_eligible(series_two, 4)
+    assert not searcher._root_pvs_eligible(state, 3)
+    assert searcher._root_pvs_eligible(state, 4)
+    assert not all_scores_searcher._root_pvs_eligible(state, 4)
+
+
+@pytest.mark.parametrize(
+    "history",
+    (
+        (("e2e4",),),
+        (("e2e4",), ("f7f5", "e8f7")),
+    ),
+)
+def test_later_progressive_root_preserves_exact_search_signature(
+    monkeypatch: pytest.MonkeyPatch,
+    history: tuple[tuple[str, ...], ...],
+) -> None:
+    state = ProgressiveState.initial()
+    for series in history:
+        state = play_series(state, series).final_state
+    limits = SearchLimits(
+        depth_series=3,
+        max_series_per_node=32,
+        max_generation_positions=3_000_000,
+        collect_all_root_scores=False,
+        native_threads=1,
+    )
+    monkeypatch.setattr(search_module, "ROOT_PVS_ENABLED", False)
+    baseline = analyze(state, limits, baseline_profile())
+    monkeypatch.setattr(search_module, "ROOT_PVS_ENABLED", True)
+    candidate = analyze(state, limits, baseline_profile())
+
+    assert _signature(candidate) == _signature(baseline)
+    assert candidate.stats.root_pvs_zero_window_searches > 0
+
+
+def test_later_required_prefix_preserves_exact_search_signature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = play_series(ProgressiveState.initial(), ("e2e4",)).final_state
+    limits = SearchLimits(
+        depth_series=3,
+        max_series_per_node=32,
+        max_generation_positions=3_000_000,
+        collect_all_root_scores=False,
+        native_threads=1,
+    )
+    monkeypatch.setattr(search_module, "ROOT_PVS_ENABLED", False)
+    baseline = analyze(
+        state,
+        limits,
+        baseline_profile(),
+        required_prefix=("f7f5",),
+    )
+    monkeypatch.setattr(search_module, "ROOT_PVS_ENABLED", True)
+    candidate = analyze(
+        state,
+        limits,
+        baseline_profile(),
+        required_prefix=("f7f5",),
+    )
+
+    assert _signature(candidate) == _signature(baseline)
+    assert candidate.stats.root_pvs_zero_window_searches > 0
 
 
 def test_generation_cache_separates_exact_fen_clocks() -> None:

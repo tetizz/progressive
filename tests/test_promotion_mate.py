@@ -148,6 +148,54 @@ def test_promotion_mate_lane_is_deterministic_and_replay_proven(
     assert search_signatures[0] == search_signatures[1] == search_signatures[2]
 
 
+def test_root_promotion_mate_memo_separates_clocks_and_prefixes() -> None:
+    fen, series_number, required_prefix, expected = HARD_PROMOTION_MATES[0]
+    first = ProgressiveState.from_fen(fen, series_number)
+    second = ProgressiveState.from_fen(
+        fen.rsplit(" ", 2)[0] + " 9 7",
+        series_number,
+    )
+    assert first.transposition_key == second.transposition_key
+
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            max_generation_positions=250_000,
+            collect_all_root_scores=False,
+        ),
+        baseline_profile(),
+    )
+    first_mate = searcher._root_promotion_mate(
+        first,
+        required_prefix=required_prefix,
+        reserve_positions=0,
+    )
+    second_mate = searcher._root_promotion_mate(
+        second,
+        required_prefix=required_prefix,
+        reserve_positions=0,
+    )
+
+    assert first_mate is not None
+    assert second_mate is not None
+    assert first_mate.moves == second_mate.moves == expected
+    assert first_mate.final_state.pfen != second_mate.final_state.pfen
+    assert second_mate.final_state.pfen == play_series(
+        second,
+        second_mate.moves,
+    ).final_state.pfen
+    assert len(searcher._root_promotion_mate_cache) == 2
+
+    different_prefix = required_prefix[:1]
+    searcher._root_promotion_mate(
+        first,
+        required_prefix=different_prefix,
+        reserve_positions=0,
+    )
+    assert len(searcher._root_promotion_mate_cache) == 3
+
+
 @pytest.mark.parametrize(
     ("fen", "series_number", "expected", "expected_unused"),
     PROMOTION_MATE_RECALL_CASES,
@@ -484,12 +532,11 @@ def test_retained_ordinary_mate_lane_overhead_is_below_ten_percent(
     enabled_lane = SeriesSearcher._apply_root_promotion_mate_lane
 
     def disabled_lane(
-        searcher: SeriesSearcher,
+        _searcher: SeriesSearcher,
         _state: ProgressiveState,
         series: object,
         **_kwargs: object,
     ) -> object:
-        searcher._promotion_mate_checked = True
         return series
 
     def run(enabled: bool) -> tuple[float, tuple[object, ...]]:
