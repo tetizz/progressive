@@ -18,6 +18,8 @@ REPORT_FILES = (
 NATIVE_SOURCE_FILES = (
     "_native_eval.cpp",
     "native_eval.hpp",
+    "native_subtree.cpp",
+    "native_subtree.hpp",
     "native_selfplay.cpp",
     "native_selfplay.hpp",
 )
@@ -112,10 +114,12 @@ setup(
             "scottish_progressive._native_eval",
             sources=[
                 "src/scottish_progressive/_native_eval.cpp",
+                "src/scottish_progressive/native_subtree.cpp",
                 "src/scottish_progressive/native_selfplay.cpp",
             ],
             depends=[
                 "src/scottish_progressive/native_eval.hpp",
+                "src/scottish_progressive/native_subtree.hpp",
                 "src/scottish_progressive/native_selfplay.hpp",
             ],
             language="c++",

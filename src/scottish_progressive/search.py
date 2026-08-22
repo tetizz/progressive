@@ -16,6 +16,11 @@ from .model import (
     ProgressiveState,
     SeriesResult,
 )
+from .native_subtree import (
+    SUBTREE_STAT_FIELDS,
+    NativeSubtreeSession,
+    native_subtree_eligible,
+)
 from .profiles import EngineProfile, baseline_profile
 from .promotion_mate import (
     MAX_PROMOTION_MATE_POSITIONS,
@@ -109,6 +114,7 @@ TACTICAL_DESCENDANT_PROMOTION_MAX_PLY = 2
 # ratio synchronized with FINAL_ORDINARY_QUOTA_DENOMINATOR in _native_eval.cpp.
 TACTICAL_FINAL_ORDINARY_QUOTA_DENOMINATOR = 2
 ROOT_PVS_ENABLED = True
+NATIVE_SUBTREE_ENABLED = True
 # Root scouts are transactional and concrete PV caches include the exact FEN
 # clocks, promoted provenance, and Chess960 mode.  That makes the same
 # fail-soft one-point probe safe at later Progressive roots as well as the
@@ -540,6 +546,8 @@ class SeriesSearcher:
             )
         )
         self._root_child_mate_screen_work = 0
+        self._native_subtree_session: NativeSubtreeSession | None = None
+        self._native_subtree_stats_applied = (0,) * len(SUBTREE_STAT_FIELDS)
 
     def _tactical_frontier_protection_enabled(
         self,
@@ -579,6 +587,133 @@ class SeriesSearcher:
     def _check_deadline(self) -> None:
         if self._deadline is not None and time.perf_counter() >= self._deadline:
             raise _Timeout
+
+    def _start_native_subtree(self, state: ProgressiveState) -> None:
+        """Starts the descendant-only core after Python root policy is settled."""
+
+        if (
+            not NATIVE_SUBTREE_ENABLED
+            or not native_subtree_eligible(
+                state,
+                requested_depth=self.limits.depth_series,
+                max_series_per_node=self.limits.max_series_per_node,
+                max_work=self.limits.max_generation_positions,
+                profile=self.profile,
+                has_overlay=self.evaluation_overlay is not None,
+            )
+        ):
+            return
+        cap = self.limits.max_series_per_node
+        if cap is None:  # narrowed by native_subtree_eligible
+            return
+        self._native_subtree_session = NativeSubtreeSession(
+            max_series_per_node=cap,
+            max_work=self.limits.max_generation_positions,
+            requested_depth=self.limits.depth_series,
+            mate_score=MATE_SCORE,
+            cache_capacity=SERIES_GENERATION_CACHE_CAPACITY,
+            external_cache_weight=self._series_generation_cache_weight,
+            native_threads=self.limits.native_threads,
+            root_tactical_protection=bool(
+                self._root_tactical_frontier_protection
+            ),
+            profile=self.profile,
+        )
+
+    def _sync_native_subtree_stats(self, raw: tuple[int, ...]) -> None:
+        if len(raw) != len(SUBTREE_STAT_FIELDS):
+            raise RuntimeError("native subtree stats shape mismatch")
+        previous = self._native_subtree_stats_applied
+        peak_fields = {
+            "peak_frontier_states",
+            "series_generation_cache_peak",
+            "series_generation_cache_entries_peak",
+        }
+        for index, field_name in enumerate(SUBTREE_STAT_FIELDS):
+            value = raw[index]
+            if value < previous[index]:
+                raise RuntimeError("native subtree stats regressed")
+            if field_name in peak_fields:
+                continue
+            setattr(
+                self.stats,
+                field_name,
+                getattr(self.stats, field_name) + value - previous[index],
+            )
+        peak_frontier_index = SUBTREE_STAT_FIELDS.index("peak_frontier_states")
+        self.stats.peak_frontier_states = max(
+            self.stats.peak_frontier_states,
+            raw[peak_frontier_index],
+        )
+        cache_peak_index = SUBTREE_STAT_FIELDS.index(
+            "series_generation_cache_peak"
+        )
+        cache_entries_index = SUBTREE_STAT_FIELDS.index(
+            "series_generation_cache_entries_peak"
+        )
+        # Root generation remains intentionally Python-owned. Its small cached
+        # frontier is the only storage outside the native descendant LRU, so
+        # include that live weight in the public unified peak counters.
+        self.stats.series_generation_cache_peak = max(
+            self.stats.series_generation_cache_peak,
+            raw[cache_peak_index],
+        )
+        self.stats.series_generation_cache_entries_peak = max(
+            self.stats.series_generation_cache_entries_peak,
+            raw[cache_entries_index],
+        )
+        self._native_subtree_stats_applied = raw
+
+    def _native_minimax(
+        self,
+        state: ProgressiveState,
+        depth: int,
+        alpha: int,
+        beta: int,
+        ply_from_root: int,
+    ) -> tuple[int, tuple[SeriesResult, ...], tuple[int, int]]:
+        session = self._native_subtree_session
+        if session is None:  # pragma: no cover - caller invariant
+            raise RuntimeError("native subtree session is unavailable")
+        work_index = SUBTREE_STAT_FIELDS.index("generation_positions")
+        native_work = self._native_subtree_stats_applied[work_index]
+        external_work = self.stats.generation_positions - native_work
+        if external_work < 0:
+            raise RuntimeError("native subtree external work accounting regressed")
+        remaining_nanoseconds = (
+            None
+            if self._deadline is None
+            else max(
+                0,
+                int((self._deadline - time.perf_counter()) * 1_000_000_000),
+            )
+        )
+        result = session.search(
+            state,
+            depth=depth,
+            alpha=alpha,
+            beta=beta,
+            ply_from_root=ply_from_root,
+            external_work=external_work,
+            remaining_nanoseconds=remaining_nanoseconds,
+        )
+        self._sync_native_subtree_stats(result.stats)
+        self._selective = self._selective or result.selective
+        self._evaluation_work_limit_reached = (
+            self._evaluation_work_limit_reached
+            or result.evaluation_work_limit_reached
+        )
+        if result.status == 1:
+            raise _WorkLimit
+        if result.status == 2:
+            raise _Timeout
+        if result.status == 3:
+            raise _AdjudicationPending
+        if result.status != 0:
+            raise RuntimeError(
+                result.message or "native subtree search is unsupported"
+            )
+        return result.score, result.principal_variation, result.proof_bounds
 
     def _quiet_adjudication(self, state: ProgressiveState) -> str | None:
         if not state.quiet_draw_pending:
@@ -1875,6 +2010,8 @@ class SeriesSearcher:
     ) -> list[tuple[_TTKey, _TTEntry | None]]:
         journal: list[tuple[_TTKey, _TTEntry | None]] = []
         self._tt_transaction_stack.append(journal)
+        if self._native_subtree_session is not None:
+            self._native_subtree_session.begin_transaction()
         return journal
 
     def _write_tt(
@@ -1898,12 +2035,17 @@ class SeriesSearcher:
         ):
             raise RuntimeError("TT transactions must roll back in nested LIFO order")
         self._tt_transaction_stack.pop()
+        native_writes = (
+            self._native_subtree_session.rollback_transaction()
+            if self._native_subtree_session is not None
+            else 0
+        )
         for key, previous in reversed(journal):
             if previous is None:
                 self._tt.pop(key, None)
             else:
                 self._tt[key] = previous
-        return len(journal)
+        return len(journal) + native_writes
 
     def _search_child_with_pvs(
         self,
@@ -2061,6 +2203,14 @@ class SeriesSearcher:
         beta: int,
         ply_from_root: int,
     ) -> tuple[int, tuple[SeriesResult, ...], tuple[int, int]]:
+        if self._native_subtree_session is not None:
+            return self._native_minimax(
+                state,
+                depth,
+                alpha,
+                beta,
+                ply_from_root,
+            )
         self._check_deadline()
         self.stats.nodes += 1
         adjudication = self._quiet_adjudication(state)
@@ -2285,6 +2435,17 @@ class SeriesSearcher:
             if self.limits.max_generation_positions is not None
             else 0
         )
+        external_cache_was_present: bool | None = None
+        if self._native_subtree_session is not None:
+            external_cache_was_present = (
+                self._native_subtree_session.external_cache_present()
+            )
+            if not external_cache_was_present:
+                # The unified LRU evicted the mirrored root entry while native
+                # descendants were searched. Drop only the Python materialized
+                # copy without double-counting that already-recorded eviction.
+                self._series_generation_cache.clear()
+                self._series_generation_cache_weight = 0
         try:
             series = self._ordered_generated(
                 state,
@@ -2304,6 +2465,17 @@ class SeriesSearcher:
                 required_prefix=required_prefix,
             )
             raise _RootInterrupted((), error, fallback) from error
+        # Root policy and its cached frontier stay in Python. Start the native
+        # descendant session only after that frontier exists, reserving its
+        # exact cache weight from the shared public 16k-series envelope.
+        if self._native_subtree_session is None:
+            self._start_native_subtree(state)
+        elif external_cache_was_present:
+            self._native_subtree_session.touch_external_cache()
+        else:
+            self._native_subtree_session.insert_external_cache(
+                self._series_generation_cache_weight
+            )
         scored: list[ScoredSeries] = []
         root_alpha = -MATE_SCORE * 2
         root_beta = MATE_SCORE * 2

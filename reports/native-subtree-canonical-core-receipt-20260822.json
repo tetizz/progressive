@@ -1,0 +1,41 @@
+{
+  "schema": "native-subtree-canonical-core-receipt-v1",
+  "date": "2026-08-22",
+  "base": "f53d6b5bb2092bc6a17f1e2d4a26b9c21e11fefe",
+  "native_source_identity": "f6ea7c7f849787fcb7e019c7dafcdbad6d5cd27ca78307b7be5d9b1f991a4066",
+  "publishable": false,
+  "safety_certified": false,
+  "python_root_policy_preserved": true,
+  "checks": {
+    "root_contract": {"passed": 14, "failed": 0},
+    "native_boundary": {"passed": 53, "failed": 0},
+    "native_regressions": {"passed": 133, "failed": 0, "skipped_opt_in": 1},
+    "emscripten_core_objects": "passed",
+    "msvc_extension": "passed",
+    "isolated_wheel_import": "passed_with_SPC_OMIT_STALE_OPENING_REPORTS=1",
+    "normal_wheel": "blocked_by_pre_existing_stale_opening_reports"
+  },
+  "parity": {
+    "count": 512,
+    "series": [1, 2, 3, 4, 5, 6, 7, 8],
+    "depth": 4,
+    "width": 4,
+    "mismatches": 0,
+    "baseline_seconds": 17.462796100153355,
+    "native_seconds": 14.073171700030798,
+    "speedup": 1.2408571765037968
+  },
+  "anchors": {
+    "S1": {"score": -1145, "best": "d2d4", "work": 17834, "parity": true},
+    "S4": {"score": -999999, "best": "c7c6/d8b6/f6e4/b6f2", "work": 634, "parity": true},
+    "S7": {"score": 999999, "best": "a1c1/c1d1/d2c3/g1f3/f3g5/g5e6/d1d8", "work": 86194, "parity": true}
+  },
+  "fail_closed": {
+    "unknown_bound_on_interruption": true,
+    "call_work_credit_enforced": true,
+    "manifest_import_replay": true,
+    "tt_capacity": 262144,
+    "eval_capacity": 262144,
+    "root_reply_mate_screen_in_python": true
+  }
+}

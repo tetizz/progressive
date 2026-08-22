@@ -1,3 +1,6 @@
+#if defined(SPC_WASM_CORE) && !defined(SPC_NATIVE_CORE_ONLY)
+#define SPC_NATIVE_CORE_ONLY 1
+#endif
 #if defined(SPC_NATIVE_CORE_ONLY) && !defined(SPC_NATIVE_CORE_PTHREADS)
 #define SPC_NATIVE_SERIAL_POOL 1
 #endif
@@ -10,6 +13,7 @@
 #include "native_eval.hpp"
 #ifndef SPC_NATIVE_CORE_ONLY
 #include "native_selfplay.hpp"
+#include "native_subtree.hpp"
 #endif
 
 #ifndef SPC_NATIVE_SOURCE_IDENTITY
@@ -1953,7 +1957,6 @@ bool update_frontier_clocks(
         board,
         request.tactical_protection
     );
-
     std::int64_t tactical = 0;
     std::int64_t term = 0;
     if (
@@ -2485,7 +2488,6 @@ bool bound_frontier(
     if (frontier.size() <= cap) {
         return true;
     }
-
     struct Group {
         std::string move;
         std::vector<NativeFrontierState> states;
@@ -3430,7 +3432,7 @@ CompleteSeriesResponse generate_complete_series(
                 if (!context.charge_position()) {
                     return std::move(context.response);
                 }
-                const auto variants = expand_legal_move_variants(
+                std::vector<ExpandedMove> variants = expand_legal_move_variants(
                     item.board,
                     item.moves.empty()
                         ? request.ep_targets
@@ -5163,7 +5165,1383 @@ PyObject* py_has_legal_move(PyObject*, PyObject* arguments) {
     return PyBool_FromLong(spc::native::has_legal_move(position, ep_targets));
 }
 
+constexpr const char* SUBTREE_SEARCH_CAPSULE =
+    "scottish_progressive.SubtreeSearchSession.v1";
+
+void destroy_subtree_search(PyObject* capsule) noexcept {
+    void* pointer = PyCapsule_GetPointer(capsule, SUBTREE_SEARCH_CAPSULE);
+    if (pointer == nullptr) {
+        PyErr_Clear();
+        return;
+    }
+    delete static_cast<spc::native::SubtreeSearchSession*>(pointer);
+}
+
+spc::native::SubtreeSearchSession* subtree_search_session(PyObject* capsule) {
+    return static_cast<spc::native::SubtreeSearchSession*>(
+        PyCapsule_GetPointer(capsule, SUBTREE_SEARCH_CAPSULE)
+    );
+}
+
+bool parse_exact_signed_sequence(
+    PyObject* object,
+    long long* values,
+    Py_ssize_t expected,
+    const char* label
+) {
+    PyObject* sequence = PySequence_Fast(object, label);
+    if (sequence == nullptr) {
+        return false;
+    }
+    if (PySequence_Fast_GET_SIZE(sequence) != expected) {
+        Py_DECREF(sequence);
+        PyErr_SetString(PyExc_ValueError, label);
+        return false;
+    }
+    for (Py_ssize_t index = 0; index < expected; ++index) {
+        values[index] = PyLong_AsLongLong(
+            PySequence_Fast_GET_ITEM(sequence, index)
+        );
+        if (values[index] == -1 && PyErr_Occurred()) {
+            Py_DECREF(sequence);
+            return false;
+        }
+    }
+    Py_DECREF(sequence);
+    return true;
+}
+
+bool parse_subtree_state(
+    PyObject* object,
+    spc::native::SubtreeState& state
+) {
+    PyObject* sequence = PySequence_Fast(
+        object,
+        "native subtree state must contain sixteen fields"
+    );
+    if (sequence == nullptr) {
+        return false;
+    }
+    if (PySequence_Fast_GET_SIZE(sequence) != 16) {
+        Py_DECREF(sequence);
+        PyErr_SetString(
+            PyExc_ValueError,
+            "native subtree state must contain sixteen fields"
+        );
+        return false;
+    }
+    std::array<unsigned long long, 10> bitboards{};
+    for (Py_ssize_t index = 0; index < 10; ++index) {
+        bitboards[static_cast<std::size_t>(index)] = PyLong_AsUnsignedLongLong(
+            PySequence_Fast_GET_ITEM(sequence, index)
+        );
+        if (
+            bitboards[static_cast<std::size_t>(index)]
+                == static_cast<unsigned long long>(-1)
+            && PyErr_Occurred()
+        ) {
+            Py_DECREF(sequence);
+            return false;
+        }
+    }
+    const int white_to_move = PyObject_IsTrue(
+        PySequence_Fast_GET_ITEM(sequence, 10)
+    );
+    if (white_to_move < 0) {
+        Py_DECREF(sequence);
+        return false;
+    }
+    std::array<long long, 4> integers{};
+    for (Py_ssize_t index = 0; index < 4; ++index) {
+        integers[static_cast<std::size_t>(index)] = PyLong_AsLongLong(
+            PySequence_Fast_GET_ITEM(sequence, index + 11)
+        );
+        if (
+            integers[static_cast<std::size_t>(index)] == -1
+            && PyErr_Occurred()
+        ) {
+            Py_DECREF(sequence);
+            return false;
+        }
+    }
+    std::vector<int> ep_targets;
+    const bool parsed_targets = parse_square_sequence(
+        PySequence_Fast_GET_ITEM(sequence, 15),
+        ep_targets,
+        "native subtree ep_targets must be an iterable of squares"
+    );
+    Py_DECREF(sequence);
+    if (!parsed_targets) {
+        return false;
+    }
+    state = spc::native::SubtreeState{
+        {
+            bitboards[0],
+            bitboards[1],
+            bitboards[2],
+            bitboards[3],
+            bitboards[4],
+            bitboards[5],
+            {bitboards[7], bitboards[6]},
+            bitboards[8],
+            bitboards[9],
+            white_to_move != 0,
+        },
+        integers[0],
+        integers[1],
+        integers[2],
+        integers[3],
+        std::move(ep_targets),
+    };
+    return true;
+}
+
+bool parse_remaining_deadline(
+    PyObject* object,
+    std::optional<std::chrono::steady_clock::time_point>& deadline
+) {
+    deadline.reset();
+    if (object == Py_None) {
+        return true;
+    }
+    const unsigned long long raw = PyLong_AsUnsignedLongLong(object);
+    if (raw == static_cast<unsigned long long>(-1) && PyErr_Occurred()) {
+        return false;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const auto bounded = std::min<unsigned long long>(
+        raw,
+        static_cast<unsigned long long>(std::numeric_limits<std::int64_t>::max())
+    );
+    const auto requested = std::chrono::duration_cast<
+        std::chrono::steady_clock::duration
+    >(std::chrono::nanoseconds(static_cast<std::int64_t>(bounded)));
+    deadline = now + std::min(
+        requested,
+        std::chrono::steady_clock::time_point::max() - now
+    );
+    return true;
+}
+
+bool parse_optional_u64_credit(
+    PyObject* object,
+    std::optional<std::uint64_t>& credit
+) {
+    credit.reset();
+    if (object == Py_None) {
+        return true;
+    }
+    const unsigned long long raw = PyLong_AsUnsignedLongLong(object);
+    if (raw == static_cast<unsigned long long>(-1) && PyErr_Occurred()) {
+        return false;
+    }
+    credit = static_cast<std::uint64_t>(raw);
+    return true;
+}
+
+PyObject* subtree_state_tuple(const spc::native::SubtreeState& state) {
+    PyObject* targets = PyTuple_New(
+        static_cast<Py_ssize_t>(state.ep_targets.size())
+    );
+    if (targets == nullptr) {
+        return nullptr;
+    }
+    for (std::size_t index = 0; index < state.ep_targets.size(); ++index) {
+        PyObject* square = PyLong_FromLong(state.ep_targets[index]);
+        if (square == nullptr) {
+            Py_DECREF(targets);
+            return nullptr;
+        }
+        PyTuple_SET_ITEM(targets, static_cast<Py_ssize_t>(index), square);
+    }
+    PyObject* result = PyTuple_New(16);
+    if (result == nullptr) {
+        Py_DECREF(targets);
+        return nullptr;
+    }
+    const std::array<std::uint64_t, 10> bitboards = {
+        state.board.pawns,
+        state.board.knights,
+        state.board.bishops,
+        state.board.rooks,
+        state.board.queens,
+        state.board.kings,
+        state.board.occupied[1],
+        state.board.occupied[0],
+        state.board.promoted,
+        state.board.castling_rights,
+    };
+    for (std::size_t index = 0; index < bitboards.size(); ++index) {
+        PyObject* value = PyLong_FromUnsignedLongLong(bitboards[index]);
+        if (value == nullptr) {
+            Py_DECREF(targets);
+            Py_DECREF(result);
+            return nullptr;
+        }
+        PyTuple_SET_ITEM(result, static_cast<Py_ssize_t>(index), value);
+    }
+    PyObject* turn = PyBool_FromLong(state.board.white_to_move ? 1 : 0);
+    const std::array<std::int64_t, 4> integers = {
+        state.halfmove_clock,
+        state.fullmove_number,
+        state.series_number,
+        state.quiet_series,
+    };
+    if (turn == nullptr) {
+        Py_DECREF(targets);
+        Py_DECREF(result);
+        return nullptr;
+    }
+    PyTuple_SET_ITEM(result, 10, turn);
+    for (std::size_t index = 0; index < integers.size(); ++index) {
+        PyObject* value = PyLong_FromLongLong(integers[index]);
+        if (value == nullptr) {
+            Py_DECREF(targets);
+            Py_DECREF(result);
+            return nullptr;
+        }
+        PyTuple_SET_ITEM(result, static_cast<Py_ssize_t>(index + 11), value);
+    }
+    PyTuple_SET_ITEM(result, 15, targets);
+    return result;
+}
+
+PyObject* subtree_stats_tuple(const spc::native::SubtreeSearchStats& stats) {
+    const std::array<std::uint64_t, 30> values = {
+        stats.nodes,
+        stats.leaf_evaluations,
+        stats.generated_raw_series,
+        stats.generated_unique_series,
+        stats.intra_series_transpositions,
+        stats.tt_hits,
+        stats.alpha_beta_cutoffs,
+        stats.pvs_zero_window_searches,
+        stats.pvs_researches,
+        stats.pvs_tt_writes_rolled_back,
+        stats.branch_caps,
+        stats.series_generation_positions,
+        stats.frontier_score_positions,
+        stats.static_evaluation_positions,
+        stats.evaluation_reach_positions,
+        stats.incomplete_reach_evaluations,
+        stats.generation_positions,
+        stats.frontier_prunes,
+        stats.frontier_states_pruned,
+        stats.frontier_paths_pruned,
+        stats.tactical_frontier_states_retained,
+        stats.tactical_frontier_reserve_drops,
+        stats.tactical_final_series_retained,
+        stats.tactical_final_reserve_drops,
+        stats.peak_frontier_states,
+        stats.generation_work_limit_hits,
+        stats.series_generation_cache_hits,
+        stats.series_generation_cache_evictions,
+        stats.series_generation_cache_peak,
+        stats.series_generation_cache_entries_peak,
+    };
+    PyObject* result = PyTuple_New(static_cast<Py_ssize_t>(values.size()));
+    if (result == nullptr) {
+        return nullptr;
+    }
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        PyObject* value = PyLong_FromUnsignedLongLong(values[index]);
+        if (value == nullptr) {
+            Py_DECREF(result);
+            return nullptr;
+        }
+        PyTuple_SET_ITEM(result, static_cast<Py_ssize_t>(index), value);
+    }
+    return result;
+}
+
+PyObject* string_vector_tuple(const std::vector<std::string>& values) {
+    PyObject* result = PyTuple_New(static_cast<Py_ssize_t>(values.size()));
+    if (result == nullptr) {
+        return nullptr;
+    }
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        PyObject* value = PyUnicode_FromString(values[index].c_str());
+        if (value == nullptr) {
+            Py_DECREF(result);
+            return nullptr;
+        }
+        PyTuple_SET_ITEM(result, static_cast<Py_ssize_t>(index), value);
+    }
+    return result;
+}
+
+PyObject* retained_root_candidate_tuple(
+    const spc::native::RetainedRootCandidate& candidate
+) {
+    PyObject* identity = PyUnicode_FromString(
+        candidate.candidate_identity.c_str()
+    );
+    PyObject* order = PyLong_FromUnsignedLongLong(candidate.order_index);
+    PyObject* order_key = PyUnicode_FromString(candidate.order_key.c_str());
+    PyObject* moves = string_vector_tuple(candidate.series.path.moves);
+    PyObject* count = PyLong_FromUnsignedLongLong(
+        candidate.series.path.transposition_count
+    );
+    PyObject* state = subtree_state_tuple(spc::native::SubtreeState{
+        candidate.series.board,
+        candidate.series.halfmove_clock,
+        candidate.series.fullmove_number,
+        candidate.series.series_number,
+        candidate.series.quiet_series,
+        candidate.series.ep_targets,
+    });
+    PyObject* outcome = PyLong_FromLong(
+        static_cast<long>(candidate.series.outcome)
+    );
+    PyObject* ended = PyBool_FromLong(
+        candidate.series.ended_by_check ? 1 : 0
+    );
+    PyObject* terminal = candidate.terminal_score.has_value()
+        ? PyLong_FromLongLong(*candidate.terminal_score)
+        : Py_NewRef(Py_None);
+    PyObject* proof = Py_BuildValue(
+        "(ii)",
+        candidate.terminal_proof_bounds[0],
+        candidate.terminal_proof_bounds[1]
+    );
+    const std::array<PyObject*, 10> objects = {
+        identity,
+        order,
+        order_key,
+        moves,
+        count,
+        state,
+        outcome,
+        ended,
+        terminal,
+        proof,
+    };
+    if (std::any_of(objects.begin(), objects.end(), [](PyObject* object) {
+            return object == nullptr;
+        })) {
+        for (PyObject* object : objects) {
+            Py_XDECREF(object);
+        }
+        return nullptr;
+    }
+    PyObject* result = PyTuple_New(10);
+    if (result == nullptr) {
+        for (PyObject* object : objects) {
+            Py_DECREF(object);
+        }
+        return nullptr;
+    }
+    for (std::size_t index = 0; index < objects.size(); ++index) {
+        PyTuple_SET_ITEM(result, static_cast<Py_ssize_t>(index), objects[index]);
+    }
+    return result;
+}
+
+PyObject* retained_root_candidates_tuple(
+    const std::vector<spc::native::RetainedRootCandidate>& candidates
+) {
+    PyObject* result = PyTuple_New(static_cast<Py_ssize_t>(candidates.size()));
+    if (result == nullptr) {
+        return nullptr;
+    }
+    for (std::size_t index = 0; index < candidates.size(); ++index) {
+        PyObject* candidate = retained_root_candidate_tuple(candidates[index]);
+        if (candidate == nullptr) {
+            Py_DECREF(result);
+            return nullptr;
+        }
+        PyTuple_SET_ITEM(result, static_cast<Py_ssize_t>(index), candidate);
+    }
+    return result;
+}
+
+PyObject* subtree_work_tuple(const spc::native::SubtreeWorkReceipt& work) {
+    PyObject* cumulative = subtree_stats_tuple(work.cumulative_stats);
+    PyObject* call = subtree_stats_tuple(work.call_stats);
+    PyObject* counters = Py_BuildValue(
+        "(KKKKKKKKKKK)",
+        work.external_work,
+        work.native_work_before,
+        work.native_work_after,
+        work.call_native_work,
+        work.total_accounted_work,
+        work.tt_entries,
+        work.tt_entries_peak,
+        work.tt_capacity,
+        work.eval_entries,
+        work.eval_entries_peak,
+        work.eval_capacity
+    );
+    PyObject* credit = work.call_work_credit.has_value()
+        ? PyLong_FromUnsignedLongLong(*work.call_work_credit)
+        : Py_NewRef(Py_None);
+    if (
+        cumulative == nullptr
+        || call == nullptr
+        || counters == nullptr
+        || credit == nullptr
+    ) {
+        Py_XDECREF(cumulative);
+        Py_XDECREF(call);
+        Py_XDECREF(counters);
+        Py_XDECREF(credit);
+        return nullptr;
+    }
+    PyObject* result = PyTuple_New(4);
+    if (result == nullptr) {
+        Py_DECREF(cumulative);
+        Py_DECREF(call);
+        Py_DECREF(counters);
+        Py_DECREF(credit);
+        return nullptr;
+    }
+    PyTuple_SET_ITEM(result, 0, cumulative);
+    PyTuple_SET_ITEM(result, 1, call);
+    PyTuple_SET_ITEM(result, 2, counters);
+    PyTuple_SET_ITEM(result, 3, credit);
+    return result;
+}
+
+PyObject* retained_root_enumeration_tuple(
+    const spc::native::RetainedRootEnumerationResult& response
+) {
+    PyObject* status = PyLong_FromLong(static_cast<long>(response.status));
+    PyObject* message = PyUnicode_FromString(response.message.c_str());
+    PyObject* identity = PyUnicode_FromString(
+        response.enumeration_identity.c_str()
+    );
+    PyObject* mover = PyBool_FromLong(response.root_white_to_move ? 1 : 0);
+    PyObject* width = PyLong_FromUnsignedLongLong(response.requested_width);
+    PyObject* retained = PyLong_FromUnsignedLongLong(response.retained_count);
+    PyObject* complete = PyBool_FromLong(response.width_complete ? 1 : 0);
+    PyObject* preferred = string_vector_tuple(response.preferred_series);
+    PyObject* candidates = retained_root_candidates_tuple(response.candidates);
+    PyObject* work = subtree_work_tuple(response.work);
+    PyObject* selective = PyBool_FromLong(response.selective ? 1 : 0);
+    PyObject* evaluation_limit = PyBool_FromLong(
+        response.evaluation_work_limit_reached ? 1 : 0
+    );
+    const std::array<PyObject*, 12> objects = {
+        status,
+        message,
+        identity,
+        mover,
+        width,
+        retained,
+        complete,
+        preferred,
+        candidates,
+        work,
+        selective,
+        evaluation_limit,
+    };
+    if (std::any_of(objects.begin(), objects.end(), [](PyObject* object) {
+            return object == nullptr;
+        })) {
+        for (PyObject* object : objects) {
+            Py_XDECREF(object);
+        }
+        return nullptr;
+    }
+    PyObject* result = PyTuple_New(static_cast<Py_ssize_t>(objects.size()));
+    if (result == nullptr) {
+        for (PyObject* object : objects) {
+            Py_DECREF(object);
+        }
+        return nullptr;
+    }
+    for (std::size_t index = 0; index < objects.size(); ++index) {
+        PyTuple_SET_ITEM(result, static_cast<Py_ssize_t>(index), objects[index]);
+    }
+    return result;
+}
+
+bool parse_retained_root_candidate(
+    PyObject* object,
+    spc::native::RetainedRootCandidate& candidate
+) {
+    PyObject* sequence = PySequence_Fast(
+        object,
+        "retained root candidate must contain ten fields"
+    );
+    if (sequence == nullptr) {
+        return false;
+    }
+    if (PySequence_Fast_GET_SIZE(sequence) != 10) {
+        Py_DECREF(sequence);
+        PyErr_SetString(
+            PyExc_ValueError,
+            "retained root candidate must contain ten fields"
+        );
+        return false;
+    }
+    const char* identity = PyUnicode_AsUTF8(PySequence_Fast_GET_ITEM(sequence, 0));
+    const unsigned long long order = PyLong_AsUnsignedLongLong(
+        PySequence_Fast_GET_ITEM(sequence, 1)
+    );
+    const char* order_key = PyUnicode_AsUTF8(
+        PySequence_Fast_GET_ITEM(sequence, 2)
+    );
+    std::vector<std::string> moves;
+    const bool parsed_moves = parse_string_sequence(
+        PySequence_Fast_GET_ITEM(sequence, 3),
+        moves,
+        "retained root candidate moves must be strings"
+    );
+    const unsigned long long count = PyLong_AsUnsignedLongLong(
+        PySequence_Fast_GET_ITEM(sequence, 4)
+    );
+    spc::native::SubtreeState state;
+    const bool parsed_state = parse_subtree_state(
+        PySequence_Fast_GET_ITEM(sequence, 5),
+        state
+    );
+    const long outcome = PyLong_AsLong(PySequence_Fast_GET_ITEM(sequence, 6));
+    const int ended = PyObject_IsTrue(PySequence_Fast_GET_ITEM(sequence, 7));
+    PyObject* terminal_object = PySequence_Fast_GET_ITEM(sequence, 8);
+    std::optional<std::int64_t> terminal;
+    if (terminal_object != Py_None) {
+        const long long score = PyLong_AsLongLong(terminal_object);
+        if (score == -1 && PyErr_Occurred()) {
+            Py_DECREF(sequence);
+            return false;
+        }
+        terminal = score;
+    }
+    std::array<long long, 2> proof{};
+    const bool parsed_proof = parse_exact_signed_sequence(
+        PySequence_Fast_GET_ITEM(sequence, 9),
+        proof.data(),
+        2,
+        "retained root candidate proof must contain two integers"
+    );
+    if (
+        identity == nullptr
+        || order_key == nullptr
+        || !parsed_moves
+        || !parsed_state
+        || ended < 0
+        || (order == static_cast<unsigned long long>(-1) && PyErr_Occurred())
+        || (count == static_cast<unsigned long long>(-1) && PyErr_Occurred())
+        || (outcome == -1 && PyErr_Occurred())
+        || !parsed_proof
+    ) {
+        Py_DECREF(sequence);
+        return false;
+    }
+    if (
+        count == 0
+        || outcome < 0
+        || outcome > static_cast<long>(
+            spc::native::CompleteSeriesOutcome::TenSeriesDraw
+        )
+        || proof[0] < -1
+        || proof[0] > 1
+        || proof[1] < -1
+        || proof[1] > 1
+    ) {
+        Py_DECREF(sequence);
+        PyErr_SetString(PyExc_ValueError, "retained root candidate is invalid");
+        return false;
+    }
+    try {
+        candidate = spc::native::RetainedRootCandidate{
+            identity,
+            static_cast<std::uint64_t>(order),
+            order_key,
+            {
+                {std::move(moves), static_cast<std::uint64_t>(count)},
+                state.board,
+                state.halfmove_clock,
+                state.fullmove_number,
+                state.series_number,
+                state.quiet_series,
+                std::move(state.ep_targets),
+                static_cast<spc::native::CompleteSeriesOutcome>(outcome),
+                ended != 0,
+            },
+            terminal,
+            {
+                static_cast<int>(proof[0]),
+                static_cast<int>(proof[1]),
+            },
+        };
+    } catch (const std::bad_alloc&) {
+        Py_DECREF(sequence);
+        PyErr_NoMemory();
+        return false;
+    }
+    Py_DECREF(sequence);
+    return true;
+}
+
+bool parse_retained_root_candidates(
+    PyObject* object,
+    std::vector<spc::native::RetainedRootCandidate>& candidates
+) {
+    PyObject* sequence = PySequence_Fast(
+        object,
+        "retained root candidates must be an iterable"
+    );
+    if (sequence == nullptr) {
+        return false;
+    }
+    const Py_ssize_t size = PySequence_Fast_GET_SIZE(sequence);
+    try {
+        candidates.clear();
+        candidates.reserve(static_cast<std::size_t>(size));
+        for (Py_ssize_t index = 0; index < size; ++index) {
+            spc::native::RetainedRootCandidate candidate;
+            if (!parse_retained_root_candidate(
+                    PySequence_Fast_GET_ITEM(sequence, index),
+                    candidate
+                )) {
+                Py_DECREF(sequence);
+                return false;
+            }
+            candidates.push_back(std::move(candidate));
+        }
+    } catch (const std::bad_alloc&) {
+        Py_DECREF(sequence);
+        PyErr_NoMemory();
+        return false;
+    }
+    Py_DECREF(sequence);
+    return true;
+}
+
+PyObject* retained_root_candidate_result_tuple(
+    const spc::native::RetainedRootCandidateResult& response
+) {
+    PyObject* status = PyLong_FromLong(static_cast<long>(response.status));
+    PyObject* message = PyUnicode_FromString(response.message.c_str());
+    PyObject* enumeration = PyUnicode_FromString(
+        response.enumeration_identity.c_str()
+    );
+    PyObject* identity = PyUnicode_FromString(
+        response.candidate_identity.c_str()
+    );
+    PyObject* order = PyLong_FromUnsignedLongLong(response.order_index);
+    PyObject* bound = PyLong_FromLong(static_cast<long>(response.bound));
+    PyObject* score = PyLong_FromLongLong(response.score);
+    PyObject* terminal = PyBool_FromLong(response.terminal ? 1 : 0);
+    spc::native::RetainedRootCandidate root_record{
+        response.candidate_identity,
+        response.order_index,
+        "",
+        response.root_series,
+        response.terminal
+            ? std::optional<std::int64_t>{response.score}
+            : std::nullopt,
+        response.terminal
+            ? response.proof_bounds
+            : std::array<int, 2>{-1, 1},
+    };
+    root_record.order_key = [&response]() {
+        std::string value;
+        for (std::size_t index = 0;
+             index < response.root_series.path.moves.size();
+             ++index) {
+            if (index != 0) {
+                value.push_back('/');
+            }
+            value += response.root_series.path.moves[index];
+        }
+        return value;
+    }();
+    PyObject* root = retained_root_candidate_tuple(root_record);
+    PyObject* pv = complete_series_tuple(response.child_principal_variation);
+    PyObject* proof = Py_BuildValue(
+        "(ii)",
+        response.proof_bounds[0],
+        response.proof_bounds[1]
+    );
+    PyObject* work = subtree_work_tuple(response.work);
+    PyObject* selective = PyBool_FromLong(response.selective ? 1 : 0);
+    PyObject* evaluation_limit = PyBool_FromLong(
+        response.evaluation_work_limit_reached ? 1 : 0
+    );
+    PyObject* rolled_back = PyLong_FromUnsignedLongLong(
+        response.tt_writes_rolled_back
+    );
+    const std::array<PyObject*, 15> objects = {
+        status,
+        message,
+        enumeration,
+        identity,
+        order,
+        bound,
+        score,
+        terminal,
+        root,
+        pv,
+        proof,
+        work,
+        selective,
+        evaluation_limit,
+        rolled_back,
+    };
+    if (std::any_of(objects.begin(), objects.end(), [](PyObject* object) {
+            return object == nullptr;
+        })) {
+        for (PyObject* object : objects) {
+            Py_XDECREF(object);
+        }
+        return nullptr;
+    }
+    PyObject* result = PyTuple_New(static_cast<Py_ssize_t>(objects.size()));
+    if (result == nullptr) {
+        for (PyObject* object : objects) {
+            Py_DECREF(object);
+        }
+        return nullptr;
+    }
+    for (std::size_t index = 0; index < objects.size(); ++index) {
+        PyTuple_SET_ITEM(result, static_cast<Py_ssize_t>(index), objects[index]);
+    }
+    return result;
+}
+
+PyObject* py_create_subtree_search(PyObject*, PyObject* arguments) {
+    unsigned long long max_series = 0;
+    PyObject* max_work_object = nullptr;
+    long long requested_depth = 0;
+    long long mate_score = 0;
+    unsigned long long cache_capacity = 0;
+    unsigned long long external_cache_weight = 0;
+    unsigned long long worker_threads = 0;
+    int root_tactical = 0;
+    PyObject* fast_weights_object = nullptr;
+    PyObject* full_weights_object = nullptr;
+    unsigned long long root_tt_capacity = 0;
+    unsigned long long root_eval_capacity = 0;
+    if (!PyArg_ParseTuple(
+            arguments,
+            "KOLLKKKpOOKK:create_subtree_search",
+            &max_series,
+            &max_work_object,
+            &requested_depth,
+            &mate_score,
+            &cache_capacity,
+            &external_cache_weight,
+            &worker_threads,
+            &root_tactical,
+            &fast_weights_object,
+            &full_weights_object,
+            &root_tt_capacity,
+            &root_eval_capacity
+        )) {
+        return nullptr;
+    }
+    std::optional<std::uint64_t> max_work;
+    if (
+        !parse_optional_positive_u64(
+            max_work_object,
+            max_work,
+            "native subtree max_work must be positive"
+        )
+    ) {
+        return nullptr;
+    }
+    std::array<long long, 5> fast{};
+    std::array<long long, 7> full{};
+    if (
+        !parse_exact_signed_sequence(
+            fast_weights_object,
+            fast.data(),
+            static_cast<Py_ssize_t>(fast.size()),
+            "native subtree fast_weights must contain five integers"
+        )
+        || !parse_exact_signed_sequence(
+            full_weights_object,
+            full.data(),
+            static_cast<Py_ssize_t>(full.size()),
+            "native subtree full_weights must contain seven integers"
+        )
+    ) {
+        return nullptr;
+    }
+    if (
+        worker_threads < 1
+        || worker_threads > std::numeric_limits<std::uint32_t>::max()
+    ) {
+        PyErr_SetString(PyExc_ValueError, "native subtree worker_threads is invalid");
+        return nullptr;
+    }
+    try {
+        auto session = std::make_unique<spc::native::SubtreeSearchSession>(
+            spc::native::SubtreeSearchConfig{
+                max_series,
+                max_work,
+                requested_depth,
+                mate_score,
+                cache_capacity,
+                external_cache_weight,
+                static_cast<std::uint32_t>(worker_threads),
+                root_tactical != 0,
+                {fast[0], fast[1], fast[2], fast[3], fast[4]},
+                {
+                    full[0],
+                    full[1],
+                    full[2],
+                    full[3],
+                    full[4],
+                    full[5],
+                    full[6],
+                },
+                root_tt_capacity,
+                root_eval_capacity,
+            }
+        );
+        PyObject* capsule = PyCapsule_New(
+            session.get(),
+            SUBTREE_SEARCH_CAPSULE,
+            destroy_subtree_search
+        );
+        if (capsule == nullptr) {
+            return nullptr;
+        }
+        session.release();
+        return capsule;
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    } catch (const std::exception& error) {
+        PyErr_SetString(PyExc_ValueError, error.what());
+        return nullptr;
+    }
+}
+
+PyObject* py_subtree_search(PyObject*, PyObject* arguments) {
+    PyObject* capsule = nullptr;
+    PyObject* state_object = nullptr;
+    long long depth = 0;
+    long long alpha = 0;
+    long long beta = 0;
+    long long ply_from_root = 0;
+    unsigned long long external_work = 0;
+    PyObject* remaining_nanoseconds_object = nullptr;
+    if (!PyArg_ParseTuple(
+            arguments,
+            "OOLLLLKO:subtree_search",
+            &capsule,
+            &state_object,
+            &depth,
+            &alpha,
+            &beta,
+            &ply_from_root,
+            &external_work,
+            &remaining_nanoseconds_object
+        )) {
+        return nullptr;
+    }
+    auto* session = subtree_search_session(capsule);
+    if (session == nullptr) {
+        return nullptr;
+    }
+    spc::native::SubtreeState state;
+    try {
+        if (!parse_subtree_state(state_object, state)) {
+            return nullptr;
+        }
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    }
+    std::optional<std::chrono::steady_clock::time_point> deadline;
+    if (!parse_remaining_deadline(remaining_nanoseconds_object, deadline)) {
+        return nullptr;
+    }
+
+    spc::native::SubtreeSearchResult response;
+    std::exception_ptr failure;
+    PyThreadState* saved_thread = PyEval_SaveThread();
+    try {
+        response = session->search(
+            state,
+            depth,
+            alpha,
+            beta,
+            ply_from_root,
+            external_work,
+            deadline
+        );
+    } catch (...) {
+        failure = std::current_exception();
+    }
+    PyEval_RestoreThread(saved_thread);
+    try {
+        if (failure != nullptr) {
+            std::rethrow_exception(failure);
+        }
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    } catch (const std::exception& error) {
+        PyErr_SetString(PyExc_RuntimeError, error.what());
+        return nullptr;
+    }
+
+    PyObject* status = PyLong_FromLong(static_cast<long>(response.status));
+    PyObject* message = PyUnicode_FromString(response.message.c_str());
+    PyObject* score = PyLong_FromLongLong(response.score);
+    PyObject* pv = complete_series_tuple(response.principal_variation);
+    PyObject* bounds = Py_BuildValue(
+        "(ii)",
+        response.proof_bounds[0],
+        response.proof_bounds[1]
+    );
+    PyObject* stats = subtree_stats_tuple(response.stats);
+    PyObject* selective = PyBool_FromLong(response.selective ? 1 : 0);
+    PyObject* evaluation_limit = PyBool_FromLong(
+        response.evaluation_work_limit_reached ? 1 : 0
+    );
+    if (
+        status == nullptr
+        || message == nullptr
+        || score == nullptr
+        || pv == nullptr
+        || bounds == nullptr
+        || stats == nullptr
+        || selective == nullptr
+        || evaluation_limit == nullptr
+    ) {
+        Py_XDECREF(status);
+        Py_XDECREF(message);
+        Py_XDECREF(score);
+        Py_XDECREF(pv);
+        Py_XDECREF(bounds);
+        Py_XDECREF(stats);
+        Py_XDECREF(selective);
+        Py_XDECREF(evaluation_limit);
+        return nullptr;
+    }
+    PyObject* result = PyTuple_New(8);
+    if (result == nullptr) {
+        Py_DECREF(status);
+        Py_DECREF(message);
+        Py_DECREF(score);
+        Py_DECREF(pv);
+        Py_DECREF(bounds);
+        Py_DECREF(stats);
+        Py_DECREF(selective);
+        Py_DECREF(evaluation_limit);
+        return nullptr;
+    }
+    PyTuple_SET_ITEM(result, 0, status);
+    PyTuple_SET_ITEM(result, 1, message);
+    PyTuple_SET_ITEM(result, 2, score);
+    PyTuple_SET_ITEM(result, 3, pv);
+    PyTuple_SET_ITEM(result, 4, bounds);
+    PyTuple_SET_ITEM(result, 5, stats);
+    PyTuple_SET_ITEM(result, 6, selective);
+    PyTuple_SET_ITEM(result, 7, evaluation_limit);
+    return result;
+}
+
+PyObject* py_subtree_enumerate_root(PyObject*, PyObject* arguments) {
+    PyObject* capsule = nullptr;
+    PyObject* state_object = nullptr;
+    PyObject* preferred_object = nullptr;
+    unsigned long long external_work = 0;
+    PyObject* credit_object = nullptr;
+    PyObject* remaining_object = nullptr;
+    if (!PyArg_ParseTuple(
+            arguments,
+            "OOOKOO:subtree_enumerate_root",
+            &capsule,
+            &state_object,
+            &preferred_object,
+            &external_work,
+            &credit_object,
+            &remaining_object
+        )) {
+        return nullptr;
+    }
+    auto* session = subtree_search_session(capsule);
+    if (session == nullptr) {
+        return nullptr;
+    }
+    spc::native::SubtreeState state;
+    std::vector<std::string> preferred;
+    std::optional<std::uint64_t> call_work_credit;
+    std::optional<std::chrono::steady_clock::time_point> deadline;
+    try {
+        if (
+            !parse_subtree_state(state_object, state)
+            || !parse_string_sequence(
+                preferred_object,
+                preferred,
+                "preferred root series must be an iterable of UCI strings"
+            )
+            || !parse_optional_u64_credit(credit_object, call_work_credit)
+            || !parse_remaining_deadline(remaining_object, deadline)
+        ) {
+            return nullptr;
+        }
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    }
+    spc::native::RetainedRootEnumerationResult response;
+    std::exception_ptr failure;
+    PyThreadState* saved_thread = PyEval_SaveThread();
+    try {
+        response = session->enumerate_retained_root(
+            state,
+            preferred,
+            external_work,
+            call_work_credit,
+            deadline
+        );
+    } catch (...) {
+        failure = std::current_exception();
+    }
+    PyEval_RestoreThread(saved_thread);
+    try {
+        if (failure != nullptr) {
+            std::rethrow_exception(failure);
+        }
+        return retained_root_enumeration_tuple(response);
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    } catch (const std::exception& error) {
+        PyErr_SetString(PyExc_RuntimeError, error.what());
+        return nullptr;
+    }
+}
+
+PyObject* py_subtree_import_root(PyObject*, PyObject* arguments) {
+    PyObject* capsule = nullptr;
+    PyObject* state_object = nullptr;
+    PyObject* identity_object = nullptr;
+    int root_white = 0;
+    unsigned long long requested_width = 0;
+    int width_complete = 0;
+    PyObject* preferred_object = nullptr;
+    PyObject* candidates_object = nullptr;
+    unsigned long long external_work = 0;
+    PyObject* credit_object = nullptr;
+    PyObject* remaining_object = nullptr;
+    if (!PyArg_ParseTuple(
+            arguments,
+            "OOOpKpOOKOO:subtree_import_root",
+            &capsule,
+            &state_object,
+            &identity_object,
+            &root_white,
+            &requested_width,
+            &width_complete,
+            &preferred_object,
+            &candidates_object,
+            &external_work,
+            &credit_object,
+            &remaining_object
+        )) {
+        return nullptr;
+    }
+    auto* session = subtree_search_session(capsule);
+    if (session == nullptr) {
+        return nullptr;
+    }
+    const char* identity = PyUnicode_AsUTF8(identity_object);
+    if (identity == nullptr) {
+        return nullptr;
+    }
+    spc::native::RetainedRootImportRequest request;
+    request.enumeration_identity = identity;
+    request.root_white_to_move = root_white != 0;
+    request.requested_width = requested_width;
+    request.width_complete = width_complete != 0;
+    request.external_work = external_work;
+    try {
+        if (
+            !parse_subtree_state(state_object, request.boundary)
+            || !parse_string_sequence(
+                preferred_object,
+                request.preferred_series,
+                "preferred root series must be an iterable of UCI strings"
+            )
+            || !parse_retained_root_candidates(
+                candidates_object,
+                request.candidates
+            )
+            || !parse_optional_u64_credit(
+                credit_object,
+                request.call_work_credit
+            )
+            || !parse_remaining_deadline(
+                remaining_object,
+                request.deadline
+            )
+        ) {
+            return nullptr;
+        }
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    }
+    spc::native::RetainedRootEnumerationResult response;
+    std::exception_ptr failure;
+    PyThreadState* saved_thread = PyEval_SaveThread();
+    try {
+        response = session->import_retained_root(request);
+    } catch (...) {
+        failure = std::current_exception();
+    }
+    PyEval_RestoreThread(saved_thread);
+    try {
+        if (failure != nullptr) {
+            std::rethrow_exception(failure);
+        }
+        return retained_root_enumeration_tuple(response);
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    } catch (const std::exception& error) {
+        PyErr_SetString(PyExc_RuntimeError, error.what());
+        return nullptr;
+    }
+}
+
+PyObject* py_subtree_search_root_candidate(PyObject*, PyObject* arguments) {
+    PyObject* capsule = nullptr;
+    PyObject* enumeration_object = nullptr;
+    PyObject* candidate_object = nullptr;
+    long long child_depth = 0;
+    long long alpha = 0;
+    long long beta = 0;
+    unsigned long long external_work = 0;
+    PyObject* credit_object = nullptr;
+    PyObject* remaining_object = nullptr;
+    int rollback = 0;
+    if (!PyArg_ParseTuple(
+            arguments,
+            "OOOLLLKOOp:subtree_search_root_candidate",
+            &capsule,
+            &enumeration_object,
+            &candidate_object,
+            &child_depth,
+            &alpha,
+            &beta,
+            &external_work,
+            &credit_object,
+            &remaining_object,
+            &rollback
+        )) {
+        return nullptr;
+    }
+    auto* session = subtree_search_session(capsule);
+    if (session == nullptr) {
+        return nullptr;
+    }
+    const char* enumeration = PyUnicode_AsUTF8(enumeration_object);
+    const char* candidate = PyUnicode_AsUTF8(candidate_object);
+    if (enumeration == nullptr || candidate == nullptr) {
+        return nullptr;
+    }
+    spc::native::RetainedRootCandidateRequest request;
+    request.enumeration_identity = enumeration;
+    request.candidate_identity = candidate;
+    request.child_depth = child_depth;
+    request.alpha = alpha;
+    request.beta = beta;
+    request.external_work = external_work;
+    request.tt_persistence = rollback
+        ? spc::native::SubtreeTTPersistence::Rollback
+        : spc::native::SubtreeTTPersistence::Commit;
+    if (
+        !parse_optional_u64_credit(
+            credit_object,
+            request.call_work_credit
+        )
+        || !parse_remaining_deadline(remaining_object, request.deadline)
+    ) {
+        return nullptr;
+    }
+    spc::native::RetainedRootCandidateResult response;
+    std::exception_ptr failure;
+    PyThreadState* saved_thread = PyEval_SaveThread();
+    try {
+        response = session->search_retained_root_candidate(request);
+    } catch (...) {
+        failure = std::current_exception();
+    }
+    PyEval_RestoreThread(saved_thread);
+    try {
+        if (failure != nullptr) {
+            std::rethrow_exception(failure);
+        }
+        return retained_root_candidate_result_tuple(response);
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    } catch (const std::exception& error) {
+        PyErr_SetString(PyExc_RuntimeError, error.what());
+        return nullptr;
+    }
+}
+
+PyObject* py_subtree_begin_transaction(PyObject*, PyObject* arguments) {
+    PyObject* capsule = nullptr;
+    if (!PyArg_ParseTuple(
+            arguments,
+            "O:subtree_begin_transaction",
+            &capsule
+        )) {
+        return nullptr;
+    }
+    auto* session = subtree_search_session(capsule);
+    if (session == nullptr) {
+        return nullptr;
+    }
+    try {
+        session->begin_tt_transaction();
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    }
+    Py_RETURN_NONE;
+}
+
+PyObject* py_subtree_rollback_transaction(PyObject*, PyObject* arguments) {
+    PyObject* capsule = nullptr;
+    if (!PyArg_ParseTuple(
+            arguments,
+            "O:subtree_rollback_transaction",
+            &capsule
+        )) {
+        return nullptr;
+    }
+    auto* session = subtree_search_session(capsule);
+    if (session == nullptr) {
+        return nullptr;
+    }
+    try {
+        return PyLong_FromUnsignedLongLong(
+            session->rollback_tt_transaction()
+        );
+    } catch (const std::exception& error) {
+        PyErr_SetString(PyExc_RuntimeError, error.what());
+        return nullptr;
+    }
+}
+
+PyObject* py_subtree_external_cache_present(PyObject*, PyObject* arguments) {
+    PyObject* capsule = nullptr;
+    if (!PyArg_ParseTuple(
+            arguments,
+            "O:subtree_external_cache_present",
+            &capsule
+        )) {
+        return nullptr;
+    }
+    auto* session = subtree_search_session(capsule);
+    if (session == nullptr) {
+        return nullptr;
+    }
+    return PyBool_FromLong(session->external_cache_present() ? 1 : 0);
+}
+
+PyObject* py_subtree_touch_external_cache(PyObject*, PyObject* arguments) {
+    PyObject* capsule = nullptr;
+    if (!PyArg_ParseTuple(
+            arguments,
+            "O:subtree_touch_external_cache",
+            &capsule
+        )) {
+        return nullptr;
+    }
+    auto* session = subtree_search_session(capsule);
+    if (session == nullptr) {
+        return nullptr;
+    }
+    try {
+        session->touch_external_cache();
+    } catch (const std::exception& error) {
+        PyErr_SetString(PyExc_RuntimeError, error.what());
+        return nullptr;
+    }
+    Py_RETURN_NONE;
+}
+
+PyObject* py_subtree_insert_external_cache(PyObject*, PyObject* arguments) {
+    PyObject* capsule = nullptr;
+    unsigned long long weight = 0;
+    if (!PyArg_ParseTuple(
+            arguments,
+            "OK:subtree_insert_external_cache",
+            &capsule,
+            &weight
+        )) {
+        return nullptr;
+    }
+    auto* session = subtree_search_session(capsule);
+    if (session == nullptr) {
+        return nullptr;
+    }
+    try {
+        session->insert_external_cache(weight);
+    } catch (const std::exception& error) {
+        PyErr_SetString(PyExc_RuntimeError, error.what());
+        return nullptr;
+    }
+    Py_RETURN_NONE;
+}
+
 PyMethodDef METHODS[] = {
+    {
+        "create_subtree_search",
+        py_create_subtree_search,
+        METH_VARARGS,
+        PyDoc_STR("Create one exact descendant-search session.")
+    },
+    {
+        "subtree_search",
+        py_subtree_search,
+        METH_VARARGS,
+        PyDoc_STR("Search one series-boundary descendant transactionally.")
+    },
+    {
+        "subtree_enumerate_root",
+        py_subtree_enumerate_root,
+        METH_VARARGS,
+        PyDoc_STR("Enumerate one deterministic retained root manifest.")
+    },
+    {
+        "subtree_import_root",
+        py_subtree_import_root,
+        METH_VARARGS,
+        PyDoc_STR("Validate and import one retained root manifest.")
+    },
+    {
+        "subtree_search_root_candidate",
+        py_subtree_search_root_candidate,
+        METH_VARARGS,
+        PyDoc_STR("Search one retained root candidate with an explicit window.")
+    },
+    {
+        "subtree_begin_transaction",
+        py_subtree_begin_transaction,
+        METH_VARARGS,
+        PyDoc_STR("Begin a native descendant TT transaction.")
+    },
+    {
+        "subtree_rollback_transaction",
+        py_subtree_rollback_transaction,
+        METH_VARARGS,
+        PyDoc_STR("Rollback the current native descendant TT transaction.")
+    },
+    {
+        "subtree_external_cache_present",
+        py_subtree_external_cache_present,
+        METH_VARARGS,
+        PyDoc_STR("Whether the mirrored Python root cache entry is resident.")
+    },
+    {
+        "subtree_touch_external_cache",
+        py_subtree_touch_external_cache,
+        METH_VARARGS,
+        PyDoc_STR("Touch the mirrored Python root cache entry.")
+    },
+    {
+        "subtree_insert_external_cache",
+        py_subtree_insert_external_cache,
+        METH_VARARGS,
+        PyDoc_STR("Insert the mirrored Python root cache entry.")
+    },
     {
         "generate_full_game_batch_v2",
         py_generate_full_game_batch_v2,

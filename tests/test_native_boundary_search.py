@@ -831,7 +831,10 @@ def test_timed_native_search_keeps_last_completed_iteration_on_deadline(
         >= completed.stats.generation_positions
     )
     assert witness.calls >= 1
-    assert 4 in witness.statuses
+    # The public deadline may be observed between native batches after the last
+    # batch returned Complete. The direct immediate-deadline test above pins the
+    # native status itself; this test pins fail-closed top-level publication.
+    assert set(witness.statuses) <= {0, 4}
     assert wall < 1.0
 
 

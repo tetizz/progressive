@@ -218,6 +218,9 @@ struct CompleteSeriesResponse {
     const std::vector<int>& ep_targets
 );
 
+// These small rule helpers are part of the standalone native-core surface.
+// They let a Python-free/WASM facade validate and replay exact boundaries
+// without reaching into this translation unit's private move generator.
 [[nodiscard]] bool is_in_check(const BoardState& position) noexcept;
 
 [[nodiscard]] bool has_insufficient_material(
