@@ -313,6 +313,8 @@ def main() -> int:
             "series_mate_version": 1,
             "exports": list(EXPORTED_FUNCTIONS),
             "reply_mate_safety": False,
+            "canonical_root_tactical_policy": "canonical-boundary-policy-v1",
+            "legacy_root_tactical_protection": False,
         },
         "toolchain": {
             "path": str(compiler),

@@ -8,6 +8,7 @@
 #include <iterator>
 #include <limits>
 #include <list>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -22,6 +23,7 @@ namespace {
 constexpr bool WHITE = true;
 constexpr std::array<int, 2> UNKNOWN_PROOF_BOUNDS{-1, 1};
 constexpr std::int64_t TACTICAL_DESCENDANT_PROMOTION_MAX_PLY = 2;
+constexpr std::int64_t ROOT_TACTICAL_PROTECTION_MIN_SERIES = 5;
 
 [[nodiscard]] std::string machine_notation(
     const std::vector<std::string>& moves
@@ -291,6 +293,7 @@ void append_weights(std::string& result, const SubtreeSearchConfig& config) {
 [[nodiscard]] std::string enumeration_identity_impl(
     const SubtreeState& state,
     const SubtreeSearchConfig& config,
+    bool canonical_root_tactical_protection,
     const std::vector<std::string>& preferred_series,
     bool width_complete,
     const std::vector<RetainedRootCandidate>& candidates
@@ -309,7 +312,10 @@ void append_weights(std::string& result, const SubtreeSearchConfig& config) {
     result += "|threads" + std::to_string(config.worker_threads);
     result += "|ttcap" + std::to_string(config.root_contract_tt_capacity);
     result += "|evalcap" + std::to_string(config.root_contract_eval_capacity);
-    result += config.root_tactical_protection ? "|root-tactical1" : "|root-tactical0";
+    result += "|root-policycanonical-boundary-v1";
+    result += canonical_root_tactical_protection
+        ? "|root-tactical1"
+        : "|root-tactical0";
     result += "|weights";
     append_weights(result, config);
     result += "|preferred" + std::to_string(preferred_series.size()) + ":";
@@ -443,6 +449,17 @@ struct ExactStateKey {
     bool operator==(const ExactStateKey&) const = default;
 };
 
+struct TTKey {
+    ExactStateKey state;
+    // Selective frontier policy and mate-distance scores are root-ply
+    // relative, so the same boundary reached at a different root ply is not
+    // the same minimax problem.
+    std::int64_t ply_from_root = 0;
+    bool root_tactical_protection = false;
+
+    bool operator==(const TTKey&) const = default;
+};
+
 struct GenerationKey {
     ExactStateKey state;
     std::int64_t ply_from_root = 0;
@@ -471,6 +488,15 @@ struct ExactStateKeyHash {
         hash_word(seed, key.promoted);
         hash_word(seed, static_cast<std::uint64_t>(key.halfmove_clock));
         hash_word(seed, static_cast<std::uint64_t>(key.fullmove_number));
+        return seed;
+    }
+};
+
+struct TTKeyHash {
+    std::size_t operator()(const TTKey& key) const noexcept {
+        std::size_t seed = ExactStateKeyHash{}(key.state);
+        hash_word(seed, static_cast<std::uint64_t>(key.ply_from_root));
+        hash_word(seed, key.root_tactical_protection ? 1 : 0);
         return seed;
     }
 };
@@ -577,13 +603,20 @@ struct TTEntry {
     std::array<int, 2> proof_bounds = UNKNOWN_PROOF_BOUNDS;
 };
 
+using CandidateSeries = std::vector<CompleteSeriesCandidate>;
+// Search nodes keep an immutable shared snapshot. An LRU eviction can remove
+// the map entry while a recursive child is running without invalidating the
+// parent's active traversal, and cache hits no longer deep-copy every series.
+using CandidateSeriesStorage = std::shared_ptr<const CandidateSeries>;
+
 struct GeneratedSeries {
-    std::vector<CompleteSeriesCandidate> series;
+    CandidateSeriesStorage series;
+    std::optional<std::size_t> preferred_index;
     bool width_complete = false;
 };
 
 struct CacheEntry {
-    std::vector<CompleteSeriesCandidate> series;
+    CandidateSeriesStorage series;
     bool width_complete = false;
     std::uint64_t weight = 0;
     std::list<GenerationKey>::iterator recency;
@@ -676,6 +709,13 @@ struct StopSearch final : std::exception {
 
 }  // namespace
 
+bool root_tactical_protection_eligible(
+    const SubtreeState& state
+) noexcept {
+    return state.series_number >= ROOT_TACTICAL_PROTECTION_MIN_SERIES
+        || promotion_mate_eligible(state);
+}
+
 std::string subtree_state_identity(const SubtreeState& state) {
     return state_identity_impl(state);
 }
@@ -719,14 +759,15 @@ public:
     std::vector<std::string> retained_preferred_series;
     std::vector<RetainedRootCandidate> retained_root_candidates;
     bool retained_width_complete = false;
+    std::optional<bool> retained_root_tactical_protection;
     bool root_contract_active = false;
     std::optional<std::uint64_t> root_call_work_credit;
     std::uint64_t root_call_work_start = 0;
     std::uint64_t tt_entries_peak = 0;
     std::uint64_t eval_entries_peak = 0;
 
-    std::unordered_map<ExactStateKey, TTEntry, ExactStateKeyHash> tt;
-    std::vector<std::vector<std::pair<ExactStateKey, std::optional<TTEntry>>>>
+    std::unordered_map<TTKey, TTEntry, TTKeyHash> tt;
+    std::vector<std::vector<std::pair<TTKey, std::optional<TTEntry>>>>
         tt_transactions;
     std::unordered_map<PositionKey, std::int64_t, PositionKeyHash> eval_cache;
     std::unordered_map<GenerationKey, CacheEntry, GenerationKeyHash>
@@ -862,6 +903,7 @@ public:
         retained_preferred_series.clear();
         retained_root_candidates.clear();
         retained_width_complete = false;
+        retained_root_tactical_protection.reset();
     }
 
     [[nodiscard]] RetainedRootCandidate make_root_candidate(
@@ -915,11 +957,19 @@ public:
         return result;
     }
 
+    [[nodiscard]] bool descendant_tactical_protection() const noexcept {
+        return root_contract_active
+            && retained_root_tactical_protection.has_value()
+            ? *retained_root_tactical_protection
+            : config.root_tactical_protection;
+    }
+
     [[nodiscard]] bool tactical_protection(
         const SubtreeState& state,
         std::int64_t generated_ply
     ) const noexcept {
-        if (generated_ply == 1 || config.root_tactical_protection) {
+        const bool protect_descendants = descendant_tactical_protection();
+        if (generated_ply == 1 || protect_descendants) {
             return true;
         }
         return generated_ply <= TACTICAL_DESCENDANT_PROMOTION_MAX_PLY
@@ -973,9 +1023,11 @@ public:
                 cached->second.recency
             );
             ++stats.series_generation_cache_hits;
-            GeneratedSeries result{cached->second.series, cached->second.width_complete};
-            prefer(result.series, preferred_series);
-            return result;
+            return GeneratedSeries{
+                cached->second.series,
+                preferred_index(*cached->second.series, preferred_series),
+                cached->second.width_complete,
+            };
         }
 
         const auto remaining = remaining_work();
@@ -1044,13 +1096,17 @@ public:
             1,
             static_cast<std::uint64_t>(response.series.size())
         );
+        CandidateSeriesStorage series =
+            std::make_shared<const CandidateSeries>(
+                std::move(response.series)
+            );
         if (weight <= config.series_cache_capacity) {
             evict_for(weight);
             generation_recency.push_back(key);
             auto recency = std::prev(generation_recency.end());
             generation_cache.emplace(
                 key,
-                CacheEntry{response.series, width_complete, weight, recency}
+                CacheEntry{series, width_complete, weight, recency}
             );
             generation_cache_weight += weight;
             stats.series_generation_cache_peak = std::max(
@@ -1062,9 +1118,12 @@ public:
                 static_cast<std::uint64_t>(generation_cache.size())
             );
         }
-        GeneratedSeries result{std::move(response.series), width_complete};
-        prefer(result.series, preferred_series);
-        return result;
+        const auto preferred = preferred_index(*series, preferred_series);
+        return GeneratedSeries{
+            std::move(series),
+            preferred,
+            width_complete,
+        };
     }
 
     [[nodiscard]] CompleteSeriesCandidate replay_imported_candidate(
@@ -1134,12 +1193,12 @@ public:
         return std::move(response.series.front());
     }
 
-    static void prefer(
-        std::vector<CompleteSeriesCandidate>& series,
+    [[nodiscard]] static std::optional<std::size_t> preferred_index(
+        const CandidateSeries& series,
         const std::vector<std::string>* preferred_series
     ) {
         if (preferred_series == nullptr) {
-            return;
+            return std::nullopt;
         }
         const auto found = std::find_if(
             series.begin(),
@@ -1148,9 +1207,24 @@ public:
                 return candidate.path.moves == *preferred_series;
             }
         );
-        if (found != series.end() && found != series.begin()) {
-            std::rotate(series.begin(), found, std::next(found));
+        return found == series.end()
+            ? std::nullopt
+            : std::optional<std::size_t>{
+                static_cast<std::size_t>(found - series.begin())
+            };
+    }
+
+    [[nodiscard]] static std::size_t ordered_index(
+        std::size_t ordinal,
+        std::optional<std::size_t> preferred
+    ) noexcept {
+        if (!preferred.has_value() || *preferred == 0) {
+            return ordinal;
         }
+        if (ordinal == 0) {
+            return *preferred;
+        }
+        return ordinal <= *preferred ? ordinal - 1 : ordinal;
     }
 
     [[nodiscard]] std::int64_t evaluate(const SubtreeState& state) {
@@ -1256,7 +1330,7 @@ public:
         return static_cast<std::uint64_t>(journal.size());
     }
 
-    void write_tt(const ExactStateKey& key, TTEntry entry) {
+    void write_tt(const TTKey& key, TTEntry entry) {
         if (
             root_contract_active
             && !tt.contains(key)
@@ -1335,8 +1409,19 @@ public:
             return NodeResult{evaluate(state), {}, UNKNOWN_PROOF_BOUNDS};
         }
 
-        const ExactStateKey key = exact_key(state);
+        const TTKey key{
+            exact_key(state),
+            ply_from_root,
+            descendant_tactical_protection(),
+        };
         auto entry = tt.find(key);
+        const bool had_entry = entry != tt.end();
+        const std::int64_t existing_depth = had_entry
+            ? entry->second.depth
+            : -1;
+        const TTBound existing_bound = had_entry
+            ? entry->second.bound
+            : TTBound::Upper;
         const std::int64_t original_alpha = alpha;
         const std::int64_t original_beta = beta;
         if (entry != tt.end() && entry->second.depth >= depth) {
@@ -1363,15 +1448,19 @@ public:
         }
 
         const bool mover = state.board.white_to_move;
-        const CompleteSeriesCandidate* preferred_candidate = nullptr;
+        std::optional<CompleteSeriesCandidate> preferred_candidate;
+        std::optional<std::vector<std::string>> preferred_moves;
         const std::vector<std::string>* preferred_series = nullptr;
         if (entry != tt.end() && !entry->second.pv.empty()) {
-            preferred_series = &entry->second.pv.front().path.moves;
             if (
                 config.requested_depth >= 4
                 && entry->second.depth < depth
             ) {
-                preferred_candidate = &entry->second.pv.front();
+                preferred_candidate = entry->second.pv.front();
+                preferred_series = &preferred_candidate->path.moves;
+            } else {
+                preferred_moves = entry->second.pv.front().path.moves;
+                preferred_series = &*preferred_moves;
             }
         }
 
@@ -1386,7 +1475,7 @@ public:
         bool cutoff_before_generation = false;
         const std::vector<std::string>* previsited_series = nullptr;
 
-        if (preferred_candidate != nullptr) {
+        if (preferred_candidate.has_value()) {
             check_deadline();
             NodeResult child;
             const auto terminal = terminal_score(
@@ -1412,8 +1501,9 @@ public:
             }
             child_bounds.push_back(child.proof_bounds);
             best_score = child.score;
-            best_candidate = *preferred_candidate;
+            best_candidate.emplace(std::move(*preferred_candidate));
             best_child_pv = std::move(child.pv);
+            preferred_series = &best_candidate->path.moves;
             previsited_series = preferred_series;
 
             const std::int64_t immediate_mate_score =
@@ -1445,19 +1535,13 @@ public:
                 preferred_series
             );
             width_complete = generated.width_complete;
-            series_count = generated.series.size();
-            if (generated.series.empty()) {
+            series_count = generated.series->size();
+            if (generated.series->empty()) {
                 return NodeResult{0, {}, UNKNOWN_PROOF_BOUNDS};
             }
             if (
                 previsited_series != nullptr
-                && std::none_of(
-                    generated.series.begin(),
-                    generated.series.end(),
-                    [previsited_series](const CompleteSeriesCandidate& candidate) {
-                        return candidate.path.moves == *previsited_series;
-                    }
-                )
+                && !generated.preferred_index.has_value()
             ) {
                 previsited_series = nullptr;
                 alpha = search_alpha;
@@ -1470,7 +1554,11 @@ public:
                 child_bounds.clear();
             }
 
-            for (const auto& candidate : generated.series) {
+            for (std::size_t ordinal = 0; ordinal < series_count; ++ordinal) {
+                const auto& candidate = (*generated.series)[ordered_index(
+                    ordinal,
+                    generated.preferred_index
+                )];
                 if (
                     previsited_series != nullptr
                     && candidate.path.moves == *previsited_series
@@ -1554,12 +1642,12 @@ public:
         );
         TTEntry replacement{depth, best_score, bound, best_pv, proof_bounds};
         if (
-            entry == tt.end()
-            || depth > entry->second.depth
+            !had_entry
+            || depth > existing_depth
             || (
-                depth == entry->second.depth
+                depth == existing_depth
                 && replacement.bound == TTBound::Exact
-                && entry->second.bound != TTBound::Exact
+                && existing_bound != TTBound::Exact
             )
         ) {
             write_tt(key, replacement);
@@ -1648,6 +1736,10 @@ RetainedRootEnumerationResult SubtreeSearchSession::enumerate_retained_root(
                 std::move(validation_error)
             );
         }
+        result.canonical_root_tactical_protection =
+            root_tactical_protection_eligible(state);
+        impl_->retained_root_tactical_protection =
+            result.canonical_root_tactical_protection;
         if (state.quiet_series >= 10) {
             throw StopSearch(
                 SubtreeSearchStatus::AdjudicationPending,
@@ -1666,12 +1758,20 @@ RetainedRootEnumerationResult SubtreeSearchSession::enumerate_retained_root(
             preferred_series.empty() ? nullptr : &preferred_series
         );
         result.width_complete = generated.width_complete;
-        result.candidates.reserve(generated.series.size());
-        for (std::size_t index = 0; index < generated.series.size(); ++index) {
+        result.candidates.reserve(generated.series->size());
+        for (
+            std::size_t ordinal = 0;
+            ordinal < generated.series->size();
+            ++ordinal
+        ) {
+            const std::size_t index = impl_->ordered_index(
+                ordinal,
+                generated.preferred_index
+            );
             result.candidates.push_back(impl_->make_root_candidate(
-                std::move(generated.series[index]),
+                (*generated.series)[index],
                 state.board.white_to_move,
-                static_cast<std::uint64_t>(index)
+                static_cast<std::uint64_t>(ordinal)
             ));
         }
         result.retained_count = static_cast<std::uint64_t>(
@@ -1686,6 +1786,7 @@ RetainedRootEnumerationResult SubtreeSearchSession::enumerate_retained_root(
         result.enumeration_identity = enumeration_identity_impl(
             state,
             impl_->config,
+            result.canonical_root_tactical_protection,
             preferred_series,
             result.width_complete,
             result.candidates
@@ -1750,6 +1851,10 @@ RetainedRootEnumerationResult SubtreeSearchSession::import_retained_root(
                 std::move(validation_error)
             );
         }
+        const bool canonical_root_tactical_protection =
+            root_tactical_protection_eligible(request.boundary);
+        result.canonical_root_tactical_protection =
+            canonical_root_tactical_protection;
         if (
             request.boundary.quiet_series >= 10
             || promotion_mate_eligible(request.boundary)
@@ -1821,6 +1926,7 @@ RetainedRootEnumerationResult SubtreeSearchSession::import_retained_root(
         const std::string identity = enumeration_identity_impl(
             request.boundary,
             impl_->config,
+            canonical_root_tactical_protection,
             request.preferred_series,
             request.width_complete,
             canonical
@@ -1839,6 +1945,8 @@ RetainedRootEnumerationResult SubtreeSearchSession::import_retained_root(
         impl_->retained_preferred_series = request.preferred_series;
         impl_->retained_root_candidates = std::move(canonical);
         impl_->retained_width_complete = request.width_complete;
+        impl_->retained_root_tactical_protection =
+            canonical_root_tactical_protection;
     } catch (const StopSearch& stopped) {
         result.status = stopped.status;
         result.message = stopped.message;

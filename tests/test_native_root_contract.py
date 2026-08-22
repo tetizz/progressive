@@ -36,6 +36,7 @@ def _session(
     max_work: int = 2_000_000,
     tt_capacity: int = 262_144,
     eval_capacity: int = 262_144,
+    root_tactical_protection: bool = False,
 ) -> NativeSubtreeSession:
     _require_contract()
     return NativeSubtreeSession(
@@ -46,7 +47,7 @@ def _session(
         cache_capacity=16_384,
         external_cache_weight=0,
         native_threads=1,
-        root_tactical_protection=False,
+        root_tactical_protection=root_tactical_protection,
         profile=baseline_profile(),
         root_contract_tt_capacity=tt_capacity,
         root_contract_eval_capacity=eval_capacity,
@@ -226,6 +227,247 @@ def test_retained_root_enumeration_matches_python_order_state_and_work(
         assert call[field] == getattr(oracle.stats, field)
     assert actual.work.call_native_work == call["generation_positions"]
     assert actual.work.total_accounted_work == actual.work.native_work_after
+
+
+def test_cached_root_enumeration_keeps_canonical_storage_and_exact_preference() -> None:
+    state = ProgressiveState.initial()
+    session = _session()
+    canonical = session.enumerate_root(
+        state,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    preferred = session.enumerate_root(
+        state,
+        preferred_series="e2e4",
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    canonical_again = session.enumerate_root(
+        state,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+
+    assert canonical.status == preferred.status == canonical_again.status == 0
+    canonical_keys = tuple(item.order_key for item in canonical.candidates)
+    preferred_index = canonical_keys.index("e2e4")
+    assert tuple(item.order_key for item in preferred.candidates) == (
+        canonical_keys[preferred_index],
+        *canonical_keys[:preferred_index],
+        *canonical_keys[preferred_index + 1 :],
+    )
+    assert tuple(item.order_key for item in canonical_again.candidates) == canonical_keys
+    preferred_call = dict(
+        zip(SUBTREE_STAT_FIELDS, preferred.work.call_stats, strict=True)
+    )
+    repeated_call = dict(
+        zip(SUBTREE_STAT_FIELDS, canonical_again.work.call_stats, strict=True)
+    )
+    assert preferred_call["generation_positions"] == 0
+    assert preferred_call["series_generation_cache_hits"] == 1
+    assert repeated_call["generation_positions"] == 0
+    assert repeated_call["series_generation_cache_hits"] == 1
+
+
+def test_iterative_tt_growth_owns_preferred_pv_and_matches_cold_search() -> None:
+    root = ProgressiveState.initial()
+    warm = _session(width=8, depth=5, max_work=10_000_000)
+    warm_manifest = warm.enumerate_root(
+        root,
+        preferred_series="e2e4",
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    warm_candidate = warm_manifest.candidates[0]
+
+    seeded = warm.search_root_candidate(
+        enumeration_identity=warm_manifest.enumeration_identity,
+        candidate_identity=warm_candidate.candidate_identity,
+        child_depth=2,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=0,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+    )
+    deepened = warm.search_root_candidate(
+        enumeration_identity=warm_manifest.enumeration_identity,
+        candidate_identity=warm_candidate.candidate_identity,
+        child_depth=3,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=0,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+    )
+
+    cold = _session(width=8, depth=5, max_work=10_000_000)
+    cold_manifest = cold.enumerate_root(
+        root,
+        preferred_series="e2e4",
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    cold_candidate = cold_manifest.candidates[0]
+    expected = cold.search_root_candidate(
+        enumeration_identity=cold_manifest.enumeration_identity,
+        candidate_identity=cold_candidate.candidate_identity,
+        child_depth=3,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=0,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+    )
+
+    assert seeded.status == deepened.status == expected.status == 0
+    # This fixture grows the table from 9 to 25 entries on the current exact
+    # search. More generally, require enough recursive inserts to put real
+    # rehash pressure on references captured from the shallower TT entry.
+    assert seeded.work.tt_entries >= 8
+    assert deepened.work.tt_entries > seeded.work.tt_entries * 2
+    assert deepened.score == expected.score
+    assert deepened.bound is expected.bound
+    assert deepened.proof_bounds == expected.proof_bounds
+    assert tuple(
+        map(_series_signature, deepened.child_principal_variation)
+    ) == tuple(map(_series_signature, expected.child_principal_variation))
+
+
+def test_tt_separates_same_state_reached_at_different_root_plies() -> None:
+    state = ProgressiveState.from_fen(
+        "7k/8/5KQ1/8/8/8/8/8 w - - 0 1",
+        1,
+    )
+    shared = _session(width=64, depth=4, max_work=2_000_000)
+    window = (-2 * MATE_SCORE, 2 * MATE_SCORE)
+
+    shallow_root = shared.search(
+        state,
+        depth=1,
+        alpha=window[0],
+        beta=window[1],
+        ply_from_root=1,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    deeper_root = shared.search(
+        state,
+        depth=1,
+        alpha=window[0],
+        beta=window[1],
+        ply_from_root=3,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+
+    assert shallow_root.status == deeper_root.status == 0
+    assert shallow_root.score == MATE_SCORE - 2
+    assert deeper_root.score == MATE_SCORE - 4
+    assert tuple(
+        map(_series_signature, shallow_root.principal_variation)
+    ) == tuple(map(_series_signature, deeper_root.principal_variation))
+
+
+def test_root_contract_derives_canonical_tactical_policy_from_boundary() -> None:
+    opening = ProgressiveState.initial()
+    late = ProgressiveState.from_fen(opening.board.fen(), 5)
+
+    early_manifest = _session(
+        width=4,
+        root_tactical_protection=True,
+    ).enumerate_root(
+        opening,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    late_manifest = _session(width=4).enumerate_root(
+        late,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+
+    assert early_manifest.status == late_manifest.status == 0
+    assert "|root-policycanonical-boundary-v1|root-tactical0" in (
+        early_manifest.enumeration_identity
+    )
+    assert "|root-policycanonical-boundary-v1|root-tactical1" in (
+        late_manifest.enumeration_identity
+    )
+
+
+def test_root_import_ignores_legacy_policy_and_preserves_canonical_identity() -> None:
+    root = ProgressiveState.initial()
+    coordinator = _session(width=4, root_tactical_protection=False)
+    manifest = coordinator.enumerate_root(
+        root,
+        preferred_series="e2e4",
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    worker = _session(width=4, root_tactical_protection=True)
+    imported = worker.import_root(
+        root,
+        manifest,
+        external_work=manifest.work.native_work_after,
+        remaining_nanoseconds=None,
+    )
+
+    assert manifest.status == imported.status == 0
+    assert imported.enumeration_identity == manifest.enumeration_identity
+    assert tuple(item.transport for item in imported.candidates) == tuple(
+        item.transport for item in manifest.candidates
+    )
+
+
+def test_tt_separates_rebound_root_tactical_policies() -> None:
+    opening = ProgressiveState.initial()
+    target = ProgressiveState.from_fen(
+        "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+        2,
+    )
+    shared = _session(width=4, depth=3, max_work=2_000_000)
+    early = shared.enumerate_root(
+        opening,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    first = shared.search(
+        target,
+        depth=1,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        ply_from_root=2,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    late = shared.enumerate_root(
+        ProgressiveState.from_fen(opening.board.fen(), 5),
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    second = shared.search(
+        target,
+        depth=1,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        ply_from_root=2,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    first_stats = dict(zip(SUBTREE_STAT_FIELDS, first.stats, strict=True))
+    second_stats = dict(zip(SUBTREE_STAT_FIELDS, second.stats, strict=True))
+
+    assert early.status == first.status == late.status == second.status == 0
+    assert first_stats["tt_hits"] == second_stats["tt_hits"] == 0
+    assert second_stats["generation_positions"] > first_stats["generation_positions"]
 
 
 def test_manifest_import_replays_exact_state_and_matches_candidate_search() -> None:

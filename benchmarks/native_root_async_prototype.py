@@ -437,6 +437,7 @@ def main() -> None:
 
     memory_stop = threading.Event()
     peak_total_rss = [0]
+    peak_rss_by_pid: dict[int, int] = {}
     worker_pids: dict[int, int] = {}
     startup_started = time.perf_counter()
     task_receipts: list[dict[str, object]] = []
@@ -462,10 +463,18 @@ def main() -> None:
         def sample_memory() -> None:
             monitored_pids = (os.getpid(),) + tuple(worker_pids.values())
             while not memory_stop.wait(0.02):
+                samples = {
+                    pid: _working_set_bytes(pid) for pid in monitored_pids
+                }
                 peak_total_rss[0] = max(
                     peak_total_rss[0],
-                    sum(_working_set_bytes(pid) for pid in monitored_pids),
+                    sum(samples.values()),
                 )
+                for pid, rss in samples.items():
+                    peak_rss_by_pid[pid] = max(
+                        peak_rss_by_pid.get(pid, 0),
+                        rss,
+                    )
 
         memory_thread = threading.Thread(target=sample_memory, daemon=True)
         memory_thread.start()
@@ -680,6 +689,8 @@ def main() -> None:
             if worker_id in final_worker_receipts:
                 raise RuntimeError(f"duplicate worker shutdown {worker_id}")
             final_worker_receipts[worker_id] = message
+        memory_stop.set()
+        memory_thread.join()
 
         expected_pv = (
             "f7f5/e8f7",
@@ -741,6 +752,18 @@ def main() -> None:
             "search_seconds": search_seconds,
             "total_seconds": time.perf_counter() - overall_started,
             "peak_total_rss_bytes": peak_total_rss[0],
+            "peak_coordinator_rss_bytes": peak_rss_by_pid.get(os.getpid(), 0),
+            "peak_worker_rss_bytes": {
+                str(worker_id): peak_rss_by_pid.get(pid, 0)
+                for worker_id, pid in sorted(worker_pids.items())
+            },
+            "max_peak_worker_rss_bytes": max(
+                (
+                    peak_rss_by_pid.get(pid, 0)
+                    for pid in worker_pids.values()
+                ),
+                default=0,
+            ),
             "root_order": [candidate.machine for candidate in candidates],
             "winner": asdict(incumbent),
             "expected_signature_match": expected_match,

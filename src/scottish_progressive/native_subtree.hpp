@@ -151,6 +151,9 @@ struct RetainedRootEnumerationResult {
     std::uint64_t requested_width = 0;
     std::uint64_t retained_count = 0;
     bool width_complete = false;
+    // Canonical boundary policy propagated to descendant generation. Root
+    // ply one is always tactically protected independently of this flag.
+    bool canonical_root_tactical_protection = false;
     std::vector<std::string> preferred_series;
     std::vector<RetainedRootCandidate> candidates;
     SubtreeWorkReceipt work;
@@ -211,6 +214,12 @@ struct RetainedRootCandidateResult {
 // Returns a collision-free, versioned identity over every field in
 // SubtreeState. It deliberately preserves clocks and promoted provenance.
 [[nodiscard]] std::string subtree_state_identity(const SubtreeState& state);
+
+// Mirrors Python's canonical root policy: late Progressive roots and roots
+// with a concrete promotion-mate corridor protect every descendant frontier.
+[[nodiscard]] bool root_tactical_protection_eligible(
+    const SubtreeState& state
+) noexcept;
 
 class SubtreeSearchSession {
 public:

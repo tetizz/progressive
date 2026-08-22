@@ -251,6 +251,9 @@ async function main() {
   assert.equal(contract.capabilities.call_work_credit, true);
   assert.equal(contract.capabilities.persistent_depth_reuse, true);
   assert.equal(contract.capabilities.selected_owner_certification, true);
+  assert.equal(contract.capabilities.canonical_root_tactical_policy, true);
+  assert.equal(contract.hard_limits.root_tactical_policy, "canonical-boundary-policy-v1");
+  assert.deepEqual(contract.hard_limits.root_tactical_protection_values, [false]);
   const prefixContract = JSON.parse(
     Module.UTF8ToString(Module._spc_boundary_prefix_contract_json()),
   );
@@ -285,7 +288,7 @@ async function main() {
     series_cache_capacity: args.seriesCacheCapacity,
     external_cache_weight: 0,
     worker_threads: 1,
-    root_tactical_protection: true,
+    root_tactical_protection: false,
     root_contract_tt_capacity: args.ttCapacity,
     root_contract_eval_capacity: args.evalCapacity,
     weights: {
@@ -366,6 +369,9 @@ async function main() {
   assert.equal(created.value.status, "ready");
   assert.equal(created.value.configured_max_depth, 2);
   assert.deepEqual(created.value.config, config);
+  assert.equal(created.value.canonical_root_tactical_policy, "canonical-boundary-policy-v1");
+  assert.equal(created.value.canonical_root_tactical_protection, false);
+  assert.equal(created.value.capabilities.canonical_root_tactical_policy, true);
   const primarySession = created.value.session_id;
   const deadline = Math.ceil(performance.now() + args.timeoutMs);
   const credit = args.maxWork;
@@ -387,6 +393,8 @@ async function main() {
   ));
   timings.enumeratePrimaryMs = enumerated.elapsedMs;
   assert.equal(enumerated.value.status, "complete");
+  assert.equal(enumerated.value.canonical_root_tactical_policy, "canonical-boundary-policy-v1");
+  assert.equal(enumerated.value.canonical_root_tactical_protection, false);
   assert.ok(enumerated.value.retained_count > 0);
   assert.equal(enumerated.value.retained_count, enumerated.value.candidates.length);
   let nativeWork = assertWorkReceipt(enumerated.value, 0, credit);
@@ -480,6 +488,38 @@ async function main() {
   assert.equal(overDepth.error_code, "candidate-task-invalid");
   assert.equal(Module._spc_root_session_destroy(primarySession), 1);
   assert.equal(Module._spc_root_session_destroy(primarySession), 0);
+
+  const legacyPolicy = bridge.rootJson(
+    "_spc_root_session_create_json",
+    null,
+    {
+      ...createRequest("create-legacy-policy", "legacy-policy", 3),
+      config: { ...config, root_tactical_protection: true },
+    },
+  );
+  assert.equal(legacyPolicy.status, "unsupported");
+  assert.equal(legacyPolicy.error_code, "legacy-root-tactical-policy-unsupported");
+
+  for (const [name, tacticalBoundary] of [
+    ["late", { ...boundary, series: 5 }],
+    ["promotion", {
+      ...boundary,
+      fen: "7k/4P3/8/8/8/8/8/K7 w - - 0 1",
+      series: 3,
+    }],
+  ]) {
+    const policyCreated = bridge.rootJson(
+      "_spc_root_session_create_json",
+      null,
+      {
+        ...createRequest(`create-${name}-policy`, `${name}-policy`, 3),
+        boundary: tacticalBoundary,
+      },
+    );
+    assert.equal(policyCreated.status, "ready");
+    assert.equal(policyCreated.canonical_root_tactical_protection, true);
+    assert.equal(Module._spc_root_session_destroy(policyCreated.session_id), 1);
+  }
 
   const importCreated = bridge.rootJson(
     "_spc_root_session_create_json",
