@@ -653,7 +653,8 @@ void update_prefix_ep_targets(
             bool same_rank = false;
             for (const auto& candidate : variants) {
                 if (
-                    candidate.move.uci == expanded.move.uci
+                    spc::native::legal_move_uci_key(candidate.move)
+                        == spc::native::legal_move_uci_key(expanded.move)
                     || candidate.move.to_square != expanded.move.to_square
                     || prefix_piece_type_at(
                         board,
@@ -909,7 +910,10 @@ void write_legal_move_payload(
         }
         first = false;
         stream << "{\"uci\":";
-        write_json_string(stream, expanded.move.uci);
+        write_json_string(
+            stream,
+            spc::native::legal_move_uci(expanded.move)
+        );
         stream << ",\"san\":";
         write_json_string(
             stream,
@@ -1008,7 +1012,8 @@ void write_legal_move_payload(
             variants.begin(),
             variants.end(),
             [&](const spc::native::ExpandedMove& expanded) {
-                return expanded.move.uci == requested[index];
+                return spc::native::legal_move_uci(expanded.move)
+                    == requested[index];
             }
         );
         if (selected == variants.end()) {
@@ -1051,11 +1056,12 @@ void write_legal_move_payload(
             || selected->is_pawn_move
             || selected->is_capture;
         board = selected->child;
-        played.push_back(selected->move.uci);
+        const std::string uci = spc::native::legal_move_uci(selected->move);
+        played.push_back(uci);
         sans.push_back(san);
         frames.push_back(PrefixFrame{
             played.size(),
-            selected->move.uci,
+            uci,
             san,
             board_fen(
                 board,

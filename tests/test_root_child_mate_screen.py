@@ -94,6 +94,33 @@ LIVE_LOSS_PUBLIC_EVIDENCE = {
     "time_limit_seconds": 30.0,
     "max_generation_positions": 10_000_000,
 }
+LATEST_HUMAN_WIN_HISTORY = (
+    ("e2e3",),
+    ("e7e6", "d7d6"),
+    ("d1f3", "f3b7", "b7c8"),
+    ("d8c8", "c8b7", "b7b2", "b2c1"),
+    ("e1e2", "b1a3", "a1c1", "a3b5", "b5c7"),
+    ("e8d7", "d7c7", "b8c6", "a8b8", "b8b1", "b1c1"),
+)
+LATEST_HUMAN_WIN_S7 = (
+    "d2d4",
+    "d4d5",
+    "d5e6",
+    "e2d2",
+    "e6f7",
+    "f7g8q",
+    "g8g7",
+)
+LATEST_HUMAN_WIN_S8_MATE = (
+    "f8g7",
+    "h7h5",
+    "h5h4",
+    "h4h3",
+    "h3g2",
+    "g2f1q",
+    "c6b4",
+    "c1c2",
+)
 
 
 def _play_limits() -> SearchLimits:
@@ -123,6 +150,13 @@ def _early_s4_state() -> ProgressiveState:
 def _live_loss_s4_state() -> ProgressiveState:
     state = ProgressiveState.initial()
     for series in LIVE_LOSS_S4_HISTORY:
+        state = play_series(state, series).final_state
+    return state
+
+
+def _latest_human_win_s7_state() -> ProgressiveState:
+    state = ProgressiveState.initial()
+    for series in LATEST_HUMAN_WIN_HISTORY:
         state = play_series(state, series).final_state
     return state
 
@@ -195,6 +229,28 @@ def test_wide_native_child_screen_replays_the_human_mate() -> None:
     assert searcher.stats.work_positions == charged_work
     assert searcher.stats.root_safety_screen_calls == 1
     assert searcher.stats.root_safety_screen_cache_hits == 1
+
+
+def test_latest_human_s8_mate_is_replayed_and_rejected() -> None:
+    root = _latest_human_win_s7_state()
+    assert root.pfen == (
+        "5bnr/p1k2ppp/2npp3/8/8/4P3/P1PPKPPP/2r2BNR w - - 0 13 "
+        "| series=7 quiet=0 progressive_ep=- "
+        "rules=scottish-modern-common-v1 quiet_draw=manual-proof-required"
+    )
+    blunder = play_series(root, LATEST_HUMAN_WIN_S7)
+    human_mate = play_series(blunder.final_state, LATEST_HUMAN_WIN_S8_MATE)
+    assert human_mate.outcome == Outcome.CHECKMATE
+    assert human_mate.ended_by_check
+
+    searcher = _live_searcher()
+    detected = searcher._root_child_immediate_mate(blunder.final_state)
+
+    assert detected is not None
+    assert detected.outcome == Outcome.CHECKMATE
+    assert play_series(blunder.final_state, detected.moves).outcome == Outcome.CHECKMATE
+    assert searcher._root_safety_fallback(blunder) is None
+    assert searcher.stats.work_positions < 10_000
 
 
 def test_process_local_mate_cache_separates_exact_fen_clocks() -> None:

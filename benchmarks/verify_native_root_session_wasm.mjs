@@ -560,6 +560,30 @@ for (const terminalCase of [
   assert.equal(wasm._spc_root_session_destroy(terminalSession.session_id), 1);
 }
 
+// Exercise CompactMovePath's heap fallback in the optimized WASM build. A
+// Series 9 root must retain a complete nine-move candidate, so this crosses
+// the eight-move inline boundary under Emscripten -O3/-flto rather than only
+// in the native MSVC regression suite.
+const longPathBoundary = {
+  ...boundary,
+  fen: "7k/8/8/8/8/8/8/K7 w - - 0 1",
+  series: 9,
+};
+const longPathSession = create({
+  boundary: longPathBoundary,
+  config: { ...config, width: 1 },
+});
+const longPathDeadline = Math.floor(performance.now() + 60_000);
+const longPathManifest = enumerate(
+  longPathSession.session_id,
+  0,
+  longPathDeadline,
+);
+assert.equal(longPathManifest.status, "complete", JSON.stringify(longPathManifest));
+assert.equal(longPathManifest.candidates.length, 1);
+assert.equal(longPathManifest.candidates[0].root_series.moves.length, 9);
+assert.equal(wasm._spc_root_session_destroy(longPathSession.session_id), 1);
+
 // Remaining time is a same-runtime transport. Zero fails before native work;
 // a later absolute deadline cannot extend the session's first pinned deadline.
 const deadlineSession = create();
@@ -686,6 +710,7 @@ process.stdout.write(`${JSON.stringify({
   enumeration_identity: enumeration.enumeration_identity,
   candidate_identity: candidate.candidate_identity,
   candidate_order_key: candidate.order_key,
+  long_path_moves: longPathManifest.candidates[0].root_series.moves,
   depth_one: {
     score: depthOne.score,
     proof_bounds: depthOne.proof_bounds,

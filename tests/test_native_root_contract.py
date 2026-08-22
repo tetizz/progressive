@@ -1257,6 +1257,95 @@ def test_transactional_ordinary_cutoff_hint_reproves_bound_without_generation(
     assert interrupted.work.call_native_work == 0
 
 
+@pytest.mark.parametrize("native_threads", (1, 4))
+def test_transactional_bound_overlay_reuses_lower_bound_without_pv(
+    native_threads: int,
+) -> None:
+    root = ProgressiveState.initial()
+    oracle = _session(
+        width=4,
+        depth=5,
+        cache_capacity=1,
+        native_threads=native_threads,
+    )
+    oracle_manifest = oracle.enumerate_root(
+        root,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    oracle_candidate = oracle_manifest.candidates[0]
+    exact = oracle.search_root_candidate(
+        enumeration_identity=oracle_manifest.enumeration_identity,
+        candidate_identity=oracle_candidate.candidate_identity,
+        child_depth=1,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=oracle_manifest.work.native_work_after,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+    )
+    assert exact.bound is NativeSubtreeBound.EXACT
+
+    session = _session(
+        width=4,
+        depth=5,
+        cache_capacity=1,
+        native_threads=native_threads,
+    )
+    manifest = session.enumerate_root(
+        root,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    candidate = manifest.candidates[0]
+    scout_args = dict(
+        enumeration_identity=manifest.enumeration_identity,
+        candidate_identity=candidate.candidate_identity,
+        child_depth=1,
+        alpha=exact.score - 1,
+        beta=exact.score,
+        external_work=manifest.work.native_work_after,
+        remaining_nanoseconds=None,
+        rollback_tt=True,
+    )
+    first = session.search_root_candidate(**scout_args)
+    reused = session.search_root_candidate(
+        **scout_args,
+        call_work_credit=0,
+    )
+
+    assert first.bound is reused.bound is NativeSubtreeBound.LOWER
+    assert first.score == reused.score == exact.score
+    assert first.work.call_native_work > 0
+    assert first.child_principal_variation
+    assert reused.work.call_native_work == 0
+    assert reused.child_principal_variation == ()
+    assert reused.proof_bounds == first.proof_bounds
+    reused_stats = dict(
+        zip(SUBTREE_STAT_FIELDS, reused.work.call_stats, strict=True)
+    )
+    assert reused_stats["nodes"] == 1
+    assert reused_stats["tt_hits"] == 1
+    assert reused_stats["generation_positions"] == 0
+    assert reused.tt_writes_rolled_back == 0
+
+    reconstructed = session.search_root_candidate(
+        enumeration_identity=manifest.enumeration_identity,
+        candidate_identity=candidate.candidate_identity,
+        child_depth=1,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=manifest.work.native_work_after,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+    )
+    assert _candidate_search_signature(reconstructed) == _candidate_search_signature(
+        exact
+    )
+
+
 def test_deep_losing_scout_stops_after_mover_mate_proves_upper_bound() -> None:
     root = ProgressiveState.initial()
     session = _session(width=32, depth=5, max_work=5_000_000)

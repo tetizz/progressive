@@ -410,6 +410,7 @@ def test_play_strength_is_explicit_and_reports_completed_not_claimed_depth() -> 
 
     assert 'id="play-strength-strong"' in index
     assert 'id="play-strength-faster"' in index
+    assert 'id="play-retry-engine"' in index
     assert 'id="play-runtime-status"' in index
     assert "Deeper · up to 30s" not in index
     assert index.count("Loading local engine…") == 2
@@ -428,18 +429,17 @@ def test_play_strength_is_explicit_and_reports_completed_not_claimed_depth() -> 
     assert "max_series: search.maxSeries" in engine_turn
     assert "time_limit: search.seconds" in engine_turn
     assert "max_generation_positions: search.generationPositions" in engine_turn
+    assert "+ PLAY_ANALYSIS_RESPONSE_GRACE_MS" in engine_turn
     assert "best_move_only: true" in engine_turn
     assert "state.play.lastSearch = playSearchEvidence(analysis, search)" in engine_turn
-    assert "Depth ${evidence.completedDepth} complete · requested ${evidence.requestedDepth}" in evidence
+    assert "Last completed search · depth ${evidence.completedDepth} · requested ${evidence.requestedDepth}" in evidence
     assert "Selective width" in evidence
     assert "Time limit reached" in evidence
     assert "Work limit reached" in evidence
     assert "Best-move alpha-beta across up to ${evidence.maxSeries} retained series per node" in evidence
     assert 'renderStrengthOption(dom.play_strength_strong, playSearchLimits("strong"))' in evidence
-    assert (
-        'detail.textContent = `Depth ${optionLimits.depth} · up to ${seconds}s · ${work} work`'
-        in evidence
-    )
+    assert "time limit only" in evidence
+    assert "no reachable position-work cap" in evidence
     assert "state.play.nativeThreads" in evidence
     assert "state.play.runtimeCpuCount" in evidence
     assert "single-thread-pool-avoidance" in evidence
@@ -447,6 +447,95 @@ def test_play_strength_is_explicit_and_reports_completed_not_claimed_depth() -> 
     assert "state.play.healthReady" in evidence
     assert "state.play.healthReady = true;" in app
     assert 'if (state.play.thinking) cancelEngineTurn();' in app
+    assert "function retryEngineTurn()" in app
+    assert 'dom.play_retry_engine.addEventListener("click", retryEngineTurn)' in app
+    assert "Search stopped — game saved" in app
+
+
+def test_play_session_reload_uses_an_authoritatively_replayed_uci_ledger() -> None:
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    persistence = app[
+        app.index("function isStoredUciList") : app.index("function seriesColor")
+    ]
+    play_surface = app[
+        app.index("function renderPlaySurface") : app.index(
+            "function engineSeriesFromAnalysis"
+        )
+    ]
+    submit_move = app[
+        app.index("async function submitMove") : app.index("function endDrag")
+    ]
+    handoff = app[
+        app.index("async function performSeriesHandoff") : app.index(
+            "function advanceSeries"
+        )
+    ]
+    initialize = app[app.index("async function initialize"):]
+
+    assert 'PLAY_SESSION_STORAGE_KEY = "scottish-progressive-play-session-v1"' in app
+    assert "completedSeries" in persistence
+    assert "currentPrefix" in persistence
+    assert "workspace: state.playWorkspace" not in persistence
+    assert "fen: START_FEN" in persistence
+    assert "for (let index = 0; index < saved.completedSeries.length; index += 1)" in persistence
+    assert 'requestJson("/api/prefix"' in persistence
+    assert "canonical.some((move, moveIndex) => move !== moves[moveIndex])" in persistence
+    assert "nextBoundary.series !== boundary.series + 1" in persistence
+    assert "authoritativeBoundaryEchoMatches(payload, boundary)" in persistence
+    assert "authoritativeBoundaryEchoMatches(current, boundary)" in persistence
+    assert "if (payload?.boundary_state === undefined) return false" in persistence
+    assert "Saved current series failed authoritative replay" in persistence
+    assert "playSessionReplayBlocked = true" in persistence
+    assert persistence.index("playSessionReplayBlocked = true") < persistence.index(
+        'await requestJson("/api/prefix"'
+    )
+    assert "playSessionReplayPromise" in app
+    assert 'setBoardBusy(true, "Restoring saved game…")' in persistence
+    assert persistence.count("signal: controller.signal") == 2
+    assert "sequence !== state.prefixSequence" in persistence
+    assert "completedSeries.length > 511" in persistence
+    assert "flipped: Boolean(state.flipped)" in persistence
+    assert "state.flipped = saved.flipped" in persistence
+    assert "seriesColor(state.boundary.series) === saved.humanColor" in persistence
+    for cleared_field in (
+        "state.complete = false",
+        "state.nextState = null",
+        "state.outcome = null",
+        "state.check = false",
+        "state.unusedMoves = 0",
+        "state.completionReason = null",
+        "state.lastMove = null",
+        "state.selected = null",
+        "state.previewIndex = null",
+        "state.positionReady = false",
+    ):
+        assert cleared_field in persistence
+    assert "Your saved moves remain stored; validation is waiting" in persistence
+    assert "playSessionLastWriteDurable = true" in persistence
+    assert "playSessionLastWriteDurable = false" in persistence
+    assert "Search stopped — reload may lose this game" in play_surface
+    assert "recoveryBlocked || (!effectiveGameEnded" in play_surface
+    assert "reviewing || recoveryBlocked ? null : playOutcomeStatus()" in play_surface
+    assert submit_move.index("captureAndPersistPlayWorkspace()") < submit_move.index(
+        "await advanceSeries(true)"
+    )
+    assert handoff.index("captureAndPersistPlayWorkspace()") < handoff.index(
+        "await refreshPrefix([], [])"
+    )
+    switch_mode = app[
+        app.index("async function switchWorkspaceMode") : app.index(
+            "function legalMovesFrom"
+        )
+    ]
+    assert switch_mode.index("if (state.positionBusy)") < switch_mode.index(
+        "state.prefixAbort?.abort()"
+    )
+    assert "dom.mode_play.disabled = state.positionBusy" in app
+    assert "dom.mode_analyze.disabled = state.positionBusy" in app
+    assert "Game restored after reload" in persistence
+    assert 'window.addEventListener("pagehide"' in app
+    assert "if (!await restorePersistedPlaySession())" in initialize
+    assert "await startNewPlayGame({ announce: false })" in initialize
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js is required for browser asset tests")

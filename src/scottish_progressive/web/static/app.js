@@ -6,10 +6,13 @@
   const FILES = "abcdefgh";
   const STUDY_STORAGE_KEY = "scottish-progressive-analysis-study-v1";
   const POSITION_STORAGE_KEY = "scottish-progressive-saved-positions-v1";
+  const PLAY_SESSION_STORAGE_KEY = "scottish-progressive-play-session-v1";
   const STUDY_SCHEMA_VERSION = 1;
   const POSITION_SCHEMA_VERSION = 1;
+  const PLAY_SESSION_SCHEMA_VERSION = 1;
   const MAX_STORED_NODES = 800;
   const MAX_SAVED_POSITIONS = 50;
+  const MAX_STORED_PLAY_SESSION_BYTES = 1_000_000;
   const AUTO_ANALYSIS_DEBOUNCE_MS = 260;
   const AUTO_ANALYSIS_RETRY_MS = 700;
   const ENGINE_MOVE_ANIMATION_MS = 145;
@@ -46,8 +49,13 @@
     quick: { depth: 4, cap: 48, seconds: 1.25, alternatives: 2, generationPositions: 150_000 },
     strong: { depth: 8, cap: 256, seconds: 5, alternatives: 3, generationPositions: 5_000_000 },
   };
+  // Strong play is governed by its wall-clock deadline. The numeric ceiling
+  // exists only because the native/WASM contracts use a finite integer; it is
+  // deliberately far beyond the work reachable during one play search.
+  const STRONG_PLAY_TECHNICAL_WORK_CEILING = 4_000_000_000;
+  const PLAY_ANALYSIS_RESPONSE_GRACE_MS = 1_500;
   const PLAY_STRENGTHS = {
-    strong: { label: "Strong", minimumDepth: 5, seconds: 30, generationPositions: 10_000_000 },
+    strong: { label: "Strong", minimumDepth: 5, seconds: 30, generationPositions: STRONG_PLAY_TECHNICAL_WORK_CEILING },
     faster: { label: "Faster", minimumDepth: 1, seconds: 5, generationPositions: 500_000 },
   };
   const PIECE_NAMES = {
@@ -83,7 +91,7 @@
     "play-as-white", "play-as-black", "play-live", "play-status-title", "play-status-detail",
     "play-series-title", "play-series-count", "play-series-copy", "play-history", "play-history-count",
     "play-history-previous", "play-history-next", "play-history-position",
-    "play-new-game", "play-analyze-position", "play-resign", "play-engine-name", "play-engine-id",
+    "play-new-game", "play-retry-engine", "play-analyze-position", "play-resign", "play-engine-name", "play-engine-id",
     "play-engine-version", "play-runtime-status", "play-strength-strong", "play-strength-faster", "play-strength-status",
     "play-search-depth", "play-search-status", "workspace-tabs", "analysis-panel", "theory-panel", "setup-panel",
   ].map((id) => [id.replaceAll("-", "_"), document.getElementById(id)]));
@@ -188,6 +196,9 @@
       timelineIndex: null,
     },
   };
+  let playSessionReplayBlocked = false;
+  let playSessionReplayPromise = null;
+  let playSessionLastWriteDurable = false;
 
   function first(...values) {
     return values.find((value) => value !== undefined && value !== null);
@@ -677,11 +688,13 @@
       state.play.timelineIndex = target;
       state.selected = null;
       renderAll();
+      persistPlaySession();
       return;
     }
     state.play.timelineIndex = null;
     state.selected = null;
     renderAll();
+    persistPlaySession();
     void continuePlayFlow();
   }
 
@@ -750,6 +763,328 @@
     return true;
   }
 
+  function isStoredUciList(value, maximumMoves, allowEmpty = true) {
+    return Array.isArray(value)
+      && (allowEmpty || value.length > 0)
+      && value.length <= maximumMoves
+      && value.every((move) => (
+        typeof move === "string"
+        && /^[a-h][1-8][a-h][1-8][qrbn]?$/.test(move)
+      ));
+  }
+
+  function initialPlayBoundary() {
+    return {
+      fen: START_FEN,
+      series: 1,
+      quiet_series: 0,
+      ep_targets: [],
+      promoted_hex: ZERO_PROMOTED_HEX,
+      chess960: false,
+    };
+  }
+
+  function sanitizeStoredPlaySession(value) {
+    if (
+      !value
+      || typeof value !== "object"
+      || value.version !== PLAY_SESSION_SCHEMA_VERSION
+      || !["white", "black"].includes(value.humanColor)
+      || !PLAY_STRENGTHS[value.strength]
+      || value.active !== true
+      || typeof value.resigned !== "boolean"
+      || !Array.isArray(value.completedSeries)
+      || value.completedSeries.length > 511
+      || value.completedSeries.some((series, index) => (
+        !isStoredUciList(series, index + 1, false)
+      ))
+      || !isStoredUciList(value.currentPrefix, value.completedSeries.length + 1)
+    ) return null;
+    const timelineIndex = value.timelineIndex === null
+      ? null
+      : Number.isInteger(value.timelineIndex) && value.timelineIndex >= 0
+        ? value.timelineIndex
+        : null;
+    const error = typeof value.error === "string"
+      ? value.error.slice(0, 1_000)
+      : null;
+    return {
+      humanColor: value.humanColor,
+      strength: value.strength,
+      active: value.active,
+      resigned: value.resigned,
+      flipped: typeof value.flipped === "boolean"
+        ? value.flipped
+        : value.humanColor === "black",
+      timelineIndex,
+      error,
+      rulesetVersion: typeof value.rulesetVersion === "string"
+        ? value.rulesetVersion
+        : null,
+      completedSeries: value.completedSeries.map((series) => [...series]),
+      currentPrefix: [...value.currentPrefix],
+    };
+  }
+
+  function readPersistedPlaySession() {
+    try {
+      const stored = localStorage.getItem(PLAY_SESSION_STORAGE_KEY);
+      if (!stored || stored.length > MAX_STORED_PLAY_SESSION_BYTES) {
+        playSessionLastWriteDurable = false;
+        return null;
+      }
+      const saved = sanitizeStoredPlaySession(JSON.parse(stored));
+      playSessionLastWriteDurable = Boolean(saved);
+      return saved;
+    } catch {
+      playSessionLastWriteDurable = false;
+      return null;
+    }
+  }
+
+  function persistPlaySession() {
+    if (playSessionReplayBlocked) return playSessionLastWriteDurable;
+    if (!state.playWorkspace || !state.play.active) {
+      playSessionLastWriteDurable = false;
+      return false;
+    }
+    const completedSeries = (state.playWorkspace.history || [])
+      .map((entry) => Array.isArray(entry?.prefix) ? [...entry.prefix] : null);
+    const currentPrefix = Array.isArray(state.playWorkspace.prefix)
+      ? [...state.playWorkspace.prefix]
+      : null;
+    if (
+      completedSeries.length > 511
+      || completedSeries.some((series, index) => (
+        !isStoredUciList(series, index + 1, false)
+      ))
+      || !isStoredUciList(currentPrefix, completedSeries.length + 1)
+    ) {
+      playSessionLastWriteDurable = false;
+      return false;
+    }
+    try {
+      const serialized = JSON.stringify({
+        version: PLAY_SESSION_SCHEMA_VERSION,
+        savedAt: new Date().toISOString(),
+        humanColor: state.play.humanColor,
+        strength: state.play.strength,
+        active: state.play.active,
+        resigned: state.play.resigned,
+        flipped: Boolean(state.flipped),
+        timelineIndex: state.play.timelineIndex,
+        error: state.play.error,
+        rulesetVersion: state.play.rulesetVersion,
+        completedSeries,
+        currentPrefix,
+      });
+      if (serialized.length > MAX_STORED_PLAY_SESSION_BYTES) {
+        playSessionLastWriteDurable = false;
+        return false;
+      }
+      localStorage.setItem(PLAY_SESSION_STORAGE_KEY, serialized);
+      playSessionLastWriteDurable = true;
+      return true;
+    } catch {
+      playSessionLastWriteDurable = false;
+      return false;
+    }
+  }
+
+  function captureAndPersistPlayWorkspace() {
+    state.playWorkspace = captureWorkspace();
+    persistPlaySession();
+    return state.playWorkspace;
+  }
+
+  function authoritativeBoundaryEchoMatches(payload, expectedBoundary) {
+    if (payload?.boundary_state === undefined) return false;
+    const echoedBoundary = safeBoundary(payload.boundary_state);
+    return Boolean(echoedBoundary)
+      && boundaryKey(echoedBoundary) === boundaryKey(expectedBoundary);
+  }
+
+  function resetFailedPlaySessionRestore(saved, error) {
+    state.mode = "play";
+    state.boundary = initialPlayBoundary();
+    state.history = [];
+    state.prefix = [];
+    state.prefixSan = [];
+    state.prefixFrames = [];
+    state.boardFen = START_FEN;
+    state.legalMoves = [];
+    state.movesRemaining = 1;
+    state.complete = false;
+    state.nextState = null;
+    state.outcome = null;
+    state.check = false;
+    state.unusedMoves = 0;
+    state.completionReason = null;
+    state.lastMove = null;
+    state.selected = null;
+    state.previewIndex = null;
+    state.pvFrames = [];
+    state.analysis = null;
+    state.arrowSelection = null;
+    state.flipped = saved.flipped;
+    state.focusSquare = state.flipped ? "e7" : "e2";
+    state.study = createStudy(state.boundary);
+    state.currentTreeNodeId = null;
+    state.seriesParentNodeId = null;
+    state.branching = false;
+    state.viewingHistorical = false;
+    state.handoffNotice = null;
+    state.positionReady = false;
+    state.play.active = true;
+    state.play.timelineIndex = null;
+    state.play.error = `Your saved moves remain stored; validation is waiting: ${displayError(error)}`;
+    state.playWorkspace = captureWorkspace();
+  }
+
+  async function restorePersistedPlaySession() {
+    if (playSessionReplayPromise) return playSessionReplayPromise;
+    const saved = readPersistedPlaySession();
+    if (!saved) return false;
+
+    playSessionReplayBlocked = true;
+    state.prefixAbort?.abort();
+    cancelAutoAnalysis(true);
+    state.pvAbort?.abort();
+    const controller = new AbortController();
+    state.prefixAbort = controller;
+    const sequence = ++state.prefixSequence;
+    state.positionReady = false;
+    setBoardBusy(true, "Restoring saved game…");
+
+    const replay = (async () => {
+      let restored = false;
+      const ensureCurrentReplay = () => {
+        if (controller.signal.aborted || sequence !== state.prefixSequence) {
+          const cancelled = new Error("Saved game replay cancelled.");
+          cancelled.name = "AbortError";
+          throw cancelled;
+        }
+      };
+      try {
+      state.mode = "play";
+      state.play.humanColor = saved.humanColor;
+      state.play.strength = saved.strength;
+      state.play.active = saved.active;
+      state.play.resigned = saved.resigned;
+      state.play.timelineIndex = null;
+      state.play.error = saved.error;
+      state.play.lastEngineSeries = null;
+      state.play.lastSearch = null;
+      state.play.activeSearch = null;
+      state.play.activeSearchRuntime = null;
+      state.play.thinking = false;
+      state.play.animating = false;
+      state.flipped = saved.flipped;
+      state.focusSquare = state.flipped ? "e7" : "e2";
+
+      let boundary = initialPlayBoundary();
+      const history = [];
+      for (let index = 0; index < saved.completedSeries.length; index += 1) {
+        const moves = saved.completedSeries[index];
+        state.boundary = cloneBoundary(boundary);
+        state.boardFen = boundary.fen;
+        const payload = await requestJson("/api/prefix", {
+          method: "POST",
+          signal: controller.signal,
+          body: JSON.stringify({ ...boundary, prefix: moves }),
+        });
+        ensureCurrentReplay();
+        const canonical = Array.isArray(payload.prefix) ? payload.prefix.map(String) : [];
+        const nextBoundary = normalizeNextState(payload.next_state);
+        if (
+          canonical.length !== moves.length
+          || canonical.some((move, moveIndex) => move !== moves[moveIndex])
+          || !payload.complete
+          || payload.outcome
+          || !nextBoundary
+          || nextBoundary.series !== boundary.series + 1
+          || !authoritativeBoundaryEchoMatches(payload, boundary)
+        ) throw new Error(`Saved Series ${index + 1} failed authoritative replay.`);
+        const prefixSan = notationArray(payload, canonical, canonical);
+        history.push({
+          boundary: cloneBoundary(boundary),
+          prefix: canonical,
+          prefixSan,
+          frames: prefixFramesFromPayload(payload, canonical, prefixSan),
+          check: Boolean(payload.check),
+          unusedMoves: Math.max(0, asNumber(payload.unused_moves, 0)),
+          completionReason: first(payload.completion_reason, null),
+          treeNodeId: null,
+          seriesParentNodeId: null,
+          handoffKey: `restored-${index + 1}`,
+        });
+        boundary = nextBoundary;
+      }
+
+      state.boundary = cloneBoundary(boundary);
+      state.boardFen = boundary.fen;
+      state.history = history;
+      state.prefix = [];
+      state.prefixSan = [];
+      state.prefixFrames = [];
+      state.study = createStudy(boundary);
+      state.currentTreeNodeId = null;
+      state.seriesParentNodeId = null;
+      state.branching = false;
+      state.viewingHistorical = false;
+      state.handoffNotice = null;
+      const current = await requestJson("/api/prefix", {
+        method: "POST",
+        signal: controller.signal,
+        body: JSON.stringify({ ...boundary, prefix: saved.currentPrefix }),
+      });
+      ensureCurrentReplay();
+      const canonicalCurrent = Array.isArray(current.prefix)
+        ? current.prefix.map(String)
+        : [];
+      if (
+        canonicalCurrent.length !== saved.currentPrefix.length
+        || canonicalCurrent.some((move, index) => move !== saved.currentPrefix[index])
+        || !authoritativeBoundaryEchoMatches(current, boundary)
+      ) throw new Error("Saved current series failed authoritative replay.");
+      applyPrefixPayload(current, canonicalCurrent, canonicalCurrent);
+      if (seriesColor(state.boundary.series) === saved.humanColor) {
+        state.play.error = null;
+      }
+      const maximumTimelineIndex = Math.max(0, playTimeline().length - 1);
+      state.play.timelineIndex = saved.timelineIndex === null
+        ? null
+        : Math.min(saved.timelineIndex, maximumTimelineIndex);
+        restored = true;
+      } catch (error) {
+        if (sequence !== state.prefixSequence) return true;
+        resetFailedPlaySessionRestore(saved, error);
+      } finally {
+        if (sequence === state.prefixSequence) {
+          if (state.prefixAbort === controller) state.prefixAbort = null;
+          setBoardBusy(false);
+        }
+      }
+
+      if (restored) {
+        playSessionReplayBlocked = false;
+        captureAndPersistPlayWorkspace();
+        renderAll();
+        showToast("Game restored after reload");
+        if (!state.play.error) void continuePlayFlow();
+      } else {
+        renderAll();
+      }
+      return true;
+    })();
+    playSessionReplayPromise = replay;
+    try {
+      return await replay;
+    } finally {
+      if (playSessionReplayPromise === replay) playSessionReplayPromise = null;
+    }
+  }
+
   function seriesColor(series = state.boundary.series) {
     return Number(series) % 2 === 1 ? "white" : "black";
   }
@@ -770,6 +1105,7 @@
         state.maximumGenerationPositions,
         setting.generationPositions,
       )),
+      timeLimitedOnly: strength === "strong",
     };
   }
 
@@ -835,8 +1171,12 @@
         : state.play.runtimeCpuCount === null
           ? "the server's reported allocation"
           : `${state.play.runtimeCpuCount} allocated CPU`;
-      if (detail) detail.textContent = `Depth ${optionLimits.depth} · up to ${seconds}s · ${work} work`;
-      node.title = `Searches toward depth ${optionLimits.depth} for up to ${seconds} ${optionLimits.seconds === 1 ? "second" : "seconds"}, capped at ${work} generated positions, using ${threads} on ${allocation}.`;
+      if (detail) detail.textContent = optionLimits.timeLimitedOnly
+        ? `Depth ${optionLimits.depth} · up to ${seconds}s · time limit only`
+        : `Depth ${optionLimits.depth} · up to ${seconds}s · ${work} work`;
+      node.title = optionLimits.timeLimitedOnly
+        ? `Searches toward depth ${optionLimits.depth} for up to ${seconds} ${optionLimits.seconds === 1 ? "second" : "seconds"}, with no reachable position-work cap, using ${threads} on ${allocation}.`
+        : `Searches toward depth ${optionLimits.depth} for up to ${seconds} ${optionLimits.seconds === 1 ? "second" : "seconds"}, capped at ${work} generated positions, using ${threads} on ${allocation}.`;
     };
     renderStrengthOption(dom.play_strength_strong, playSearchLimits("strong"));
     renderStrengthOption(dom.play_strength_faster, playSearchLimits("faster"));
@@ -844,7 +1184,9 @@
     dom.play_strength_faster.classList.toggle("is-active", state.play.strength === "faster");
     dom.play_strength_strong.setAttribute("aria-pressed", String(state.play.strength === "strong"));
     dom.play_strength_faster.setAttribute("aria-pressed", String(state.play.strength === "faster"));
-    dom.play_strength_status.textContent = `${limits.label} · target depth ${limits.depth} · up to ${limits.seconds.toLocaleString()}s · ${compactNumber(limits.generationPositions)} work cap`;
+    dom.play_strength_status.textContent = limits.timeLimitedOnly
+      ? `${limits.label} · target depth ${limits.depth} · up to ${limits.seconds.toLocaleString()}s · time limit only`
+      : `${limits.label} · target depth ${limits.depth} · up to ${limits.seconds.toLocaleString()}s · ${compactNumber(limits.generationPositions)} work cap`;
     if (state.play.activeSearch) {
       const active = state.play.activeSearch;
       if (state.play.activeSearchRuntime === "browser-wasm") {
@@ -858,7 +1200,9 @@
         const threads = Math.max(1, state.play.nativeThreads);
         dom.play_search_depth.textContent = `Searching on hosted engine · ${threads} thread${threads === 1 ? "" : "s"}`;
       }
-      dom.play_search_status.textContent = `Best-move alpha-beta across up to ${active.maxSeries} retained series per node · up to ${active.seconds.toLocaleString()}s · ${compactNumber(active.generationPositions)} position work cap`;
+      dom.play_search_status.textContent = active.timeLimitedOnly
+        ? `Best-move alpha-beta across up to ${active.maxSeries} retained series per node · up to ${active.seconds.toLocaleString()}s · no reachable work cap`
+        : `Best-move alpha-beta across up to ${active.maxSeries} retained series per node · up to ${active.seconds.toLocaleString()}s · ${compactNumber(active.generationPositions)} position work cap`;
       return;
     }
     const evidence = state.play.lastSearch;
@@ -868,8 +1212,8 @@
       return;
     }
     dom.play_search_depth.textContent = evidence.completedDepth === null
-      ? `Requested depth ${evidence.requestedDepth} · completion not reported`
-      : `Depth ${evidence.completedDepth} complete · requested ${evidence.requestedDepth}`;
+      ? `Last completed search · requested depth ${evidence.requestedDepth} · completion not reported`
+      : `Last completed search · depth ${evidence.completedDepth} · requested ${evidence.requestedDepth}`;
     const status = [
       evidence.runtime === "browser-wasm"
         ? evidence.rootSearchMode === "streaming-root-iteration" && evidence.workerCount !== null
@@ -897,10 +1241,36 @@
   }
 
   function selectPlayStrength(strength) {
-    if (!PLAY_STRENGTHS[strength] || state.play.strength === strength) return;
+    if (!PLAY_STRENGTHS[strength]) return;
+    if (state.play.strength === strength) {
+      if (state.play.error) retryEngineTurn();
+      return;
+    }
     state.play.strength = strength;
     if (state.play.thinking) cancelEngineTurn();
+    persistPlaySession();
     renderPlaySurface();
+    void continuePlayFlow();
+  }
+
+  function retryEngineTurn() {
+    if (state.mode === "play" && state.play.active && !state.positionReady) {
+      if (state.positionBusy) return;
+      void restorePersistedPlaySession();
+      return;
+    }
+    if (
+      state.mode !== "play"
+      || !state.play.active
+      || state.play.thinking
+      || state.play.animating
+      || playReviewActive()
+      || playGameEnded()
+      || seriesColor() === state.play.humanColor
+    ) return;
+    state.play.error = null;
+    persistPlaySession();
+    renderAll();
     void continuePlayFlow();
   }
 
@@ -2269,6 +2639,8 @@
     dom.workspace.classList.toggle("is-analyze-mode", !playMode);
     dom.mode_play.classList.toggle("is-active", playMode);
     dom.mode_analyze.classList.toggle("is-active", !playMode);
+    dom.mode_play.disabled = state.positionBusy;
+    dom.mode_analyze.disabled = state.positionBusy;
     dom.mode_play.setAttribute("aria-pressed", String(playMode));
     dom.mode_analyze.setAttribute("aria-pressed", String(!playMode));
     dom.play_panel.hidden = !playMode;
@@ -2286,24 +2658,30 @@
     const timeline = playTimeline();
     const review = playReviewPosition(timeline);
     const reviewing = Boolean(review);
+    const recoveryBlocked = Boolean(state.play.error) && !state.positionReady;
+    const effectiveGameEnded = playGameEnded() && !recoveryBlocked;
     const activeColor = review?.side || seriesColor();
     setPlayerColor(dom.play_top_color, engineColor);
     setPlayerColor(dom.play_bottom_color, humanColor);
-    dom.play_top_player.classList.toggle("is-active", !reviewing && activeColor === engineColor && !playGameEnded());
-    dom.play_bottom_player.classList.toggle("is-active", !reviewing && activeColor === humanColor && !playGameEnded());
+    dom.play_top_player.classList.toggle("is-active", !reviewing && activeColor === engineColor && !effectiveGameEnded);
+    dom.play_bottom_player.classList.toggle("is-active", !reviewing && activeColor === humanColor && !effectiveGameEnded);
     dom.play_top_name.textContent = "Current champion";
     dom.play_top_meta.textContent = `${state.play.engineName} · ${engineColor === "white" ? "White" : "Black"}`;
     dom.play_bottom_meta.textContent = humanColor === "white" ? "White" : "Black";
     dom.play_top_turn.textContent = reviewing
       ? "Review"
-      : playGameEnded()
+      : recoveryBlocked
+      ? "Restore paused"
+      : effectiveGameEnded
       ? "Game over"
       : activeColor === engineColor
         ? state.play.thinking ? "Thinking…" : "To move"
         : "Waiting";
     dom.play_bottom_turn.textContent = reviewing
       ? "Review"
-      : playGameEnded()
+      : recoveryBlocked
+      ? "Restore paused"
+      : effectiveGameEnded
       ? "Game over"
       : activeColor === humanColor ? "Your series" : "Waiting";
 
@@ -2312,10 +2690,19 @@
     dom.play_as_white.setAttribute("aria-pressed", String(humanColor === "white"));
     dom.play_as_black.setAttribute("aria-pressed", String(humanColor === "black"));
     dom.play_new_game.textContent = `New game as ${humanColor === "white" ? "White" : "Black"}`;
-    dom.play_resign.disabled = reviewing || !state.play.active || playGameEnded();
+    dom.play_resign.disabled = reviewing || recoveryBlocked || !state.play.active || effectiveGameEnded;
     dom.play_analyze_position.disabled = reviewing || !state.positionReady || state.positionBusy || state.play.thinking || state.play.animating;
+    const retryableEngineTurn = Boolean(state.play.error)
+      && !reviewing
+      && state.play.active
+      && (recoveryBlocked || (!effectiveGameEnded && seriesColor() !== humanColor));
+    dom.play_retry_engine.hidden = !retryableEngineTurn;
+    dom.play_retry_engine.disabled = !retryableEngineTurn || state.play.thinking || state.play.animating;
+    dom.play_retry_engine.textContent = state.positionReady
+      ? "Retry engine move"
+      : "Retry saved game";
 
-    const outcome = reviewing ? null : playOutcomeStatus();
+    const outcome = reviewing || recoveryBlocked ? null : playOutcomeStatus();
     let status = reviewing ? {
       title: "Reviewing game",
       detail: review.lastSan
@@ -2324,7 +2711,17 @@
       kind: "review",
     } : outcome;
     if (!status && state.play.error) {
-      status = { title: "Engine reply stopped", detail: state.play.error, kind: "error" };
+      status = {
+        title: playSessionLastWriteDurable
+          ? "Search stopped — game saved"
+          : "Search stopped — reload may lose this game",
+        detail: recoveryBlocked
+          ? `${state.play.error} Retry validation when the engine is available; you do not need to restart.`
+          : playSessionLastWriteDurable
+            ? `${state.play.error} — Retry this engine move or switch strength; you do not need to restart.`
+            : `${state.play.error} Browser storage rejected the latest save. Keep this tab open, then retry the engine move.`,
+        kind: "warning",
+      };
     } else if (!status && (state.play.thinking || state.play.animating)) {
       const search = state.play.activeSearch || playSearchLimits();
       status = {
@@ -2358,7 +2755,9 @@
       ? review.seriesMove
         ? `Move ${review.seriesMove} of Series ${review.series}${review.complete ? " · series complete" : ""}`
         : `Position before Series ${review.series}`
-      : playGameEnded()
+      : recoveryBlocked
+      ? "Saved game waiting for validation"
+      : effectiveGameEnded
       ? humanize(state.play.resigned ? "resigned" : state.outcome)
       : `${state.movesRemaining} move${state.movesRemaining === 1 ? "" : "s"} remaining`;
     dom.play_history_count.textContent = reviewing
@@ -2477,7 +2876,11 @@
     const sequence = ++state.play.sequence;
     const key = playPositionKey();
     const search = playSearchLimits();
-    const deadlineMs = monotonicNow() + search.seconds * 1000;
+    // Let a result completed at the search boundary cross the transport and
+    // replay-validation boundary instead of aborting it in flight.
+    const deadlineMs = monotonicNow()
+      + search.seconds * 1000
+      + PLAY_ANALYSIS_RESPONSE_GRACE_MS;
     const analysisBody = {
       ...boundaryPayload(),
       prefix: [],
@@ -2552,11 +2955,15 @@
       };
       state.play.thinking = false;
       state.play.animating = false;
+      captureAndPersistPlayWorkspace();
       if (checked.complete && checked.next_state && !checked.outcome) await advanceSeries(true);
-      state.playWorkspace = captureWorkspace();
+      captureAndPersistPlayWorkspace();
     } catch (error) {
       if (error.name === "AbortError" || sequence !== state.play.sequence) return;
-      state.play.error = displayError(error);
+      state.play.error = error?.code === "analysis-deadline"
+        ? "The engine used its full search time before the reply receipt arrived."
+        : displayError(error);
+      persistPlaySession();
     } finally {
       if (state.play.engineAbort === controller) state.play.engineAbort = null;
       if (sequence === state.play.sequence) {
@@ -2570,9 +2977,12 @@
   }
 
   async function startNewPlayGame({ announce = true } = {}) {
+    playSessionReplayBlocked = false;
     cancelEngineTurn();
     cancelAutoAnalysis(true);
     state.prefixAbort?.abort();
+    state.prefixAbort = null;
+    state.prefixSequence += 1;
     await PLAY_HANDOFF.wait().catch(() => null);
     const sequence = state.play.sequence;
     state.mode = "play";
@@ -2617,7 +3027,7 @@
     renderAll();
     const payload = await refreshPrefix([], []);
     if (!payload || sequence !== state.play.sequence || state.mode !== "play") return;
-    state.playWorkspace = captureWorkspace();
+    captureAndPersistPlayWorkspace();
     if (announce) showToast(`New game as ${state.play.humanColor === "white" ? "White" : "Black"}`);
     renderAll();
     void continuePlayFlow();
@@ -2634,11 +3044,16 @@
     cancelEngineTurn();
     state.play.resigned = true;
     state.selected = null;
+    persistPlaySession();
     renderAll();
   }
 
   async function switchWorkspaceMode(mode, { importPlayPosition = false } = {}) {
     if (!new Set(["play", "analyze"]).has(mode)) return;
+    if (state.positionBusy) {
+      showToast("Wait for the saved game validation to finish");
+      return;
+    }
     state.prefixAbort?.abort();
     state.prefixAbort = null;
     if (mode === "analyze") {
@@ -2648,6 +3063,7 @@
           ? state.playWorkspace
           : captureWorkspace();
         state.playWorkspace = stablePlay;
+        persistPlaySession();
         const imported = importPlayPosition ? stablePlay : null;
         cancelEngineTurn();
         if (imported) {
@@ -2758,9 +3174,12 @@
     if (state.mode === "analyze") {
       attachMoveToStudy(move, payload, boundaryAtMove, parentId, seriesParentId);
     }
+    if (state.mode === "play") {
+      captureAndPersistPlayWorkspace();
+    }
     if (payload.complete && payload.next_state && !payload.outcome) await advanceSeries(true);
     if (state.mode === "play") {
-      state.playWorkspace = captureWorkspace();
+      captureAndPersistPlayWorkspace();
       renderPlaySurface();
     }
   }
@@ -3632,6 +4051,7 @@
     state.handoffNotice = completedByCheck && unusedMoves > 0
       ? `Series ${completedSeries} ended by check; ${unusedMoves} unused move${unusedMoves === 1 ? "" : "s"} were forfeited.`
       : `Series ${completedSeries} complete. Series ${state.boundary.series} started automatically.`;
+    if (state.mode === "play") captureAndPersistPlayWorkspace();
     renderAll();
 
     const expectedBoundaryKey = boundaryKey(plan.nextBoundary);
@@ -3662,7 +4082,7 @@
       renderStudyTree();
     } else {
       state.play.error = null;
-      state.playWorkspace = captureWorkspace();
+      captureAndPersistPlayWorkspace();
     }
     showToast(completedByCheck && unusedMoves > 0
       ? `Check ended Series ${completedSeries} early · ${unusedMoves} unused move${unusedMoves === 1 ? "" : "s"}`
@@ -4177,6 +4597,15 @@
     window.addEventListener("pointermove", onPointerMove, { passive: false });
     window.addEventListener("pointerup", onPointerUp);
     window.addEventListener("pointercancel", endDrag);
+    window.addEventListener("pagehide", () => {
+      if (
+        state.mode === "play"
+        && state.play.active
+        && !state.play.animating
+        && !state.positionBusy
+      ) captureAndPersistPlayWorkspace();
+      else persistPlaySession();
+    });
 
     dom.mode_play.addEventListener("click", () => { void switchWorkspaceMode("play"); });
     dom.mode_analyze.addEventListener("click", () => { void switchWorkspaceMode("analyze"); });
@@ -4185,6 +4614,7 @@
     dom.play_strength_strong.addEventListener("click", () => selectPlayStrength("strong"));
     dom.play_strength_faster.addEventListener("click", () => selectPlayStrength("faster"));
     dom.play_new_game.addEventListener("click", () => { void startNewPlayGame(); });
+    dom.play_retry_engine.addEventListener("click", retryEngineTurn);
     dom.play_analyze_position.addEventListener("click", () => { void switchWorkspaceMode("analyze", { importPlayPosition: true }); });
     dom.play_resign.addEventListener("click", resignPlayGame);
     dom.play_history_previous.addEventListener("click", () => stepPlayTimeline(-1));
@@ -4319,7 +4749,9 @@
       renderStudyTree();
     }
     state.analysisWorkspace = captureWorkspace();
-    await startNewPlayGame({ announce: false });
+    if (!await restorePersistedPlaySession()) {
+      await startNewPlayGame({ announce: false });
+    }
   }
 
   void initialize();

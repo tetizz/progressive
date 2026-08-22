@@ -227,11 +227,93 @@ private:
 #endif
 
 struct Move {
-    int from;
-    int to;
-    int promotion;
-    int required_ep_square;
-    bool castling;
+    std::int8_t from;
+    std::int8_t to;
+    std::int8_t promotion;
+    std::int8_t required_ep_square;
+    bool castling = false;
+
+    Move() = default;
+
+    constexpr Move(
+        int from_square,
+        int to_square,
+        int promotion_piece,
+        int ep_square,
+        bool is_castling
+    ) noexcept
+        : from(static_cast<std::int8_t>(from_square)),
+          to(static_cast<std::int8_t>(to_square)),
+          promotion(static_cast<std::int8_t>(promotion_piece)),
+          required_ep_square(static_cast<std::int8_t>(ep_square)),
+          castling(is_castling) {}
+};
+
+static_assert(sizeof(Move) == 5);
+
+class MoveList {
+public:
+    static constexpr std::size_t INLINE_CAPACITY = 64;
+
+    MoveList() = default;
+    MoveList(const MoveList&) = delete;
+    MoveList& operator=(const MoveList&) = delete;
+
+    MoveList(MoveList&& other) noexcept
+        : overflow_moves_(std::move(other.overflow_moves_)),
+          size_(other.size_) {
+        if (size_ <= INLINE_CAPACITY) {
+            std::copy_n(
+                other.inline_moves_.begin(),
+                size_,
+                inline_moves_.begin()
+            );
+        }
+        other.size_ = 0;
+    }
+
+    MoveList& operator=(MoveList&&) = delete;
+
+    void push_back(const Move& move) {
+        if (size_ < INLINE_CAPACITY) {
+            inline_moves_[size_] = move;
+            ++size_;
+            return;
+        }
+        if (size_ == INLINE_CAPACITY) {
+            overflow_moves_.reserve(INLINE_CAPACITY * 2);
+            overflow_moves_.insert(
+                overflow_moves_.end(),
+                inline_moves_.begin(),
+                inline_moves_.end()
+            );
+        }
+        overflow_moves_.push_back(move);
+        ++size_;
+    }
+
+    [[nodiscard]] const Move* begin() const noexcept {
+        return data();
+    }
+
+    [[nodiscard]] const Move* end() const noexcept {
+        return data() + size_;
+    }
+
+    [[nodiscard]] std::size_t size() const noexcept {
+        return size_;
+    }
+
+private:
+    [[nodiscard]] const Move* data() const noexcept {
+        return size_ <= INLINE_CAPACITY
+            ? inline_moves_.data()
+            : overflow_moves_.data();
+    }
+
+    std::array<Move, INLINE_CAPACITY> inline_moves_;
+    std::vector<Move> overflow_moves_;
+    std::size_t size_ = 0;
 };
 
 constexpr std::array<int, 7> PIECE_VALUES = {0, 100, 325, 340, 525, 975, 0};
@@ -580,7 +662,7 @@ void set_piece(
 }
 
 void add_promotions(
-    std::vector<Move>& moves,
+    MoveList& moves,
     int from,
     int to,
     int required_ep_square = -1
@@ -592,7 +674,7 @@ void add_promotions(
 
 void add_standard_castling(
     const BoardState& board,
-    std::vector<Move>& moves
+    MoveList& moves
 ) {
     const bool mover = board.white_to_move;
     const int rank = mover == WHITE ? 0 : 7;
@@ -637,12 +719,11 @@ void add_standard_castling(
     try_side(false);
 }
 
-[[nodiscard]] std::vector<Move> pseudo_moves(
+[[nodiscard]] MoveList pseudo_moves(
     const BoardState& board,
     const std::vector<int>& ep_targets
 ) {
-    std::vector<Move> moves;
-    moves.reserve(64);
+    MoveList moves;
     const bool mover = board.white_to_move;
     const Bitboard own = board.occupied[mover ? 1 : 0];
     const Bitboard enemy = board.occupied[(!mover) ? 1 : 0];
@@ -1186,7 +1267,7 @@ struct ReachIdentityHash {
     if (left.is_capture != right.is_capture) {
         return left.is_capture;
     }
-    return left.move.uci < right.move.uci;
+    return legal_move_uci_key(left.move) < legal_move_uci_key(right.move);
 }
 
 [[nodiscard]] ReachProbe probe_series_reach_native(
@@ -1440,15 +1521,69 @@ std::optional<FullEvaluation> full_evaluate(
     return result;
 }
 
+std::uint16_t legal_move_uci_key(const LegalMove& move) noexcept {
+    std::uint16_t promotion = 0;
+    switch (move.promotion) {
+        case BISHOP:
+            promotion = 1;
+            break;
+        case KNIGHT:
+            promotion = 2;
+            break;
+        case QUEEN:
+            promotion = 3;
+            break;
+        case ROOK:
+            promotion = 4;
+            break;
+        default:
+            break;
+    }
+    const std::uint16_t from_file = static_cast<std::uint16_t>(
+        move.from_square & 7
+    );
+    const std::uint16_t from_rank = static_cast<std::uint16_t>(
+        move.from_square >> 3
+    );
+    const std::uint16_t to_file = static_cast<std::uint16_t>(
+        move.to_square & 7
+    );
+    const std::uint16_t to_rank = static_cast<std::uint16_t>(
+        move.to_square >> 3
+    );
+    return static_cast<std::uint16_t>(
+        (((from_file * 8 + from_rank) * 8 + to_file) * 8 + to_rank) * 5
+        + promotion
+    );
+}
+
+std::string legal_move_uci(const LegalMove& move) {
+    std::string result;
+    result.reserve(move.promotion == 0 ? 4 : 5);
+    result.push_back(static_cast<char>('a' + (move.from_square & 7)));
+    result.push_back(static_cast<char>('1' + (move.from_square >> 3)));
+    result.push_back(static_cast<char>('a' + (move.to_square & 7)));
+    result.push_back(static_cast<char>('1' + (move.to_square >> 3)));
+    if (move.promotion != 0) {
+        constexpr std::array<char, 7> SYMBOLS = {
+            '\0', 'p', 'n', 'b', 'r', 'q', 'k',
+        };
+        result.push_back(SYMBOLS[move.promotion]);
+    }
+    return result;
+}
+
 std::vector<ExpandedMove> expand_legal_move_variants(
     const BoardState& position,
     const std::vector<int>& ep_targets
 ) {
     std::vector<ExpandedMove> legal;
+    const MoveList moves = pseudo_moves(position, ep_targets);
+    legal.reserve(moves.size());
     const bool mover = position.white_to_move;
     const Bitboard enemy = position.occupied[(!mover) ? 1 : 0];
     const Position evaluation = evaluation_position(position);
-    for (const Move& move : pseudo_moves(position, ep_targets)) {
+    for (const Move& move : moves) {
         BoardState child = apply_move(position, move);
         const Bitboard own_king = child.kings
             & child.occupied[mover ? 1 : 0];
@@ -1476,14 +1611,13 @@ std::vector<ExpandedMove> expand_legal_move_variants(
                 child,
                 static_cast<int>(std::countr_zero(opponent_king)),
                 mover
-            );
+        );
         legal.push_back(ExpandedMove{
             LegalMove{
-                move_uci(move),
-                move.from,
-                move.to,
-                move.promotion,
-                move.required_ep_square,
+                static_cast<std::int8_t>(move.from),
+                static_cast<std::int8_t>(move.to),
+                static_cast<std::int8_t>(move.promotion),
+                static_cast<std::int8_t>(move.required_ep_square),
             },
             child,
             moving_piece == PAWN,
@@ -1495,7 +1629,8 @@ std::vector<ExpandedMove> expand_legal_move_variants(
         legal.begin(),
         legal.end(),
         [](const ExpandedMove& left, const ExpandedMove& right) {
-            return left.move.uci < right.move.uci;
+            return legal_move_uci_key(left.move)
+                < legal_move_uci_key(right.move);
         }
     );
     legal.erase(
@@ -1503,7 +1638,8 @@ std::vector<ExpandedMove> expand_legal_move_variants(
             legal.begin(),
             legal.end(),
             [](const ExpandedMove& left, const ExpandedMove& right) {
-                return left.move.uci == right.move.uci;
+                return legal_move_uci_key(left.move)
+                    == legal_move_uci_key(right.move);
             }
         ),
         legal.end()
@@ -1735,9 +1871,200 @@ struct FrontierScoreIdentityHash {
     }
 };
 
+using PackedUciMove = std::uint16_t;
+
+[[nodiscard]] PackedUciMove pack_uci_move(
+    const LegalMove& move
+) noexcept {
+    return legal_move_uci_key(move);
+}
+
+[[nodiscard]] std::string unpack_uci_move(PackedUciMove packed) {
+    constexpr std::array<char, 5> PROMOTIONS = {'\0', 'b', 'n', 'q', 'r'};
+    const std::uint16_t promotion = packed % 5;
+    packed = static_cast<PackedUciMove>(packed / 5);
+    const std::uint16_t to_rank = packed % 8;
+    packed = static_cast<PackedUciMove>(packed / 8);
+    const std::uint16_t to_file = packed % 8;
+    packed = static_cast<PackedUciMove>(packed / 8);
+    const std::uint16_t from_rank = packed % 8;
+    const std::uint16_t from_file = packed / 8;
+
+    std::string result;
+    result.reserve(promotion == 0 ? 4 : 5);
+    result.push_back(static_cast<char>('a' + from_file));
+    result.push_back(static_cast<char>('1' + from_rank));
+    result.push_back(static_cast<char>('a' + to_file));
+    result.push_back(static_cast<char>('1' + to_rank));
+    if (promotion != 0) {
+        result.push_back(PROMOTIONS[promotion]);
+    }
+    return result;
+}
+
+class CompactMovePath {
+public:
+    static constexpr std::size_t INLINE_CAPACITY = 8;
+
+    CompactMovePath() = default;
+
+    CompactMovePath(const CompactMovePath& other) {
+        copy_from(other);
+    }
+
+    CompactMovePath(CompactMovePath&& other) noexcept {
+        move_from(other);
+    }
+
+    CompactMovePath& operator=(const CompactMovePath& other) {
+        if (this != &other) {
+            CompactMovePath copy(other);
+            *this = std::move(copy);
+        }
+        return *this;
+    }
+
+    CompactMovePath& operator=(CompactMovePath&& other) noexcept {
+        if (this != &other) {
+            release_heap();
+            size_ = 0;
+            capacity_ = INLINE_CAPACITY;
+            inline_moves_ = {};
+            move_from(other);
+        }
+        return *this;
+    }
+
+    ~CompactMovePath() {
+        release_heap();
+    }
+
+    [[nodiscard]] bool empty() const noexcept {
+        return size_ == 0;
+    }
+
+    [[nodiscard]] std::size_t size() const noexcept {
+        return size_;
+    }
+
+    [[nodiscard]] PackedUciMove operator[](std::size_t index) const noexcept {
+        return data()[index];
+    }
+
+    [[nodiscard]] PackedUciMove back() const noexcept {
+        return data()[size_ - 1];
+    }
+
+    void push_back(const LegalMove& move) {
+        push_back(pack_uci_move(move));
+    }
+
+    [[nodiscard]] std::vector<std::string> to_uci_vector() const {
+        std::vector<std::string> result;
+        result.reserve(size_);
+        for (std::size_t index = 0; index < size_; ++index) {
+            result.push_back(unpack_uci_move(data()[index]));
+        }
+        return result;
+    }
+
+    friend bool operator==(
+        const CompactMovePath& left,
+        const CompactMovePath& right
+    ) noexcept {
+        return left.size_ == right.size_
+            && std::equal(
+                left.data(),
+                left.data() + left.size_,
+                right.data()
+            );
+    }
+
+    friend bool operator<(
+        const CompactMovePath& left,
+        const CompactMovePath& right
+    ) noexcept {
+        return std::lexicographical_compare(
+            left.data(),
+            left.data() + left.size_,
+            right.data(),
+            right.data() + right.size_
+        );
+    }
+
+private:
+    void push_back(PackedUciMove move) {
+        if (size_ == capacity_) {
+            if (capacity_ > std::numeric_limits<std::uint32_t>::max() / 2) {
+                throw std::length_error("progressive move path is too long");
+            }
+            const std::uint32_t next_capacity = capacity_ * 2;
+            auto* replacement = new PackedUciMove[next_capacity];
+            std::copy(data(), data() + size_, replacement);
+            release_heap();
+            heap_moves_ = replacement;
+            capacity_ = next_capacity;
+        }
+        mutable_data()[size_] = move;
+        ++size_;
+    }
+
+    [[nodiscard]] const PackedUciMove* data() const noexcept {
+        return capacity_ <= INLINE_CAPACITY
+            ? inline_moves_.data()
+            : heap_moves_;
+    }
+
+    [[nodiscard]] PackedUciMove* mutable_data() noexcept {
+        return capacity_ <= INLINE_CAPACITY
+            ? inline_moves_.data()
+            : heap_moves_;
+    }
+
+    void release_heap() noexcept {
+        if (capacity_ > INLINE_CAPACITY) {
+            delete[] heap_moves_;
+            heap_moves_ = nullptr;
+        }
+    }
+
+    void copy_from(const CompactMovePath& other) {
+        size_ = other.size_;
+        capacity_ = other.capacity_;
+        if (other.capacity_ <= INLINE_CAPACITY) {
+            inline_moves_ = other.inline_moves_;
+            return;
+        }
+        auto* copy = new PackedUciMove[other.capacity_];
+        std::copy(other.data(), other.data() + other.size_, copy);
+        heap_moves_ = copy;
+    }
+
+    void move_from(CompactMovePath& other) noexcept {
+        size_ = other.size_;
+        capacity_ = other.capacity_;
+        if (other.capacity_ <= INLINE_CAPACITY) {
+            inline_moves_ = other.inline_moves_;
+        } else {
+            heap_moves_ = other.heap_moves_;
+            other.heap_moves_ = nullptr;
+            other.inline_moves_ = {};
+        }
+        other.size_ = 0;
+        other.capacity_ = INLINE_CAPACITY;
+    }
+
+    std::array<PackedUciMove, INLINE_CAPACITY> inline_moves_{};
+    PackedUciMove* heap_moves_ = nullptr;
+    std::uint32_t size_ = 0;
+    std::uint32_t capacity_ = INLINE_CAPACITY;
+};
+
+static_assert(sizeof(CompactMovePath) <= 32);
+
 struct NativeFrontierState {
     BoardState board;
-    std::vector<std::string> moves;
+    CompactMovePath moves;
     Bitboard pending_ep_targets = 0;
     bool made_progress = false;
     std::uint64_t path_count = 1;
@@ -1748,7 +2075,7 @@ struct NativeFrontierState {
 
 struct NativeCompletedSeries {
     BoardState board;
-    std::vector<std::string> moves;
+    CompactMovePath moves;
     std::vector<int> boundary_ep_targets;
     std::int64_t halfmove_clock;
     std::int64_t fullmove_number;
@@ -2310,7 +2637,7 @@ bool record_completed(
     const CompleteSeriesRequest& request,
     const NativeFrontierState& state,
     BoardState board,
-    std::vector<std::string> moves,
+    CompactMovePath moves,
     Bitboard pending_ep_targets,
     bool made_progress,
     bool delivered_check
@@ -2336,7 +2663,10 @@ bool record_completed(
                 outcome == NativeSeriesOutcome::Checkmate
                     ? TacticalKind::Mate
                     : TacticalKind::Check,
-                tactical_signature(moves.size(), moves.back()),
+                tactical_signature(
+                    moves.size(),
+                    unpack_uci_move(moves.back())
+                ),
             });
             std::sort(tactical_provenance.begin(), tactical_provenance.end());
             tactical_provenance.erase(
@@ -2392,7 +2722,7 @@ void record_played_tactical_provenance(
 ) {
     const std::string signature = tactical_signature(
         state.moves.size(),
-        expanded.move.uci
+        legal_move_uci(expanded.move)
     );
     if (expanded.move.promotion != 0) {
         state.tactical_provenance.push_back(TacticalOpportunity{
@@ -2496,11 +2826,11 @@ bool bound_frontier(
         return true;
     }
     struct Group {
-        std::string move;
+        PackedUciMove move;
         std::vector<NativeFrontierState> states;
     };
     std::vector<Group> groups;
-    std::unordered_map<std::string, std::size_t> group_indices;
+    std::unordered_map<PackedUciMove, std::size_t> group_indices;
     const std::size_t prefix_length = context.request.required_prefix.size();
     for (const auto& item : frontier) {
         if (context.deadline_reached()) {
@@ -2510,7 +2840,7 @@ bool bound_frontier(
             prefix_length,
             item.moves.size() - 1
         );
-        const std::string& group_move = item.moves[group_index];
+        const PackedUciMove group_move = item.moves[group_index];
         const auto [found, inserted] = group_indices.emplace(
             group_move,
             groups.size()
@@ -2537,7 +2867,7 @@ bool bound_frontier(
     if (selected.size() > cap) {
         selected.resize(cap);
     }
-    std::set<std::vector<std::string>> selected_moves;
+    std::set<CompactMovePath> selected_moves;
     for (const auto& item : selected) {
         selected_moves.insert(item.moves);
     }
@@ -2626,7 +2956,7 @@ bool bound_frontier(
             }
         );
 
-        std::set<std::vector<std::string>> reserve_candidates;
+        std::set<CompactMovePath> reserve_candidates;
         for (const auto& representative : protected_states) {
             if (!selected_moves.contains(representative.state->moves)) {
                 reserve_candidates.insert(representative.state->moves);
@@ -3069,7 +3399,7 @@ bool merge_complete_series(NativeGenerationContext& context) {
             auto& representative = item.series.representative;
             context.response.series.push_back(CompleteSeriesCandidate{
                 CompleteSeriesPath{
-                    std::move(representative.moves),
+                    representative.moves.to_uci_vector(),
                     item.series.path_count,
                 },
                 representative.board,
@@ -3090,7 +3420,7 @@ bool merge_complete_series(NativeGenerationContext& context) {
         auto& representative = item.representative;
         context.response.series.push_back(CompleteSeriesCandidate{
             CompleteSeriesPath{
-                std::move(representative.moves),
+                representative.moves.to_uci_vector(),
                 item.path_count,
             },
             representative.board,
@@ -3146,7 +3476,8 @@ bool replay_required_prefix(
             expanded.begin(),
             expanded.end(),
             [&](const ExpandedMove& move) {
-                return move.move.uci == request.required_prefix[index];
+                return legal_move_uci(move.move)
+                    == request.required_prefix[index];
             }
         );
         if (selected == expanded.end()) {
@@ -3163,7 +3494,7 @@ bool replay_required_prefix(
         root.made_progress = root.made_progress
             || selected->is_pawn_move
             || selected->is_capture;
-        root.moves.push_back(selected->move.uci);
+        root.moves.push_back(selected->move);
         if (request.tactical_protection) {
             record_played_tactical_provenance(root, *selected);
         }
@@ -3330,7 +3661,7 @@ CompleteSeriesResponse generate_complete_series(
                 if (!update_frontier_clocks(context, candidate, expanded, mover)) {
                     return false;
                 }
-                candidate.moves.push_back(expanded.move.uci);
+                candidate.moves.push_back(expanded.move);
                 if (request.tactical_protection) {
                     record_played_tactical_provenance(candidate, expanded);
                 }
@@ -4990,9 +5321,10 @@ PyObject* py_legal_move_variants(PyObject*, PyObject* arguments) {
     }
     for (std::size_t index = 0; index < legal.size(); ++index) {
         const auto& move = legal[index];
+        const std::string uci = spc::native::legal_move_uci(move);
         PyObject* entry = Py_BuildValue(
             "(siiii)",
-            move.uci.c_str(),
+            uci.c_str(),
             move.from_square,
             move.to_square,
             move.promotion,
@@ -5087,9 +5419,10 @@ PyObject* py_expand_legal_move_variants(PyObject*, PyObject* arguments) {
     for (std::size_t index = 0; index < expanded.size(); ++index) {
         const auto& item = expanded[index];
         const auto& child = item.child;
+        const std::string uci = spc::native::legal_move_uci(item.move);
         PyObject* entry = Py_BuildValue(
             "(siiiiKKKKKKKKKKiii)",
-            item.move.uci.c_str(),
+            uci.c_str(),
             item.move.from_square,
             item.move.to_square,
             item.move.promotion,

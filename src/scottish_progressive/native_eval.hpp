@@ -37,12 +37,19 @@ struct BoardState {
 };
 
 struct LegalMove {
-    std::string uci;
-    int from_square;
-    int to_square;
-    int promotion;
-    int required_ep_square;
+    std::int8_t from_square;
+    std::int8_t to_square;
+    std::int8_t promotion;
+    std::int8_t required_ep_square;
 };
+
+static_assert(sizeof(LegalMove) == 4);
+
+[[nodiscard]] std::uint16_t legal_move_uci_key(
+    const LegalMove& move
+) noexcept;
+
+[[nodiscard]] std::string legal_move_uci(const LegalMove& move);
 
 struct ExpandedMove {
     LegalMove move;

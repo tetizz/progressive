@@ -378,6 +378,8 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .play-live.is-thinking .play-live-mark i:nth-child(3) { animation-delay: .24s; }
 .play-live.is-error { color: #efbbb6; background: #3c2927; border-color: #6e3934; }
 .play-live.is-error .play-live-mark i { background: var(--red); }
+.play-live.is-warning { color: #f0ddb0; background: #3a3324; border-color: #6b5a32; }
+.play-live.is-warning .play-live-mark i { background: var(--amber); }
 .play-live.is-won { color: #d9efc0; background: #2d3b25; border-color: #4f6b3a; }
 .play-live.is-finished .play-live-mark i { background: var(--text-3); }
 .play-live.is-review { color: #e5d8b4; background: #363127; border-color: #685c3c; }
@@ -412,6 +414,7 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .board-shell.is-reviewing { box-shadow: 0 0 0 2px rgb(197 169 93 / 38%); }
 .play-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; margin-top: 14px; }
 .play-new-game { grid-column: 1 / -1; min-height: 42px; }
+.play-retry-engine { grid-column: 1 / -1; min-height: 38px; }
 .play-actions .secondary { min-height: 38px; }
 .play-resign { color: #dba39e; }
 .engine-proof { display: grid; gap: 5px; margin: 15px 0 0; padding-top: 12px; border-top: 1px solid var(--line-soft); }

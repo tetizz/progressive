@@ -224,6 +224,51 @@ def _direct_bulk_call(
     )
 
 
+def test_native_compact_move_path_preserves_inline_fallback_and_uci_order() -> None:
+    native = _require_native_complete_series()
+
+    long_state = ProgressiveState.from_fen(
+        "7k/8/8/8/8/8/8/K7 w - - 0 1",
+        9,
+    )
+    long_prefix = (
+        "a1b1",
+        "b1a1",
+        "a1b1",
+        "b1a1",
+        "a1b1",
+        "b1a1",
+        "a1b1",
+        "b1a1",
+        "a1b1",
+    )
+    status, message, _stats, raw_series = _direct_bulk_call(
+        native,
+        long_state,
+        required_prefix=long_prefix,
+        max_frontier_states=1,
+    )
+    assert status == 0, message
+    assert raw_series == ((long_prefix, 1),)
+
+    promotion_state = ProgressiveState.from_fen(
+        "8/P6k/8/8/8/8/8/7K w - - 0 1",
+        1,
+    )
+    status, message, _stats, raw_series = _direct_bulk_call(
+        native,
+        promotion_state,
+        max_frontier_states=32,
+    )
+    assert status == 0, message
+    assert tuple(item[0][0] for item in raw_series[:4]) == (
+        "a7a8b",
+        "a7a8n",
+        "a7a8q",
+        "a7a8r",
+    )
+
+
 def test_bulk_complete_series_matches_python_rules_and_structured_ordering(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

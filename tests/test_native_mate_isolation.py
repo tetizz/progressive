@@ -21,11 +21,11 @@ from scottish_progressive.series_mate import (
 
 
 NATIVE_SOURCE_HASHES = {
-    "_native_eval.cpp": "eb7d998989f11b78e7f549b40d761b1865d065674fae0a4c787101b9c7e08b91",
-    "native_eval.hpp": "b388b9c9d65d4e950bee9fe2e3c3564aea9586e6742013925d75b33c4bdfc103",
+    "_native_eval.cpp": "c77a98e64ac3fc1e34517854de23ce5cf48e64f335af2d655cf5e3068ec99820",
+    "native_eval.hpp": "c9037b4947831c259cbc6eddfa2ec6f025979addaa20f3a3e9012b7d6c69f7b9",
 }
 NATIVE_IDENTITY = (
-    "002f7731b4d71877de5b5312ce9729bafd564e11a4f5ee1ebe649af64843023e"
+    "c3224da726b09e7c61e047205af6a2923aaa6dded54d64c41f42b55a9f30805c"
 )
 NATIVE_SURFACE = {
     "SOURCE_IDENTITY",
@@ -136,7 +136,8 @@ def _raw_native_arguments(state: ProgressiveState) -> list[object]:
 def test_native_sources_identity_and_surface_are_unchanged() -> None:
     package = Path(evaluation.__file__).resolve().parent
     for filename, expected in NATIVE_SOURCE_HASHES.items():
-        assert hashlib.sha256((package / filename).read_bytes()).hexdigest() == expected
+        normalized = (package / filename).read_text(encoding="utf-8").encode()
+        assert hashlib.sha256(normalized).hexdigest() == expected
 
     native = evaluation._native_eval
     assert native is not None

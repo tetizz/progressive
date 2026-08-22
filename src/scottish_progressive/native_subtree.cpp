@@ -613,6 +613,17 @@ struct CutoffHint {
     CompleteSeriesCandidate candidate;
 };
 
+struct TransactionalBound {
+    TTKey key;
+    std::int64_t depth = 0;
+    std::int64_t lower = 0;
+    std::int64_t upper = 0;
+    std::uint8_t mask = 0;
+};
+
+constexpr std::uint8_t TRANSACTIONAL_LOWER = 1;
+constexpr std::uint8_t TRANSACTIONAL_UPPER = 2;
+
 using CandidateSeries = std::vector<CompleteSeriesCandidate>;
 // Search nodes keep an immutable shared snapshot. An LRU eviction can remove
 // the map entry while a recursive child is running without invalidating the
@@ -742,6 +753,14 @@ public:
                       config.root_contract_tt_capacity
                   ))
                   : 0
+          ),
+          transactional_bounds(
+              config.requested_depth >= 5
+                  ? static_cast<std::size_t>(std::min<std::uint64_t>(
+                      32'768,
+                      config.root_contract_tt_capacity
+                  ))
+                  : 0
           ) {
         if (
             config.max_series_per_node == 0
@@ -793,6 +812,12 @@ public:
     // frontier. Hints never supply a score; a direct-map collision replaces
     // only an ordering hint, and every miss falls back to canonical generation.
     std::vector<std::optional<CutoffHint>> cutoff_hints;
+    // PVS score-table writes are rolled back to keep later exact searches
+    // canonical. Their fail-low/fail-high bounds remain mathematically valid,
+    // though, so retain a compact score-only overlay for later one-point
+    // probes. The overlay is never consulted by a full-window search and never
+    // supplies a PV.
+    std::vector<std::optional<TransactionalBound>> transactional_bounds;
     std::vector<std::vector<std::pair<TTKey, std::optional<TTEntry>>>>
         tt_transactions;
     std::unordered_map<PositionKey, std::int64_t, PositionKeyHash> eval_cache;
@@ -834,6 +859,100 @@ public:
         slot = CutoffHint{
             key,
             candidate,
+        };
+    }
+
+    [[nodiscard]] const TransactionalBound* transactional_bound(
+        const TTKey& key
+    ) const noexcept {
+        if (transactional_bounds.empty()) {
+            return nullptr;
+        }
+        const std::size_t base = TTKeyHash{}(key)
+            % transactional_bounds.size();
+        const std::size_t probes = std::min<std::size_t>(
+            4,
+            transactional_bounds.size()
+        );
+        for (std::size_t probe = 0; probe < probes; ++probe) {
+            const auto& slot = transactional_bounds[
+                (base + probe) % transactional_bounds.size()
+            ];
+            if (slot.has_value() && slot->key == key) {
+                return &*slot;
+            }
+        }
+        return nullptr;
+    }
+
+    void remember_transactional_bound(
+        const TTKey& key,
+        const TTEntry& entry
+    ) {
+        if (
+            transactional_bounds.empty()
+            || entry.bound == TTBound::Exact
+        ) {
+            return;
+        }
+        const std::size_t base = TTKeyHash{}(key)
+            % transactional_bounds.size();
+        const std::size_t probes = std::min<std::size_t>(
+            4,
+            transactional_bounds.size()
+        );
+        std::optional<TransactionalBound>* selected = nullptr;
+        for (std::size_t probe = 0; probe < probes; ++probe) {
+            auto& candidate = transactional_bounds[
+                (base + probe) % transactional_bounds.size()
+            ];
+            if (candidate.has_value() && candidate->key == key) {
+                selected = &candidate;
+                break;
+            }
+            if (!candidate.has_value()) {
+                selected = &candidate;
+                break;
+            }
+            if (
+                selected == nullptr
+                || candidate->depth < (*selected)->depth
+            ) {
+                selected = &candidate;
+            }
+        }
+        if (selected == nullptr) {
+            return;
+        }
+        auto& slot = *selected;
+        if (slot.has_value() && slot->key == key) {
+            if (slot->depth > entry.depth) {
+                return;
+            }
+            if (slot->depth == entry.depth) {
+                if (entry.bound == TTBound::Lower) {
+                    slot->lower = (slot->mask & TRANSACTIONAL_LOWER) != 0
+                        ? std::max(slot->lower, entry.score)
+                        : entry.score;
+                    slot->mask |= TRANSACTIONAL_LOWER;
+                } else {
+                    slot->upper = (slot->mask & TRANSACTIONAL_UPPER) != 0
+                        ? std::min(slot->upper, entry.score)
+                        : entry.score;
+                    slot->mask |= TRANSACTIONAL_UPPER;
+                }
+                return;
+            }
+        }
+        const std::uint8_t mask = entry.bound == TTBound::Lower
+            ? TRANSACTIONAL_LOWER
+            : TRANSACTIONAL_UPPER;
+        slot = TransactionalBound{
+            key,
+            entry.depth,
+            entry.bound == TTBound::Lower ? entry.score : 0,
+            entry.bound == TTBound::Upper ? entry.score : 0,
+            mask,
         };
     }
 
@@ -1387,6 +1506,12 @@ public:
         }
         auto journal = std::move(tt_transactions.back());
         tt_transactions.pop_back();
+        for (const auto& item : journal) {
+            const auto found = tt.find(item.first);
+            if (found != tt.end()) {
+                remember_transactional_bound(item.first, found->second);
+            }
+        }
         for (auto item = journal.rbegin(); item != journal.rend(); ++item) {
             if (item->second.has_value()) {
                 tt[item->first] = std::move(*item->second);
@@ -1520,6 +1645,30 @@ public:
                     entry->second.proof_bounds,
                     entry->second.canonical_pv,
                 };
+            }
+        }
+
+        if (
+            original_beta - original_alpha == 1
+            && cutoff_hint(key) == nullptr
+        ) {
+            const auto* bound = transactional_bound(key);
+            if (bound != nullptr && bound->depth >= depth) {
+                const bool lower_cutoff =
+                    (bound->mask & TRANSACTIONAL_LOWER) != 0
+                    && bound->lower >= original_beta;
+                const bool upper_cutoff =
+                    (bound->mask & TRANSACTIONAL_UPPER) != 0
+                    && bound->upper <= original_alpha;
+                if (lower_cutoff || upper_cutoff) {
+                    ++stats.tt_hits;
+                    return NodeResult{
+                        lower_cutoff ? bound->lower : bound->upper,
+                        {},
+                        UNKNOWN_PROOF_BOUNDS,
+                        false,
+                    };
+                }
             }
         }
 
