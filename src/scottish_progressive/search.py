@@ -373,7 +373,8 @@ class _TTEntry:
     proof_bounds: tuple[int, int]
 
 
-_TTKey = tuple[tuple[int, str, int, int], int, int, int, bool]
+_SearchKey = tuple[object, ...]
+_TTKey = tuple[_SearchKey, int, int, int, bool]
 
 
 @dataclass(frozen=True, slots=True)
@@ -475,13 +476,11 @@ class SeriesSearcher:
                 ]
             ]
         ] = []
-        self._eval_cache: dict[tuple[int, str, int, int], EvaluationBreakdown] = {}
-        self._quiet_adjudication_cache: dict[
-            tuple[int, str, int, int], str | None
-        ] = {}
+        self._eval_cache: dict[_SearchKey, EvaluationBreakdown] = {}
+        self._quiet_adjudication_cache: dict[_SearchKey, str | None] = {}
         self._series_generation_cache: OrderedDict[
             tuple[
-                tuple[int, str, int, int],
+                _SearchKey,
                 int,
                 int,
                 int,
@@ -585,7 +584,7 @@ class SeriesSearcher:
         if not state.quiet_draw_pending:
             return None
         self._check_deadline()
-        key = state.transposition_key
+        key = state.search_key
         if key in self._quiet_adjudication_cache:
             self.stats.quiet_adjudication_cache_hits += 1
             return self._quiet_adjudication_cache[key]
@@ -634,7 +633,7 @@ class SeriesSearcher:
         return status
 
     def _evaluate(self, state: ProgressiveState) -> EvaluationBreakdown:
-        key = state.transposition_key
+        key = state.search_key
         cached = self._eval_cache.get(key)
         if cached is None:
             if (
@@ -1741,7 +1740,7 @@ class SeriesSearcher:
             required_prefix=required_prefix,
         )
         key = (
-            state.transposition_key,
+            state.search_key,
             state.board.halfmove_clock,
             state.board.fullmove_number,
             state.board.promoted,
@@ -1864,7 +1863,7 @@ class SeriesSearcher:
     @staticmethod
     def _tt_key(state: ProgressiveState) -> _TTKey:
         return (
-            state.transposition_key,
+            state.search_key,
             state.board.halfmove_clock,
             state.board.fullmove_number,
             state.board.promoted,

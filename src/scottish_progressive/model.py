@@ -75,6 +75,21 @@ def progressive_zobrist(
     return value & MASK_64
 
 
+def _polyglot_ep_file(board: chess.Board) -> int | None:
+    """Returns the en-passant component represented by Polyglot hashing."""
+
+    if board.ep_square is None:
+        return None
+    if board.turn == chess.WHITE:
+        ep_mask = chess.shift_down(chess.BB_SQUARES[board.ep_square])
+    else:
+        ep_mask = chess.shift_up(chess.BB_SQUARES[board.ep_square])
+    adjacent = chess.shift_left(ep_mask) | chess.shift_right(ep_mask)
+    if adjacent & board.pawns & board.occupied_co[board.turn]:
+        return chess.square_file(board.ep_square)
+    return None
+
+
 class Outcome(StrEnum):
     CHECKMATE = "checkmate"
     STALEMATE = "stalemate"
@@ -210,6 +225,36 @@ class ProgressiveState:
             self.boundary_key,
             self.series_number,
             self.quiet_series,
+        )
+
+    @property
+    def search_key(self) -> tuple[object, ...]:
+        """Returns the exact clockless identity used by in-process search.
+
+        Public/database identities retain the stable Zobrist plus boundary-FEN
+        contract above. Search tables do not need to serialize that text, so
+        they can use the board's canonical bitboards directly. The tuple is at
+        least as discriminating as ``transposition_key`` for every valid
+        ``ProgressiveState`` and avoids reconstructing a FEN and Polyglot hash
+        at each visited node.
+        """
+
+        board = self.board
+        return (
+            board.pawns,
+            board.knights,
+            board.bishops,
+            board.rooks,
+            board.queens,
+            board.kings,
+            board.occupied_co[chess.WHITE],
+            board.occupied_co[chess.BLACK],
+            board.turn,
+            board.clean_castling_rights(),
+            _polyglot_ep_file(board),
+            self.series_number,
+            self.quiet_series,
+            tuple(sorted(self.ep_targets)),
         )
 
     @property
