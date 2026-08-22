@@ -1,0 +1,216 @@
+{
+  "schema": "spc-native-root-async-receipt-v1",
+  "recorded_date": "2026-08-22",
+  "status": "complete",
+  "source_base": "f53d6b5bb2092bc6a17f1e2d4a26b9c21e11fefe",
+  "scope": "start-position final-depth kernel feasibility only",
+  "command": "& '..\\_venvs\\native-subtree-candidate\\Scripts\\python.exe' 'benchmarks/native_root_async_prototype.py' --depth 5 --width 32 --workers 4 --threads-per-worker 4 --max-work 100000000 --cache-capacity 65536 --time-limit 300",
+  "environment": {
+    "os": "Windows-11-10.0.26200-SP0",
+    "cpu": "AMD Ryzen 7 9800X3D 8-Core Processor",
+    "physical_cores": 8,
+    "logical_processors": 16,
+    "python": "3.14.4",
+    "package": "scottish-progressive 0.9.0",
+    "native_extension": "_native_eval.cp314-win_amd64.pyd",
+    "native_extension_sha256": "A5737976C31D802F4342978DEB1916C5E327A6C4CD9F4702263DDA1AF1E28DE7",
+    "benchmark_script_sha256": "5D26B910071BCF8271019ABD6E38EA63D3847296EFB036AB114F21CE9A5CCCF6"
+  },
+  "configuration": {
+    "depth_series": 5,
+    "max_series_per_node": 32,
+    "workers": 4,
+    "native_threads_per_worker": 4,
+    "total_native_threads": 16,
+    "series_generation_cache_capacity_per_worker": 65536,
+    "common_deadline_seconds": 300.0,
+    "aggregate_max_work": 100000000,
+    "coordinator_work_budget": 20000000,
+    "worker_work_budget_each": 20000000,
+    "first_wave": [
+      "e2e3",
+      "d2d3",
+      "d2d4",
+      "e2e4"
+    ],
+    "dynamic_dispatch_order": "production root order",
+    "completion_order_nondeterministic": true
+  },
+  "timing_seconds": {
+    "worker_startup": 0.1286083999730181,
+    "first_wave": 12.225497999985237,
+    "dynamic": 23.021491599996807,
+    "search": 35.24706540000625,
+    "cold_total": 35.42607419998967
+  },
+  "memory": {
+    "peak_aggregate_rss_bytes": 309100544,
+    "peak_aggregate_rss_mib": 294.78125
+  },
+  "result": {
+    "expected_signature_match": true,
+    "candidate_id": 10,
+    "move": "b2b3",
+    "score": 951,
+    "principal_variation": [
+      "b2b3",
+      "f7f5/e8f7",
+      "c1b2/e2e3/f1c4",
+      "e7e6/f5f4/f4e3/e3f2",
+      "e1f2/d1g4/f2e2/g1h3/g4g7"
+    ],
+    "selected_child_proof_bounds": [
+      -1,
+      1
+    ],
+    "root_proof": null
+  },
+  "certification": {
+    "publishable": false,
+    "safety_certified": false,
+    "legal_series_certified": false,
+    "authoritative_replay_certified": false,
+    "reason": "No root reply-mate safety, retry/widening, iterative deepening, or authoritative prefix replay ran in this prototype."
+  },
+  "work": {
+    "coordinator": 1,
+    "workers": {
+      "0": 9699033,
+      "1": 10513249,
+      "2": 10359609,
+      "3": 9206409
+    },
+    "aggregate": 39778301,
+    "aggregate_within_limit": true,
+    "generation_work_limit_hits": 0,
+    "deadline_hits": 0
+  },
+  "aggregate_stats_sum": {
+    "generated_raw_series": 58080031,
+    "generated_unique_series": 22709766,
+    "intra_series_transpositions": 35370265,
+    "generation_positions": 39778301,
+    "series_generation_positions": 2068491,
+    "frontier_score_positions": 33421307,
+    "evaluation_reach_positions": 4229542,
+    "static_evaluation_positions": 58961,
+    "leaf_evaluations": 58961,
+    "incomplete_reach_evaluations": 19156,
+    "nodes": 105256,
+    "branch_caps": 19355,
+    "alpha_beta_cutoffs": 12632,
+    "tt_hits": 94,
+    "pvs_zero_window_searches": 1178,
+    "pvs_researches": 83,
+    "pvs_tt_writes_rolled_back": 14503,
+    "root_pvs_zero_window_searches": 16,
+    "root_pvs_researches": 3,
+    "root_pvs_tt_writes_rolled_back": 9348,
+    "series_generation_cache_hits": 7058,
+    "series_generation_cache_evictions": 11163,
+    "series_generation_cache_peak_sum": 262164,
+    "series_generation_cache_entries_peak_sum": 8193,
+    "frontier_prunes": 53965,
+    "frontier_states_pruned": 32223881,
+    "frontier_paths_pruned": 59684935
+  },
+  "worker_assignments": {
+    "0": [
+      "e2e3",
+      "f2f3",
+      "g1f3",
+      "g1h3",
+      "g2g4"
+    ],
+    "1": [
+      "d2d3",
+      "f2f4",
+      "b1a3",
+      "c2c3",
+      "h2h3",
+      "h2h4"
+    ],
+    "2": [
+      "d2d4",
+      "a2a3",
+      "b2b3"
+    ],
+    "3": [
+      "e2e4",
+      "a2a4",
+      "b1c3",
+      "b2b4",
+      "c2c4",
+      "g2g3"
+    ]
+  },
+  "first_wave_exact_scores": {
+    "e2e3": 298,
+    "d2d3": 565,
+    "d2d4": 634,
+    "e2e4": 412
+  },
+  "dispatch_sequence": [
+    "e2e3@w0:FULL:e0",
+    "d2d3@w1:FULL:e0",
+    "d2d4@w2:FULL:e0",
+    "e2e4@w3:FULL:e0",
+    "f2f3@w0:PVS:e1:a634",
+    "f2f4@w1:PVS:e1:a634",
+    "a2a3@w2:PVS:e1:a634",
+    "a2a4@w3:PVS:e1:a634",
+    "b1a3@w1:PVS:e1:a634",
+    "b1c3@w3:PVS:e1:a634",
+    "b2b3@w2:PVS:e1:a634",
+    "b2b4@w3:PVS:e1:a634",
+    "c2c3@w1:PVS:e2:a836",
+    "c2c4@w3:PVS:e2:a836",
+    "g1f3@w0:PVS:e3:a847",
+    "g1h3@w0:PVS:e3:a847",
+    "g2g3@w3:PVS:e3:a847",
+    "g2g4@w0:PVS:e3:a847",
+    "h2h3@w1:PVS:e3:a847",
+    "h2h4@w1:PVS:e3:a847"
+  ],
+  "completion_sequence": [
+    "e2e4@w3:EXACT:e0",
+    "d2d4@w2:EXACT:e0",
+    "e2e3@w0:EXACT:e0",
+    "d2d3@w1:EXACT:e0",
+    "f2f4@w1:UPPER:e1",
+    "a2a4@w3:UPPER:e1",
+    "a2a3@w2:UPPER:e1",
+    "b1c3@w3:UPPER:e1",
+    "b1a3@w1:EXACT:e1:score836",
+    "b2b4@w3:UPPER:e1",
+    "f2f3@w0:EXACT:e1:score847",
+    "g1f3@w0:UPPER:e3",
+    "c2c4@w3:UPPER:e2",
+    "g1h3@w0:UPPER:e3",
+    "c2c3@w1:UPPER:e2",
+    "h2h3@w1:UPPER:e3",
+    "g2g4@w0:UPPER:e3",
+    "g2g3@w3:UPPER:e3",
+    "h2h4@w1:UPPER:e3",
+    "b2b3@w2:EXACT:e1:score951"
+  ],
+  "bound_counts": {
+    "first_wave_exact": 4,
+    "dynamic_exact": 3,
+    "dynamic_upper": 13,
+    "dynamic_lower": 0,
+    "unknown": 0
+  },
+  "comparisons": {
+    "four-root-staged_static_rr_seconds": 64.01107879998744,
+    "one-root-staged_static_rr_seconds": 67.0094553999952,
+    "note": "These are the two earlier final-iteration feasibility shapes, not public product timings."
+  },
+  "gaps": [
+    "Completion-arrival order changes incumbent snapshots, redundant research, work, and cache state; deterministic result does not imply deterministic SearchStats.",
+    "The public Python root reply-mate screen, retry/widening state machine, and mate-safe adjudication were not executed.",
+    "Iterative depths 1 through 4 were not executed; e2e3 was injected as the production depth-4 preferred root.",
+    "The selected series and PV were not certified through the authoritative browser prefix-replay ABI.",
+    "This start-only multiprocessing harness is not the ordinary-Web-Worker C/JSON facade and must not be included in release code."
+  ]
+}
