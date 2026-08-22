@@ -1,5 +1,19 @@
 const MANIFEST_SCHEMA = "spc-browser-wasm-manifest-v1";
 const CERTIFICATE_SCHEMA = "spc-browser-wasm-certificate-v1";
+const PREFIX_CONTRACT_SCHEMA = "spc-boundary-prefix-contract-v1";
+const PREFIX_RESULT_SCHEMA = "spc-boundary-prefix-v1";
+const MIN_PREFIX_DIFFERENTIAL_CASES = 14;
+const PREFIX_HARD_LIMITS = Object.freeze({
+  maximum_fen_utf8_bytes: 512,
+  maximum_series_number: 256,
+  maximum_quiet_series: 1_000_000,
+  maximum_ep_targets: 8,
+  maximum_ep_utf8_bytes: 23,
+  maximum_prefix_moves: 256,
+  maximum_prefix_utf8_bytes: 1_535,
+  maximum_uci_move_bytes: 5,
+  maximum_promoted_hex_bytes: 18,
+});
 const SHA256 = /^[0-9a-f]{64}$/;
 const SOURCE_FINGERPRINT = /^[0-9a-f]{16}$/;
 const PROMOTED_HEX = /^[0-9a-f]{16}$/;
@@ -64,6 +78,13 @@ async function sha256Hex(bytes) {
 
 function validateMemoryLimits(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const expectedKeys = [
+    "estimated_peak_bytes",
+    "growth_enabled",
+    "initial_bytes",
+    "maximum_bytes",
+  ];
+  if (!sameJson(Object.keys(value).sort(), expectedKeys)) return null;
   const memory = {
     initial_bytes: value.initial_bytes,
     maximum_bytes: value.maximum_bytes,
@@ -150,46 +171,82 @@ function validateRuntimeMemory(module, memory, { initial = false } = {}) {
   return bytes;
 }
 
-function validateVariant(name, value, sourceFingerprint) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new KernelAdapterError(
-      `The browser engine ${name} variant is missing.`,
-      "browser-manifest-invalid",
-    );
-  }
-  const threadCount = Number(value.thread_count);
+function sameJson(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function validatePrefixContract(value, { native = false } = {}) {
+  const rawLimits = value?.[native ? "hard_limits" : "limits"];
   if (
-    !SHA256.test(String(value.wasm_sha256 || ""))
-    || !SHA256.test(String(value.module_js_sha256 || ""))
-    || !Number.isInteger(threadCount)
-    || threadCount < 1
-    || (name === "single" && threadCount !== 1)
-    || (name === "pthread" && threadCount < 2)
-  ) {
-    throw new KernelAdapterError(
-      `The browser engine ${name} variant identity is invalid.`,
-      "browser-manifest-invalid",
-    );
+    !value
+    || typeof value !== "object"
+    || Array.isArray(value)
+    || value.schema !== PREFIX_CONTRACT_SCHEMA
+    || value.result_schema !== PREFIX_RESULT_SCHEMA
+    || value.abi_version !== 1
+    || value.chess960 !== false
+    || value.promoted_hex_required_for_product !== true
+    || !rawLimits
+    || typeof rawLimits !== "object"
+    || Array.isArray(rawLimits)
+    || !sameJson(Object.keys(rawLimits).sort(), Object.keys(PREFIX_HARD_LIMITS).sort())
+  ) return null;
+  const limits = {};
+  for (const [name, hardMaximum] of Object.entries(PREFIX_HARD_LIMITS)) {
+    const candidate = rawLimits[name];
+    if (
+      !Number.isInteger(candidate)
+      || candidate < 1
+      || candidate > hardMaximum
+      || (native && candidate !== hardMaximum)
+    ) return null;
+    limits[name] = candidate;
   }
-  const certificate = value.safety_certificate;
+  if (limits.maximum_prefix_moves > limits.maximum_series_number) return null;
+  return Object.freeze({
+    schema: PREFIX_CONTRACT_SCHEMA,
+    result_schema: PREFIX_RESULT_SCHEMA,
+    abi_version: 1,
+    chess960: false,
+    promoted_hex_required_for_product: true,
+    limits: Object.freeze(limits),
+  });
+}
+
+function certificateMatchesArtifact(certificate, value, {
+  name,
+  sourceFingerprint,
+  threadCount,
+  supportFiles,
+}) {
+  return Boolean(
+    certificate
+    && typeof certificate === "object"
+    && !Array.isArray(certificate)
+    && certificate.status === "certified"
+    && certificate.contract_version === 1
+    && certificate.source_fingerprint === sourceFingerprint
+    && certificate.runtime_variant === name
+    && certificate.thread_count === threadCount
+    && certificate.wasm_sha256 === value.wasm_sha256
+    && certificate.module_js_sha256 === value.module_js_sha256
+    && typeof certificate.certificate_id === "string"
+    && certificate.certificate_id
+    && sameJson(certificate.support_files, supportFiles)
+  );
+}
+
+function validateSafetyCertificate(certificate, value, context) {
+  if (certificate === undefined || certificate === null) return null;
   const evidence = certificate?.evidence;
   const engine = certificate?.engine;
   const limits = validateAnalysisLimits(engine?.analysis_limits);
   const memory = validateMemoryLimits(certificate?.memory);
   if (
-    !certificate
+    !certificateMatchesArtifact(certificate, value, context)
     || certificate.schema !== CERTIFICATE_SCHEMA
-    || certificate.status !== "certified"
     || certificate.safety_certified !== true
-    || certificate.contract_version !== 1
     || certificate.abi_version !== 1
-    || certificate.source_fingerprint !== sourceFingerprint
-    || certificate.runtime_variant !== name
-    || certificate.thread_count !== threadCount
-    || certificate.wasm_sha256 !== value.wasm_sha256
-    || certificate.module_js_sha256 !== value.module_js_sha256
-    || typeof certificate.certificate_id !== "string"
-    || !certificate.certificate_id
     || !evidence
     || evidence.failures !== 0
     || !Number.isInteger(evidence.differential_cases)
@@ -211,8 +268,61 @@ function validateVariant(name, value, sourceFingerprint) {
     || !memory
   ) {
     throw new KernelAdapterError(
-      `The ${name} WebAssembly artifact has no matching safety certificate.`,
+      `The ${context.name} WebAssembly artifact has no matching safety certificate.`,
       "browser-kernel-not-certified",
+    );
+  }
+  return { certificate, engine, limits, memory };
+}
+
+function validatePrefixCertificate(certificate, value, context) {
+  if (certificate === undefined || certificate === null) return null;
+  const evidence = certificate?.evidence;
+  const engine = certificate?.engine;
+  const contract = validatePrefixContract(certificate?.prefix_contract);
+  const memory = validateMemoryLimits(certificate?.memory);
+  if (
+    !certificateMatchesArtifact(certificate, value, context)
+    || !evidence
+    || evidence.failures !== 0
+    || evidence.compiled_prefix_replay !== true
+    || evidence.multi_ep_san !== true
+    || evidence.illegal_prefix_fail_closed !== true
+    || !Number.isInteger(evidence.differential_cases)
+    || evidence.differential_cases < MIN_PREFIX_DIFFERENTIAL_CASES
+    || !engine
+    || !["engine_version", "ruleset_version"]
+      .every((key) => typeof engine[key] === "string" && engine[key])
+    || !contract
+    || !memory
+  ) {
+    throw new KernelAdapterError(
+      `The ${context.name} WebAssembly artifact has no matching prefix certificate.`,
+      "browser-prefix-contract-uncertified",
+    );
+  }
+  return { certificate, contract, engine, memory };
+}
+
+function validateVariant(name, value, sourceFingerprint) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new KernelAdapterError(
+      `The browser engine ${name} variant is missing.`,
+      "browser-manifest-invalid",
+    );
+  }
+  const threadCount = Number(value.thread_count);
+  if (
+    !SHA256.test(String(value.wasm_sha256 || ""))
+    || !SHA256.test(String(value.module_js_sha256 || ""))
+    || !Number.isInteger(threadCount)
+    || threadCount < 1
+    || (name === "single" && threadCount !== 1)
+    || (name === "pthread" && threadCount < 2)
+  ) {
+    throw new KernelAdapterError(
+      `The browser engine ${name} variant identity is invalid.`,
+      "browser-manifest-invalid",
     );
   }
   const supportFiles = Array.isArray(value.support_files)
@@ -230,23 +340,37 @@ function validateVariant(name, value, sourceFingerprint) {
       return { name: safeAssetName(item.name, ".js"), sha256: item.sha256 };
     })
     : [];
-  if (
-    name === "single"
-    && supportFiles.length !== 0
-  ) {
+  if (name === "single" && supportFiles.length !== 0) {
     throw new KernelAdapterError(
       "The single-thread WebAssembly lane may not load external support code.",
       "browser-support-file-uncertified",
     );
   }
-  if (
-    !Array.isArray(certificate.support_files)
-    || JSON.stringify(certificate.support_files) !== JSON.stringify(supportFiles)
-  ) {
+  const context = { name, sourceFingerprint, threadCount, supportFiles };
+  const analysis = validateSafetyCertificate(value.safety_certificate, value, context);
+  const prefix = validatePrefixCertificate(value.prefix_certificate, value, context);
+  if (!analysis && !prefix) {
     throw new KernelAdapterError(
-      `The ${name} WebAssembly support files do not match their certificate.`,
+      `The ${name} WebAssembly artifact has no certified capability.`,
       "browser-kernel-not-certified",
     );
+  }
+  if (analysis && prefix) {
+    if (!sameJson(analysis.memory, prefix.memory)) {
+      throw new KernelAdapterError(
+        "Search and prefix certificates have different memory envelopes.",
+        "browser-memory-envelope-mismatch",
+      );
+    }
+    if (
+      analysis.engine.engine_version !== prefix.engine.engine_version
+      || analysis.engine.ruleset_version !== prefix.engine.ruleset_version
+    ) {
+      throw new KernelAdapterError(
+        "Search and prefix certificates have different engine identities.",
+        "browser-manifest-identity-mismatch",
+      );
+    }
   }
   return {
     ...value,
@@ -254,8 +378,14 @@ function validateVariant(name, value, sourceFingerprint) {
     wasm: safeAssetName(value.wasm, ".wasm"),
     module_js: safeAssetName(value.module_js, ".js"),
     support_files: supportFiles,
-    analysis_limits: limits,
-    memory_limits: memory,
+    analysis_ready: analysis !== null,
+    prefix_ready: prefix !== null,
+    analysis_certificate: analysis,
+    prefix_capability: prefix,
+    analysis_limits: analysis?.limits ?? null,
+    prefix_contract: prefix?.contract ?? null,
+    memory_limits: analysis?.memory ?? prefix?.memory ?? null,
+    engine_identity: analysis?.engine ?? prefix?.engine ?? null,
   };
 }
 
@@ -373,6 +503,111 @@ function validateKernelRequest(request, identity) {
       "browser-certified-limits-exceeded",
     );
   }
+}
+
+function utf8Length(value) {
+  if (typeof TextEncoder !== "function") {
+    throw new KernelAdapterError(
+      "This browser cannot measure the certified prefix request envelope.",
+      "browser-prefix-text-encoder-unavailable",
+    );
+  }
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function validatePrefixKernelRequest(request, identity) {
+  const contract = identity?.prefix_contract;
+  const limits = contract?.limits;
+  const boundary = request?.boundary;
+  const prefix = request?.prefix;
+  const epTargets = boundary?.ep_targets;
+  if (
+    identity?.prefix_ready !== true
+    || !contract
+    || request?.contract_version !== 1
+    || request?.operation !== "prefix-replay"
+    || typeof request?.request_id !== "string"
+    || !request.request_id
+    || !boundary
+    || typeof boundary.fen !== "string"
+    || !boundary.fen
+    || boundary.fen !== boundary.fen.trim()
+    || /[\0\r\n]/.test(boundary.fen)
+    || utf8Length(boundary.fen) > limits.maximum_fen_utf8_bytes
+    || !Number.isInteger(boundary.series)
+    || boundary.series < 1
+    || boundary.series > limits.maximum_series_number
+    || !Number.isInteger(boundary.quiet_series)
+    || boundary.quiet_series < 0
+    || boundary.quiet_series > limits.maximum_quiet_series
+    || !Array.isArray(epTargets)
+    || epTargets.length > limits.maximum_ep_targets
+    || epTargets.some((square) => (
+      typeof square !== "string" || !/^[a-h][1-8]$/.test(square)
+    ))
+    || new Set(epTargets).size !== epTargets.length
+    || epTargets.some((square, index) => index > 0 && epTargets[index - 1] >= square)
+    || utf8Length(epTargets.join(",") || "-") > limits.maximum_ep_utf8_bytes
+    || !PROMOTED_HEX.test(String(boundary.promoted_hex || ""))
+    || utf8Length(boundary.promoted_hex) > limits.maximum_promoted_hex_bytes
+    || boundary.chess960 !== false
+    || !Array.isArray(prefix)
+    || prefix.length > boundary.series
+    || prefix.length > limits.maximum_prefix_moves
+    || prefix.some((move) => (
+      typeof move !== "string"
+      || !/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(move)
+      || utf8Length(move) > limits.maximum_uci_move_bytes
+    ))
+    || utf8Length(prefix.join("/")) > limits.maximum_prefix_utf8_bytes
+  ) {
+    throw new KernelAdapterError(
+      "The prefix request exceeds the certified compiled envelope.",
+      "browser-prefix-request-unsupported",
+    );
+  }
+}
+
+function validateNativePrefixContract(module, certifiedContract) {
+  let pointer;
+  try {
+    pointer = module._spc_boundary_prefix_contract_json();
+  } catch (cause) {
+    throw new KernelAdapterError(
+      `The compiled prefix contract could not be read: ${cause?.message || cause}`,
+      "browser-prefix-abi-mismatch",
+    );
+  }
+  if (!pointer) {
+    throw new KernelAdapterError(
+      "The compiled prefix contract returned a null pointer.",
+      "browser-prefix-abi-mismatch",
+    );
+  }
+  let nativeContract;
+  try {
+    nativeContract = validatePrefixContract(
+      JSON.parse(module.UTF8ToString(pointer)),
+      { native: true },
+    );
+  } catch {
+    nativeContract = null;
+  }
+  if (!nativeContract) {
+    throw new KernelAdapterError(
+      "The compiled prefix ABI does not match its hard contract.",
+      "browser-prefix-abi-mismatch",
+    );
+  }
+  for (const [name, certifiedMaximum] of Object.entries(certifiedContract.limits)) {
+    if (certifiedMaximum > nativeContract.limits[name]) {
+      throw new KernelAdapterError(
+        `The certified prefix limit ${name} exceeds the compiled ABI.`,
+        "browser-prefix-abi-mismatch",
+      );
+    }
+  }
+  return nativeContract;
 }
 
 function normalizeKernelResult(raw, request, identity) {
@@ -565,40 +800,63 @@ export async function loadCertifiedBrowserKernel({
   if (
     typeof module?._spc_start_kernel_abi_version !== "function"
     || module._spc_start_kernel_abi_version() !== manifest.abi_version
-    || typeof module?._spc_boundary_kernel_search_json !== "function"
     || typeof module?.stringToNewUTF8 !== "function"
     || typeof module?._free !== "function"
     || typeof module?.UTF8ToString !== "function"
+    || (variant.analysis_ready
+      && typeof module?._spc_boundary_kernel_search_json !== "function")
+    || (variant.prefix_ready && (
+      typeof module?._spc_boundary_prefix_json !== "function"
+      || typeof module?._spc_boundary_prefix_contract_json !== "function"
+    ))
   ) {
     throw new KernelAdapterError(
       "The browser engine module does not implement ABI version 1.",
       "browser-abi-mismatch",
     );
   }
+  if (variant.prefix_ready) {
+    validateNativePrefixContract(module, variant.prefix_contract);
+  }
 
+  const safetyCertificate = variant.analysis_certificate?.certificate ?? null;
+  const prefixCertificate = variant.prefix_capability?.certificate ?? null;
+  const engineIdentity = variant.engine_identity;
   const identity = Object.freeze({
-    certificate_schema: variant.safety_certificate.schema,
-    certificate_status: variant.safety_certificate.status,
-    contract_version: variant.safety_certificate.contract_version,
-    abi_version: variant.safety_certificate.abi_version,
+    certificate_schema: safetyCertificate?.schema ?? null,
+    certificate_status: safetyCertificate?.status ?? null,
+    contract_version: manifest.contract_version,
+    abi_version: manifest.abi_version,
     source_fingerprint: manifest.source_fingerprint,
     wasm_sha256: variant.wasm_sha256,
     module_js_sha256: variant.module_js_sha256,
     runtime_variant: runtimeVariant,
     thread_count: variant.thread_count,
-    safety_certified: true,
-    certificate_id: variant.safety_certificate.certificate_id,
-    engine_profile_id: variant.safety_certificate.engine.engine_profile_id,
-    engine_profile_name: variant.safety_certificate.engine.engine_profile_name,
-    engine_version: variant.safety_certificate.engine.engine_version,
-    ruleset_version: variant.safety_certificate.engine.ruleset_version,
-    analysis_limits: Object.freeze({ ...variant.analysis_limits }),
+    analysis_ready: variant.analysis_ready,
+    prefix_ready: variant.prefix_ready,
+    safety_certified: variant.analysis_ready,
+    certificate_id: safetyCertificate?.certificate_id ?? null,
+    prefix_certificate_id: prefixCertificate?.certificate_id ?? null,
+    engine_profile_id: safetyCertificate?.engine?.engine_profile_id ?? null,
+    engine_profile_name: safetyCertificate?.engine?.engine_profile_name ?? null,
+    engine_version: engineIdentity.engine_version,
+    ruleset_version: engineIdentity.ruleset_version,
+    analysis_limits: variant.analysis_limits
+      ? Object.freeze({ ...variant.analysis_limits })
+      : null,
+    prefix_contract: variant.prefix_contract,
     memory_limits: Object.freeze({ ...variant.memory_limits }),
     initial_memory_bytes: initialMemoryBytes,
   });
   return Object.freeze({
     identity,
     analyze(request) {
+      if (!identity.analysis_ready) {
+        throw new KernelAdapterError(
+          "This browser artifact has no certified search capability.",
+          "browser-analysis-unavailable",
+        );
+      }
       validateKernelRequest(request, identity);
       const timeLimitMs = Math.max(
         1,
@@ -657,6 +915,82 @@ export async function loadCertifiedBrowserKernel({
       normalized.elapsed_seconds = Math.max(0, (performance.now() - started) / 1000);
       return normalized;
     },
+    inspectPrefix(request) {
+      validatePrefixKernelRequest(request, identity);
+      const epTargets = request.boundary.ep_targets.join(",") || "-";
+      const prefix = request.prefix.join("/");
+      const allocated = [];
+      let pointer;
+      try {
+        for (const value of [
+          request.boundary.fen,
+          epTargets,
+          request.boundary.promoted_hex,
+          prefix,
+        ]) {
+          const allocatedValue = module.stringToNewUTF8(value);
+          if (!allocatedValue) {
+            throw new KernelAdapterError(
+              "The browser engine could not allocate its prefix request.",
+              "browser-prefix-allocation-failed",
+            );
+          }
+          allocated.push(allocatedValue);
+        }
+        pointer = module._spc_boundary_prefix_json(
+          allocated[0],
+          request.boundary.series,
+          request.boundary.quiet_series,
+          allocated[1],
+          allocated[2],
+          allocated[3],
+        );
+      } finally {
+        allocated.forEach((value) => module._free(value));
+      }
+      if (!pointer) {
+        throw new KernelAdapterError(
+          "The browser prefix ABI returned a null result.",
+          "browser-prefix-null-result",
+        );
+      }
+      let raw;
+      try {
+        raw = JSON.parse(module.UTF8ToString(pointer));
+      } catch {
+        throw new KernelAdapterError(
+          "The browser prefix ABI returned invalid JSON.",
+          "browser-prefix-invalid-json",
+        );
+      }
+      if (
+        !raw
+        || typeof raw !== "object"
+        || Array.isArray(raw)
+        || raw.schema !== PREFIX_RESULT_SCHEMA
+        || raw.abi_version !== 1
+        || raw.ok !== true
+        || raw.status !== "complete"
+      ) {
+        throw new KernelAdapterError(
+          String(raw?.message || "The compiled prefix replay was not authoritative."),
+          "browser-prefix-native-rejected",
+        );
+      }
+      return {
+        ...raw,
+        request_id: request.request_id,
+        source_fingerprint: identity.source_fingerprint,
+        wasm_sha256: identity.wasm_sha256,
+        module_js_sha256: identity.module_js_sha256,
+        certificate_id: identity.prefix_certificate_id,
+        engine_version: identity.engine_version,
+        ruleset_version: identity.ruleset_version,
+        runtime_variant: identity.runtime_variant,
+        thread_count: identity.thread_count,
+        memory_bytes: validateRuntimeMemory(module, identity.memory_limits),
+      };
+    },
   });
 }
 
@@ -664,5 +998,6 @@ export {
   KernelAdapterError,
   importVerifiedModuleBytes,
   normalizeKernelResult,
+  validatePrefixContract,
   validateManifest,
 };

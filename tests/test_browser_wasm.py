@@ -83,6 +83,51 @@ def _certificate(
     }
 
 
+def _prefix_certificate(
+    builder,
+    *,
+    source_package: Path,
+    wasm: Path,
+    module_js: Path,
+) -> dict[str, object]:
+    return {
+        "status": "certified",
+        "contract_version": 1,
+        "certificate_id": "prefix-gate-20260822-single",
+        "source_fingerprint": builder.engine_source_fingerprint(source_package),
+        "wasm_sha256": builder.sha256_file(wasm),
+        "module_js_sha256": builder.sha256_file(module_js),
+        "runtime_variant": "single",
+        "thread_count": 1,
+        "support_files": [],
+        "memory": {
+            "initial_bytes": 16 * 1024 * 1024,
+            "maximum_bytes": 128 * 1024 * 1024,
+            "estimated_peak_bytes": 96 * 1024 * 1024,
+            "growth_enabled": True,
+        },
+        "evidence": {
+            "failures": 0,
+            "compiled_prefix_replay": True,
+            "multi_ep_san": True,
+            "illegal_prefix_fail_closed": True,
+            "differential_cases": builder.MIN_PREFIX_DIFFERENTIAL_CASES,
+        },
+        "engine": {
+            "engine_version": "test-engine-v1",
+            "ruleset_version": "test-rules-v1",
+        },
+        "prefix_contract": {
+            "schema": builder.PREFIX_CONTRACT_SCHEMA,
+            "result_schema": builder.PREFIX_RESULT_SCHEMA,
+            "abi_version": 1,
+            "chess960": False,
+            "promoted_hex_required_for_product": True,
+            "limits": dict(builder.PREFIX_HARD_LIMITS),
+        },
+    }
+
+
 def test_bundle_builder_stages_only_a_certified_identity_bound_single_lane(
     tmp_path: Path,
 ) -> None:
@@ -125,6 +170,165 @@ def test_bundle_builder_stages_only_a_certified_identity_bound_single_lane(
     )
     assert (output / "single" / "spc-engine.wasm").read_bytes() == wasm.read_bytes()
     assert (output / "browser-engine-manifest.json").is_file()
+
+
+def test_bundle_builder_stages_an_independently_certified_prefix_lane(
+    tmp_path: Path,
+) -> None:
+    builder = _load_bundle_builder()
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "core.cpp").write_text("int engine = 1;\n", encoding="utf-8")
+    wasm = tmp_path / "kernel.wasm"
+    module_js = tmp_path / "kernel.mjs"
+    prefix_certificate_path = tmp_path / "prefix-certificate.json"
+    wasm.write_bytes(b"\0asm\x01\0\0\0")
+    module_js.write_text("export default async () => ({});\n", encoding="utf-8")
+    prefix_certificate_path.write_text(
+        json.dumps(
+            _prefix_certificate(
+                builder,
+                source_package=package,
+                wasm=wasm,
+                module_js=module_js,
+            )
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "engine"
+
+    manifest = builder.build_bundle(
+        single_wasm=wasm,
+        single_module_js=module_js,
+        single_prefix_certificate_path=prefix_certificate_path,
+        source_package=package,
+        output=output,
+    )
+
+    variant = manifest["variants"]["single"]
+    assert "safety_certificate" not in variant
+    assert variant["prefix_certificate"]["certificate_id"] == (
+        "prefix-gate-20260822-single"
+    )
+    assert variant["prefix_certificate"]["memory"]["maximum_bytes"] == (
+        128 * 1024 * 1024
+    )
+    builder.validate_existing_bundle(output, package)
+
+
+def test_prefix_certificate_rejects_weak_evidence_and_limits_above_native_abi(
+    tmp_path: Path,
+) -> None:
+    builder = _load_bundle_builder()
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "core.cpp").write_text("int engine = 1;\n", encoding="utf-8")
+    wasm = tmp_path / "kernel.wasm"
+    module_js = tmp_path / "kernel.mjs"
+    certificate_path = tmp_path / "prefix-certificate.json"
+    wasm.write_bytes(b"\0asm\x01\0\0\0")
+    module_js.write_text("export default async () => ({});\n", encoding="utf-8")
+    certificate = _prefix_certificate(
+        builder,
+        source_package=package,
+        wasm=wasm,
+        module_js=module_js,
+    )
+
+    certificate["evidence"]["differential_cases"] = (
+        builder.MIN_PREFIX_DIFFERENTIAL_CASES - 1
+    )
+    certificate_path.write_text(json.dumps(certificate), encoding="utf-8")
+    with pytest.raises(ValueError, match="at least 14 differential cases"):
+        builder.build_bundle(
+            single_wasm=wasm,
+            single_module_js=module_js,
+            single_prefix_certificate_path=certificate_path,
+            source_package=package,
+            output=tmp_path / "weak-evidence",
+        )
+
+    certificate["evidence"]["differential_cases"] = (
+        builder.MIN_PREFIX_DIFFERENTIAL_CASES
+    )
+    certificate["prefix_contract"]["limits"]["maximum_fen_utf8_bytes"] = 513
+    certificate_path.write_text(json.dumps(certificate), encoding="utf-8")
+    with pytest.raises(ValueError, match="maximum_fen_utf8_bytes"):
+        builder.build_bundle(
+            single_wasm=wasm,
+            single_module_js=module_js,
+            single_prefix_certificate_path=certificate_path,
+            source_package=package,
+            output=tmp_path / "broad-contract",
+        )
+
+
+def test_prefix_certificate_cannot_bypass_memory_caps_or_search_identity(
+    tmp_path: Path,
+) -> None:
+    builder = _load_bundle_builder()
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "core.cpp").write_text("int engine = 1;\n", encoding="utf-8")
+    wasm = tmp_path / "kernel.wasm"
+    module_js = tmp_path / "kernel.mjs"
+    search_path = tmp_path / "search-certificate.json"
+    prefix_path = tmp_path / "prefix-certificate.json"
+    wasm.write_bytes(b"\0asm\x01\0\0\0")
+    module_js.write_text("export default async () => ({});\n", encoding="utf-8")
+    search = _certificate(
+        builder,
+        source_package=package,
+        wasm=wasm,
+        module_js=module_js,
+    )
+    prefix = _prefix_certificate(
+        builder,
+        source_package=package,
+        wasm=wasm,
+        module_js=module_js,
+    )
+    search_path.write_text(json.dumps(search), encoding="utf-8")
+
+    prefix["memory"]["maximum_bytes"] = builder.MAXIMUM_MEMORY_BYTES + 65_536
+    prefix["memory"]["estimated_peak_bytes"] = builder.MAXIMUM_MEMORY_BYTES
+    prefix_path.write_text(json.dumps(prefix), encoding="utf-8")
+    with pytest.raises(ValueError, match="maximum_bytes"):
+        builder.build_bundle(
+            single_wasm=wasm,
+            single_module_js=module_js,
+            single_prefix_certificate_path=prefix_path,
+            source_package=package,
+            output=tmp_path / "oversized-prefix",
+        )
+
+    prefix["memory"] = {
+        **search["memory"],
+        "estimated_peak_bytes": 64 * 1024 * 1024,
+    }
+    prefix_path.write_text(json.dumps(prefix), encoding="utf-8")
+    with pytest.raises(ValueError, match="identical memory envelopes"):
+        builder.build_bundle(
+            single_wasm=wasm,
+            single_module_js=module_js,
+            single_certificate_path=search_path,
+            single_prefix_certificate_path=prefix_path,
+            source_package=package,
+            output=tmp_path / "memory-mismatch",
+        )
+
+    prefix["memory"] = dict(search["memory"])
+    prefix["engine"]["ruleset_version"] = "different-rules"
+    prefix_path.write_text(json.dumps(prefix), encoding="utf-8")
+    with pytest.raises(ValueError, match="disagree on ruleset_version"):
+        builder.build_bundle(
+            single_wasm=wasm,
+            single_module_js=module_js,
+            single_certificate_path=search_path,
+            single_prefix_certificate_path=prefix_path,
+            source_package=package,
+            output=tmp_path / "engine-mismatch",
+        )
 
 
 def test_bundle_builder_rejects_a_depth_five_receipt_at_the_sixty_second_gate(
@@ -246,6 +450,210 @@ def test_existing_bundle_validator_rejects_artifact_drift(tmp_path: Path) -> Non
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js is required for browser contract tests")
+def test_adapter_loads_verified_prefix_only_artifact_and_checks_native_contract() -> None:
+    script = r"""
+import { createHash, webcrypto } from "node:crypto";
+import { pathToFileURL } from "node:url";
+
+if (!globalThis.crypto) globalThis.crypto = webcrypto;
+const api = await import(pathToFileURL(process.argv[1]).href);
+const wasmBytes = Uint8Array.from([0, 97, 115, 109, 1, 0, 0, 0]);
+const moduleBytes = new TextEncoder().encode("export default async () => ({});\n");
+const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const source = "a".repeat(16);
+const memory = {
+  initial_bytes: 16777216,
+  maximum_bytes: 134217728,
+  estimated_peak_bytes: 100663296,
+  growth_enabled: true,
+};
+const limits = {
+  maximum_fen_utf8_bytes: 512,
+  maximum_series_number: 256,
+  maximum_quiet_series: 1000000,
+  maximum_ep_targets: 8,
+  maximum_ep_utf8_bytes: 23,
+  maximum_prefix_moves: 256,
+  maximum_prefix_utf8_bytes: 1535,
+  maximum_uci_move_bytes: 5,
+  maximum_promoted_hex_bytes: 18,
+};
+const manifest = {
+  schema: "spc-browser-wasm-manifest-v1",
+  contract_version: 1,
+  abi_version: 1,
+  source_fingerprint: source,
+  variants: {
+    single: {
+      thread_count: 1,
+      wasm: "spc-engine.wasm",
+      wasm_sha256: hash(wasmBytes),
+      module_js: "spc-engine.js",
+      module_js_sha256: hash(moduleBytes),
+      support_files: [],
+      prefix_certificate: {
+        status: "certified",
+        contract_version: 1,
+        certificate_id: "prefix-cert-1",
+        source_fingerprint: source,
+        runtime_variant: "single",
+        thread_count: 1,
+        wasm_sha256: hash(wasmBytes),
+        module_js_sha256: hash(moduleBytes),
+        support_files: [],
+        memory,
+        evidence: {
+          failures: 0,
+          compiled_prefix_replay: true,
+          multi_ep_san: true,
+          illegal_prefix_fail_closed: true,
+          differential_cases: 14,
+        },
+        engine: { engine_version: "engine-v1", ruleset_version: "rules-v1" },
+        prefix_contract: {
+          schema: "spc-boundary-prefix-contract-v1",
+          result_schema: "spc-boundary-prefix-v1",
+          abi_version: 1,
+          chess960: false,
+          promoted_hex_required_for_product: true,
+          limits,
+        },
+      },
+    },
+  },
+};
+const copyBuffer = (bytes) => bytes.buffer.slice(
+  bytes.byteOffset,
+  bytes.byteOffset + bytes.byteLength,
+);
+globalThis.fetch = async (url) => {
+  const text = String(url);
+  if (text.includes("browser-engine-manifest.json")) {
+    return { ok: true, status: 200, json: async () => manifest };
+  }
+  const bytes = text.includes("spc-engine.wasm") ? wasmBytes : moduleBytes;
+  return { ok: true, status: 200, arrayBuffer: async () => copyBuffer(bytes) };
+};
+
+const strings = new Map();
+let nextPointer = 10;
+let freed = 0;
+const put = (value) => { const pointer = nextPointer++; strings.set(pointer, value); return pointer; };
+const nativeContractPointer = put(JSON.stringify({
+  schema: "spc-boundary-prefix-contract-v1",
+  abi_version: 1,
+  result_schema: "spc-boundary-prefix-v1",
+  chess960: false,
+  promoted_hex_required_for_product: true,
+  hard_limits: limits,
+}));
+const module = {
+  HEAPU8: new Uint8Array(memory.initial_bytes),
+  _spc_start_kernel_abi_version: () => 1,
+  stringToNewUTF8: put,
+  UTF8ToString: (pointer) => strings.get(pointer),
+  _free: (pointer) => { if (strings.delete(pointer)) freed += 1; },
+  _spc_boundary_prefix_contract_json: () => nativeContractPointer,
+  _spc_boundary_prefix_json: (fen, series, quiet, ep, promoted, prefix) => {
+    if (
+      strings.get(fen) !== "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+      || series !== 1 || quiet !== 0 || strings.get(ep) !== "-"
+      || strings.get(promoted) !== "0000000000000000" || strings.get(prefix) !== ""
+    ) throw new Error("prefix ABI arguments drifted");
+    return put(JSON.stringify({
+      schema: "spc-boundary-prefix-v1", abi_version: 1, ok: true, status: "complete",
+    }));
+  },
+};
+let importedVerifiedBytes = false;
+const kernel = await api.loadCertifiedBrowserKernel({
+  expectedSourceFingerprint: source,
+  manifestUrl: new URL("https://example.test/engine/browser-engine-manifest.json"),
+  moduleImporter: async (bytes) => {
+    importedVerifiedBytes = Buffer.from(bytes).equals(Buffer.from(moduleBytes));
+    return { default: async () => module };
+  },
+});
+if (!importedVerifiedBytes) throw new Error("unverified wrapper bytes executed");
+if (kernel.identity.analysis_ready !== false || kernel.identity.prefix_ready !== true) {
+  throw new Error("prefix-only capability drifted");
+}
+if (kernel.identity.certificate_id !== null || kernel.identity.safety_certified !== false) {
+  throw new Error("prefix certificate became a search certificate");
+}
+const result = kernel.inspectPrefix({
+  contract_version: 1,
+  operation: "prefix-replay",
+  request_id: "prefix-1",
+  boundary: {
+    fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    series: 1,
+    quiet_series: 0,
+    ep_targets: [],
+    promoted_hex: "0000000000000000",
+    chess960: false,
+  },
+  prefix: [],
+});
+if (result.certificate_id !== "prefix-cert-1" || result.memory_bytes !== memory.initial_bytes) {
+  throw new Error("prefix runtime receipt drifted");
+}
+let searchRejected = false;
+try { kernel.analyze({}); } catch (error) {
+  searchRejected = error.code === "browser-analysis-unavailable";
+}
+if (!searchRejected) throw new Error("prefix-only artifact became searchable");
+if (freed !== 4) throw new Error(`prefix input allocations leaked: ${freed}`);
+strings.set(nativeContractPointer, JSON.stringify({
+  schema: "spc-boundary-prefix-contract-v1",
+  abi_version: 1,
+  result_schema: "spc-boundary-prefix-v1",
+  chess960: false,
+  promoted_hex_required_for_product: true,
+  hard_limits: { ...limits, maximum_fen_utf8_bytes: 511 },
+}));
+let nativeMismatchRejected = false;
+try {
+  await api.loadCertifiedBrowserKernel({
+    expectedSourceFingerprint: source,
+    manifestUrl: new URL("https://example.test/engine/browser-engine-manifest.json"),
+    moduleImporter: async () => ({ default: async () => module }),
+  });
+} catch (error) {
+  nativeMismatchRejected = error.code === "browser-prefix-abi-mismatch";
+}
+if (!nativeMismatchRejected) throw new Error("native prefix contract drift was accepted");
+process.stdout.write(JSON.stringify({
+  prefixReady: kernel.identity.prefix_ready,
+  analysisReady: kernel.identity.analysis_ready,
+  searchRejected,
+  nativeMismatchRejected,
+  freed,
+}));
+"""
+    completed = subprocess.run(
+        [
+            str(NODE),
+            "--input-type=module",
+            "-e",
+            script,
+            str(STATIC / "wasm-kernel-adapter.js"),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(completed.stdout) == {
+        "prefixReady": True,
+        "analysisReady": False,
+        "searchRejected": True,
+        "nativeMismatchRejected": True,
+        "freed": 4,
+    }
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is required for browser contract tests")
 def test_browser_client_accepts_certified_completed_depth_and_rejects_fake_legality() -> None:
     script = r"""
 const api = require(process.argv[1]);
@@ -256,6 +664,8 @@ const start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const after = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1";
 const identity = {
   ready: true,
+  analysis_ready: true,
+  prefix_ready: false,
   source_fingerprint: source,
   wasm_sha256: artifact,
   module_js_sha256: moduleHash,
@@ -265,6 +675,8 @@ const identity = {
   abi_version: 1,
   safety_certified: true,
   certificate_id: "cert-1",
+  prefix_certificate_id: null,
+  prefix_contract: null,
   runtime_variant: "single",
   thread_count: 1,
   engine_profile_id: "spc-test",
@@ -417,6 +829,8 @@ def test_browser_client_cancellation_terminates_the_synchronous_worker() -> None
 const api = require(process.argv[1]);
 const identity = {
   ready: true,
+  analysis_ready: true,
+  prefix_ready: false,
   source_fingerprint: "a".repeat(16),
   wasm_sha256: "b".repeat(64),
   module_js_sha256: "c".repeat(64),
@@ -426,6 +840,8 @@ const identity = {
   abi_version: 1,
   safety_certified: true,
   certificate_id: "cert-1",
+  prefix_certificate_id: null,
+  prefix_contract: null,
   runtime_variant: "single",
   thread_count: 1,
   engine_profile_id: "spc-test",
@@ -514,9 +930,11 @@ const limits = {
 };
 const identity = {
   source_fingerprint: source, wasm_sha256: artifact, module_js_sha256: moduleHash,
+  analysis_ready: true, prefix_ready: false,
   certificate_schema: "spc-browser-wasm-certificate-v1",
   certificate_status: "certified", contract_version: 1, abi_version: 1,
   safety_certified: true, certificate_id: "cert-1", runtime_variant: "single",
+  prefix_certificate_id: null, prefix_contract: null,
   thread_count: 1, engine_profile_id: "spc-test", engine_profile_name: "Test",
   engine_version: "engine-v1", ruleset_version: "rules-v1",
   analysis_limits: limits,
@@ -606,10 +1024,12 @@ const start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const after = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1";
 const identity = {
   ready: true, source_fingerprint: source, wasm_sha256: artifact,
+  analysis_ready: true, prefix_ready: false,
   module_js_sha256: moduleHash,
   certificate_schema: "spc-browser-wasm-certificate-v1",
   certificate_status: "certified", contract_version: 1, abi_version: 1,
   safety_certified: true, certificate_id: "cert-1",
+  prefix_certificate_id: null, prefix_contract: null,
   runtime_variant: "single", thread_count: 1, engine_profile_id: "spc-test",
   engine_profile_name: "Test", engine_version: "engine-v1", ruleset_version: "rules-v1",
   analysis_limits: {
@@ -694,11 +1114,213 @@ class WorkerDouble {
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js is required for browser contract tests")
+def test_prefix_client_cancels_without_fallback_then_reprobes_prefix_only_worker() -> None:
+    script = r"""
+const prefixApi = require(process.argv[1]);
+const clientApi = require(process.argv[2]);
+const source = "a".repeat(16), wasm = "b".repeat(64), moduleHash = "c".repeat(64);
+const start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+const prefixContract = {
+  schema: prefixApi.CONTRACT_SCHEMA,
+  result_schema: prefixApi.RESULT_SCHEMA,
+  abi_version: 1,
+  chess960: false,
+  promoted_hex_required_for_product: true,
+  limits: { ...prefixApi.HARD_LIMITS },
+};
+const identity = {
+  ready: true,
+  certificate_schema: null,
+  certificate_status: null,
+  contract_version: 1,
+  abi_version: 1,
+  source_fingerprint: source,
+  wasm_sha256: wasm,
+  module_js_sha256: moduleHash,
+  analysis_ready: false,
+  prefix_ready: true,
+  safety_certified: false,
+  certificate_id: null,
+  prefix_certificate_id: "prefix-cert-1",
+  runtime_variant: "single",
+  thread_count: 1,
+  engine_profile_id: null,
+  engine_profile_name: null,
+  engine_version: "engine-v1",
+  ruleset_version: "rules-v1",
+  analysis_limits: null,
+  prefix_contract: prefixContract,
+  memory_limits: {
+    initial_bytes: 16777216,
+    maximum_bytes: 134217728,
+    estimated_peak_bytes: 100663296,
+    growth_enabled: true,
+  },
+};
+const payload = {
+  fen: start,
+  series: 1,
+  quiet_series: 0,
+  ep_targets: [],
+  progressive_ep: [],
+  promoted_hex: "0000000000000000",
+  chess960: false,
+  prefix: [],
+};
+function resultFor(request) {
+  const legal = [{ uci: "e2e4", san: "e4" }];
+  return {
+    schema: prefixApi.RESULT_SCHEMA,
+    abi_version: 1,
+    ok: true,
+    status: "complete",
+    request_id: request.request_id,
+    source_fingerprint: source,
+    wasm_sha256: wasm,
+    module_js_sha256: moduleHash,
+    certificate_id: "prefix-cert-1",
+    engine_version: "engine-v1",
+    ruleset_version: "rules-v1",
+    runtime_variant: "single",
+    thread_count: 1,
+    memory_bytes: 16777216,
+    boundary_state: {
+      fen: start,
+      board_fen: start,
+      series: 1,
+      series_number: 1,
+      side_to_move: "white",
+      quiet_series: 0,
+      ep_targets: [],
+      progressive_ep: [],
+      promoted_hex: "0000000000000000",
+      chess960: false,
+    },
+    fen: start,
+    board_fen: start,
+    prefix: [],
+    current_prefix: [],
+    san: [],
+    frames: [],
+    complete: false,
+    completion_reason: null,
+    check: false,
+    ended_by_check: false,
+    in_check: false,
+    outcome: null,
+    remaining: 1,
+    moves_remaining: 1,
+    unused_moves: 0,
+    legal_next: legal,
+    legal_moves: legal,
+    next_state: null,
+  };
+}
+class WorkerDouble {
+  constructor(index) {
+    this.index = index;
+    this.listeners = new Map();
+    this.messages = [];
+    this.terminated = false;
+  }
+  addEventListener(type, listener) {
+    this.listeners.set(type, [...(this.listeners.get(type) || []), listener]);
+  }
+  emit(type, event) {
+    for (const listener of this.listeners.get(type) || []) listener(event);
+  }
+  postMessage(message) {
+    this.messages.push(message.type);
+    if (message.type === "prefix" && this.index === 0) return;
+    const response = message.type === "probe" ? identity : resultFor(message.payload);
+    queueMicrotask(() => this.emit("message", {
+      data: { id: message.id, ok: true, payload: response },
+    }));
+  }
+  terminate() { this.terminated = true; }
+}
+(async () => {
+  const workers = [];
+  const client = clientApi.createClient({ workerFactory: () => {
+    const worker = new WorkerDouble(workers.length);
+    workers.push(worker);
+    return worker;
+  } });
+  await client.preflight({});
+  if (client.canAnalyze({})) throw new Error("prefix-only artifact became searchable");
+  let remoteCalls = 0;
+  const remote = {
+    identity: {
+      source_fingerprint: source,
+      engine_version: "engine-v1",
+      ruleset_version: "rules-v1",
+    },
+    request: async () => { remoteCalls += 1; throw new Error("unexpected fallback"); },
+  };
+  const controller = new AbortController();
+  const cancelled = prefixApi.routePrefixRequest({
+    payload,
+    signal: controller.signal,
+    localClient: client,
+    remote,
+  });
+  controller.abort();
+  let cancelledName = null;
+  try { await cancelled; } catch (error) { cancelledName = error.name; }
+  if (cancelledName !== "AbortError") throw new Error(`unexpected abort ${cancelledName}`);
+  if (remoteCalls !== 0) throw new Error("aborted prefix request reached hosted fallback");
+  if (!workers[0].terminated || client.ready !== false) {
+    throw new Error("cancelled prefix worker stayed ready");
+  }
+  const recovered = await prefixApi.routePrefixRequest({
+    payload,
+    localClient: client,
+    remote,
+  });
+  if (recovered.status !== "complete" || client.ready !== true) {
+    throw new Error("replacement prefix worker did not recover");
+  }
+  if (workers.length !== 2 || workers[1].messages.join(",") !== "probe,prefix") {
+    throw new Error(`replacement prefix worker was not reprobed: ${workers.length}`);
+  }
+  if (remoteCalls !== 0) throw new Error("successful local replay reached hosted fallback");
+  process.stdout.write(JSON.stringify({
+    cancelledName,
+    remoteCalls,
+    ready: client.ready,
+    replacementMessages: workers[1].messages,
+  }));
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+    completed = subprocess.run(
+        [
+            str(NODE),
+            "-e",
+            script,
+            str(STATIC / "browser-prefix-contract.js"),
+            str(STATIC / "browser-engine-client.js"),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(completed.stdout) == {
+        "cancelledName": "AbortError",
+        "remoteCalls": 0,
+        "ready": True,
+        "replacementMessages": ["probe", "prefix"],
+    }
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is required for browser contract tests")
 def test_browser_client_deadline_terminates_without_starting_a_fallback_search() -> None:
     script = r"""
 const api = require(process.argv[1]);
 const identity = {
   ready: true,
+  analysis_ready: true,
+  prefix_ready: false,
   certificate_schema: "spc-browser-wasm-certificate-v1",
   certificate_status: "certified",
   contract_version: 1,
@@ -708,6 +1330,8 @@ const identity = {
   module_js_sha256: "c".repeat(64),
   safety_certified: true,
   certificate_id: "cert-1",
+  prefix_certificate_id: null,
+  prefix_contract: null,
   runtime_variant: "single",
   thread_count: 1,
   engine_profile_id: "spc-test",

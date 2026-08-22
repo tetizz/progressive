@@ -161,6 +161,37 @@ The response correctly remained `safety_certified:false` and
 `safety_status:"not_screened"`. This is proof that the real kernel runs in
 Opera, not evidence of full-product safety or an under-60-second Strong mode.
 
+## Browser shell integration status (2026-08-22)
+
+The browser shell now has an independent, fail-closed prefix capability path.
+Its bundle builder accepts a prefix-only certificate or a separate search
+certificate plus prefix certificate. Both certificate types are artifact-bound;
+when they coexist they must agree on artifact, runtime, thread count, engine,
+ruleset, support files, and the same capped memory envelope. A prefix
+certificate does not make search selectable.
+
+At runtime the adapter verifies the manifest, wrapper bytes, WASM bytes, native
+prefix ABI contract, current/initial heap, and certificate identity before it
+reports `prefix_ready:true`. The Worker and client route exact supported
+`/api/prefix` requests locally, terminate synchronous WASM on cancellation,
+reprobe after a crash, and only use the hosted endpoint when the unchanged
+request and exact engine/rules/source authority can be preserved. Hosted prefix
+responses now echo that authority. Progressive EP, promoted provenance, and
+`chess960:false` travel through principal-variation replay.
+
+Runtime checks prove the instantiated initial/current heap size. WebAssembly's
+declared maximum is not introspectable through this wrapper; it remains
+certificate-bound build evidence under the hard JavaScript cap, not a claimed
+runtime-proven maximum.
+
+This is source integration, not a release certificate. There is no browser
+engine manifest or certified WASM bundle in the static tree yet. The Pages
+workflow deliberately fails if those assets or hashes are absent or drifted,
+and the Render deployment-identity gate remains in place. Pthreads remain
+unselectable until their wrapper/bootstrap bytes can be bound equivalently.
+Search certification remains completely separate; no under-60-second Strong
+certificate is asserted here.
+
 ## Integration files and remaining gates
 
 Integrate these source files and builders:
@@ -186,13 +217,17 @@ Remaining fail-closed gates:
 2. The public search facade remains `safety_certified:false` until the root
    reply-mate screen/retry state machine calls this proof ABI for every selected
    root.
-3. The browser adapter must map prefix error JSON to the current UI error path
-   and must carry `progressive_ep` and `promoted_hex` across every boundary.
+3. A release build must compile the current native facade and canonical native
+   subtree into a single-lane WASM artifact, then issue an artifact-bound prefix
+   certificate from the required parity/evidence run. The canonical
+   `native_subtree.cpp`/`.hpp` sources are not present in this checkout, so no
+   bundle was fabricated.
 4. The Python SAN suffix bug above should be fixed or explicitly normalized so
    server fallback and WASM do not display conflicting notation.
-5. Engine/ruleset version, PFEN, and position hash are intentionally absent
-   from the lab C ABI and must be supplied by the production adapter if the UI
-   consumes them.
+5. Engine/ruleset/source identity is supplied and checked by the production
+   adapter and hosted prefix route. PFEN and position hash remain absent from
+   the lab C ABI and would need an explicit contract before any UI depends on
+   them.
 6. Standard KQkq castling is supported; Chess960 is deliberately rejected.
 7. No release artifact should be called Strong until the exact W32 public
    safety path, not just this kernel, passes its release gate.

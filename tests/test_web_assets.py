@@ -28,6 +28,9 @@ def test_public_assets_are_project_pages_safe_and_keep_local_same_origin() -> No
     assert 'href="./THIRD_PARTY_NOTICES.txt"' in index
     assert 'src="/app.js"' not in index
     assert 'src="./app.js"' in index
+    assert index.index('src="./browser-prefix-contract.js"') < index.index(
+        'src="./browser-engine-client.js"'
+    )
     assert index.index('src="./browser-engine-client.js"') < index.index(
         'src="./app.js"'
     )
@@ -68,6 +71,7 @@ def test_deployment_manifests_keep_pages_and_render_on_the_same_commit() -> None
     assert "Validate certified browser engine bundle" in workflow
     assert "--validate-existing src/scottish_progressive/web/static/engine" in workflow
     for asset in (
+        "browser-prefix-contract.js",
         "browser-engine-client.js",
         "browser-engine-worker.js",
         "wasm-kernel-adapter.js",
@@ -116,6 +120,7 @@ def test_pages_artifact_versions_every_executable_asset(
         ("src", "evaluation-format.js"),
         ("src", "play-handoff.js"),
         ("src", "play-timeline.js"),
+        ("src", "browser-prefix-contract.js"),
         ("src", "browser-engine-client.js"),
         ("src", "app.js"),
     )
@@ -124,6 +129,9 @@ def test_pages_artifact_versions_every_executable_asset(
         assert f'{attribute}="./{asset}?v={version}"' in deployed_index
     assert deployed_index.count(f"?v={version}") == len(assets)
     assert (output / "app.js").read_bytes() == (STATIC / "app.js").read_bytes()
+    assert (output / "browser-prefix-contract.js").read_bytes() == (
+        STATIC / "browser-prefix-contract.js"
+    ).read_bytes()
     assert (output / "browser-engine-worker.js").is_file()
     assert (output / "wasm-kernel-adapter.js").is_file()
 
@@ -160,8 +168,9 @@ def test_browser_engine_assets_are_fail_closed_and_receipted() -> None:
     assert "URL.revokeObjectURL" in adapter
     assert "validateRuntimeMemory(module, variant.memory_limits" in adapter
     assert "module_js_sha256: identity.module_js_sha256" in adapter
-    assert "certificate_schema: variant.safety_certificate.schema" in adapter
+    assert "certificate_schema: safetyCertificate?.schema ?? null" in adapter
     assert "evidence.differential_cases < 1" in adapter
+    assert "evidence.differential_cases < MIN_PREFIX_DIFFERENTIAL_CASES" in adapter
     assert "limits.depth > certified.maximum_depth" in adapter
     assert "limits.max_generation_positions > certified.maximum_generation_positions" in adapter
     assert "nextState.quiet_series" in client
@@ -174,6 +183,21 @@ def test_browser_engine_assets_are_fail_closed_and_receipted() -> None:
     assert "analysisDeadlineMs" in app
     assert "worker?.terminate()" in client
     assert "Synchronous WebAssembly cannot consume a queued cancel message" in client
+    assert "_spc_boundary_prefix_contract_json" in adapter
+    assert "_spc_boundary_prefix_json" in adapter
+    assert "validateNativePrefixContract(module, variant.prefix_contract)" in adapter
+    assert 'this._call("prefix", request' in client
+    assert "PREFIX_API.validatePrefixResult(result, request, this.identity)" in client
+    assert "this.activeAnalysis !== null || this.activePrefix !== null" in client
+    assert 'path === "/api/prefix"' in app
+    assert "BROWSER_PREFIX.routePrefixRequest" in app
+    assert "currentPrefixAuthority()" in app
+    assert "progressive_ep: cursor.ep_targets" in app
+    assert "promoted_hex: cursor.promoted_hex" in app
+    assert "chess960: cursor.chess960 === true" in app
+    assert (STATIC / "browser-prefix-contract.js").read_text(encoding="utf-8") == (
+        ROOT / "browser-prefix-contract.js"
+    ).read_text(encoding="utf-8")
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js is required for browser asset tests")

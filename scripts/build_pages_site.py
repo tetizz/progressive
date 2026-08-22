@@ -16,6 +16,10 @@ ASSET_REFERENCES = (
     ("src=\"./play-handoff.js\"", "src=\"./play-handoff.js?v={version}\""),
     ("src=\"./play-timeline.js\"", "src=\"./play-timeline.js?v={version}\""),
     (
+        "src=\"./browser-prefix-contract.js\"",
+        "src=\"./browser-prefix-contract.js?v={version}\"",
+    ),
+    (
         "src=\"./browser-engine-client.js\"",
         "src=\"./browser-engine-client.js?v={version}\"",
     ),

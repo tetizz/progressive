@@ -44,6 +44,7 @@ jobs:
               "evaluation-format.js",
               "play-handoff.js",
               "play-timeline.js",
+              "browser-prefix-contract.js",
               "browser-engine-client.js",
               "browser-engine-worker.js",
               "wasm-kernel-adapter.js",

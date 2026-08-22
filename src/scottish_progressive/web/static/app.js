@@ -36,6 +36,7 @@
       globalThis.location.hostname.toLowerCase(),
     );
   const API_ORIGIN = isPublicPagesSite ? configuredApiOrigin : "";
+  const BROWSER_PREFIX = globalThis.ScottishProgressiveBrowserPrefix;
   const BROWSER_ENGINE_API = globalThis.ScottishProgressiveBrowserEngine;
   const browserEngineClient = staticHostCanRunLocalEngine && BROWSER_ENGINE_API
     ? BROWSER_ENGINE_API.createClient()
@@ -161,6 +162,7 @@
       engineName: "Current champion",
       engineProfileId: null,
       engineVersion: null,
+      rulesetVersion: null,
       engineFingerprint: null,
       runtimeCpuCount: null,
       runtimeCpuCountSource: null,
@@ -168,6 +170,7 @@
       nativeThreadsPolicy: null,
       runtimeMode: "server",
       browserWasmReady: false,
+      browserPrefixReady: false,
       browserWasmReason: null,
       browserWasmArtifact: null,
       healthReady: false,
@@ -231,6 +234,17 @@
     error.name = "TimeoutError";
     error.code = "analysis-deadline";
     return error;
+  }
+
+  function currentPrefixAuthority() {
+    const authority = {
+      source_fingerprint: state.play.engineFingerprint,
+      engine_version: state.play.engineVersion,
+      ruleset_version: state.play.rulesetVersion,
+    };
+    return Object.values(authority).every((value) => (
+      typeof value === "string" && Boolean(value)
+    )) ? authority : null;
   }
 
   async function requestRemoteJson(path, options = {}) {
@@ -324,6 +338,29 @@
 
   async function requestJson(path, options = {}) {
     if (!path.startsWith("/api/")) throw new Error("API path must start with /api/");
+    if (
+      path === "/api/prefix"
+      && browserEngineClient
+      && BROWSER_PREFIX
+      && options.body !== undefined
+    ) {
+      const originalBody = typeof options.body === "string"
+        ? JSON.parse(options.body)
+        : options.body;
+      return BROWSER_PREFIX.routePrefixRequest({
+        payload: originalBody,
+        signal: options.signal,
+        localClient: browserEngineClient,
+        remote: {
+          identity: currentPrefixAuthority(),
+          request: (body, { signal }) => requestRemoteJson(path, {
+            ...options,
+            signal,
+            body: JSON.stringify(body),
+          }),
+        },
+      });
+    }
     let analysisBody = null;
     let analysisDeadlineMs = Number(options.analysisDeadlineMs);
     if (path === "/api/analyze" && options.body !== undefined) {
@@ -2900,6 +2937,9 @@
               series: cursor.series,
               quiet_series: cursor.quiet_series,
               ep_targets: cursor.ep_targets,
+              progressive_ep: cursor.ep_targets,
+              promoted_hex: cursor.promoted_hex,
+              chess960: cursor.chess960 === true,
               prefix: moves.slice(0, micro + 1),
             }),
           });
@@ -3710,6 +3750,7 @@
     state.play.engineName = String(runtime.engine_profile_name);
     state.play.engineProfileId = runtime.engine_profile_id;
     state.play.engineVersion = runtime.engine_version;
+    state.play.rulesetVersion = runtime.ruleset_version;
     state.play.engineFingerprint = runtime.source_fingerprint;
     state.play.browserWasmReady = true;
     state.play.browserWasmReason = null;
@@ -3784,7 +3825,9 @@
         dom.engine_status.classList.remove("is-online", "is-offline");
         dom.engine_status_text.textContent = "Loading native engine…";
         const localRuntime = await browserEngineClient.preflight({});
-        if (localRuntime.ready === true) {
+        state.play.browserPrefixReady = localRuntime.ready === true
+          && localRuntime.prefix_ready === true;
+        if (localRuntime.ready === true && localRuntime.analysis_ready === true) {
           applyCertifiedBrowserRuntime(localRuntime);
           return;
         }
@@ -3848,6 +3891,7 @@
         health.rules_version,
         health.ruleset,
       );
+      state.play.rulesetVersion = rulesetVersion;
       let browserRuntime = { ready: false, reason: "not-public-pages" };
       if (browserEngineClient) {
         try {
@@ -3866,14 +3910,19 @@
           };
         }
       }
-      state.play.browserWasmReady = browserRuntime.ready === true;
-      state.play.browserWasmReason = browserRuntime.ready
+      state.play.browserWasmReady = browserRuntime.ready === true
+        && browserRuntime.analysis_ready === true;
+      state.play.browserPrefixReady = browserRuntime.ready === true
+        && browserRuntime.prefix_ready === true;
+      state.play.browserWasmReason = state.play.browserWasmReady
         ? null
-        : String(browserRuntime.reason || "browser-kernel-unavailable");
+        : browserRuntime.ready
+          ? "browser-search-not-certified"
+          : String(browserRuntime.reason || "browser-kernel-unavailable");
       state.play.browserWasmArtifact = browserRuntime.ready
         ? browserRuntime.wasm_sha256
         : null;
-      if (browserRuntime.ready) {
+      if (state.play.browserWasmReady) {
         state.play.runtimeMode = "browser-wasm";
         state.play.runtimeCpuCount = Math.max(
           1,
@@ -3897,7 +3946,7 @@
         state.play.recommendedBranchCap,
       )));
       dom.engine_status_text.textContent = first(health.status, "ok") === "ok"
-        ? browserRuntime.ready ? "Engine on this device" : "Engine online"
+        ? state.play.browserWasmReady ? "Engine on this device" : "Engine online"
         : String(first(health.status, "Engine online"));
       const version = rulesetVersion;
       if (version) dom.rules_version.textContent = String(version);
@@ -3963,7 +4012,11 @@
         profileName,
         first(health.engine_version, health.version),
         first(health.source_fingerprint, health.fingerprint),
-        browserRuntime.ready ? "certified on-device WebAssembly" : "hosted engine fallback",
+        state.play.browserWasmReady
+          ? "certified on-device WebAssembly"
+          : state.play.browserPrefixReady
+            ? "hosted search · certified local move validation"
+            : "hosted engine fallback",
       ].filter(Boolean).join(" · ");
       renderPlaySurface();
     } catch (error) {

@@ -13,6 +13,12 @@ function publicError(error, fallbackRequired = true) {
   };
 }
 
+function notReadyError() {
+  const error = new Error("The browser engine was not certified before use.");
+  error.code = "browser-worker-not-ready";
+  return error;
+}
+
 async function getKernel(expectedSourceFingerprint) {
   if (
     pinnedSourceFingerprint !== null
@@ -46,13 +52,16 @@ self.addEventListener("message", async (event) => {
       return;
     }
     if (message.type === "analyze") {
-      if (!kernelPromise) {
-        const error = new Error("The browser engine was not certified before search.");
-        error.code = "browser-worker-not-ready";
-        throw error;
-      }
+      if (!kernelPromise) throw notReadyError();
       const kernel = await kernelPromise;
       const result = await kernel.analyze(message.payload);
+      self.postMessage({ id, ok: true, payload: result });
+      return;
+    }
+    if (message.type === "prefix") {
+      if (!kernelPromise) throw notReadyError();
+      const kernel = await kernelPromise;
+      const result = await kernel.inspectPrefix(message.payload);
       self.postMessage({ id, ok: true, payload: result });
       return;
     }

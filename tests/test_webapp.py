@@ -615,6 +615,13 @@ def test_http_health_prefix_static_and_traversal(tmp_path: Path) -> None:
         assert status == 200
         assert prefix["complete"] is True
         assert "4P3" in prefix["board_fen"]
+        assert {
+            key: prefix[key]
+            for key in ("source_fingerprint", "engine_version", "ruleset_version")
+        } == {
+            key: health[key]
+            for key in ("source_fingerprint", "engine_version", "ruleset_version")
+        }
 
         with urlopen(f"{base}/", timeout=3) as response:
             assert response.status == 200

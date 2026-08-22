@@ -19,6 +19,7 @@
   const MAX_INITIAL_MEMORY_BYTES = 128 * 1024 * 1024;
   const MAXIMUM_MEMORY_BYTES = 256 * 1024 * 1024;
   const MAX_ESTIMATED_PEAK_MEMORY_BYTES = 192 * 1024 * 1024;
+  const PREFIX_API = globalThis.ScottishProgressiveBrowserPrefix || null;
   const scriptVersion = (() => {
     try {
       const source = globalThis.document?.currentScript?.src;
@@ -106,6 +107,13 @@
 
   function normalizedMemoryLimits(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const expectedKeys = [
+      "estimated_peak_bytes",
+      "growth_enabled",
+      "initial_bytes",
+      "maximum_bytes",
+    ];
+    if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(expectedKeys)) return null;
     const limits = {
       initial_bytes: value.initial_bytes,
       maximum_bytes: value.maximum_bytes,
@@ -232,30 +240,59 @@
     if (!identity || typeof identity !== "object") return false;
     const analysisLimits = normalizedAnalysisLimits(identity.analysis_limits);
     const memoryLimits = normalizedMemoryLimits(identity.memory_limits);
-    return (
+    let prefixContract = null;
+    if (identity.prefix_ready === true && PREFIX_API) {
+      try {
+        prefixContract = PREFIX_API.validateCertifiedPrefixContract(
+          identity.prefix_contract,
+        );
+      } catch {
+        prefixContract = null;
+      }
+    }
+    const commonIdentity = (
       SOURCE_FINGERPRINT.test(String(identity.source_fingerprint || ""))
       && ARTIFACT_FINGERPRINT.test(String(identity.wasm_sha256 || ""))
       && ARTIFACT_FINGERPRINT.test(String(identity.module_js_sha256 || ""))
-      && identity.certificate_schema === CERTIFICATE_SCHEMA
-      && identity.certificate_status === "certified"
       && identity.contract_version === 1
       && identity.abi_version === 1
-      && identity.safety_certified === true
-      && typeof identity.certificate_id === "string"
-      && Boolean(identity.certificate_id)
       && identity.runtime_variant === "single"
       && identity.thread_count === 1
-      && typeof identity.engine_profile_id === "string"
-      && Boolean(identity.engine_profile_id)
-      && typeof identity.engine_profile_name === "string"
-      && Boolean(identity.engine_profile_name)
       && typeof identity.engine_version === "string"
       && Boolean(identity.engine_version)
       && typeof identity.ruleset_version === "string"
       && Boolean(identity.ruleset_version)
-      && analysisLimits !== null
       && memoryLimits !== null
     );
+    if (!commonIdentity) return false;
+    const analysisReady = identity.analysis_ready === true;
+    const prefixReady = identity.prefix_ready === true;
+    const validAnalysis = analysisReady ? (
+      identity.certificate_schema === CERTIFICATE_SCHEMA
+      && identity.certificate_status === "certified"
+      && identity.safety_certified === true
+      && typeof identity.certificate_id === "string"
+      && Boolean(identity.certificate_id)
+      && typeof identity.engine_profile_id === "string"
+      && Boolean(identity.engine_profile_id)
+      && typeof identity.engine_profile_name === "string"
+      && Boolean(identity.engine_profile_name)
+      && analysisLimits !== null
+    ) : (
+      identity.safety_certified === false
+      && identity.certificate_id === null
+      && analysisLimits === null
+    );
+    const validPrefix = prefixReady ? (
+      PREFIX_API !== null
+      && typeof identity.prefix_certificate_id === "string"
+      && Boolean(identity.prefix_certificate_id)
+      && prefixContract !== null
+    ) : (
+      identity.prefix_certificate_id === null
+      && identity.prefix_contract === null
+    );
+    return (analysisReady || prefixReady) && validAnalysis && validPrefix;
   }
 
   function validateCompiledReplay(result, request) {
@@ -346,6 +383,26 @@
     return replay;
   }
 
+  function validateReportedMemory(result, identity) {
+    const memoryBytes = result?.memory_bytes;
+    const memory = normalizedMemoryLimits(identity?.memory_limits);
+    if (
+      !memory
+      || !Number.isInteger(memoryBytes)
+      || memoryBytes < memory.initial_bytes
+      || memoryBytes % 65_536 !== 0
+      || memoryBytes > memory.estimated_peak_bytes
+      || memoryBytes > memory.maximum_bytes
+    ) {
+      throw new BrowserEngineError(
+        "The browser kernel exceeded its certified memory envelope.",
+        "browser-memory-envelope-exceeded",
+        { fallbackRequired: true },
+      );
+    }
+    return memoryBytes;
+  }
+
   function validatePublishedAnalysis(result, request, identity) {
     if (!result || typeof result !== "object" || Array.isArray(result)) {
       throw new BrowserEngineError(
@@ -411,24 +468,29 @@
         { fallbackRequired: true },
       );
     }
-    const memoryBytes = result.memory_bytes;
-    const memory = normalizedMemoryLimits(identity?.memory_limits);
-    if (
-      !memory
-      || !Number.isInteger(memoryBytes)
-      || memoryBytes < memory.initial_bytes
-      || memoryBytes % 65_536 !== 0
-      || memoryBytes > memory.estimated_peak_bytes
-      || memoryBytes > memory.maximum_bytes
-    ) {
-      throw new BrowserEngineError(
-        "The browser kernel exceeded its certified memory envelope.",
-        "browser-memory-envelope-exceeded",
-        { fallbackRequired: true },
-      );
-    }
+    validateReportedMemory(result, identity);
     validateCompiledReplay(result, request);
     return { requestedDepth, completedDepth };
+  }
+
+  function expectedIdentityMatches(identity, {
+    engineProfileId,
+    engineProfileName,
+    engineVersion,
+    rulesetVersion,
+  }) {
+    if (!identity) return true;
+    const expected = [
+      [engineVersion, identity.engine_version],
+      [rulesetVersion, identity.ruleset_version],
+      ...(identity.analysis_ready === true ? [
+        [engineProfileId, identity.engine_profile_id],
+        [engineProfileName, identity.engine_profile_name],
+      ] : []),
+    ];
+    return expected.every(([wanted, actual]) => (
+      wanted === null || wanted === undefined || wanted === actual
+    ));
   }
 
   class BrowserEngineClient {
@@ -444,6 +506,7 @@
       this.generation = 0;
       this.nextMessageId = 1;
       this.nextRequestId = 1;
+      this.nextPrefixRequestId = 1;
       this.pending = new Map();
       this.identity = null;
       this.profile = null;
@@ -451,12 +514,36 @@
       this.disabledReason = null;
       this.probePromise = null;
       this.activeAnalysis = null;
+      this.activePrefix = null;
     }
 
     canAnalyze(payload) {
       return this.identity !== null
         && this.disabledReason === null
+        && this.identity.analysis_ready === true
+        && this.activePrefix === null
         && isLocalBestMoveRequest(payload, this.identity.analysis_limits);
+    }
+
+    canInspectPrefix(payload) {
+      if (
+        !PREFIX_API
+        || this.identity === null
+        || this.disabledReason !== null
+        || this.identity.prefix_ready !== true
+        || this.activeAnalysis !== null
+        || this.activePrefix !== null
+      ) return false;
+      try {
+        PREFIX_API.normalizePrefixRequest(
+          payload,
+          "prefix-capability-check",
+          this.identity.prefix_contract,
+        );
+        return true;
+      } catch {
+        return false;
+      }
     }
 
     _spawnWorker() {
@@ -517,6 +604,7 @@
       this.worker = null;
       this.generation += 1;
       this.activeAnalysis = null;
+      this.activePrefix = null;
       try {
         worker?.terminate();
       } catch {
@@ -619,14 +707,12 @@
         return { ready: false, reason: "invalid-server-source-fingerprint" };
       }
       if (this.disabledReason) return { ready: false, reason: this.disabledReason };
-      const expectedProfileMatches = this.identity === null || [
-        [engineProfileId, this.identity.engine_profile_id],
-        [engineProfileName, this.identity.engine_profile_name],
-        [engineVersion, this.identity.engine_version],
-        [rulesetVersion, this.identity.ruleset_version],
-      ].every(([expected, actual]) => (
-        expected === null || expected === undefined || expected === actual
-      ));
+      const expectedProfileMatches = expectedIdentityMatches(this.identity, {
+        engineProfileId,
+        engineProfileName,
+        engineVersion,
+        rulesetVersion,
+      });
       if (
         this.ready
         && (!hasExpectedSource || this.identity?.source_fingerprint === sourceFingerprint)
@@ -665,21 +751,16 @@
               ? "browser-analysis-deadline"
               : "browser-worker-timeout",
           });
-          const expectedMetadata = [
-            [engineProfileId, response?.engine_profile_id],
-            [engineProfileName, response?.engine_profile_name],
-            [engineVersion, response?.engine_version],
-            [rulesetVersion, response?.ruleset_version],
-          ];
           if (
             response?.ready !== true
             || !validateIdentity(response)
             || (hasExpectedSource && response.source_fingerprint !== sourceFingerprint)
-            || expectedMetadata.some(([expected, actual]) => (
-              expected !== null
-              && expected !== undefined
-              && expected !== actual
-            ))
+            || !expectedIdentityMatches(response, {
+              engineProfileId,
+              engineProfileName,
+              engineVersion,
+              rulesetVersion,
+            })
           ) {
             this.disabledReason = String(response?.reason || "browser-kernel-not-certified");
             this._dropWorker(new BrowserEngineError(
@@ -697,15 +778,27 @@
             source_fingerprint: response.source_fingerprint,
             wasm_sha256: response.wasm_sha256,
             module_js_sha256: response.module_js_sha256,
-            safety_certified: true,
-            certificate_id: String(response.certificate_id || ""),
+            analysis_ready: response.analysis_ready === true,
+            prefix_ready: response.prefix_ready === true,
+            safety_certified: response.safety_certified === true,
+            certificate_id: response.certificate_id === null
+              ? null
+              : String(response.certificate_id || ""),
+            prefix_certificate_id: response.prefix_certificate_id === null
+              ? null
+              : String(response.prefix_certificate_id || ""),
             runtime_variant: response.runtime_variant,
             thread_count: response.thread_count,
             engine_profile_id: response.engine_profile_id,
             engine_profile_name: response.engine_profile_name,
             engine_version: response.engine_version,
             ruleset_version: response.ruleset_version,
-            analysis_limits: Object.freeze(normalizedAnalysisLimits(response.analysis_limits)),
+            analysis_limits: response.analysis_ready
+              ? Object.freeze(normalizedAnalysisLimits(response.analysis_limits))
+              : null,
+            prefix_contract: response.prefix_ready
+              ? PREFIX_API.validateCertifiedPrefixContract(response.prefix_contract)
+              : null,
             memory_limits: Object.freeze(normalizedMemoryLimits(response.memory_limits)),
           });
           this.profile = Object.freeze({
@@ -838,6 +931,58 @@
       }
     }
 
+    async inspectPrefix(payload, { signal } = {}) {
+      if (!PREFIX_API) {
+        throw new BrowserEngineError(
+          "The certified browser prefix contract is unavailable.",
+          "browser-prefix-contract-unavailable",
+          { fallbackRequired: true },
+        );
+      }
+      if (!this.ready && this.identity) {
+        await this.preflight({
+          sourceFingerprint: this.identity.source_fingerprint,
+          engineProfileId: this.profile?.engine_profile_id,
+          engineProfileName: this.profile?.engine_profile_name,
+          engineVersion: this.profile?.engine_version,
+          rulesetVersion: this.profile?.ruleset_version,
+          signal,
+        });
+      }
+      if (this.activeAnalysis !== null || this.activePrefix !== null) {
+        throw new BrowserEngineError(
+          "The browser engine is busy with synchronous work.",
+          "browser-engine-busy",
+          { fallbackRequired: true },
+        );
+      }
+      if (!this.ready || !this.canInspectPrefix(payload)) {
+        throw new BrowserEngineError(
+          "The certified browser prefix engine is unavailable for this request.",
+          "browser-prefix-unavailable",
+          { fallbackRequired: true },
+        );
+      }
+      const requestId = `prefix-${this.nextPrefixRequestId++}`;
+      const request = PREFIX_API.normalizePrefixRequest(
+        payload,
+        requestId,
+        this.identity.prefix_contract,
+      );
+      this.activePrefix = requestId;
+      try {
+        const result = await this._call("prefix", request, {
+          signal,
+          timeoutMs: this.probeTimeoutMs,
+        });
+        PREFIX_API.validatePrefixResult(result, request, this.identity);
+        validateReportedMemory(result, this.identity);
+        return result;
+      } finally {
+        if (this.activePrefix === requestId) this.activePrefix = null;
+      }
+    }
+
     close(reason = "browser engine client closed") {
       this.disabledReason = reason;
       this.ready = false;
@@ -856,6 +1001,7 @@
     createClient: (options) => new BrowserEngineClient(options),
     isLocalBestMoveRequest,
     normalizedKernelRequest,
+    validateReportedMemory,
     validateCompiledReplay,
     validatePublishedAnalysis,
   });

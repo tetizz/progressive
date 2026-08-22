@@ -605,6 +605,7 @@ def inspect_prefix(
     next_state = _boundary_payload(result.final_state) if result is not None else None
     payload = {
         "engine_version": ENGINE_VERSION,
+        "source_fingerprint": ENGINE_SOURCE_FINGERPRINT,
         "ruleset_version": RULESET_VERSION,
         "boundary_state": _boundary_payload(state),
         "fen": display_board.fen(en_passant="fen"),
