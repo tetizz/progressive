@@ -1,8 +1,16 @@
+#if defined(SPC_NATIVE_CORE_ONLY) && !defined(SPC_NATIVE_CORE_PTHREADS)
+#define SPC_NATIVE_SERIAL_POOL 1
+#endif
+
+#ifndef SPC_NATIVE_CORE_ONLY
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
+#endif
 
 #include "native_eval.hpp"
+#ifndef SPC_NATIVE_CORE_ONLY
 #include "native_selfplay.hpp"
+#endif
 
 #ifndef SPC_NATIVE_SOURCE_IDENTITY
 #define SPC_NATIVE_SOURCE_IDENTITY "unconfigured"
@@ -12,7 +20,6 @@
 #include <array>
 #include <atomic>
 #include <bit>
-#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
@@ -20,12 +27,15 @@
 #include <limits>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <new>
 #include <set>
 #include <stdexcept>
 #include <string>
+#ifndef SPC_NATIVE_SERIAL_POOL
+#include <condition_variable>
+#include <mutex>
 #include <thread>
+#endif
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -43,6 +53,25 @@ constexpr int ROOK = 4;
 constexpr int QUEEN = 5;
 constexpr int KING = 6;
 
+#ifdef SPC_NATIVE_SERIAL_POOL
+class BoundedNativePool {
+public:
+    static BoundedNativePool& instance() {
+        static BoundedNativePool pool;
+        return pool;
+    }
+
+    void run(
+        std::size_t count,
+        std::uint32_t,
+        const std::function<void(std::size_t)>& task
+    ) {
+        for (std::size_t index = 0; index < count; ++index) {
+            task(index);
+        }
+    }
+};
+#else
 class BoundedNativePool {
 public:
     BoundedNativePool(const BoundedNativePool&) = delete;
@@ -191,6 +220,7 @@ private:
     std::uint64_t generation_ = 0;
     bool stopping_ = false;
 };
+#endif
 
 struct Move {
     int from;
@@ -3169,6 +3199,21 @@ bool replay_required_prefix(
 
 }  // namespace
 
+bool is_in_check(const BoardState& position) noexcept {
+    return board_in_check(position);
+}
+
+bool has_insufficient_material(const BoardState& position) noexcept {
+    return board_has_insufficient_material(position);
+}
+
+std::vector<int> canonical_ep_targets(
+    const BoardState& position,
+    Bitboard pending_ep_targets
+) {
+    return canonical_boundary_ep_targets(position, pending_ep_targets);
+}
+
 CompleteSeriesResponse generate_complete_series(
     const CompleteSeriesRequest& request
 ) {
@@ -3463,6 +3508,7 @@ CompleteSeriesResponse generate_complete_series(
 
 }  // namespace spc::native
 
+#ifndef SPC_NATIVE_CORE_ONLY
 namespace {
 
 bool parse_square_sequence(
@@ -5230,3 +5276,4 @@ PyMODINIT_FUNC PyInit__native_eval() {
     }
     return module;
 }
+#endif

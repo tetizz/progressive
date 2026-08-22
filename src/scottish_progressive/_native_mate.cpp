@@ -1,5 +1,7 @@
 #define PY_SSIZE_T_CLEAN
+#ifndef SPC_NATIVE_MATE_CORE_ONLY
 #include <Python.h>
+#endif
 
 #ifndef SPC_NATIVE_MATE_SOURCE_IDENTITY
 #define SPC_NATIVE_MATE_SOURCE_IDENTITY "unconfigured"
@@ -8,7 +10,9 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <charconv>
 #include <chrono>
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
@@ -17,11 +21,20 @@
 #include <new>
 #include <optional>
 #include <queue>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#if defined(__EMSCRIPTEN__)
+#include <emscripten/emscripten.h>
+#define SPC_MATE_WASM_EXPORT EMSCRIPTEN_KEEPALIVE
+#else
+#define SPC_MATE_WASM_EXPORT
+#endif
 
 namespace spc::native_mate {
 namespace {
@@ -1120,6 +1133,496 @@ struct MateSearchNodeWorse {
     return response;
 }
 
+constexpr std::uint32_t MATE_WASM_ABI_VERSION = 1;
+
+[[nodiscard]] bool parse_i64_text(
+    std::string_view text,
+    std::int64_t& value
+) noexcept {
+    if (text.empty()) {
+        return false;
+    }
+    const auto parsed = std::from_chars(
+        text.data(),
+        text.data() + text.size(),
+        value
+    );
+    return parsed.ec == std::errc{}
+        && parsed.ptr == text.data() + text.size();
+}
+
+[[nodiscard]] bool parse_promoted_mask(
+    const char* supplied,
+    Bitboard& promoted
+) noexcept {
+    std::string_view text = supplied == nullptr
+        ? std::string_view{}
+        : std::string_view{supplied};
+    if (text.empty() || text == "-") {
+        promoted = 0;
+        return true;
+    }
+    if (text.starts_with("0x") || text.starts_with("0X")) {
+        text.remove_prefix(2);
+    }
+    if (text.empty() || text.size() > 16) {
+        return false;
+    }
+    const auto parsed = std::from_chars(
+        text.data(),
+        text.data() + text.size(),
+        promoted,
+        16
+    );
+    return parsed.ec == std::errc{}
+        && parsed.ptr == text.data() + text.size();
+}
+
+[[nodiscard]] bool parse_square_name(
+    std::string_view name,
+    int& square_index
+) noexcept {
+    if (
+        name.size() != 2
+        || name[0] < 'a'
+        || name[0] > 'h'
+        || name[1] < '1'
+        || name[1] > '8'
+    ) {
+        return false;
+    }
+    square_index = static_cast<int>(name[0] - 'a')
+        + 8 * static_cast<int>(name[1] - '1');
+    return true;
+}
+
+[[nodiscard]] bool parse_ep_text(
+    std::string_view text,
+    std::vector<int>& targets
+) {
+    targets.clear();
+    if (text.empty() || text == "-") {
+        return true;
+    }
+    std::size_t begin = 0;
+    while (begin <= text.size()) {
+        const std::size_t comma = text.find(',', begin);
+        const std::size_t end = comma == std::string_view::npos
+            ? text.size()
+            : comma;
+        int square_index = -1;
+        if (!parse_square_name(text.substr(begin, end - begin), square_index)) {
+            return false;
+        }
+        targets.push_back(square_index);
+        if (comma == std::string_view::npos) {
+            break;
+        }
+        begin = comma + 1;
+    }
+    std::sort(targets.begin(), targets.end());
+    targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
+    return true;
+}
+
+[[nodiscard]] bool board_has_piece(
+    const BoardState& board,
+    Bitboard pieces,
+    bool white,
+    int square_index
+) noexcept {
+    const Bitboard mask = bit(square_index);
+    return (pieces & mask) != 0
+        && (board.occupied[white ? 1 : 0] & mask) != 0;
+}
+
+[[nodiscard]] bool parse_mate_boundary(
+    const char* fen_text,
+    std::int32_t series_number,
+    const char* progressive_ep,
+    const char* promoted_hex,
+    BoardState& board,
+    std::vector<int>& ep_targets,
+    std::string& error
+) {
+    if (fen_text == nullptr || *fen_text == '\0') {
+        error = "boundary FEN is required";
+        return false;
+    }
+    if (series_number < 1 || series_number > 256) {
+        error = "Progressive series value is out of range";
+        return false;
+    }
+    std::istringstream fields{fen_text};
+    std::array<std::string, 6> fen;
+    for (auto& field : fen) {
+        if (!(fields >> field)) {
+            error = "boundary FEN must contain six fields";
+            return false;
+        }
+    }
+    std::string extra;
+    if (fields >> extra) {
+        error = "boundary FEN contains trailing fields";
+        return false;
+    }
+
+    board = {};
+    int rank = 7;
+    int file = 0;
+    int separators = 0;
+    for (const char symbol : fen[0]) {
+        if (symbol == '/') {
+            if (file != 8 || rank == 0) {
+                error = "boundary FEN board rows are malformed";
+                return false;
+            }
+            --rank;
+            file = 0;
+            ++separators;
+            continue;
+        }
+        if (symbol >= '1' && symbol <= '8') {
+            file += symbol - '0';
+            if (file > 8) {
+                error = "boundary FEN board row is too wide";
+                return false;
+            }
+            continue;
+        }
+        if (file >= 8 || rank < 0) {
+            error = "boundary FEN piece placement is malformed";
+            return false;
+        }
+        const bool white = std::isupper(
+            static_cast<unsigned char>(symbol)
+        ) != 0;
+        const char piece = static_cast<char>(
+            std::tolower(static_cast<unsigned char>(symbol))
+        );
+        const Bitboard mask = bit(rank * 8 + file);
+        Bitboard* piece_mask = nullptr;
+        switch (piece) {
+            case 'p': piece_mask = &board.pawns; break;
+            case 'n': piece_mask = &board.knights; break;
+            case 'b': piece_mask = &board.bishops; break;
+            case 'r': piece_mask = &board.rooks; break;
+            case 'q': piece_mask = &board.queens; break;
+            case 'k': piece_mask = &board.kings; break;
+            default:
+                error = "boundary FEN contains an unknown piece";
+                return false;
+        }
+        *piece_mask |= mask;
+        board.occupied[white ? 1 : 0] |= mask;
+        ++file;
+    }
+    if (rank != 0 || file != 8 || separators != 7) {
+        error = "boundary FEN does not describe eight complete ranks";
+        return false;
+    }
+    if (fen[1] == "w") {
+        board.white_to_move = true;
+    } else if (fen[1] == "b") {
+        board.white_to_move = false;
+    } else {
+        error = "boundary FEN turn must be w or b";
+        return false;
+    }
+    if (board.white_to_move != (series_number % 2 == 1)) {
+        error = "boundary FEN turn does not match Progressive series parity";
+        return false;
+    }
+    const Bitboard white_kings = board.kings & board.occupied[1];
+    const Bitboard black_kings = board.kings & board.occupied[0];
+    if (
+        white_kings == 0
+        || (white_kings & (white_kings - 1)) != 0
+        || black_kings == 0
+        || (black_kings & (black_kings - 1)) != 0
+    ) {
+        error = "boundary must contain exactly one king per side";
+        return false;
+    }
+
+    if (fen[2] != "-") {
+        std::array<bool, 4> seen{};
+        for (const char right : fen[2]) {
+            int index = -1;
+            int rook_square = -1;
+            int king_square_index = -1;
+            bool white = false;
+            switch (right) {
+                case 'K': index = 0; rook_square = 7; king_square_index = 4; white = true; break;
+                case 'Q': index = 1; rook_square = 0; king_square_index = 4; white = true; break;
+                case 'k': index = 2; rook_square = 63; king_square_index = 60; break;
+                case 'q': index = 3; rook_square = 56; king_square_index = 60; break;
+                default:
+                    error = "only standard KQkq castling rights are supported";
+                    return false;
+            }
+            if (seen[static_cast<std::size_t>(index)]) {
+                error = "boundary FEN repeats a castling right";
+                return false;
+            }
+            seen[static_cast<std::size_t>(index)] = true;
+            if (
+                !board_has_piece(board, board.kings, white, king_square_index)
+                || !board_has_piece(board, board.rooks, white, rook_square)
+            ) {
+                error = "boundary FEN castling right has no matching king and rook";
+                return false;
+            }
+            board.castling_rights |= bit(rook_square);
+        }
+    }
+    if (!parse_promoted_mask(promoted_hex, board.promoted)) {
+        error = "promoted_hex is not a 64-bit hexadecimal mask";
+        return false;
+    }
+    const Bitboard occupied = board.occupied[0] | board.occupied[1];
+    if (
+        (board.promoted & ~occupied) != 0
+        || (board.promoted & (board.pawns | board.kings)) != 0
+    ) {
+        error = "promoted mask must name occupied non-pawn, non-king squares";
+        return false;
+    }
+    std::int64_t halfmove = 0;
+    std::int64_t fullmove = 0;
+    if (
+        !parse_i64_text(fen[4], halfmove)
+        || !parse_i64_text(fen[5], fullmove)
+        || halfmove < 0
+        || fullmove < 1
+    ) {
+        error = "boundary FEN clocks are out of range";
+        return false;
+    }
+
+    const std::string_view explicit_ep = progressive_ep == nullptr
+        ? std::string_view{}
+        : std::string_view{progressive_ep};
+    const std::string_view ep_text = explicit_ep.empty()
+        ? std::string_view{fen[3]}
+        : explicit_ep;
+    std::vector<int> supplied_targets;
+    if (!parse_ep_text(ep_text, supplied_targets)) {
+        error = "progressive EP targets must be comma-separated board squares";
+        return false;
+    }
+    ep_targets.clear();
+    const int expected_rank = board.white_to_move ? 5 : 2;
+    const int pawn_offset = board.white_to_move ? -8 : 8;
+    for (const int target : supplied_targets) {
+        const int pawn_square = target + pawn_offset;
+        if (
+            target / 8 != expected_rank
+            || pawn_square < 0
+            || pawn_square >= 64
+            || (occupied & bit(target)) != 0
+            || !board_has_piece(
+                board,
+                board.pawns,
+                !board.white_to_move,
+                pawn_square
+            )
+        ) {
+            error = "progressive EP target has invalid rank, occupancy, or pawn";
+            return false;
+        }
+        const auto legal = legal_move_variants(board, {target});
+        if (std::any_of(
+                legal.begin(),
+                legal.end(),
+                [target](const LegalMove& move) {
+                    return move.required_ep_square == target;
+                }
+            )) {
+            ep_targets.push_back(target);
+        }
+    }
+    return true;
+}
+
+void write_json_string(std::ostringstream& stream, const std::string& value) {
+    stream << '"';
+    for (const unsigned char character : value) {
+        switch (character) {
+            case '"': stream << "\\\""; break;
+            case '\\': stream << "\\\\"; break;
+            case '\b': stream << "\\b"; break;
+            case '\f': stream << "\\f"; break;
+            case '\n': stream << "\\n"; break;
+            case '\r': stream << "\\r"; break;
+            case '\t': stream << "\\t"; break;
+            default:
+                if (character < 0x20U) {
+                    constexpr char HEX[] = "0123456789abcdef";
+                    stream << "\\u00"
+                           << HEX[(character >> 4U) & 0x0fU]
+                           << HEX[character & 0x0fU];
+                } else {
+                    stream << static_cast<char>(character);
+                }
+        }
+    }
+    stream << '"';
+}
+
+[[nodiscard]] const char* mate_kernel_status(
+    SeriesMateSearchStatus status
+) noexcept {
+    switch (status) {
+        case SeriesMateSearchStatus::Found: return "found";
+        case SeriesMateSearchStatus::Exhausted: return "exhausted";
+        case SeriesMateSearchStatus::WorkLimit: return "work_limit";
+        case SeriesMateSearchStatus::Deadline: return "deadline";
+        case SeriesMateSearchStatus::Unsupported: return "unsupported";
+    }
+    return "unsupported";
+}
+
+[[nodiscard]] const char* mate_proof_status(
+    SeriesMateSearchStatus status
+) noexcept {
+    if (status == SeriesMateSearchStatus::Found) {
+        return "found";
+    }
+    if (status == SeriesMateSearchStatus::Exhausted) {
+        return "exhausted";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] std::string mate_error_json(const std::string& message) {
+    std::ostringstream stream;
+    stream << "{\"schema\":\"spc-series-mate-proof-v1\""
+           << ",\"abi_version\":" << MATE_WASM_ABI_VERSION
+           << ",\"kernel_status\":\"unsupported\""
+           << ",\"status_code\":4"
+           << ",\"proof_status\":\"unknown\""
+           << ",\"complete\":false,\"message\":";
+    write_json_string(stream, message);
+    stream << ",\"moves\":[],\"stats\":{}}";
+    return stream.str();
+}
+
+[[nodiscard]] std::string run_mate_json(
+    const BoardState& board,
+    std::int32_t series_number,
+    std::vector<int> ep_targets,
+    std::uint32_t max_positions,
+    std::uint32_t max_work,
+    std::uint32_t time_limit_ms
+) {
+    SeriesMateSearchRequest request{
+        board,
+        series_number,
+        std::move(ep_targets),
+        max_positions == 0
+            ? std::nullopt
+            : std::optional<std::uint64_t>{max_positions},
+        std::nullopt,
+        max_work == 0
+            ? std::nullopt
+            : std::optional<std::uint64_t>{max_work},
+    };
+    if (time_limit_ms != 0) {
+        request.deadline = std::chrono::steady_clock::now()
+            + std::chrono::milliseconds(time_limit_ms);
+    }
+    const SeriesMateSearchResponse response = find_series_mate(request);
+    const bool complete = response.status == SeriesMateSearchStatus::Found
+        || response.status == SeriesMateSearchStatus::Exhausted;
+    std::ostringstream stream;
+    stream << "{\"schema\":\"spc-series-mate-proof-v1\""
+           << ",\"abi_version\":" << MATE_WASM_ABI_VERSION
+           << ",\"kernel_status\":";
+    write_json_string(stream, mate_kernel_status(response.status));
+    stream << ",\"status_code\":" << static_cast<int>(response.status)
+           << ",\"proof_status\":";
+    write_json_string(stream, mate_proof_status(response.status));
+    stream << ",\"complete\":" << (complete ? "true" : "false")
+           << ",\"series_number\":" << series_number
+           << ",\"max_positions\":" << max_positions
+           << ",\"max_work\":" << max_work
+           << ",\"message\":";
+    write_json_string(stream, response.message);
+    stream << ",\"moves\":[";
+    for (std::size_t index = 0; index < response.moves.size(); ++index) {
+        if (index != 0) {
+            stream << ',';
+        }
+        write_json_string(stream, response.moves[index]);
+    }
+    stream << "],\"stats\":{\"positions_visited\":"
+           << response.stats.positions_visited
+           << ",\"moves_generated\":" << response.stats.moves_generated
+           << ",\"transpositions_merged\":"
+           << response.stats.transpositions_merged
+           << ",\"checking_series\":" << response.stats.checking_series
+           << ",\"checkmates\":" << response.stats.checkmates
+           << ",\"peak_frontier\":" << response.stats.peak_frontier
+           << ",\"max_depth_reached\":"
+           << response.stats.max_depth_reached << "}}";
+    return stream.str();
+}
+
+thread_local std::string last_mate_wasm_result;
+
+}  // namespace
+
+extern "C" SPC_MATE_WASM_EXPORT const char* spc_series_mate_search_json(
+    const char* fen,
+    std::int32_t series_number,
+    const char* progressive_ep,
+    const char* promoted_hex,
+    std::uint32_t max_positions,
+    std::uint32_t max_work,
+    std::uint32_t time_limit_ms
+) {
+    try {
+        BoardState board;
+        std::vector<int> ep_targets;
+        std::string error;
+        if (!parse_mate_boundary(
+                fen,
+                series_number,
+                progressive_ep,
+                promoted_hex,
+                board,
+                ep_targets,
+                error
+            )) {
+            last_mate_wasm_result = mate_error_json(error);
+            return last_mate_wasm_result.c_str();
+        }
+        last_mate_wasm_result = run_mate_json(
+            board,
+            series_number,
+            std::move(ep_targets),
+            max_positions,
+            max_work,
+            time_limit_ms
+        );
+    } catch (const std::exception& error) {
+        last_mate_wasm_result = mate_error_json(error.what());
+    } catch (...) {
+        last_mate_wasm_result = mate_error_json(
+            "native series-mate WASM search failed"
+        );
+    }
+    return last_mate_wasm_result.c_str();
+}
+
+extern "C" SPC_MATE_WASM_EXPORT std::uint32_t spc_series_mate_abi_version() {
+    return MATE_WASM_ABI_VERSION;
+}
+
+#ifndef SPC_NATIVE_MATE_CORE_ONLY
+namespace {
+
 enum class IntegerParseStatus : std::uint8_t {
     Ok,
     OutOfRange,
@@ -1528,8 +2031,10 @@ PyModuleDef MODULE = {
 };
 
 }  // namespace
+#endif
 }  // namespace spc::native_mate
 
+#ifndef SPC_NATIVE_MATE_CORE_ONLY
 PyMODINIT_FUNC PyInit__native_mate() {
     PyObject* module = PyModule_Create(&spc::native_mate::MODULE);
     if (module == nullptr) {
@@ -1547,3 +2052,6 @@ PyMODINIT_FUNC PyInit__native_mate() {
     }
     return module;
 }
+#endif
+
+#undef SPC_MATE_WASM_EXPORT

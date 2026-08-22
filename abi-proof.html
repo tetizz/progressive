@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Progressive WASM ABI proof</title>
+  </head>
+  <body>
+    <pre id="environment"></pre>
+    <pre id="receipt">starting</pre>
+    <script type="module">
+      document.querySelector("#environment").textContent = JSON.stringify({
+        user_agent: navigator.userAgent,
+        hardware_concurrency: navigator.hardwareConcurrency,
+        cross_origin_isolated: self.crossOriginIsolated,
+      }, null, 2);
+      const worker = new Worker("./abi-proof-worker.mjs", { type: "module" });
+      worker.onmessage = ({ data }) => {
+        document.querySelector("#receipt").textContent = JSON.stringify(data, null, 2);
+        document.title = `ABI proof ${data.mate.proof_status}`;
+      };
+      worker.onerror = (event) => {
+        document.querySelector("#receipt").textContent = `${event.message} @ ${event.filename}:${event.lineno}`;
+        document.title = "ABI proof failed";
+      };
+    </script>
+  </body>
+</html>

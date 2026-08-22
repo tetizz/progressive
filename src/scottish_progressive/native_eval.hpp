@@ -218,6 +218,17 @@ struct CompleteSeriesResponse {
     const std::vector<int>& ep_targets
 );
 
+[[nodiscard]] bool is_in_check(const BoardState& position) noexcept;
+
+[[nodiscard]] bool has_insufficient_material(
+    const BoardState& position
+) noexcept;
+
+[[nodiscard]] std::vector<int> canonical_ep_targets(
+    const BoardState& position,
+    Bitboard pending_ep_targets
+);
+
 [[nodiscard]] CompleteSeriesResponse generate_complete_series(
     const CompleteSeriesRequest& request
 );
