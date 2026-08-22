@@ -4,6 +4,7 @@ services:
     runtime: python
     plan: free
     region: ohio
+    autoDeployTrigger: commit
     buildCommand: python -m pip install .
     startCommand: >-
       python -m scottish_progressive.cli web

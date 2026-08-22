@@ -48,6 +48,7 @@ def test_deployment_manifests_keep_pages_and_render_on_the_same_commit() -> None
     assert "SPC_ALLOWED_CORS_ORIGIN" in render
     assert "value: https://tetizz.github.io" in render
     assert "SPC_OMIT_STALE_OPENING_REPORTS" in render
+    assert "autoDeployTrigger: commit" in render
     assert "branches: [main]" in workflow
     assert "src/scottish_progressive/web/static" in workflow
     assert "actions/deploy-pages@v4" in workflow
