@@ -1,0 +1,74 @@
+{
+  "schema": "spc-native-browser-geometry-receipt-v1",
+  "recorded_date": "2026-08-22",
+  "status": "complete",
+  "source_base": "741a75d9a0d3a610cd3ea7742ebdad6e1ebcb023",
+  "scope": "native proxy for eight ordinary single-thread browser workers",
+  "common": {
+    "depth_series": 5,
+    "max_series_per_node": 32,
+    "workers": 8,
+    "threads_per_worker": 1,
+    "aggregate_max_work": 100000000,
+    "worker_work_budget": 11111111,
+    "stream_first_wave": true,
+    "result": {
+      "candidate": "b2b3",
+      "score": 951,
+      "expected_signature_match": true,
+      "candidate_dispatches": 20,
+      "candidate_completions": 20
+    }
+  },
+  "runs": [
+    {
+      "series_generation_cache_capacity_per_worker": 65536,
+      "total_seconds": 44.81392330001108,
+      "search_seconds": 44.56780789999175,
+      "first_wave_completed_at_seconds": 18.170690200000536,
+      "aggregate_work": 52616728,
+      "per_worker_work": [
+        9536802,
+        9251773,
+        7441057,
+        7934998,
+        4247950,
+        5287559,
+        4247114,
+        4669474
+      ],
+      "peak_aggregate_rss_bytes": 541913088,
+      "under_60_seconds": true
+    },
+    {
+      "series_generation_cache_capacity_per_worker": 16384,
+      "total_seconds": 64.1106962999911,
+      "search_seconds": 63.87674929999048,
+      "first_wave_completed_at_seconds": 21.711714600009145,
+      "aggregate_work": 65984603,
+      "per_worker_work": [
+        10920024,
+        10948784,
+        9898297,
+        9710185,
+        5197074,
+        6278251,
+        6553314,
+        6478673
+      ],
+      "peak_aggregate_rss_bytes": 383012864,
+      "under_60_seconds": false
+    }
+  ],
+  "comparison": {
+    "larger_cache_time_reduction_percent": 30.09914743350354,
+    "larger_cache_work_reduction_percent": 20.259082258932438,
+    "larger_cache_extra_peak_rss_bytes": 158900224
+  },
+  "certification": {
+    "publishable": false,
+    "browser_wasm_executed": false,
+    "safety_certified": false,
+    "reason": "native browser-geometry proxy; iterative deepening, safety, replay, and Opera WASM remain unmeasured"
+  }
+}

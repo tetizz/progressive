@@ -343,7 +343,7 @@ def main() -> None:
     )
     parser.add_argument("--depth", type=int, choices=(5,), default=5)
     parser.add_argument("--width", type=int, default=32)
-    parser.add_argument("--workers", type=int, choices=(4,), default=4)
+    parser.add_argument("--workers", type=int, choices=(4, 8), default=4)
     parser.add_argument("--threads-per-worker", type=int, default=4)
     parser.add_argument("--max-work", type=int, default=100_000_000)
     parser.add_argument("--cache-capacity", type=int, default=65_536)
