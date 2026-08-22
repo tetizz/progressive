@@ -380,16 +380,44 @@ def _boundary_payload(state: ProgressiveState) -> dict[str, object]:
 
 
 def _legal_move_payload(
+    state: ProgressiveState,
     board: chess.Board,
     variants: Sequence[tuple[chess.Move, int | None]],
+    played: tuple[str, ...],
+    sans: tuple[str, ...],
+    ep_candidates: Mapping[int, int],
+    made_progress: bool,
 ) -> list[dict[str, object]]:
     legal: list[dict[str, object]] = []
     for move, required_ep in variants:
         trial = board.copy(stack=False)
         trial.ep_square = required_ep
         san = trial.san(move)
+        piece = trial.piece_at(move.from_square)
+        is_pawn_move = piece is not None and piece.piece_type == chess.PAWN
         capture = trial.is_capture(move)
+
+        next_candidates = dict(ep_candidates)
+        if move.from_square in next_candidates:
+            del next_candidates[move.from_square]
+        if is_pawn_move and abs(move.to_square - move.from_square) == 16:
+            next_candidates[move.to_square] = (
+                move.from_square + move.to_square
+            ) // 2
+
         trial.push(move)
+        gives_check = trial.is_check()
+        if gives_check:
+            completed = _finish_series(
+                state,
+                trial,
+                played + (move.uci(),),
+                sans + (san,),
+                next_candidates,
+                made_progress or is_pawn_move or capture,
+                delivered_check=True,
+            )
+            san = completed.san[-1]
         promotion = chess.piece_symbol(move.promotion) if move.promotion else None
         legal.append(
             {
@@ -399,7 +427,7 @@ def _legal_move_payload(
                 "to": chess.square_name(move.to_square),
                 "promotion": promotion,
                 "capture": capture,
-                "gives_check": trial.is_check(),
+                "gives_check": gives_check,
             }
         )
     return legal
@@ -498,6 +526,8 @@ def inspect_prefix(
                 made_progress,
                 delivered_check=delivered_check,
             )
+            sans = result.san
+            frames[-1]["san"] = result.san[-1]
             continue
 
         board.turn = mover
@@ -511,7 +541,15 @@ def inspect_prefix(
             result = _stuck_result(state, board, played, sans)
             legal_next: list[dict[str, object]] = []
         else:
-            legal_next = _legal_move_payload(board, variants)
+            legal_next = _legal_move_payload(
+                state,
+                board,
+                variants,
+                played,
+                sans,
+                ep_candidates,
+                made_progress,
+            )
     else:
         legal_next = []
 

@@ -111,6 +111,30 @@ def test_multiple_progressive_en_passant_targets_are_preserved() -> None:
     assert {"b5a6", "b5c6", "d5c6"} <= first_moves
 
 
+def test_progressive_en_passant_reply_downgrades_orthodox_mate_san() -> None:
+    state = ProgressiveState.from_fen(
+        "8/8/8/8/1p5p/7b/2PB1KPk/7b w - - 0 1",
+        3,
+    )
+
+    result = play_series(state, ("g2g4", "c2c4", "d2f4"))
+    generated = find_series(
+        generate_series(state, merge_transpositions=False),
+        "g2g4",
+        "c2c4",
+        "d2f4",
+    )
+
+    assert result.ended_by_check
+    assert result.outcome is None
+    assert result.san == ("g4", "c4", "Bf4+")
+    assert generated.san == result.san
+    assert generated.outcome is None
+    assert result.final_state.ep_targets == (chess.G3,)
+    replies = generate_series(result.final_state, merge_transpositions=False)
+    assert any(reply.moves[0] == "h4g3" for reply in replies)
+
+
 def test_moving_double_stepped_pawn_again_removes_ep_eligibility() -> None:
     black = ProgressiveState.from_fen(
         "7k/p7/8/1P6/8/8/8/K7 b - - 0 1", 2

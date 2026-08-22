@@ -143,6 +143,27 @@ def test_prefix_reconstructs_multiple_progressive_ep_targets() -> None:
     assert {"e5d6", "e5f6", "g5f6"} <= legal
 
 
+def test_prefix_san_uses_progressive_ep_replies_for_mate_suffix() -> None:
+    state = ProgressiveState.from_fen(
+        "8/8/8/8/1p5p/7b/2PB1KPk/7b w - - 0 1",
+        3,
+    )
+    line = ("g2g4", "c2c4", "d2f4")
+
+    partial = inspect_prefix(state, line[:2])
+    bishop_check = next(
+        move for move in partial["legal_next"] if move["uci"] == "d2f4"
+    )
+    assert bishop_check["san"] == "Bf4+"
+
+    completed = inspect_prefix(state, line)
+    assert completed["san"] == ["g4", "c4", "Bf4+"]
+    assert completed["frames"][-1]["san"] == "Bf4+"
+    assert completed["completion_reason"] == "check"
+    assert completed["outcome"] is None
+    assert completed["next_state"]["ep_targets"] == ["g3"]
+
+
 def test_prefix_rejects_illegal_and_overlong_client_paths() -> None:
     with pytest.raises(APIError, match="illegal move") as illegal:
         inspect_prefix(ProgressiveState.initial(), ("e2e5",))

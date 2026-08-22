@@ -768,6 +768,14 @@ def _finish_series(
         child.quiet_series,
         delivered_check=delivered_check,
     )
+    if delivered_check and sans:
+        # python-chess only knows its single orthodox en-passant square when it
+        # formats SAN. Scottish Progressive can hand several double-step
+        # targets to the opponent, so an orthodox ``#`` can still have a legal
+        # progressive en-passant reply. The completed boundary is the source
+        # of truth for the suffix.
+        suffix = "#" if outcome == Outcome.CHECKMATE else "+"
+        sans = (*sans[:-1], sans[-1].rstrip("+#") + suffix)
     return SeriesResult(
         moves=moves,
         san=sans,
