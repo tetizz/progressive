@@ -9,6 +9,20 @@ $root = Split-Path -Parent $PSScriptRoot
 $package = Join-Path $root "src/scottish_progressive"
 $absoluteOutput = Join-Path $root $Output
 $outputDirectory = Split-Path -Parent $absoluteOutput
+$requiredSources = @(
+    "_native_eval.cpp",
+    "native_eval.hpp",
+    "native_subtree.cpp",
+    "native_subtree.hpp",
+    "native_subtree_wasm.cpp",
+    "native_subtree_wasm.hpp"
+)
+$missingSources = @($requiredSources | Where-Object {
+    -not (Test-Path -LiteralPath (Join-Path $package $_) -PathType Leaf)
+})
+if ($missingSources.Count -gt 0) {
+    throw "WASM native-core dependency closure is missing: $($missingSources -join ', ')"
+}
 New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
 
 & $EmPlusPlus `
@@ -25,7 +39,7 @@ New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
     -sMODULARIZE=1 `
     -sEXPORT_ES6=1 `
     -sFILESYSTEM=0 `
-    "-sEXPORTED_FUNCTIONS=_spc_start_kernel_search_json,_spc_boundary_kernel_search_json,_spc_boundary_prefix_json,_spc_start_kernel_abi_version,_malloc,_free" `
+    "-sEXPORTED_FUNCTIONS=_spc_start_kernel_search_json,_spc_boundary_kernel_search_json,_spc_boundary_prefix_json,_spc_boundary_prefix_contract_json,_spc_start_kernel_abi_version,_malloc,_free" `
     "-sEXPORTED_RUNTIME_METHODS=UTF8ToString,stringToNewUTF8" `
     -o $absoluteOutput
 

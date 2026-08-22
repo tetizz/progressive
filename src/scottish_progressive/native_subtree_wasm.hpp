@@ -52,6 +52,11 @@ SPC_WASM_EXPORT const char* spc_boundary_prefix_json(
     const char* prefix_uci
 );
 
+// Machine-readable hard envelope for the prefix ABI. Browser publication must
+// additionally pin these limits in the artifact certificate and may only make
+// them stricter; requests must never be clamped into this envelope.
+SPC_WASM_EXPORT const char* spc_boundary_prefix_contract_json();
+
 SPC_WASM_EXPORT std::uint32_t spc_start_kernel_abi_version();
 
 }

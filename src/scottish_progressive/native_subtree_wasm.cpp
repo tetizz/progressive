@@ -23,6 +23,12 @@ namespace {
 constexpr std::uint32_t ABI_VERSION = 1;
 constexpr std::int64_t MATE_SCORE = 1'000'000;
 constexpr std::uint64_t CACHE_CAPACITY = 16'384;
+constexpr std::size_t MAX_BOUNDARY_FEN_BYTES = 512;
+constexpr std::int32_t MAX_QUIET_SERIES = 1'000'000;
+constexpr std::size_t MAX_PROGRESSIVE_EP_TARGETS = 8;
+constexpr std::size_t MAX_PROGRESSIVE_EP_BYTES = 23;
+constexpr std::size_t MAX_PREFIX_MOVES = 256;
+constexpr std::size_t MAX_PREFIX_UCI_BYTES = 1'535;
 
 [[nodiscard]] spc::native::SubtreeState initial_state() {
     using spc::native::Bitboard;
@@ -137,6 +143,9 @@ constexpr std::uint64_t CACHE_CAPACITY = 16'384;
         if (!parse_square(text.substr(begin, end - begin), square)) {
             return false;
         }
+        if (targets.size() >= MAX_PROGRESSIVE_EP_TARGETS) {
+            return false;
+        }
         targets.push_back(square);
         if (comma == std::string_view::npos) {
             break;
@@ -172,7 +181,21 @@ constexpr std::uint64_t CACHE_CAPACITY = 16'384;
         error = "boundary FEN is required";
         return false;
     }
-    if (series_number < 1 || series_number > 256 || quiet_series < 0) {
+    const std::string_view fen_input{fen_text};
+    if (
+        fen_input.size() > MAX_BOUNDARY_FEN_BYTES
+        || fen_input.find('\r') != std::string_view::npos
+        || fen_input.find('\n') != std::string_view::npos
+    ) {
+        error = "boundary FEN exceeds the compiled request envelope";
+        return false;
+    }
+    if (
+        series_number < 1
+        || series_number > static_cast<std::int32_t>(MAX_PREFIX_MOVES)
+        || quiet_series < 0
+        || quiet_series > MAX_QUIET_SERIES
+    ) {
         error = "Progressive series or quiet-series value is out of range";
         return false;
     }
@@ -328,6 +351,10 @@ constexpr std::uint64_t CACHE_CAPACITY = 16'384;
     const std::string_view ep_text = explicit_ep.empty()
         ? std::string_view{fen[3]}
         : explicit_ep;
+    if (ep_text.size() > MAX_PROGRESSIVE_EP_BYTES) {
+        error = "progressive EP targets exceed the compiled request envelope";
+        return false;
+    }
     std::vector<int> supplied_targets;
     if (!parse_ep_targets(ep_text, supplied_targets)) {
         error = "progressive EP targets must be comma-separated board squares";
@@ -534,7 +561,8 @@ constexpr int PREFIX_KING = 6;
     const spc::native::BoardState& board
 ) {
     std::ostringstream stream;
-    stream << "0x" << std::hex << board.promoted;
+    stream << std::hex << std::nouppercase << std::setfill('0')
+           << std::setw(16) << board.promoted;
     return stream.str();
 }
 
@@ -697,6 +725,10 @@ void update_prefix_ep_targets(
         return true;
     }
     const std::string_view text{supplied};
+    if (text.size() > MAX_PREFIX_UCI_BYTES) {
+        error = "prefix exceeds the compiled request envelope";
+        return false;
+    }
     std::size_t begin = 0;
     while (begin <= text.size()) {
         const std::size_t slash = text.find('/', begin);
@@ -732,6 +764,10 @@ void update_prefix_ep_targets(
         );
         if (move.size() != 4 && move.size() != 5) {
             error = "prefix contains malformed UCI text";
+            return false;
+        }
+        if (moves.size() >= MAX_PREFIX_MOVES) {
+            error = "prefix contains too many UCI moves";
             return false;
         }
         moves.push_back(std::move(move));
@@ -854,7 +890,7 @@ void write_boundary_payload(
     write_ep_array(stream, state.ep_targets);
     stream << ",\"promoted_hex\":";
     write_json_string(stream, promoted_hex(state.board));
-    stream << '}';
+    stream << ",\"chess960\":false}";
 }
 
 void write_legal_move_payload(
@@ -1522,6 +1558,10 @@ extern "C" const char* spc_boundary_prefix_json(
         );
     }
     return last_result.c_str();
+}
+
+extern "C" const char* spc_boundary_prefix_contract_json() {
+    return R"json({"schema":"spc-boundary-prefix-contract-v1","abi_version":1,"result_schema":"spc-boundary-prefix-v1","chess960":false,"promoted_hex_required_for_product":true,"hard_limits":{"maximum_fen_utf8_bytes":512,"maximum_series_number":256,"maximum_quiet_series":1000000,"maximum_ep_targets":8,"maximum_ep_utf8_bytes":23,"maximum_prefix_moves":256,"maximum_prefix_utf8_bytes":1535,"maximum_uci_move_bytes":5,"maximum_promoted_hex_bytes":18}})json";
 }
 
 extern "C" std::uint32_t spc_start_kernel_abi_version() {
