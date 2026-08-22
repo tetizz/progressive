@@ -348,6 +348,14 @@ def main() -> None:
     parser.add_argument("--max-work", type=int, default=100_000_000)
     parser.add_argument("--cache-capacity", type=int, default=65_536)
     parser.add_argument("--time-limit", type=float, default=300.0)
+    parser.add_argument(
+        "--stream-first-wave",
+        action="store_true",
+        help=(
+            "reuse each completed first-wave worker immediately instead of "
+            "waiting for the other exact seeds"
+        ),
+    )
     args = parser.parse_args()
 
     session_count = args.workers + 1
@@ -504,74 +512,21 @@ def main() -> None:
                 incumbent=None,
             )
 
+        first_wave_candidate_ids = {
+            candidate.candidate_id for candidate in candidates[:4]
+        }
         first_wave_results: list[dict[str, object]] = []
         completion_counter = 0
-        while len(first_wave_results) < 4:
-            result = _get_message(result_queue, processes, common_deadline)
-            if result.get("kind") != "result":
-                raise RuntimeError(f"unexpected first-wave message: {result!r}")
-            worker_id = int(result["worker_id"])
-            expected = in_flight.pop(worker_id, None)
-            if expected is None:
-                raise RuntimeError(f"unsolicited result from worker {worker_id}")
-            if result.get("status") != "COMPLETE":
-                raise RuntimeError(f"worker result is unknown: {result!r}")
-            if result.get("mode") != "FULL" or result.get("bound_kind") != "EXACT":
-                raise RuntimeError(f"first-wave result is not exact: {result!r}")
-            if int(result["candidate_id"]) != int(expected["candidate"]["candidate_id"]):
-                raise RuntimeError(f"first-wave candidate identity mismatch: {result!r}")
-            if result["candidate"] != expected["candidate"]["machine"]:
-                raise RuntimeError(f"first-wave candidate notation mismatch: {result!r}")
-            if int(result["incumbent_epoch"]) != 0:
-                raise RuntimeError(f"first-wave epoch mismatch: {result!r}")
-            completion_counter += 1
-            completion_sequence.append(
-                {
-                    "sequence": completion_counter,
-                    "phase": "first-wave",
-                    "worker_id": worker_id,
-                    "candidate_id": int(result["candidate_id"]),
-                    "candidate": result["candidate"],
-                    "incumbent_epoch": 0,
-                    "bound_kind": "EXACT",
-                }
-            )
-            candidate_id = int(result["candidate_id"])
-            if candidate_id in completed_candidate_ids:
-                raise RuntimeError(f"duplicate candidate result {candidate_id}")
-            completed_candidate_ids.add(candidate_id)
-            first_wave_results.append(result)
-            task_receipts.append(result)
-        first_wave_seconds = time.perf_counter() - search_started
-
-        exact_first_wave = [
-            _exact_from_result(result, candidate_by_id)
-            for result in sorted(
-                first_wave_results,
-                key=lambda item: int(item["candidate_id"]),
-            )
-        ]
-        incumbent = exact_first_wave[0]
-        for candidate in exact_first_wave[1:]:
-            if _better(candidate, incumbent, chess.WHITE):
-                incumbent = candidate
-        incumbent_epoch = 1
-
+        incumbent: ExactCandidate | None = None
+        incumbent_epoch = 0
         remaining = deque(candidates[4:])
-        for worker_id in range(args.workers):
-            if remaining:
-                dispatch(
-                    worker_id,
-                    remaining.popleft(),
-                    mode="PVS",
-                    incumbent_epoch=incumbent_epoch,
-                    incumbent=incumbent,
-                )
-        dynamic_started = time.perf_counter()
-        while in_flight:
+        first_wave_seconds: float | None = None
+        dynamic_started: float | None = None
+
+        while in_flight or remaining:
             result = _get_message(result_queue, processes, common_deadline)
             if result.get("kind") != "result":
-                raise RuntimeError(f"unexpected dynamic message: {result!r}")
+                raise RuntimeError(f"unexpected root-worker message: {result!r}")
             worker_id = int(result["worker_id"])
             expected = in_flight.pop(worker_id, None)
             if expected is None:
@@ -582,7 +537,8 @@ def main() -> None:
             expected_id = int(expected["candidate"]["candidate_id"])
             if candidate_id != expected_id:
                 raise RuntimeError(
-                    f"candidate identity mismatch: expected {expected_id}, got {candidate_id}"
+                    "candidate identity mismatch: "
+                    f"expected {expected_id}, got {candidate_id}"
                 )
             if result["candidate"] != expected["candidate"]["machine"]:
                 raise RuntimeError(f"candidate notation mismatch: {result!r}")
@@ -602,7 +558,23 @@ def main() -> None:
                 raise RuntimeError(f"beta snapshot mismatch: {result!r}")
             bound_kind = str(result["bound_kind"])
             score = int(result["score"])
-            if bound_kind == "UPPER":
+            is_first_wave = candidate_id in first_wave_candidate_ids
+            if is_first_wave:
+                if expected["mode"] != "FULL" or bound_kind != "EXACT":
+                    raise RuntimeError(
+                        f"first-wave result is not exact: {result!r}"
+                    )
+                if response_epoch != 0:
+                    raise RuntimeError(f"first-wave epoch mismatch: {result!r}")
+                first_wave_results.append(result)
+                if args.stream_first_wave:
+                    exact = _exact_from_result(result, candidate_by_id)
+                    if incumbent is None or _better(exact, incumbent, chess.WHITE):
+                        incumbent = exact
+                        incumbent_epoch += 1
+            elif bound_kind == "UPPER":
+                if incumbent is None:
+                    raise RuntimeError("PVS result arrived before an exact incumbent")
                 if score > alpha_snapshot or alpha_snapshot > incumbent.score:
                     raise RuntimeError(f"invalid stale upper bound: {result!r}")
                 snapshot_machine = str(expected["incumbent_machine"])
@@ -612,16 +584,33 @@ def main() -> None:
                 raise RuntimeError(f"unresolved lower-bound root result: {result!r}")
             elif bound_kind == "EXACT":
                 exact = _exact_from_result(result, candidate_by_id)
-                if _better(exact, incumbent, chess.WHITE):
+                if incumbent is None or _better(exact, incumbent, chess.WHITE):
                     incumbent = exact
                     incumbent_epoch += 1
             else:
                 raise RuntimeError(f"unknown bound kind: {result!r}")
+
+            if len(first_wave_results) == 4 and first_wave_seconds is None:
+                first_wave_seconds = time.perf_counter() - search_started
+                if not args.stream_first_wave:
+                    exact_first_wave = [
+                        _exact_from_result(item, candidate_by_id)
+                        for item in sorted(
+                            first_wave_results,
+                            key=lambda item: int(item["candidate_id"]),
+                        )
+                    ]
+                    incumbent = exact_first_wave[0]
+                    for exact in exact_first_wave[1:]:
+                        if _better(exact, incumbent, chess.WHITE):
+                            incumbent = exact
+                    incumbent_epoch = 1
+
             completion_counter += 1
             completion_sequence.append(
                 {
                     "sequence": completion_counter,
-                    "phase": "dynamic",
+                    "phase": "first-wave" if is_first_wave else "dynamic",
                     "worker_id": worker_id,
                     "candidate_id": candidate_id,
                     "candidate": result["candidate"],
@@ -631,15 +620,31 @@ def main() -> None:
                 }
             )
             task_receipts.append(result)
-            if remaining:
-                dispatch(
-                    worker_id,
-                    remaining.popleft(),
-                    mode="PVS",
-                    incumbent_epoch=incumbent_epoch,
-                    incumbent=incumbent,
-                )
-        dynamic_seconds = time.perf_counter() - dynamic_started
+
+            barrier_open = args.stream_first_wave or len(first_wave_results) == 4
+            if barrier_open:
+                for idle_worker in range(args.workers):
+                    if idle_worker in in_flight or not remaining:
+                        continue
+                    if incumbent is None:
+                        raise RuntimeError("barrier release has no incumbent")
+                    if dynamic_started is None:
+                        dynamic_started = time.perf_counter()
+                    dispatch(
+                        idle_worker,
+                        remaining.popleft(),
+                        mode="PVS",
+                        incumbent_epoch=incumbent_epoch,
+                        incumbent=incumbent,
+                    )
+
+        if incumbent is None or first_wave_seconds is None:
+            raise RuntimeError("root schedule produced no exact first wave")
+        dynamic_seconds = (
+            0.0
+            if dynamic_started is None
+            else time.perf_counter() - dynamic_started
+        )
         search_seconds = time.perf_counter() - search_started
 
         expected_ids = {candidate.candidate_id for candidate in candidates}
@@ -689,13 +694,18 @@ def main() -> None:
             raise RuntimeError("a worker exceeded its cumulative work allocation")
 
         output = {
-            "prototype": "async-no-seed-root-workers-v1",
+            "prototype": (
+                "async-streaming-first-wave-root-workers-v2"
+                if args.stream_first_wave
+                else "async-no-seed-root-workers-v1"
+            ),
             "publishable": False,
             "safety_certified": False,
             "legal_series_certified": False,
             "authoritative_replay_certified": False,
             "reason": "start-only final-iteration feasibility; no root mate safety",
             "completion_order_nondeterministic": True,
+            "stream_first_wave": args.stream_first_wave,
             "deterministic_result": expected_match,
             "root_proof": None,
             "depth": args.depth,

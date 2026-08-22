@@ -1,0 +1,73 @@
+{
+  "schema": "spc-native-root-streaming-receipt-v1",
+  "recorded_date": "2026-08-22",
+  "status": "complete",
+  "source_base": "e49f47eebefc47a7bc98971147dc2cd212481565",
+  "prototype": "async-streaming-first-wave-root-workers-v2",
+  "scope": "start-position exact final-iteration native scheduling feasibility",
+  "command": "& '..\\_venvs\\native-subtree-candidate\\Scripts\\python.exe' 'benchmarks/native_root_async_prototype.py' --depth 5 --width 32 --workers 4 --threads-per-worker 4 --max-work 100000000 --cache-capacity 65536 --time-limit 300 --stream-first-wave",
+  "environment": {
+    "cpu": "AMD Ryzen 7 9800X3D",
+    "os": "Windows 11 build 26200",
+    "python": "3.14.4",
+    "note": "fresh spawned worker processes and empty session caches; operating-system file cache was not flushed"
+  },
+  "configuration": {
+    "depth_series": 5,
+    "max_series_per_node": 32,
+    "workers": 4,
+    "native_threads_per_worker": 4,
+    "total_native_threads": 16,
+    "series_generation_cache_capacity_per_worker": 65536,
+    "aggregate_max_work": 100000000,
+    "common_deadline_seconds": 300.0,
+    "first_wave": ["e2e3", "d2d3", "d2d4", "e2e4"],
+    "stream_first_wave": true,
+    "completion_order_nondeterministic": true
+  },
+  "timing_seconds": {
+    "worker_startup_and_coordinator_overhead": 0.18344239995349,
+    "first_wave_completed_at": 11.768449000024702,
+    "overlapping_dynamic_span": 22.94984730001306,
+    "search": 32.78778120002244,
+    "total": 32.97122359997593
+  },
+  "memory": {
+    "peak_aggregate_rss_bytes": 308146176,
+    "peak_aggregate_rss_mib": 293.871094
+  },
+  "result": {
+    "candidate": "b2b3",
+    "score": 951,
+    "principal_variation": [
+      "b2b3",
+      "f7f5/e8f7",
+      "c1b2/e2e3/f1c4",
+      "e7e6/f5f4/f4e3/e3f2",
+      "e1f2/d1g4/f2e2/g1h3/g4g7"
+    ],
+    "expected_signature_match": true,
+    "candidate_dispatches": 20,
+    "candidate_completions": 20
+  },
+  "work": {
+    "aggregate": 39628874,
+    "aggregate_within_limit": true,
+    "per_worker": [10901601, 9188110, 9373295, 10165867],
+    "generation_work_limit_hits": 0,
+    "deadline_hits": 0
+  },
+  "comparisons": {
+    "barrier_async_seconds": 35.42607419998967,
+    "streaming_reduction_percent": 6.92950222526903,
+    "barrier_async_work": 39778301,
+    "work_reduction_percent": 0.3756
+  },
+  "certification": {
+    "publishable": false,
+    "safety_certified": false,
+    "legal_series_certified": false,
+    "authoritative_replay_certified": false,
+    "reason": "kernel-only final iteration; iterative deepening, root reply-mate safety, canonical replay, and browser-WASM execution are not included"
+  }
+}
