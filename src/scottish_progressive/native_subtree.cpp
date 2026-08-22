@@ -1640,17 +1640,23 @@ public:
                 && width_complete
                 && child_bounds.size() == series_count
         );
-        TTEntry replacement{depth, best_score, bound, best_pv, proof_bounds};
         if (
             !had_entry
             || depth > existing_depth
             || (
                 depth == existing_depth
-                && replacement.bound == TTBound::Exact
+                && bound == TTBound::Exact
                 && existing_bound != TTBound::Exact
             )
         ) {
-            write_tt(key, replacement);
+            TTEntry replacement{
+                depth,
+                best_score,
+                bound,
+                best_pv,
+                proof_bounds,
+            };
+            write_tt(key, std::move(replacement));
         }
         return NodeResult{best_score, std::move(best_pv), proof_bounds};
     }
