@@ -22,6 +22,24 @@ function sameJson(left, right) {
 }
 
 
+function canonicalJsonValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value).sort().map((key) => [key, canonicalJsonValue(value[key])]),
+    );
+  }
+  return value;
+}
+
+
+async function canonicalSha256(value) {
+  const encoded = new TextEncoder().encode(JSON.stringify(canonicalJsonValue(value)));
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", encoded));
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+
 function canonicalBoundary(value) {
   return {
     fen: value?.fen,
@@ -121,6 +139,7 @@ function parseParameters() {
     width: integer("width", 32),
     workers: integer("workers", 8),
     initialFullWave: integer("wave", 4),
+    mode: values.get("mode") === "cold" ? "cold" : "warm",
     maxWork: integer("max_work", 100_000_000),
     safetyReserveWork: integer("safety_work", 1_000_000),
     timeoutMs: integer("timeout_ms", 300_000),
@@ -201,7 +220,7 @@ async function main() {
   const receipt = await receiptResponse.json();
   invariant(receipt.status === "built-not-certified", "build receipt is not lab-only");
   invariant(receipt.product_publishable === false, "build receipt claims publishability");
-  const runId = `opera-d${args.depth}-w${args.width}-wave${args.initialFullWave}-${Date.now()}`;
+  const runId = `opera-${args.mode}-d${args.depth}-w${args.width}-wave${args.initialFullWave}-${Date.now()}`;
   const identity = Object.freeze({
     source_fingerprint: receipt.source_fingerprint,
     kernel_sha256: receipt.kernel_sha256,
@@ -229,7 +248,7 @@ async function main() {
     series_cache_capacity: receipt.session_geometry.desktop_series_cache_capacity,
     external_cache_weight: 0,
     worker_threads: 1,
-    root_tactical_protection: true,
+    root_tactical_protection: false,
     root_contract_tt_capacity: receipt.session_geometry.root_contract_tt_capacity,
     root_contract_eval_capacity: receipt.session_geometry.root_contract_eval_capacity,
     weights: Object.freeze({
@@ -276,6 +295,13 @@ async function main() {
       ready.every((reply) => sameJson(reply.prefix_contract, ready[0].prefix_contract)),
       "Worker prefix contract mismatch",
     );
+    invariant(
+      ready.every((reply) => (
+        reply.canonical_root_tactical_policy === "canonical-boundary-policy-v1"
+        && reply.canonical_root_tactical_protection === false
+      )),
+      "Worker canonical root policy echo mismatch",
+    );
     const certifiedPrefixContract = Object.freeze({
       ...ready[0].prefix_contract,
       limits: Object.freeze({ ...ready[0].prefix_contract.hard_limits }),
@@ -291,7 +317,10 @@ async function main() {
     });
     PREFIX_API.validateCertifiedPrefixContract(prefixIdentity.prefix_contract);
     const iterativeStarted = performance.now();
-    for (let depth = 1; depth <= args.depth; depth += 1) {
+    const depths = args.mode === "cold"
+      ? [args.depth]
+      : Array.from({ length: args.depth }, (_, index) => index + 1);
+    for (const depth of depths) {
       activeDepth = depth;
       invariant(performance.now() < absoluteDeadline, `deadline before D${depth}`);
       const iterationStarted = performance.now();
@@ -327,6 +356,15 @@ async function main() {
         "complete",
       );
       invariant(enumeration.imported === false, "primary enumeration claims import");
+      invariant(
+        enumeration.canonical_root_tactical_policy === "canonical-boundary-policy-v1"
+          && enumeration.canonical_root_tactical_protection === false,
+        `D${depth} enumeration canonical root policy drifted`,
+      );
+      invariant(
+        enumeration.enumeration_identity.includes("|root-policycanonical-boundary-v1|root-tactical0"),
+        `D${depth} enumeration identity lacks canonical root policy=false`,
+      );
       const manifest = manifestOf(enumeration);
       invariant(manifest.requested_width === args.width, "enumerated width drifted");
       invariant(manifest.candidates.length > 0, "root manifest is empty");
@@ -348,6 +386,11 @@ async function main() {
           "complete",
         );
         invariant(imported.imported === true, `Worker ${channel.id} did not import`);
+        invariant(
+          imported.canonical_root_tactical_policy === "canonical-boundary-policy-v1"
+            && imported.canonical_root_tactical_protection === false,
+          `Worker ${channel.id} imported a different canonical root policy`,
+        );
         invariant(sameJson(manifestOf(imported), manifest), `Worker ${channel.id} manifest drifted`);
       }));
       const initialWork = channels.reduce(
@@ -489,9 +532,22 @@ async function main() {
       invariant(sameBoundary(finalReplay.next_state, selectedSeries.child_boundary), "final replay drifted");
       safetyWork += result.work.safety_committed_work;
       preferredSeries = [...selectedSeries.moves];
+      const retainedManifestSha256 = await canonicalSha256(manifest);
+      const orderShapeSha256 = await canonicalSha256({
+        initial_full_wave: args.initialFullWave,
+        tasks: result.tasks.map((task) => ({
+          event: task.event,
+          worker_id: task.worker_id ?? null,
+          candidate_identity: task.candidate_identity ?? null,
+          purpose: task.purpose ?? null,
+          bound: task.bound ?? null,
+          score: task.score ?? null,
+        })),
+      });
       iterations.push({
         depth,
         elapsed_ms: performance.now() - iterationStarted,
+        candidate_identity: result.selected.candidate_identity,
         move: selectedSeries.machine_notation,
         score: result.selected.score,
         proof_bounds: result.selected.proof_bounds,
@@ -505,9 +561,14 @@ async function main() {
         owner_certification_count: result.tasks.filter(
           (task) => task.event === "complete" && task.purpose === "selected-certification",
         ).length,
+        root_bounds: result.root_bounds,
+        retained_manifest_sha256: retainedManifestSha256,
+        order_shape_sha256: orderShapeSha256,
         coverage_complete: result.coverage_complete,
         root_scores_complete: result.root_scores_complete,
         width_complete: result.width_complete,
+        canonical_root_tactical_policy: enumeration.canonical_root_tactical_policy,
+        canonical_root_tactical_protection: enumeration.canonical_root_tactical_protection,
         final_replay: {
           complete: finalReplay.complete,
           outcome: finalReplay.outcome,
@@ -549,6 +610,7 @@ async function main() {
         max_work: args.maxWork,
         safety_reserve_work: args.safetyReserveWork,
         config,
+        mode: args.mode,
       },
       timings_ms: {
         pool_ready: poolReadyMs,
@@ -558,6 +620,7 @@ async function main() {
       },
       result: {
         completed_depth: final.depth,
+        candidate_identity: final.candidate_identity,
         move: final.move,
         score: final.score,
         proof_bounds: final.proof_bounds,
@@ -566,6 +629,9 @@ async function main() {
         safety_status: final.safety_status,
         safety_revision: final.safety_revision,
         owner_worker_id: final.owner_worker_id,
+        root_bounds: final.root_bounds,
+        retained_manifest_sha256: final.retained_manifest_sha256,
+        order_shape_sha256: final.order_shape_sha256,
         coverage_complete: final.coverage_complete,
         root_scores_complete: final.root_scores_complete,
         width_complete: final.width_complete,
@@ -600,8 +666,13 @@ async function main() {
         ordinary_module_workers: true,
         pthreads_disabled: true,
         combined_prefix_root_mate_abi: true,
-        persistent_d1_through_d5_sessions: true,
+        persistent_d1_through_d5_sessions: args.mode === "warm",
         exact_manifest_import_all_workers: true,
+        canonical_root_tactical_policy: config.root_tactical_protection === false,
+        canonical_root_tactical_boundary_echoes: iterations.every((iteration) => (
+          iteration.canonical_root_tactical_policy === "canonical-boundary-policy-v1"
+          && iteration.canonical_root_tactical_protection === false
+        )),
         global_work_cap_enforced: final.work.within_cap === true,
         common_monotonic_deadline: true,
         dynamic_work_pool_certified: true,

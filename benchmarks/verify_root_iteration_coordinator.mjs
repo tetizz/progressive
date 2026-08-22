@@ -314,6 +314,16 @@ async function testStreamingWhiteAndStaleEpoch() {
   assert.equal(threat.worker.id, certificate.worker.id);
   assert(result.coverage_complete);
   assert(result.dynamic_work_pool_certified);
+  assert.equal(result.root_bounds.length, definitions.length);
+  assert.deepEqual(
+    result.root_bounds.map((item) => item.candidate_identity),
+    [...definitions.map((item) => item.id)].sort(),
+  );
+  assert(result.root_bounds.every((item) => item.bound !== "unknown"));
+  assert.equal(
+    result.root_bounds.find((item) => item.candidate_identity === oracle.id)?.bound,
+    "exact",
+  );
   return result;
 }
 

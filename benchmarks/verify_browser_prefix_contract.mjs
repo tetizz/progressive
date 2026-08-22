@@ -1,10 +1,23 @@
 import assert from "node:assert/strict";
+import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const args = new Map();
+for (let index = 2; index < process.argv.length; index += 2) {
+  const key = process.argv[index];
+  const value = process.argv[index + 1];
+  if (!key?.startsWith("--") || value === undefined) {
+    throw new Error(`invalid argument near ${String(key)}`);
+  }
+  args.set(key, value);
+}
+if (!args.has("--build-receipt") || !args.has("--output")) {
+  throw new Error("--build-receipt and --output are required");
+}
 const require = createRequire(import.meta.url);
 const api = require(path.join(root, "browser-prefix-contract.js"));
 
@@ -332,8 +345,19 @@ await assert.rejects(api.routePrefixRequest({
   },
 }), (error) => error === nonFallback);
 
-process.stdout.write(`${JSON.stringify({
+const buildReceipt = JSON.parse(await readFile(args.get("--build-receipt"), "utf8"));
+const artifact = Object.fromEntries([
+  "source_revision",
+  "source_fingerprint",
+  "kernel_sha256",
+  "wasm_sha256",
+  "module_js_sha256",
+  "artifact_set_sha256",
+].map((key) => [key, buildReceipt[key]]));
+const receipt = {
   schema: "spc-browser-prefix-contract-receipt-v1",
+  status: "passed",
+  artifact,
   exact_identity: true,
   promoted_hex: request.boundary.promoted_hex,
   chess960_rejected: true,
@@ -346,4 +370,6 @@ process.stdout.write(`${JSON.stringify({
   remote_authority_bound: true,
   cancellation_fallback_suppressed: true,
   remote_calls: remoteCalls,
-})}\n`);
+};
+await writeFile(args.get("--output"), `${JSON.stringify(receipt, null, 2)}\n`, "utf8");
+process.stdout.write(`${JSON.stringify(receipt)}\n`);

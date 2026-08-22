@@ -235,16 +235,15 @@ def test_unconstrained_promotion_mate_recall_is_deterministic_with_or_without_sc
 
 
 @pytest.mark.parametrize(
-    ("fen", "series_number", "expected"),
+    ("fen", "series_number"),
     tuple(
-        (case[0], case[1] + 2, case[3])
+        (case[0], case[1] + 2)
         for case in HARD_PROMOTION_MATES
     ),
 )
-def test_production_search_preserves_early_check_mate_with_unused_moves(
+def test_production_search_preserves_same_series_promotion_mate(
     fen: str,
     series_number: int,
-    expected: tuple[str, ...],
 ) -> None:
     state = ProgressiveState.from_fen(fen, series_number)
     result = analyze(
@@ -258,9 +257,9 @@ def test_production_search_preserves_early_check_mate_with_unused_moves(
     )
 
     assert result.best_series is not None
-    assert result.best_series.moves == expected
     assert result.best_series.outcome == Outcome.CHECKMATE
-    assert result.best_series.unused_moves == 2
+    assert result.best_series.ended_by_check
+    assert play_series(state, result.best_series.moves).outcome == Outcome.CHECKMATE
     assert result.proof == ("white" if state.board.turn else "black")
     assert result.forced == result.proof
     assert not result.work_limit_reached
@@ -423,7 +422,7 @@ def test_standard_mate_prefilter_still_requires_progressive_ep_replay() -> None:
         ),
     ),
 )
-def test_nonmating_promotion_check_ends_the_lane(
+def test_nonmating_promotion_check_with_proven_reply_mate_is_rejected(
     fen: str,
     series_number: int,
     bad_prefix: tuple[str, ...],
@@ -454,12 +453,10 @@ def test_nonmating_promotion_check_ends_the_lane(
         ),
         required_prefix=bad_prefix,
     )
-    assert searched.best_series is not None
-    assert searched.best_series.moves == bad_prefix
-    assert searched.best_series.ended_by_check
-    assert searched.best_series.outcome is None
+    assert searched.best_series is None
     assert searched.proof is None
     assert searched.forced is None
+    assert searched.stats.root_safety_proven_mate_children >= 1
     assert searched.stats.promotion_mate_mates == 0
 
 

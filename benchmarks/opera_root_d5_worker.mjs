@@ -200,6 +200,18 @@ async function initialize(payload) {
     rootContract.capabilities?.selected_owner_certification === true,
     "selected-owner certification capability is missing",
   );
+  invariant(
+    rootContract.capabilities?.canonical_root_tactical_policy === true,
+    "canonical root tactical policy capability is missing",
+  );
+  invariant(
+    rootContract.hard_limits?.root_tactical_policy === "canonical-boundary-policy-v1",
+    "canonical root tactical policy contract drifted",
+  );
+  invariant(
+    JSON.stringify(rootContract.hard_limits?.root_tactical_protection_values) === "[false]",
+    "legacy root tactical configuration is still accepted",
+  );
   buildReceipt = receipt;
   identity = Object.freeze({ ...payload.identity });
   boundary = Object.freeze({ ...payload.boundary });
@@ -215,6 +227,14 @@ async function initialize(payload) {
   invariant(created.status === "ready", `root session create failed: ${JSON.stringify(created)}`);
   invariant(created.native_work_after === 0, "new root session has nonzero work");
   invariant(JSON.stringify(created.config) === JSON.stringify(payload.config), "root config echo drifted");
+  invariant(
+    created.canonical_root_tactical_policy === "canonical-boundary-policy-v1",
+    "create response canonical root policy drifted",
+  );
+  invariant(
+    created.canonical_root_tactical_protection === false,
+    "starting boundary did not derive canonical root protection=false",
+  );
   sessionId = created.session_id;
   return {
     status: "ready",
@@ -233,6 +253,8 @@ async function initialize(payload) {
     },
     root_contract: rootContract,
     prefix_contract: prefixContract,
+    canonical_root_tactical_policy: created.canonical_root_tactical_policy,
+    canonical_root_tactical_protection: created.canonical_root_tactical_protection,
     environment: {
       ordinary_module_worker: true,
       worker_global_scope: self.constructor?.name ?? "unknown",

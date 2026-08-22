@@ -703,6 +703,21 @@
     });
   }
 
+  function publicRootBounds(records) {
+    return Object.freeze(
+      [...records.values()]
+        .map((record) => Object.freeze({
+          candidate_identity: record.candidate.candidate_identity,
+          bound: record.exact ? EXACT : record.bound?.kind ?? UNKNOWN,
+          score: record.exact ? record.score : record.bound?.score ?? null,
+          proof_bounds: Object.freeze([...record.proofBounds]),
+        }))
+        .sort((left, right) => left.candidate_identity.localeCompare(
+          right.candidate_identity,
+        )),
+    );
+  }
+
   async function runRootIteration({
     request: rawRequest,
     manifest: rawManifest,
@@ -1082,6 +1097,7 @@
           incumbentEpoch: outcome.task.incumbent_epoch,
           safetyRevision: outcome.task.safety_revision,
         });
+        record.proofBounds = Object.freeze([...reply.proof_bounds]);
         if (coversFinal(record, incumbent, whiteToMove)) return null;
         return { worker, record, purpose: "threat-research" };
       };
@@ -1347,6 +1363,7 @@
         safety_certified: safetyStatus === "exhausted" || safetyStatus === "terminal",
         coverage_complete: true,
         root_scores_complete: rootScoresComplete,
+        root_bounds: publicRootBounds(records),
         width_complete: manifest.width_complete,
         dynamic_work_pool_certified: true,
         product_publishable: false,

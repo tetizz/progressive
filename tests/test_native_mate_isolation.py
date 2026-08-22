@@ -20,14 +20,14 @@ from scottish_progressive.series_mate import (
 )
 
 
-LEGACY_NATIVE_SOURCE_HASHES = {
-    "_native_eval.cpp": "8c5a11b0b2abb88670b34146e2c0404f1d32b51c3d8faa1e1acb2facbd181216",
-    "native_eval.hpp": "38d7ff911021d62486be02761ba7a9d765ff2ca5de2f1fe369c715ac0c523ca5",
+NATIVE_SOURCE_HASHES = {
+    "_native_eval.cpp": "47d6a6ea482bb932a5a9e7d2dcc5eba19de8c6caf3b5b24f9e5f59dde7b3d225",
+    "native_eval.hpp": "22a682cd9a62d5f90804ad567e5eaabac3ad39cf6a8f6dff4a1b35290d251cbe",
 }
-LEGACY_NATIVE_IDENTITY = (
-    "33c8235e2287f2ea0bf87c60e69996ce376b2f2fd96ea65f41aa0d478aaa74e1"
+NATIVE_IDENTITY = (
+    "4df221056d37585039d88d1e9278d0db2dc63e7d941386561c206b4fce0a20c9"
 )
-LEGACY_NATIVE_SURFACE = {
+NATIVE_SURFACE = {
     "SOURCE_IDENTITY",
     "complete_series_candidate",
     "expand_legal_move_variants",
@@ -41,6 +41,16 @@ LEGACY_NATIVE_SURFACE = {
     "prepare_complete_series",
     "prepare_complete_series_timed",
     "prepare_complete_series_timed_parallel",
+    "create_subtree_search",
+    "subtree_begin_transaction",
+    "subtree_enumerate_root",
+    "subtree_external_cache_present",
+    "subtree_import_root",
+    "subtree_insert_external_cache",
+    "subtree_rollback_transaction",
+    "subtree_search",
+    "subtree_search_root_candidate",
+    "subtree_touch_external_cache",
 }
 LIVE_S5_HISTORY = (
     ("e2e4",),
@@ -123,17 +133,17 @@ def _raw_native_arguments(state: ProgressiveState) -> list[object]:
     ]
 
 
-def test_legacy_native_sources_identity_and_surface_are_unchanged() -> None:
+def test_native_sources_identity_and_surface_are_unchanged() -> None:
     package = Path(evaluation.__file__).resolve().parent
-    for filename, expected in LEGACY_NATIVE_SOURCE_HASHES.items():
+    for filename, expected in NATIVE_SOURCE_HASHES.items():
         assert hashlib.sha256((package / filename).read_bytes()).hexdigest() == expected
 
     native = evaluation._native_eval
     assert native is not None
-    assert evaluation._native_source_identity() == LEGACY_NATIVE_IDENTITY
-    assert native.SOURCE_IDENTITY == LEGACY_NATIVE_IDENTITY
+    assert evaluation._native_source_identity() == NATIVE_IDENTITY
+    assert native.SOURCE_IDENTITY == NATIVE_IDENTITY
     assert {name for name in dir(native) if not name.startswith("__")} == (
-        LEGACY_NATIVE_SURFACE
+        NATIVE_SURFACE
     )
     assert not hasattr(native, "find_series_mate")
 

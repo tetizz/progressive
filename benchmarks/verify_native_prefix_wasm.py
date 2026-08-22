@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -145,7 +147,32 @@ BOUNDARY_KEYS = (
     "quiet_draw_pending",
     "ep_targets",
     "progressive_ep",
+    "promoted_hex",
+    "chess960",
 )
+
+
+def canonical_bytes(value: object) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def canonical_sha256(value: object) -> str:
+    return hashlib.sha256(canonical_bytes(value)).hexdigest()
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Verify the combined WASM prefix ABI against Python."
+    )
+    parser.add_argument("--module", type=Path, required=True)
+    parser.add_argument("--build-receipt", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    return parser.parse_args()
 
 
 def state_for(case: dict[str, object]) -> ProgressiveState:
@@ -177,6 +204,19 @@ def selected(payload: dict[str, object]) -> dict[str, object]:
 
 
 def main() -> int:
+    args = parse_args()
+    build = json.loads(args.build_receipt.read_text(encoding="utf-8"))
+    identity = {
+        key: build[key]
+        for key in (
+            "source_revision",
+            "source_fingerprint",
+            "kernel_sha256",
+            "wasm_sha256",
+            "module_js_sha256",
+            "artifact_set_sha256",
+        )
+    }
     all_cases = CASES + ERROR_CASES
     wire_cases = [
         {
@@ -187,7 +227,12 @@ def main() -> int:
         for case in all_cases
     ]
     completed = subprocess.run(
-        ["node", str(ROOT / "prefix_batch_probe.mjs")],
+        [
+            "node",
+            str(ROOT / "benchmarks" / "wasm_batch_probe.mjs"),
+            "prefix",
+            str(args.module.resolve()),
+        ],
         input=json.dumps(wire_cases),
         text=True,
         stdout=subprocess.PIPE,
@@ -201,40 +246,80 @@ def main() -> int:
 
     parity = 0
     progressive_san_parity = 0
-    for case, wasm in zip(CASES, wasm_results[: len(CASES)], strict=True):
+    case_receipts: list[dict[str, object]] = []
+    for case, wire, wasm in zip(
+        CASES,
+        wire_cases[: len(CASES)],
+        wasm_results[: len(CASES)],
+        strict=True,
+    ):
         oracle = inspect_prefix(state_for(case), tuple(case["prefix"]))
-        if selected(wasm) != selected(oracle):
+        wasm_selected = selected(wasm)
+        oracle_selected = selected(oracle)
+        if wasm_selected != oracle_selected:
             raise AssertionError(
-                f"{case['name']} differs:\nWASM={json.dumps(selected(wasm), sort_keys=True)}"
-                f"\nPYTHON={json.dumps(selected(oracle), sort_keys=True)}"
+                f"{case['name']} differs:\nWASM={json.dumps(wasm_selected, sort_keys=True)}"
+                f"\nPYTHON={json.dumps(oracle_selected, sort_keys=True)}"
             )
+        case_receipts.append(
+            {
+                "name": case["name"],
+                "input_sha256": canonical_sha256(wire),
+                "wasm_output_sha256": canonical_sha256(wasm_selected),
+                "oracle_output_sha256": canonical_sha256(oracle_selected),
+                "exact_match": True,
+            }
+        )
         parity += 1
         if case.get("progressive_san_exact") is True:
             progressive_san_parity += 1
 
-    for case, wasm in zip(
+    for case, wire, wasm in zip(
         ERROR_CASES,
+        wire_cases[len(CASES) :],
         wasm_results[len(CASES) :],
         strict=True,
     ):
         if wasm.get("ok") is not False or wasm.get("error_code") != case["expected_error"]:
             raise AssertionError(f"{case['name']} did not fail closed: {wasm}")
-
-    print(
-        json.dumps(
+        wasm_error = {"ok": False, "error_code": wasm["error_code"]}
+        oracle_error = {"ok": False, "error_code": case["expected_error"]}
+        case_receipts.append(
             {
-                "schema": "spc-prefix-parity-receipt-v1",
-                "cases": len(all_cases),
-                "exact_python_parity": parity,
-                "progressive_san_corrections": 0,
-                "progressive_san_exact_parity": progressive_san_parity,
-                "fail_closed_errors": len(ERROR_CASES),
-                "mate_replay": "checkmate",
-                "multi_ep": "covered",
-            },
-            sort_keys=True,
+                "name": case["name"],
+                "input_sha256": canonical_sha256(wire),
+                "wasm_output_sha256": canonical_sha256(wasm_error),
+                "oracle_output_sha256": canonical_sha256(oracle_error),
+                "exact_match": wasm_error == oracle_error,
+            }
         )
+
+    receipt = {
+        "schema": "spc-prefix-parity-receipt-v2",
+        "status": "passed",
+        "failures": 0,
+        "artifact": identity,
+        "cases": case_receipts,
+        "case_set_sha256": canonical_sha256(case_receipts),
+        "progressive_san_corrections": 0,
+        "progressive_san_exact_parity": progressive_san_parity,
+        "fail_closed_errors": len(ERROR_CASES),
+        "mate_replay": "checkmate",
+        "multi_ep": "covered",
+        "gates": {
+            "exact_python_parity": parity == len(CASES),
+            "compiled_prefix_replay": True,
+            "multi_ep_san": True,
+            "illegal_prefix_fail_closed": True,
+            "case_input_output_hashes": True,
+        },
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(
+        json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
     )
+    print(json.dumps(receipt, sort_keys=True))
     return 0
 
 
