@@ -1,7 +1,7 @@
 {
-  "generated_at": "2026-08-22T18:10:08+00:00",
+  "generated_at": "2026-08-22T19:25:55+00:00",
   "engine_version": "spc-0.9.0",
-  "source_fingerprint": "d02699877498939b",
+  "source_fingerprint": "90f4ec022c823037",
   "ruleset_version": "scottish-modern-common-v1",
   "series_horizon": 3,
   "white_response_search": "deterministic tactical/diversity frontier and final screen retain at most 64 candidates per layer/node for full progressive evaluation; any pruning is selective",
@@ -30,7 +30,7 @@
           "unique_white_series": 2510,
           "intra_series_transpositions": 2454,
           "nodes": 64,
-          "elapsed_seconds": 0.019997900002636015
+          "elapsed_seconds": 0.020258300006389618
         },
         {
           "black_label": "e5 / Qh4",
@@ -48,7 +48,7 @@
           "unique_white_series": 2056,
           "intra_series_transpositions": 3064,
           "nodes": 64,
-          "elapsed_seconds": 0.01937499997438863
+          "elapsed_seconds": 0.01850370003376156
         },
         {
           "black_label": "e5 / f6",
@@ -66,7 +66,7 @@
           "unique_white_series": 2239,
           "intra_series_transpositions": 2127,
           "nodes": 64,
-          "elapsed_seconds": 0.02124930004356429
+          "elapsed_seconds": 0.019676600000821054
         },
         {
           "black_label": "e5 / Qe7",
@@ -84,7 +84,7 @@
           "unique_white_series": 2402,
           "intra_series_transpositions": 2760,
           "nodes": 64,
-          "elapsed_seconds": 0.02047560003120452
+          "elapsed_seconds": 0.020624400000087917
         },
         {
           "black_label": "e5 / Nh6",
@@ -102,7 +102,7 @@
           "unique_white_series": 2393,
           "intra_series_transpositions": 2590,
           "nodes": 64,
-          "elapsed_seconds": 0.02068319998215884
+          "elapsed_seconds": 0.02188499999465421
         },
         {
           "black_label": "d5 / dxe4",
@@ -120,7 +120,7 @@
           "unique_white_series": 2495,
           "intra_series_transpositions": 2525,
           "nodes": 64,
-          "elapsed_seconds": 0.021452499961014837
+          "elapsed_seconds": 0.02012179995654151
         },
         {
           "black_label": "e6 / Nf6",
@@ -138,7 +138,7 @@
           "unique_white_series": 2326,
           "intra_series_transpositions": 2057,
           "nodes": 64,
-          "elapsed_seconds": 0.019757699978072196
+          "elapsed_seconds": 0.01858400000492111
         },
         {
           "black_label": "d5 / e5",
@@ -156,7 +156,7 @@
           "unique_white_series": 2474,
           "intra_series_transpositions": 2502,
           "nodes": 64,
-          "elapsed_seconds": 0.022715100029017776
+          "elapsed_seconds": 0.022799599973950535
         },
         {
           "black_label": "d5 / d4",
@@ -174,7 +174,7 @@
           "unique_white_series": 2413,
           "intra_series_transpositions": 2546,
           "nodes": 64,
-          "elapsed_seconds": 0.020532700000330806
+          "elapsed_seconds": 0.019995399983599782
         },
         {
           "black_label": "d5 / Nc6",
@@ -192,7 +192,7 @@
           "unique_white_series": 2611,
           "intra_series_transpositions": 2519,
           "nodes": 64,
-          "elapsed_seconds": 0.02256040001520887
+          "elapsed_seconds": 0.023155200004111975
         }
       ]
     },
@@ -218,7 +218,7 @@
           "unique_white_series": 1275,
           "intra_series_transpositions": 467,
           "nodes": 64,
-          "elapsed_seconds": 0.01599700003862381
+          "elapsed_seconds": 0.014930400007870048
         },
         {
           "black_label": "e6 / Bb4+",
@@ -236,7 +236,7 @@
           "unique_white_series": 1216,
           "intra_series_transpositions": 466,
           "nodes": 64,
-          "elapsed_seconds": 0.016013899992685765
+          "elapsed_seconds": 0.015588800015393645
         },
         {
           "black_label": "d5 / h5",
@@ -254,7 +254,7 @@
           "unique_white_series": 2396,
           "intra_series_transpositions": 1745,
           "nodes": 64,
-          "elapsed_seconds": 0.022222900006454438
+          "elapsed_seconds": 0.021490999963134527
         },
         {
           "black_label": "d5 / Nc6",
@@ -272,7 +272,7 @@
           "unique_white_series": 2145,
           "intra_series_transpositions": 1570,
           "nodes": 64,
-          "elapsed_seconds": 0.01938079996034503
+          "elapsed_seconds": 0.02005180000560358
         },
         {
           "black_label": "e5 / exd4",
@@ -290,7 +290,7 @@
           "unique_white_series": 2972,
           "intra_series_transpositions": 2937,
           "nodes": 64,
-          "elapsed_seconds": 0.02182249998440966
+          "elapsed_seconds": 0.021676400036085397
         },
         {
           "black_label": "d6 / Nf6",
@@ -308,7 +308,7 @@
           "unique_white_series": 2393,
           "intra_series_transpositions": 1723,
           "nodes": 64,
-          "elapsed_seconds": 0.020815800002310425
+          "elapsed_seconds": 0.019822799949906766
         },
         {
           "black_label": "f5 / Nf6",
@@ -326,7 +326,7 @@
           "unique_white_series": 2508,
           "intra_series_transpositions": 1739,
           "nodes": 64,
-          "elapsed_seconds": 0.02134400000795722
+          "elapsed_seconds": 0.02061060001142323
         },
         {
           "black_label": "e5 / e4",
@@ -344,7 +344,7 @@
           "unique_white_series": 2049,
           "intra_series_transpositions": 1479,
           "nodes": 64,
-          "elapsed_seconds": 0.018388399970717728
+          "elapsed_seconds": 0.01735699997516349
         },
         {
           "black_label": "c5 / cxd4",
@@ -362,7 +362,7 @@
           "unique_white_series": 2961,
           "intra_series_transpositions": 2510,
           "nodes": 64,
-          "elapsed_seconds": 0.025341100001242012
+          "elapsed_seconds": 0.0207010000012815
         },
         {
           "black_label": "d5 / c6",
@@ -380,7 +380,7 @@
           "unique_white_series": 2150,
           "intra_series_transpositions": 1493,
           "nodes": 64,
-          "elapsed_seconds": 0.019319000013638288
+          "elapsed_seconds": 0.018737200007308275
         },
         {
           "black_label": "c5 / d5",
@@ -398,7 +398,7 @@
           "unique_white_series": 2604,
           "intra_series_transpositions": 2083,
           "nodes": 64,
-          "elapsed_seconds": 0.021886700007598847
+          "elapsed_seconds": 0.021861699991859496
         }
       ]
     }

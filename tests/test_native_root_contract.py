@@ -34,6 +34,7 @@ def _session(
     width: int = 8,
     depth: int = 3,
     max_work: int = 2_000_000,
+    cache_capacity: int = 16_384,
     tt_capacity: int = 262_144,
     eval_capacity: int = 262_144,
     root_tactical_protection: bool = False,
@@ -45,7 +46,7 @@ def _session(
         max_work=max_work,
         requested_depth=depth,
         mate_score=MATE_SCORE,
-        cache_capacity=16_384,
+        cache_capacity=cache_capacity,
         external_cache_weight=0,
         native_threads=native_threads,
         root_tactical_protection=root_tactical_protection,
@@ -1133,6 +1134,129 @@ def test_transactional_candidate_call_reports_bound_and_rolls_back() -> None:
     assert upper.tt_writes_rolled_back >= 0
 
 
+@pytest.mark.parametrize("native_threads", (1, 4))
+def test_transactional_ordinary_cutoff_hint_reproves_bound_without_generation(
+    native_threads: int,
+) -> None:
+    root = ProgressiveState.initial()
+
+    oracle = _session(
+        width=4,
+        depth=5,
+        cache_capacity=1,
+        native_threads=native_threads,
+    )
+    oracle_manifest = oracle.enumerate_root(
+        root,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    oracle_candidate = oracle_manifest.candidates[0]
+    exact = oracle.search_root_candidate(
+        enumeration_identity=oracle_manifest.enumeration_identity,
+        candidate_identity=oracle_candidate.candidate_identity,
+        child_depth=1,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=oracle_manifest.work.native_work_after,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+    )
+    assert exact.bound is NativeSubtreeBound.EXACT
+
+    session = _session(
+        width=4,
+        depth=5,
+        cache_capacity=1,
+        native_threads=native_threads,
+    )
+    manifest = session.enumerate_root(
+        root,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    candidate = manifest.candidates[0]
+    calls = []
+    for credit in (None, 0):
+        calls.append(
+            session.search_root_candidate(
+                enumeration_identity=manifest.enumeration_identity,
+                candidate_identity=candidate.candidate_identity,
+                child_depth=1,
+                alpha=exact.score,
+                beta=exact.score + 1,
+                external_work=manifest.work.native_work_after,
+                call_work_credit=credit,
+                remaining_nanoseconds=None,
+                rollback_tt=True,
+            )
+        )
+
+    first, hinted = calls
+    assert first.bound is hinted.bound is NativeSubtreeBound.UPPER
+    assert first.score == -666
+    assert first.child_principal_variation
+    assert first.child_principal_variation[0].machine_notation == "e7e5/f8b4"
+    assert first.child_principal_variation[0].outcome is None
+    assert hinted.child_principal_variation == ()
+    assert hinted.score == first.score
+    assert hinted.proof_bounds == first.proof_bounds
+    assert hinted.root_series == first.root_series
+    assert first.work.call_native_work == 139
+    assert hinted.work.call_native_work == 0
+    hinted_stats = dict(
+        zip(SUBTREE_STAT_FIELDS, hinted.work.call_stats, strict=True)
+    )
+    assert hinted_stats["generated_raw_series"] == 0
+    assert hinted_stats["generated_unique_series"] == 0
+    assert hinted_stats["generation_positions"] == 0
+    assert hinted.tt_writes_rolled_back > 0
+
+    reconstructed = session.search_root_candidate(
+        enumeration_identity=manifest.enumeration_identity,
+        candidate_identity=candidate.candidate_identity,
+        child_depth=1,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=manifest.work.native_work_after,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+    )
+    assert _candidate_search_signature(reconstructed) == _candidate_search_signature(
+        exact
+    )
+
+    cold = _session(
+        width=4,
+        depth=5,
+        cache_capacity=1,
+        native_threads=native_threads,
+    )
+    cold_manifest = cold.enumerate_root(
+        root,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    interrupted = cold.search_root_candidate(
+        enumeration_identity=cold_manifest.enumeration_identity,
+        candidate_identity=cold_manifest.candidates[0].candidate_identity,
+        child_depth=1,
+        alpha=exact.score,
+        beta=exact.score + 1,
+        external_work=cold_manifest.work.native_work_after,
+        call_work_credit=0,
+        remaining_nanoseconds=None,
+        rollback_tt=True,
+    )
+    assert interrupted.status != 0
+    assert interrupted.bound is NativeSubtreeBound.UNKNOWN
+    assert interrupted.child_principal_variation == ()
+    assert interrupted.work.call_native_work == 0
+
+
 def test_deep_losing_scout_stops_after_mover_mate_proves_upper_bound() -> None:
     root = ProgressiveState.initial()
     session = _session(width=32, depth=5, max_work=5_000_000)
@@ -1164,6 +1288,53 @@ def test_deep_losing_scout_stops_after_mover_mate_proves_upper_bound() -> None:
     assert scout.proof_bounds == (-1, 1)
     assert scout.work.call_native_work == 16_273
     assert scout.tt_writes_rolled_back > 0
+
+
+def test_proof_only_hint_cannot_escape_root_candidate_pv() -> None:
+    root = ProgressiveState.initial()
+    session = _session(width=32, depth=5, max_work=5_000_000)
+    manifest = session.enumerate_root(
+        root,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    candidate = next(
+        item for item in manifest.candidates if item.order_key == "g1f3"
+    )
+
+    seeded = session.search_root_candidate(
+        enumeration_identity=manifest.enumeration_identity,
+        candidate_identity=candidate.candidate_identity,
+        child_depth=3,
+        alpha=951,
+        beta=952,
+        external_work=manifest.work.native_work_after,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+    )
+    deepened = session.search_root_candidate(
+        enumeration_identity=manifest.enumeration_identity,
+        candidate_identity=candidate.candidate_identity,
+        child_depth=4,
+        alpha=951,
+        beta=952,
+        external_work=manifest.work.native_work_after,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+    )
+
+    assert seeded.status == deepened.status == 0
+    assert seeded.bound is deepened.bound is NativeSubtreeBound.UPPER
+    assert seeded.score == deepened.score == -MATE_SCORE + 4
+    assert seeded.proof_bounds == deepened.proof_bounds == (-1, 1)
+    assert seeded.child_principal_variation == ()
+    assert deepened.child_principal_variation == ()
+    assert seeded.principal_variation == deepened.principal_variation == (
+        candidate.series,
+    )
+    assert seeded.work.call_native_work == 16_273
+    assert deepened.work.call_native_work == 0
 
 
 @pytest.mark.parametrize(
@@ -1289,6 +1460,172 @@ def test_mover_mate_bound_reconstructs_canonical_full_window_pv() -> None:
             item.machine_notation for item in warm.principal_variation
         ) == expected_pv
         assert warm.principal_variation == cold.principal_variation
+
+
+@pytest.mark.parametrize(
+    ("fen", "series", "alpha", "beta", "score", "proof", "seed_work"),
+    (
+        (
+            "3k2K1/Q7/8/8/8/8/8/8 w - - 0 1",
+            3,
+            0,
+            1,
+            MATE_SCORE - 1,
+            (1, 1),
+            152,
+        ),
+        (
+            "6K1/1q6/8/8/8/3k4/8/8 b - - 0 1",
+            4,
+            -1,
+            0,
+            -MATE_SCORE + 1,
+            (-1, -1),
+            988,
+        ),
+    ),
+)
+def test_mover_mate_bound_hint_skips_deeper_scout_generation(
+    fen: str,
+    series: int,
+    alpha: int,
+    beta: int,
+    score: int,
+    proof: tuple[int, int],
+    seed_work: int,
+) -> None:
+    state = ProgressiveState.from_fen(fen, series)
+    results = []
+    for native_threads in (1, 4):
+        session = _session(
+            width=128,
+            depth=5,
+            max_work=20_000,
+            native_threads=native_threads,
+        )
+        seeded = session.search(
+            state,
+            depth=1,
+            alpha=alpha,
+            beta=beta,
+            ply_from_root=0,
+            external_work=0,
+            remaining_nanoseconds=None,
+        )
+        deepened = session.search(
+            state,
+            depth=2,
+            alpha=alpha,
+            beta=beta,
+            ply_from_root=0,
+            external_work=0,
+            remaining_nanoseconds=None,
+        )
+        warm_exact = session.search(
+            state,
+            depth=2,
+            alpha=-2 * MATE_SCORE,
+            beta=2 * MATE_SCORE,
+            ply_from_root=0,
+            external_work=0,
+            remaining_nanoseconds=None,
+        )
+        cold_exact = _session(
+            width=128,
+            depth=5,
+            max_work=20_000,
+            native_threads=native_threads,
+        ).search(
+            state,
+            depth=2,
+            alpha=-2 * MATE_SCORE,
+            beta=2 * MATE_SCORE,
+            ply_from_root=0,
+            external_work=0,
+            remaining_nanoseconds=None,
+        )
+        retry_cap = seed_work * 4 + 500
+        retry_session = _session(
+            width=128,
+            depth=5,
+            max_work=retry_cap,
+            native_threads=native_threads,
+        )
+        retry_session.search(
+            state,
+            depth=1,
+            alpha=alpha,
+            beta=beta,
+            ply_from_root=0,
+            external_work=0,
+            remaining_nanoseconds=None,
+        )
+        retry_session.search(
+            state,
+            depth=2,
+            alpha=alpha,
+            beta=beta,
+            ply_from_root=0,
+            external_work=0,
+            remaining_nanoseconds=None,
+        )
+        interrupted = retry_session.search(
+            state,
+            depth=2,
+            alpha=-2 * MATE_SCORE,
+            beta=2 * MATE_SCORE,
+            ply_from_root=0,
+            external_work=retry_cap - seed_work - 100,
+            remaining_nanoseconds=None,
+        )
+        retried = retry_session.search(
+            state,
+            depth=2,
+            alpha=-2 * MATE_SCORE,
+            beta=2 * MATE_SCORE,
+            ply_from_root=0,
+            external_work=0,
+            remaining_nanoseconds=None,
+        )
+        results.append(
+            (
+                seeded,
+                deepened,
+                warm_exact,
+                cold_exact,
+                interrupted,
+                retried,
+            )
+        )
+
+    assert results[0] == results[1]
+    for (
+        seeded,
+        deepened,
+        warm_exact,
+        cold_exact,
+        interrupted,
+        retried,
+    ) in results:
+        seeded_stats = dict(zip(SUBTREE_STAT_FIELDS, seeded.stats, strict=True))
+        deepened_stats = dict(zip(SUBTREE_STAT_FIELDS, deepened.stats, strict=True))
+        assert seeded.status == deepened.status == 0
+        assert seeded.score == deepened.score == score
+        assert seeded.proof_bounds == deepened.proof_bounds == proof
+        assert seeded.principal_variation == deepened.principal_variation == ()
+        assert seeded_stats["generation_positions"] == seed_work
+        assert deepened_stats["generation_positions"] == seed_work
+        assert warm_exact.status == cold_exact.status == 0
+        assert warm_exact.score == cold_exact.score == score
+        assert warm_exact.proof_bounds == cold_exact.proof_bounds == proof
+        assert warm_exact.principal_variation == cold_exact.principal_variation
+        assert len(warm_exact.principal_variation) == 1
+        assert interrupted.status == 1
+        assert interrupted.principal_variation == ()
+        assert retried.status == cold_exact.status == 0
+        assert retried.score == cold_exact.score
+        assert retried.proof_bounds == cold_exact.proof_bounds
+        assert retried.principal_variation == cold_exact.principal_variation
 
 
 def test_mover_mate_exit_preserves_capped_parallel_search_result() -> None:

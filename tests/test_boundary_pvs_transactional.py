@@ -367,9 +367,9 @@ def test_hard_s4_depth_five_completes_with_exact_safety_under_production_work() 
         baseline_profile(),
     )
     # Later-root transactional scouts reject 31 non-improving S4 candidates;
-    # proven mover-mate bounds stop their partial frontier generation without
-    # changing the exact D5 result.
-    assert result.stats.work_positions == 7_400_700
+    # proven mover-mate bounds stop their partial frontier generation and keep
+    # the delivered-mate series as a proof-only hint for the next scout depth.
+    assert result.stats.work_positions == 6_908_889
     assert result.stats.root_pvs_zero_window_searches == 31
     assert result.stats.root_safety_screen_positions == 831_549
     assert (

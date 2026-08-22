@@ -600,9 +600,17 @@ struct TTEntry {
     std::int64_t depth = 0;
     std::int64_t score = 0;
     TTBound bound = TTBound::Exact;
+    // Canonical entries store their PV.  A non-canonical bound may store one
+    // legal series in this existing vector solely as an ordering hint; every
+    // result path masks it unless canonical_pv is true.
     std::vector<CompleteSeriesCandidate> pv;
     std::array<int, 2> proof_bounds = UNKNOWN_PROOF_BOUNDS;
     bool canonical_pv = true;
+};
+
+struct CutoffHint {
+    TTKey key;
+    CompleteSeriesCandidate candidate;
 };
 
 using CandidateSeries = std::vector<CompleteSeriesCandidate>;
@@ -726,7 +734,15 @@ std::string subtree_state_identity(const SubtreeState& state) {
 class SubtreeSearchSession::Impl {
 public:
     explicit Impl(SubtreeSearchConfig config_value)
-        : config(std::move(config_value)) {
+        : config(std::move(config_value)),
+          cutoff_hints(
+              config.requested_depth >= 5
+                  ? static_cast<std::size_t>(std::min<std::uint64_t>(
+                      1'024,
+                      config.root_contract_tt_capacity
+                  ))
+                  : 0
+          ) {
         if (
             config.max_series_per_node == 0
             || config.requested_depth < 1
@@ -770,6 +786,13 @@ public:
     std::uint64_t eval_entries_peak = 0;
 
     std::unordered_map<TTKey, TTEntry, TTKeyHash> tt;
+    // Transactional PVS probes roll their TT writes back, but a legal series
+    // that caused an ordinary alpha-beta cutoff remains a safe move-ordering
+    // witness.  Keeping that witness outside the score table lets a later
+    // zero-window visit prove its bound before regenerating the full series
+    // frontier. Hints never supply a score; a direct-map collision replaces
+    // only an ordering hint, and every miss falls back to canonical generation.
+    std::vector<std::optional<CutoffHint>> cutoff_hints;
     std::vector<std::vector<std::pair<TTKey, std::optional<TTEntry>>>>
         tt_transactions;
     std::unordered_map<PositionKey, std::int64_t, PositionKeyHash> eval_cache;
@@ -778,6 +801,41 @@ public:
     std::list<GenerationKey> generation_recency;
     std::uint64_t generation_cache_weight = 0;
     GenerationKey external_cache_key{};
+
+    [[nodiscard]] const CompleteSeriesCandidate* cutoff_hint(
+        const TTKey& key
+    ) const noexcept {
+        if (cutoff_hints.empty()) {
+            return nullptr;
+        }
+        const auto& slot = cutoff_hints[
+            TTKeyHash{}(key) % cutoff_hints.size()
+        ];
+        return slot.has_value() && slot->key == key
+            ? &slot->candidate
+            : nullptr;
+    }
+
+    void remember_cutoff_hint(
+        const TTKey& key,
+        const CompleteSeriesCandidate& candidate
+    ) {
+        if (cutoff_hints.empty()) {
+            return;
+        }
+        auto& slot = cutoff_hints[TTKeyHash{}(key) % cutoff_hints.size()];
+        if (
+            slot.has_value()
+            && slot->key == key
+            && same_series(slot->candidate, candidate)
+        ) {
+            return;
+        }
+        slot = CutoffHint{
+            key,
+            candidate,
+        };
+    }
 
     void evict_for(std::uint64_t weight) {
         while (
@@ -1436,6 +1494,11 @@ public:
         if (entry != tt.end() && entry->second.depth >= depth) {
             ++stats.tt_hits;
             if (entry->second.bound == TTBound::Exact) {
+                if (!entry->second.canonical_pv) {
+                    throw std::logic_error(
+                        "native subtree TT contains a non-canonical exact entry"
+                    );
+                }
                 return NodeResult{
                     entry->second.score,
                     entry->second.pv,
@@ -1451,7 +1514,9 @@ public:
             if (alpha >= beta) {
                 return NodeResult{
                     entry->second.score,
-                    entry->second.pv,
+                    entry->second.canonical_pv
+                        ? entry->second.pv
+                        : std::vector<CompleteSeriesCandidate>{},
                     entry->second.proof_bounds,
                     entry->second.canonical_pv,
                 };
@@ -1462,16 +1527,53 @@ public:
         std::optional<CompleteSeriesCandidate> preferred_candidate;
         std::optional<std::vector<std::string>> preferred_moves;
         const std::vector<std::string>* preferred_series = nullptr;
+        bool proof_only_ordering = false;
         if (entry != tt.end() && !entry->second.pv.empty()) {
-            if (
-                config.requested_depth >= 4
-                && entry->second.depth < depth
-            ) {
-                preferred_candidate = entry->second.pv.front();
-                preferred_series = &preferred_candidate->path.moves;
+            if (entry->second.canonical_pv) {
+                if (
+                    config.requested_depth >= 4
+                    && entry->second.depth < depth
+                ) {
+                    preferred_candidate = entry->second.pv.front();
+                    preferred_series = &preferred_candidate->path.moves;
+                } else {
+                    preferred_moves = entry->second.pv.front().path.moves;
+                    preferred_series = &*preferred_moves;
+                }
+            } else if (original_beta - original_alpha <= 1) {
+                proof_only_ordering = true;
+                // A zero-width integer window cannot return an exact score.
+                // It is therefore safe to reuse a proof-only ordering hint
+                // here, while exact searches retain canonical generation
+                // order and tie-breaking semantics.
+                if (
+                    config.requested_depth >= 4
+                    && entry->second.depth < depth
+                ) {
+                    preferred_candidate = entry->second.pv.front();
+                    preferred_series = &preferred_candidate->path.moves;
+                } else {
+                    preferred_moves = entry->second.pv.front().path.moves;
+                    preferred_series = &*preferred_moves;
+                }
             } else {
-                preferred_moves = entry->second.pv.front().path.moves;
-                preferred_series = &*preferred_moves;
+                // A proof-only vector is never an ordering source for a full
+                // window because it could change canonical equal-score ties.
+            }
+        }
+        if (
+            preferred_series == nullptr
+            && config.requested_depth >= 5
+            && original_beta - original_alpha == 1
+        ) {
+            const auto* hinted = cutoff_hint(key);
+            if (hinted != nullptr) {
+                // This witness came from an earlier zero-window cutoff whose
+                // TT writes were rolled back. It is legal for ordering and
+                // re-proving the same bound, but it is not a canonical PV.
+                proof_only_ordering = true;
+                preferred_candidate = *hinted;
+                preferred_series = &preferred_candidate->path.moves;
             }
         }
 
@@ -1542,6 +1644,7 @@ public:
         bool width_complete = false;
         std::size_t series_count = 0;
         bool stopped_on_mover_mate = false;
+        bool ordinary_cutoff_after_generation = false;
         if (!cutoff_before_generation) {
             const std::int64_t immediate_mate_score =
                 config.mate_score - (ply_from_root + 1);
@@ -1640,12 +1743,27 @@ public:
                 }
                 if (alpha >= beta) {
                     ++stats.alpha_beta_cutoffs;
+                    ordinary_cutoff_after_generation = true;
                     break;
                 }
             }
         }
 
-        const bool canonical_pv = !stopped_on_mover_mate
+        if (
+            config.requested_depth >= 5
+            && !tt_transactions.empty()
+            && ordinary_cutoff_after_generation
+            && best_candidate.has_value()
+            && best_candidate->outcome == CompleteSeriesOutcome::None
+        ) {
+            // A committed TT entry already retains its own PV or proof-only
+            // hint.  Keep a second witness only while a transactional PVS
+            // probe is active and its score-table writes will be rolled back.
+            remember_cutoff_hint(key, *best_candidate);
+        }
+
+        const bool canonical_pv = !proof_only_ordering
+            && !stopped_on_mover_mate
             && best_child_pv_canonical;
         std::vector<CompleteSeriesCandidate> best_pv;
         if (best_candidate.has_value() && canonical_pv) {
@@ -1685,11 +1803,22 @@ public:
                 && existing_bound != TTBound::Exact
             )
         ) {
+            std::vector<CompleteSeriesCandidate> stored_pv = best_pv;
+            if (
+                !canonical_pv
+                && bound != TTBound::Exact
+                && best_candidate.has_value()
+            ) {
+                // Non-canonical bounds originate at a partial mover-mate exit
+                // or propagate that proof through an ancestor.  Retain only
+                // the legal series at this node, never the unproven child line.
+                stored_pv.push_back(*best_candidate);
+            }
             TTEntry replacement{
                 depth,
                 best_score,
                 bound,
-                best_pv,
+                std::move(stored_pv),
                 proof_bounds,
                 canonical_pv,
             };
