@@ -181,6 +181,10 @@ struct CompleteSeriesRequest {
     // Opt-in selective-search lane. Full-game corpus exploration keeps its
     // historical fixed-width policy unless it explicitly requests this.
     bool tactical_protection = false;
+    // Bound-only alpha-beta calls may stop once the mover has a legal
+    // delivered mate. Exact/full-window callers leave this false so their
+    // canonical retained frontier and principal variation stay unchanged.
+    bool stop_on_mover_mate = false;
 };
 
 struct CompleteSeriesResponse {
@@ -188,6 +192,9 @@ struct CompleteSeriesResponse {
     std::string message;
     SeriesGenerationStats stats;
     std::vector<CompleteSeriesCandidate> series;
+    // True only when generation returned a partial frontier after the
+    // request's bound-only mover-mate condition was satisfied.
+    bool stopped_on_mover_mate = false;
 };
 
 [[nodiscard]] std::optional<std::int64_t> fast_evaluate(

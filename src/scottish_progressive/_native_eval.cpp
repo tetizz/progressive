@@ -2290,6 +2290,13 @@ bool record_completed(
     ) {
         return false;
     }
+    if (
+        context.request.stop_on_mover_mate
+        && completed.outcome == NativeSeriesOutcome::Checkmate
+        && completed.ended_by_check
+    ) {
+        context.response.stopped_on_mover_mate = true;
+    }
     context.completed.push_back(std::move(completed));
     return true;
 }
@@ -3351,6 +3358,9 @@ CompleteSeriesResponse generate_complete_series(
                         )) {
                         return false;
                     }
+                    if (context.response.stopped_on_mover_mate) {
+                        return true;
+                    }
                     continue;
                 }
 
@@ -3425,6 +3435,10 @@ CompleteSeriesResponse generate_complete_series(
             );
         const bool parallel_expansion =
             request.worker_threads > 1
+            // A bound-only mate exit must charge exactly through the proving
+            // frontier item. Pre-expanding the whole frontier would make the
+            // logical work result depend on execution thread count.
+            && !request.stop_on_mover_mate
             && frontier.size() >= PARALLEL_EXPANSION_THRESHOLD
             && enough_position_budget;
         if (!parallel_expansion) {
@@ -3440,6 +3454,9 @@ CompleteSeriesResponse generate_complete_series(
                 );
                 if (!process_variants(item, variants)) {
                     return std::move(context.response);
+                }
+                if (context.response.stopped_on_mover_mate) {
+                    break;
                 }
             }
         } else {
@@ -3490,7 +3507,13 @@ CompleteSeriesResponse generate_complete_series(
                 if (!process_variants(frontier[index], expanded[index])) {
                     return std::move(context.response);
                 }
+                if (context.response.stopped_on_mover_mate) {
+                    break;
+                }
             }
+        }
+        if (context.response.stopped_on_mover_mate) {
+            break;
         }
         if (!bound_frontier(context, following)) {
             return std::move(context.response);

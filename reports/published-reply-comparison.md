@@ -1,8 +1,8 @@
 # Published and engine reply comparison
 
-Generated: `2026-08-22T15:58:26+00:00`<br>
+Generated: `2026-08-22T18:10:08+00:00`<br>
 Engine: `spc-0.9.0`<br>
-Source fingerprint: `6ba9d0ee7faf5646`<br>
+Source fingerprint: `d02699877498939b`<br>
 Rules: `scottish-modern-common-v1`
 Horizon: White 1 move, fixed Black candidate 2-move series, then a screened White 3-move response.
 

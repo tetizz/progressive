@@ -7,7 +7,7 @@ import pytest
 
 import scottish_progressive.evaluation as evaluation
 import scottish_progressive.search as search_module
-from scottish_progressive.model import ProgressiveState
+from scottish_progressive.model import Outcome, ProgressiveState
 from scottish_progressive.native_subtree import (
     SUBTREE_STAT_FIELDS,
     NativeRootEnumerationResult,
@@ -37,6 +37,7 @@ def _session(
     tt_capacity: int = 262_144,
     eval_capacity: int = 262_144,
     root_tactical_protection: bool = False,
+    native_threads: int = 1,
 ) -> NativeSubtreeSession:
     _require_contract()
     return NativeSubtreeSession(
@@ -46,7 +47,7 @@ def _session(
         mate_score=MATE_SCORE,
         cache_capacity=16_384,
         external_cache_weight=0,
-        native_threads=1,
+        native_threads=native_threads,
         root_tactical_protection=root_tactical_protection,
         profile=baseline_profile(),
         root_contract_tt_capacity=tt_capacity,
@@ -1130,6 +1131,227 @@ def test_transactional_candidate_call_reports_bound_and_rolls_back() -> None:
     assert upper.bound is NativeSubtreeBound.UPPER
     assert upper.score <= exact.score
     assert upper.tt_writes_rolled_back >= 0
+
+
+def test_deep_losing_scout_stops_after_mover_mate_proves_upper_bound() -> None:
+    root = ProgressiveState.initial()
+    session = _session(width=32, depth=5, max_work=5_000_000)
+    manifest = session.enumerate_root(
+        root,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    candidate = next(
+        item for item in manifest.candidates if item.order_key == "g1f3"
+    )
+
+    scout = session.search_root_candidate(
+        enumeration_identity=manifest.enumeration_identity,
+        candidate_identity=candidate.candidate_identity,
+        child_depth=4,
+        alpha=951,
+        beta=952,
+        external_work=manifest.work.native_work_after,
+        remaining_nanoseconds=None,
+        rollback_tt=True,
+    )
+
+    assert scout.status == 0
+    assert scout.bound is NativeSubtreeBound.UPPER
+    assert scout.score == -MATE_SCORE + 4
+    assert scout.child_principal_variation == ()
+    assert scout.proof_bounds == (-1, 1)
+    assert scout.work.call_native_work == 16_273
+    assert scout.tt_writes_rolled_back > 0
+
+
+@pytest.mark.parametrize(
+    ("fen", "series", "alpha", "beta", "score", "proof", "work"),
+    (
+        (
+            "3k2K1/Q7/8/8/8/8/8/8 w - - 0 1",
+            3,
+            0,
+            1,
+            MATE_SCORE - 1,
+            (1, 1),
+            152,
+        ),
+        (
+            "6K1/1q6/8/8/8/3k4/8/8 b - - 0 1",
+            4,
+            -1,
+            0,
+            -MATE_SCORE + 1,
+            (-1, -1),
+            988,
+        ),
+    ),
+)
+def test_mover_mate_exit_is_work_identical_across_native_thread_counts(
+    fen: str,
+    series: int,
+    alpha: int,
+    beta: int,
+    score: int,
+    proof: tuple[int, int],
+    work: int,
+) -> None:
+    mate_bound = ProgressiveState.from_fen(fen, series)
+    results = []
+    for native_threads in (1, 4):
+        results.append(
+            _session(
+                width=128,
+                depth=5,
+                max_work=5_000,
+                native_threads=native_threads,
+            ).search(
+                mate_bound,
+                depth=1,
+                alpha=alpha,
+                beta=beta,
+                ply_from_root=0,
+                external_work=0,
+                remaining_nanoseconds=None,
+            )
+        )
+
+    serial, parallel = results
+    assert serial == parallel
+    assert serial.status == 0
+    assert serial.score == score
+    assert serial.principal_variation == ()
+    assert serial.proof_bounds == proof
+    stats = dict(zip(SUBTREE_STAT_FIELDS, serial.stats, strict=True))
+    assert stats["generation_positions"] == work
+    assert stats["generation_work_limit_hits"] == 0
+
+
+def test_mover_mate_bound_reconstructs_canonical_full_window_pv() -> None:
+    fixtures = (
+        (
+            ProgressiveState.from_fen(
+                "3k2K1/Q7/8/8/8/8/8/8 w - - 0 1",
+                3,
+            ),
+            0,
+            1,
+            ("g8f7/f7e6/a7b8",),
+        ),
+        (
+            ProgressiveState.from_fen(
+                "6K1/1q6/8/8/8/3k4/8/8 b - - 0 1",
+                4,
+            ),
+            -1,
+            0,
+            ("d3d4/d4e5/e5f6/b7g7",),
+        ),
+    )
+    for state, alpha, beta, expected_pv in fixtures:
+        cold = _session(width=128, depth=5, max_work=20_000).search(
+            state,
+            depth=1,
+            alpha=-2 * MATE_SCORE,
+            beta=2 * MATE_SCORE,
+            ply_from_root=0,
+            external_work=0,
+            remaining_nanoseconds=None,
+        )
+        warm_session = _session(width=128, depth=5, max_work=20_000)
+        bound = warm_session.search(
+            state,
+            depth=1,
+            alpha=alpha,
+            beta=beta,
+            ply_from_root=0,
+            external_work=0,
+            remaining_nanoseconds=None,
+        )
+        warm = warm_session.search(
+            state,
+            depth=1,
+            alpha=-2 * MATE_SCORE,
+            beta=2 * MATE_SCORE,
+            ply_from_root=0,
+            external_work=0,
+            remaining_nanoseconds=None,
+        )
+
+        assert bound.status == 0
+        assert bound.principal_variation == ()
+        assert warm.status == cold.status == 0
+        assert warm.score == cold.score == bound.score
+        assert warm.proof_bounds == cold.proof_bounds == bound.proof_bounds
+        assert tuple(
+            item.machine_notation for item in warm.principal_variation
+        ) == expected_pv
+        assert warm.principal_variation == cold.principal_variation
+
+
+def test_mover_mate_exit_preserves_capped_parallel_search_result() -> None:
+    capped_exact = ProgressiveState.from_fen(
+        "5k2/8/3K4/1r3b2/8/1NQ5/8/8 w - - 0 1",
+        1,
+    )
+    results = []
+    for native_threads in (1, 4):
+        results.append(
+            _session(
+                width=8,
+                depth=5,
+                max_work=4_956,
+                native_threads=native_threads,
+                root_tactical_protection=True,
+            ).search(
+                capped_exact,
+                depth=3,
+                alpha=-2 * MATE_SCORE,
+                beta=2 * MATE_SCORE,
+                ply_from_root=0,
+                external_work=0,
+                remaining_nanoseconds=None,
+            )
+        )
+
+    serial, parallel = results
+    assert serial == parallel
+    assert serial.status == 0
+    assert serial.score == 1_627
+    assert tuple(
+        item.machine_notation for item in serial.principal_variation
+    ) == ("c3f6", "f8g8/b5b3", "f6f5/f5c2/c2b3")
+    assert not serial.evaluation_work_limit_reached
+    stats = dict(zip(SUBTREE_STAT_FIELDS, serial.stats, strict=True))
+    assert stats["generation_positions"] == 4_956
+    assert stats["generation_work_limit_hits"] == 0
+
+
+def test_checkmated_mover_is_not_misclassified_as_delivering_mate() -> None:
+    state = ProgressiveState.from_fen(
+        "8/8/8/8/8/5k2/6q1/7K w - - 0 1",
+        1,
+    )
+    result = _session(width=8, depth=5, max_work=1_000).search(
+        state,
+        depth=1,
+        alpha=-1,
+        beta=0,
+        ply_from_root=0,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+
+    assert result.status == 0
+    assert result.score == -MATE_SCORE + 1
+    assert result.proof_bounds == (-1, -1)
+    assert len(result.principal_variation) == 1
+    terminal = result.principal_variation[0]
+    assert terminal.moves == ()
+    assert terminal.outcome is Outcome.CHECKMATE
+    assert not terminal.ended_by_check
 
 
 def test_per_call_work_credit_exact_one_over_and_retry_are_fail_closed() -> None:

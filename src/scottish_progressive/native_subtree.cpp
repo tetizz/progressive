@@ -593,6 +593,7 @@ struct NodeResult {
     std::int64_t score = 0;
     std::vector<CompleteSeriesCandidate> pv;
     std::array<int, 2> proof_bounds = UNKNOWN_PROOF_BOUNDS;
+    bool canonical_pv = true;
 };
 
 struct TTEntry {
@@ -601,6 +602,7 @@ struct TTEntry {
     TTBound bound = TTBound::Exact;
     std::vector<CompleteSeriesCandidate> pv;
     std::array<int, 2> proof_bounds = UNKNOWN_PROOF_BOUNDS;
+    bool canonical_pv = true;
 };
 
 using CandidateSeries = std::vector<CompleteSeriesCandidate>;
@@ -613,6 +615,7 @@ struct GeneratedSeries {
     CandidateSeriesStorage series;
     std::optional<std::size_t> preferred_index;
     bool width_complete = false;
+    bool stopped_on_mover_mate = false;
 };
 
 struct CacheEntry {
@@ -1010,7 +1013,8 @@ public:
     [[nodiscard]] GeneratedSeries generate(
         const SubtreeState& state,
         std::int64_t generated_ply,
-        const std::vector<std::string>* preferred_series
+        const std::vector<std::string>* preferred_series,
+        bool stop_on_mover_mate = false
     ) {
         check_deadline();
         const bool tactical = tactical_protection(state, generated_ply);
@@ -1027,6 +1031,7 @@ public:
                 cached->second.series,
                 preferred_index(*cached->second.series, preferred_series),
                 cached->second.width_complete,
+                false,
             };
         }
 
@@ -1059,6 +1064,7 @@ public:
         request.deadline = deadline;
         request.worker_threads = config.worker_threads;
         request.tactical_protection = tactical;
+        request.stop_on_mover_mate = stop_on_mover_mate;
         CompleteSeriesResponse response = generate_complete_series(request);
         record_generation(response.stats);
         if (response.status == SeriesGenerationStatus::WorkLimit) {
@@ -1090,7 +1096,9 @@ public:
             ++stats.branch_caps;
             selective = true;
         }
-        const bool width_complete = response.stats.frontier_prunes == 0
+        const bool stopped_on_mover_mate = response.stopped_on_mover_mate;
+        const bool width_complete = !stopped_on_mover_mate
+            && response.stats.frontier_prunes == 0
             && response.stats.unique_series <= response.series.size();
         const std::uint64_t weight = std::max<std::uint64_t>(
             1,
@@ -1100,7 +1108,7 @@ public:
             std::make_shared<const CandidateSeries>(
                 std::move(response.series)
             );
-        if (weight <= config.series_cache_capacity) {
+        if (!stopped_on_mover_mate && weight <= config.series_cache_capacity) {
             evict_for(weight);
             generation_recency.push_back(key);
             auto recency = std::prev(generation_recency.end());
@@ -1123,6 +1131,7 @@ public:
             std::move(series),
             preferred,
             width_complete,
+            stopped_on_mover_mate,
         };
     }
 
@@ -1431,6 +1440,7 @@ public:
                     entry->second.score,
                     entry->second.pv,
                     entry->second.proof_bounds,
+                    entry->second.canonical_pv,
                 };
             }
             if (entry->second.bound == TTBound::Lower) {
@@ -1443,6 +1453,7 @@ public:
                     entry->second.score,
                     entry->second.pv,
                     entry->second.proof_bounds,
+                    entry->second.canonical_pv,
                 };
             }
         }
@@ -1471,6 +1482,7 @@ public:
             : config.mate_score * 2;
         std::optional<CompleteSeriesCandidate> best_candidate;
         std::vector<CompleteSeriesCandidate> best_child_pv;
+        bool best_child_pv_canonical = true;
         std::vector<std::array<int, 2>> child_bounds;
         bool cutoff_before_generation = false;
         const std::vector<std::string>* previsited_series = nullptr;
@@ -1503,6 +1515,7 @@ public:
             best_score = child.score;
             best_candidate.emplace(std::move(*preferred_candidate));
             best_child_pv = std::move(child.pv);
+            best_child_pv_canonical = child.canonical_pv;
             preferred_series = &best_candidate->path.moves;
             previsited_series = preferred_series;
 
@@ -1528,13 +1541,27 @@ public:
 
         bool width_complete = false;
         std::size_t series_count = 0;
+        bool stopped_on_mover_mate = false;
         if (!cutoff_before_generation) {
+            const std::int64_t immediate_mate_score =
+                config.mate_score - (ply_from_root + 1);
+            // Partial generation pays off in deep searches; at shallower
+            // requested depths, retaining the complete generation cache is
+            // measurably cheaper for later calls in the same session.
+            const bool mate_proves_caller_bound = config.requested_depth >= 5
+                && (
+                    mover == WHITE
+                        ? immediate_mate_score >= original_beta
+                        : -immediate_mate_score <= original_alpha
+                );
             GeneratedSeries generated = generate(
                 state,
                 ply_from_root + 1,
-                preferred_series
+                preferred_series,
+                mate_proves_caller_bound
             );
             width_complete = generated.width_complete;
+            stopped_on_mover_mate = generated.stopped_on_mover_mate;
             series_count = generated.series->size();
             if (generated.series->empty()) {
                 return NodeResult{0, {}, UNKNOWN_PROOF_BOUNDS};
@@ -1595,6 +1622,7 @@ public:
                     best_score = child.score;
                     best_candidate = candidate;
                     best_child_pv = std::move(child.pv);
+                    best_child_pv_canonical = child.canonical_pv;
                 }
 
                 const std::int64_t immediate_mate_score =
@@ -1617,8 +1645,10 @@ public:
             }
         }
 
+        const bool canonical_pv = !stopped_on_mover_mate
+            && best_child_pv_canonical;
         std::vector<CompleteSeriesCandidate> best_pv;
-        if (best_candidate.has_value()) {
+        if (best_candidate.has_value() && canonical_pv) {
             best_pv.reserve(1 + best_child_pv.size());
             best_pv.push_back(*best_candidate);
             best_pv.insert(
@@ -1633,10 +1663,16 @@ public:
         } else if (best_score >= original_beta) {
             bound = TTBound::Lower;
         }
+        if (!canonical_pv && bound == TTBound::Exact) {
+            throw std::logic_error(
+                "native bound-only mate exit produced an exact result"
+            );
+        }
         const auto proof_bounds = combine_proof_bounds(
             mover,
             child_bounds,
             !cutoff_before_generation
+                && !stopped_on_mover_mate
                 && width_complete
                 && child_bounds.size() == series_count
         );
@@ -1655,10 +1691,16 @@ public:
                 bound,
                 best_pv,
                 proof_bounds,
+                canonical_pv,
             };
             write_tt(key, std::move(replacement));
         }
-        return NodeResult{best_score, std::move(best_pv), proof_bounds};
+        return NodeResult{
+            best_score,
+            std::move(best_pv),
+            proof_bounds,
+            canonical_pv,
+        };
     }
 };
 
