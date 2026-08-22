@@ -471,6 +471,7 @@ def _validate_root_geometry(
         "aggregate_maximum_bytes",
         "supported_lower_geometries",
         "session_config",
+        "play_limits",
     }
     if set(geometry) != expected_keys:
         raise ValueError("root-session geometry must exactly name its pool envelope")
@@ -515,15 +516,55 @@ def _validate_root_geometry(
         reverse=True,
     ):
         raise ValueError("lower root geometries must use fastest-first canonical order")
+    session_config = _validate_root_session_config(
+        geometry.get("session_config"),
+        contract,
+    )
+    play_limits = _require_mapping(
+        geometry.get("play_limits"),
+        "root-session play limits",
+    )
+    if set(play_limits) != {
+        "maximum_seconds",
+        "default_seconds",
+        "default_generation_positions",
+        "safety_reserve_positions",
+    }:
+        raise ValueError("root-session play limits must exactly bind four fields")
+    maximum_seconds = play_limits.get("maximum_seconds")
+    default_seconds = play_limits.get("default_seconds")
+    if (
+        isinstance(maximum_seconds, bool)
+        or not isinstance(maximum_seconds, (int, float))
+        or not 0 < float(maximum_seconds) <= 0xFFFFFFFF / 1000
+        or isinstance(default_seconds, bool)
+        or not isinstance(default_seconds, (int, float))
+        or not 0 < float(default_seconds) <= float(maximum_seconds)
+    ):
+        raise ValueError("root-session play seconds are invalid")
+    default_work = play_limits.get("default_generation_positions")
+    safety_reserve = play_limits.get("safety_reserve_positions")
+    if (
+        isinstance(default_work, bool)
+        or not isinstance(default_work, int)
+        or not 1_000 <= default_work <= session_config["max_work"]
+        or isinstance(safety_reserve, bool)
+        or not isinstance(safety_reserve, int)
+        or not 1 <= safety_reserve <= session_config["max_work"]
+    ):
+        raise ValueError("root-session play work limits are invalid")
     return {
         "desktop_workers": workers,
         "desktop_initial_full_wave": wave,
         "aggregate_maximum_bytes": aggregate,
         "supported_lower_geometries": normalized_lower,
-        "session_config": _validate_root_session_config(
-            geometry.get("session_config"),
-            contract,
-        ),
+        "session_config": session_config,
+        "play_limits": {
+            "maximum_seconds": maximum_seconds,
+            "default_seconds": default_seconds,
+            "default_generation_positions": default_work,
+            "safety_reserve_positions": safety_reserve,
+        },
     }
 
 

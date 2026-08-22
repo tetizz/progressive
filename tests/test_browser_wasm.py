@@ -220,6 +220,12 @@ def _root_session_certificate(
             "desktop_initial_full_wave": 4,
             "aggregate_maximum_bytes": 8 * maximum,
             "supported_lower_geometries": [],
+            "play_limits": {
+                "maximum_seconds": 60,
+                "default_seconds": 45,
+                "default_generation_positions": 100_000_000,
+                "safety_reserve_positions": 1_000_000,
+            },
             "session_config": {
                 "max_depth": 5,
                 "width": 32,
@@ -471,6 +477,12 @@ def test_bundle_builder_stages_one_identity_bound_root_and_mate_artifact(
     assert variant["root_session_certificate"]["exports"] == list(
         builder.COMBINED_EXPORTS
     )
+    assert variant["root_session_certificate"]["geometry"]["play_limits"] == {
+        "maximum_seconds": 60,
+        "default_seconds": 45,
+        "default_generation_positions": 100_000_000,
+        "safety_reserve_positions": 1_000_000,
+    }
     assert (
         variant["root_session_certificate"]["memory"]
         == variant["mate_certificate"]["memory"]
@@ -544,6 +556,32 @@ def test_root_and_mate_certificates_fail_closed_on_contract_and_identity_drift(
         )
 
     root["geometry"]["session_config"]["root_contract_eval_capacity"] = 262_144
+    root["geometry"]["play_limits"].pop("safety_reserve_positions")
+    root_path.write_text(json.dumps(root), encoding="utf-8")
+    with pytest.raises(ValueError, match="exactly bind four fields"):
+        builder.build_bundle(
+            single_wasm=wasm,
+            single_module_js=module_js,
+            single_root_session_certificate_path=root_path,
+            single_mate_certificate_path=mate_path,
+            source_package=package,
+            output=tmp_path / "unbound-play-limits",
+        )
+
+    root["geometry"]["play_limits"]["safety_reserve_positions"] = 1_000_000
+    root["geometry"]["play_limits"]["default_generation_positions"] = 100_000_001
+    root_path.write_text(json.dumps(root), encoding="utf-8")
+    with pytest.raises(ValueError, match="play work limits are invalid"):
+        builder.build_bundle(
+            single_wasm=wasm,
+            single_module_js=module_js,
+            single_root_session_certificate_path=root_path,
+            single_mate_certificate_path=mate_path,
+            source_package=package,
+            output=tmp_path / "over-cap-play-limits",
+        )
+
+    root["geometry"]["play_limits"]["default_generation_positions"] = 100_000_000
     mate["kernel_sha256"] = "e" * 64
     root_path.write_text(json.dumps(root), encoding="utf-8")
     mate_path.write_text(json.dumps(mate), encoding="utf-8")
