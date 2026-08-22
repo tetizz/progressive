@@ -26,6 +26,19 @@ def _load_bundle_builder():
     return module
 
 
+def test_engine_source_fingerprint_is_line_ending_stable(tmp_path: Path) -> None:
+    builder = _load_bundle_builder()
+    package = tmp_path / "package"
+    package.mkdir()
+    source = package / "sample.py"
+    source.write_bytes(b"first = 1\nsecond = 2\n")
+    lf_fingerprint = builder.engine_source_fingerprint(package)
+
+    source.write_bytes(b"first = 1\r\nsecond = 2\r\n")
+
+    assert builder.engine_source_fingerprint(package) == lf_fingerprint
+
+
 def _certificate(
     builder,
     *,

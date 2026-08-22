@@ -8,6 +8,7 @@ from unittest.mock import patch
 import chess
 import pytest
 
+import scottish_progressive.search as search_module
 from scottish_progressive.model import ProgressiveState, SeriesResult
 from scottish_progressive.profiles import baseline_profile
 from scottish_progressive.rules import play_series
@@ -106,10 +107,11 @@ def _search(
         collect_all_root_scores=collect_all,
         native_threads=1,
     )
-    if pvs:
-        return analyze(state, limits, baseline_profile())
-    with patch.object(SeriesSearcher, "_search_child_with_pvs", _full_window_child):
-        return analyze(state, limits, baseline_profile())
+    with patch.object(search_module, "NATIVE_SUBTREE_ENABLED", False):
+        if pvs:
+            return analyze(state, limits, baseline_profile())
+        with patch.object(SeriesSearcher, "_search_child_with_pvs", _full_window_child):
+            return analyze(state, limits, baseline_profile())
 
 
 def _random_sparse_states(count: int) -> tuple[ProgressiveState, ...]:
@@ -420,7 +422,8 @@ def _search_with_limits(
     limits: SearchLimits,
     pvs: bool,
 ) -> object:
-    if pvs:
-        return analyze(state, limits, baseline_profile())
-    with patch.object(SeriesSearcher, "_search_child_with_pvs", _full_window_child):
-        return analyze(state, limits, baseline_profile())
+    with patch.object(search_module, "NATIVE_SUBTREE_ENABLED", False):
+        if pvs:
+            return analyze(state, limits, baseline_profile())
+        with patch.object(SeriesSearcher, "_search_child_with_pvs", _full_window_child):
+            return analyze(state, limits, baseline_profile())

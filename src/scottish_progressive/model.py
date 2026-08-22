@@ -28,7 +28,7 @@ def _source_fingerprint() -> str:
     for path in sorted(paths, key=lambda item: item.relative_to(package).as_posix()):
         relative = path.relative_to(package).as_posix()
         digest.update(relative.encode("utf-8"))
-        digest.update(path.read_bytes())
+        digest.update(path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n"))
     return digest.hexdigest()[:16]
 
 

@@ -28,6 +28,8 @@ NATIVE_MATE_SOURCE_FILES = ("_native_mate.cpp",)
 
 def engine_source_fingerprint(package: Path) -> str:
     digest = hashlib.sha256()
+    carriage_return = bytes((13,))
+    line_feed = bytes((10,))
     paths = (
         path
         for pattern in ("*.py", "*.cpp", "*.hpp", "*.h")
@@ -35,7 +37,11 @@ def engine_source_fingerprint(package: Path) -> str:
     )
     for path in sorted(paths, key=lambda item: item.relative_to(package).as_posix()):
         digest.update(path.relative_to(package).as_posix().encode("utf-8"))
-        digest.update(path.read_bytes())
+        normalized = path.read_bytes().replace(
+            carriage_return + line_feed,
+            line_feed,
+        ).replace(carriage_return, line_feed)
+        digest.update(normalized)
     return digest.hexdigest()[:16]
 
 
@@ -76,23 +82,21 @@ class BuildPyWithOpeningReports(build_py):
         reports = root / "reports"
         target = package / "reports"
         target.mkdir(parents=True, exist_ok=True)
-        fingerprint = engine_source_fingerprint(package)
-        omit_stale_reports = (
+        fingerprint = engine_source_fingerprint(root / "src" / "scottish_progressive")
+        omit_opening_reports = (
             os.environ.get("SPC_OMIT_STALE_OPENING_REPORTS") == "1"
         )
         for filename in REPORT_FILES:
+            if omit_opening_reports:
+                # Hosted play does not depend on the optional theory reports.
+                # Keep the compatibility environment variable as a strict
+                # omission mode so a report can never drift into that wheel.
+                continue
             source = reports / filename
             if not source.is_file():
                 raise FileNotFoundError(f"required opening report is missing: {source}")
             payload = json.loads(source.read_text(encoding="utf-8"))
             if payload.get("source_fingerprint") != fingerprint:
-                if omit_stale_reports:
-                    # Hosted play does not depend on optional theory reports.
-                    # Never package stale evidence as though it described the
-                    # deployed engine; omit it explicitly instead. Normal
-                    # release builds remain fail-closed and require freshly
-                    # generated reports.
-                    continue
                 raise RuntimeError(
                     f"opening report is stale for source {fingerprint}: {source}"
                 )

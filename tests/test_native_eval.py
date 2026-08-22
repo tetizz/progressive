@@ -314,7 +314,9 @@ def test_engine_fingerprint_includes_native_cpp_and_headers() -> None:
             key=lambda item: item.relative_to(package).as_posix(),
         ):
             digest.update(path.relative_to(package).as_posix().encode("utf-8"))
-            digest.update(path.read_bytes())
+            digest.update(
+                path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+            )
         return digest.hexdigest()[:16]
 
     assert list(package.glob("*.cpp"))
