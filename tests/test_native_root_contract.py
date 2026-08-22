@@ -98,6 +98,20 @@ def _analysis_signature(result: object) -> tuple[object, ...]:
     )
 
 
+def _candidate_search_signature(result: object) -> tuple[object, ...]:
+    return (
+        result.status,
+        result.bound,
+        result.score,
+        result.terminal,
+        _series_signature(result.root_series) if result.root_series else None,
+        tuple(
+            _series_signature(item) for item in result.child_principal_variation
+        ),
+        result.proof_bounds,
+    )
+
+
 @pytest.mark.parametrize(
     "state",
     [
@@ -296,6 +310,238 @@ def test_manifest_import_replays_exact_state_and_matches_candidate_search() -> N
         map(_series_signature, child_pv)
     )
     assert direct.proof_bounds == proof
+
+
+def test_small_root_corpus_cold_full_matches_warm_iterative_per_candidate() -> None:
+    root = ProgressiveState.initial()
+    warm = _session(width=4, depth=3, max_work=4_000_000)
+    warm_manifest = warm.enumerate_root(
+        root,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    candidates = warm_manifest.candidates[:3]
+    assert len(candidates) == 3
+
+    warm_final: dict[str, object] = {}
+    for child_depth in range(3):
+        for candidate in candidates:
+            result = warm.search_root_candidate(
+                enumeration_identity=warm_manifest.enumeration_identity,
+                candidate_identity=candidate.candidate_identity,
+                child_depth=child_depth,
+                alpha=-2 * MATE_SCORE,
+                beta=2 * MATE_SCORE,
+                external_work=0,
+                remaining_nanoseconds=None,
+                rollback_tt=False,
+            )
+            assert result.status == 0
+            assert result.bound is NativeSubtreeBound.EXACT
+            if child_depth == 2:
+                warm_final[candidate.candidate_identity] = result
+
+    for candidate in candidates:
+        cold = _session(width=4, depth=3, max_work=4_000_000)
+        cold_manifest = cold.enumerate_root(
+            root,
+            preferred_series=None,
+            external_work=0,
+            remaining_nanoseconds=None,
+        )
+        cold_candidate = next(
+            item
+            for item in cold_manifest.candidates
+            if item.candidate_identity == candidate.candidate_identity
+        )
+        cold_result = cold.search_root_candidate(
+            enumeration_identity=cold_manifest.enumeration_identity,
+            candidate_identity=cold_candidate.candidate_identity,
+            child_depth=2,
+            alpha=-2 * MATE_SCORE,
+            beta=2 * MATE_SCORE,
+            external_work=0,
+            remaining_nanoseconds=None,
+            rollback_tt=False,
+        )
+        assert _candidate_search_signature(
+            warm_final[candidate.candidate_identity]
+        ) == _candidate_search_signature(cold_result)
+
+
+def test_scout_rollback_then_full_matches_cold_full_window() -> None:
+    root = ProgressiveState.initial()
+    cold = _session(width=4, depth=3)
+    cold_manifest = cold.enumerate_root(
+        root,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    candidate = cold_manifest.candidates[1]
+    expected = cold.search_root_candidate(
+        enumeration_identity=cold_manifest.enumeration_identity,
+        candidate_identity=candidate.candidate_identity,
+        child_depth=2,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=0,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+    )
+    assert expected.status == 0
+
+    warm = _session(width=4, depth=3)
+    warm_manifest = warm.enumerate_root(
+        root,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    warm_candidate = next(
+        item
+        for item in warm_manifest.candidates
+        if item.candidate_identity == candidate.candidate_identity
+    )
+    for alpha, beta, expected_bound in (
+        (expected.score, expected.score + 1, NativeSubtreeBound.UPPER),
+        (expected.score - 1, expected.score, NativeSubtreeBound.LOWER),
+    ):
+        scout = warm.search_root_candidate(
+            enumeration_identity=warm_manifest.enumeration_identity,
+            candidate_identity=warm_candidate.candidate_identity,
+            child_depth=2,
+            alpha=alpha,
+            beta=beta,
+            external_work=0,
+            remaining_nanoseconds=None,
+            rollback_tt=True,
+        )
+        assert scout.status == 0
+        assert scout.bound is expected_bound
+
+    actual = warm.search_root_candidate(
+        enumeration_identity=warm_manifest.enumeration_identity,
+        candidate_identity=warm_candidate.candidate_identity,
+        child_depth=2,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=0,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+    )
+    assert _candidate_search_signature(actual) == _candidate_search_signature(expected)
+
+
+def test_committed_work_limit_then_retry_matches_cold_full_window() -> None:
+    root = ProgressiveState.initial()
+    coordinator = _session(width=4, depth=3, max_work=4_000_000)
+    manifest = coordinator.enumerate_root(
+        root,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    candidate = manifest.candidates[0]
+
+    def imported_worker() -> tuple[NativeSubtreeSession, NativeRootEnumerationResult]:
+        worker = _session(width=4, depth=3, max_work=4_000_000)
+        imported = worker.import_root(
+            root,
+            manifest,
+            external_work=manifest.work.native_work_after,
+            remaining_nanoseconds=None,
+        )
+        assert imported.status == 0
+        return worker, imported
+
+    cold, cold_manifest = imported_worker()
+    expected = cold.search_root_candidate(
+        enumeration_identity=cold_manifest.enumeration_identity,
+        candidate_identity=candidate.candidate_identity,
+        child_depth=2,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=manifest.work.native_work_after,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+    )
+    assert expected.status == 0
+    assert expected.work.call_native_work > 2
+
+    warm, warm_manifest = imported_worker()
+    interrupted = warm.search_root_candidate(
+        enumeration_identity=warm_manifest.enumeration_identity,
+        candidate_identity=candidate.candidate_identity,
+        child_depth=2,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=manifest.work.native_work_after,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+        call_work_credit=max(1, expected.work.call_native_work // 2),
+    )
+    assert interrupted.status == 1
+    assert interrupted.bound is NativeSubtreeBound.UNKNOWN
+    retry = warm.search_root_candidate(
+        enumeration_identity=warm_manifest.enumeration_identity,
+        candidate_identity=candidate.candidate_identity,
+        child_depth=2,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=manifest.work.native_work_after,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+        call_work_credit=expected.work.call_native_work + 1,
+    )
+    assert _candidate_search_signature(retry) == _candidate_search_signature(expected)
+
+
+def test_valid_manifest_replacement_rejects_stale_enumeration_identity() -> None:
+    root = ProgressiveState.initial()
+    session = _session(width=4)
+    first = session.enumerate_root(
+        root,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    preferred = first.candidates[-1].order_key
+    replacement = session.enumerate_root(
+        root,
+        preferred_series=preferred,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    assert first.status == replacement.status == 0
+    assert first.enumeration_identity != replacement.enumeration_identity
+    assert replacement.candidates[0].order_key == preferred
+
+    stale = session.search_root_candidate(
+        enumeration_identity=first.enumeration_identity,
+        candidate_identity=first.candidates[0].candidate_identity,
+        child_depth=1,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=0,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+    )
+    assert stale.status == 4
+    assert stale.bound is NativeSubtreeBound.UNKNOWN
+    current = session.search_root_candidate(
+        enumeration_identity=replacement.enumeration_identity,
+        candidate_identity=replacement.candidates[0].candidate_identity,
+        child_depth=1,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=0,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+    )
+    assert current.status == 0
+    assert current.bound is NativeSubtreeBound.EXACT
 
 
 def test_manifest_import_rejects_tampering_and_leaves_no_searchable_root() -> None:

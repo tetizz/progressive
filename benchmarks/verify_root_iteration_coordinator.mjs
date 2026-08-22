@@ -529,28 +529,43 @@ async function testResponseOrderPermutations() {
     { id: "c", key: "c", score: 10 },
     { id: "d", key: "d", score: 30 },
     { id: "e", key: "e", score: 0 },
+    { id: "f", key: "f", score: 25 },
+    { id: "g", key: "g", score: 15 },
+    { id: "h", key: "h", score: 40 },
+    { id: "i", key: "i", score: 35 },
+    { id: "j", key: "j", score: 45 },
+    { id: "k", key: "k", score: 42 },
+    { id: "l", key: "l", score: 50 },
   ];
+  const ids = definitions.map((item) => item.id);
   const permutations = [
-    ["a", "b", "c"], ["a", "c", "b"], ["b", "a", "c"],
-    ["b", "c", "a"], ["c", "a", "b"], ["c", "b", "a"],
+    ids,
+    [...ids].reverse(),
+    ...Array.from({ length: 6 }, (_, offset) => (
+      [...ids.slice(offset + 1), ...ids.slice(0, offset + 1)]
+    )),
   ];
   const signatures = [];
   for (const order of permutations) {
     const rank = new Map(order.map((id, index) => [id, index]));
-    const pool = workers(3, definitions, {
-      delay: (task) => task.purpose === "full" && rank.has(task.candidate_identity)
-        ? 1 + rank.get(task.candidate_identity) * 3
+    const pool = workers(8, definitions, {
+      delay: (task) => rank.has(task.candidate_identity)
+        ? 1 + rank.get(task.candidate_identity) % 5
         : 1,
     });
     const result = await api.runRootIteration({
-      request: request(3, { iteration_id: `permutation-${order.join("")}` }),
+      request: request(8, {
+        initial_full_wave: 4,
+        iteration_id: `permutation-${order.join("")}`,
+      }),
       manifest: manifest(definitions),
       workers: pool,
       safetyProbe: exhaustedSafety(),
     });
     signatures.push([result.selected.candidate_identity, result.selected.score]);
   }
-  assert(signatures.every(([id, score]) => id === "d" && score === 30));
+  assert.equal(permutations.length, 8);
+  assert(signatures.every(([id, score]) => id === "l" && score === 50));
 }
 
 
@@ -948,7 +963,8 @@ await testUnsupportedEnvelope();
 process.stdout.write(`${JSON.stringify({
   schema: "spc-root-iteration-coordinator-verifier-v1",
   scenarios: 13,
-  response_order_permutations: 6,
+  response_order_permutations: 8,
+  response_order_worker_count: 8,
   streaming_first_wave: true,
   certified_initial_full_wave_4_of_8: true,
   stale_epoch_revalidated: true,

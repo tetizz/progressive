@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Progressive Opera root-session probe</title>
+  </head>
+  <body data-probe-status="running">
+    <pre id="result">running</pre>
+    <script type="module">
+      const result = document.querySelector("#result");
+      const parameters = new URLSearchParams(location.search);
+      const required = ["module", "wasm", "receipt"];
+      const missing = required.filter((name) => !parameters.get(name));
+      if (missing.length) {
+        document.body.dataset.probeStatus = "failed";
+        result.textContent = JSON.stringify({
+          status: "failed",
+          message: `missing query parameters: ${missing.join(", ")}`,
+        });
+      } else {
+        const worker = new Worker(
+          new URL("./opera_root_session_worker.mjs", import.meta.url),
+          { type: "module", name: "spc-root-session-opera-proof" },
+        );
+        const timer = setTimeout(() => {
+          worker.terminate();
+          document.body.dataset.probeStatus = "failed";
+          result.textContent = JSON.stringify({
+            status: "failed",
+            message: "ordinary Worker probe exceeded 120 seconds",
+          });
+        }, 120_000);
+        worker.onmessage = (event) => {
+          clearTimeout(timer);
+          worker.terminate();
+          const payload = event.data;
+          document.body.dataset.probeStatus = payload?.status === "passed-not-certified"
+            ? "passed"
+            : "failed";
+          result.textContent = JSON.stringify(payload);
+        };
+        worker.onerror = (event) => {
+          clearTimeout(timer);
+          worker.terminate();
+          document.body.dataset.probeStatus = "failed";
+          result.textContent = JSON.stringify({
+            status: "failed",
+            message: event.message || "ordinary Worker failed",
+          });
+        };
+        worker.postMessage({
+          moduleUrl: new URL(parameters.get("module"), location.href).href,
+          wasmUrl: new URL(parameters.get("wasm"), location.href).href,
+          buildReceiptUrl: new URL(parameters.get("receipt"), location.href).href,
+        });
+      }
+    </script>
+  </body>
+</html>

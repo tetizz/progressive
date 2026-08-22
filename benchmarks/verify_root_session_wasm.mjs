@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 
 
 const START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+const START_BLACK_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1";
 const LIVE_S5 = "rn1q1bnr/ppp1pkpp/5p2/8/3Pp3/2NB4/PPP2PPP/R1BbK1NR w KQ - 0 7";
 const BARE_KINGS = "8/8/8/8/8/2k5/8/K7 w - - 0 1";
 const ZERO_PROMOTED = "0000000000000000";
@@ -640,7 +641,7 @@ async function main() {
     mateWorkLimit.stats.positions_visited + mateWorkLimit.stats.moves_generated <= 100,
   );
   const mateDeadline = bridge.mateJson(
-    START_FEN,
+    START_BLACK_FEN,
     8,
     "-",
     ZERO_PROMOTED,

@@ -243,7 +243,7 @@ def main() -> int:
         "-sFILESYSTEM=0",
         "-sDYNAMIC_EXECUTION=0",
         f"-sEXPORTED_FUNCTIONS={','.join(EXPORTED_FUNCTIONS)}",
-        "-sEXPORTED_RUNTIME_METHODS=UTF8ToString,stringToNewUTF8",
+        "-sEXPORTED_RUNTIME_METHODS=UTF8ToString,stringToNewUTF8,HEAPU8",
         "-o",
         str(module_path),
     ]
