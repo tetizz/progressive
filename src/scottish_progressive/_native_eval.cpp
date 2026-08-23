@@ -3170,24 +3170,20 @@ bool bound_ordinary_frontier(
         std::sort(chosen.begin(), chosen.end(), ranked_before);
     }
 
-    std::vector<NativeFrontierState> selected;
-    selected.reserve(chosen.size());
-    std::set<CompactMovePath> selected_moves;
-    for (const auto& item : chosen) {
-        selected.push_back(frontier[item.index]);
-        selected_moves.insert(frontier[item.index].moves);
-    }
     const std::uint64_t discarded_count = static_cast<std::uint64_t>(
-        frontier.size() - selected.size()
+        frontier.size() - chosen.size()
     );
     std::uint64_t discarded_paths = 0;
-    for (const auto& item : frontier) {
+    for (std::size_t index = 0; index < frontier.size(); ++index) {
         if (context.deadline_reached()) {
             return false;
         }
         if (
-            !selected_moves.contains(item.moves)
-            && !context.add_path_count(discarded_paths, item.path_count)
+            !selected_indices[index]
+            && !context.add_path_count(
+                discarded_paths,
+                frontier[index].path_count
+            )
         ) {
             return false;
         }
@@ -3199,6 +3195,11 @@ bool bound_ordinary_frontier(
         || !context.add_path_count(stats.frontier_paths_pruned, discarded_paths)
     ) {
         return false;
+    }
+    std::vector<NativeFrontierState> selected;
+    selected.reserve(chosen.size());
+    for (const auto& item : chosen) {
+        selected.push_back(std::move(frontier[item.index]));
     }
     frontier = std::move(selected);
     return true;

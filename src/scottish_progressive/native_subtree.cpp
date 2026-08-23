@@ -460,10 +460,23 @@ struct TTKey {
     // Selective frontier policy and mate-distance scores are root-ply
     // relative, so the same boundary reached at a different root ply is not
     // the same minimax problem.
-    std::int64_t ply_from_root = 0;
-    bool root_tactical_protection = false;
+    std::uint64_t ply_and_tactical;
+    std::size_t hash_value;
 
-    bool operator==(const TTKey&) const = default;
+    TTKey(
+        ExactStateKey state_value,
+        std::uint64_t ply_and_tactical_value,
+        std::size_t hash_value_value
+    ) noexcept
+        : state(std::move(state_value)),
+          ply_and_tactical(ply_and_tactical_value),
+          hash_value(hash_value_value) {}
+
+    bool operator==(const TTKey& other) const noexcept {
+        return hash_value == other.hash_value
+            && ply_and_tactical == other.ply_and_tactical
+            && state == other.state;
+    }
 };
 
 struct GenerationKey {
@@ -474,6 +487,16 @@ struct GenerationKey {
 
     bool operator==(const GenerationKey&) const = default;
 };
+
+static_assert(sizeof(TTKey) == 144);
+
+[[nodiscard]] constexpr std::uint64_t pack_tt_ply_and_tactical(
+    std::int64_t ply_from_root,
+    bool root_tactical_protection
+) noexcept {
+    return (static_cast<std::uint64_t>(ply_from_root) << 1)
+        | static_cast<std::uint64_t>(root_tactical_protection);
+}
 
 struct PositionKeyHash {
     std::size_t operator()(const PositionKey& key) const noexcept {
@@ -499,12 +522,29 @@ struct ExactStateKeyHash {
     }
 };
 
+[[nodiscard]] TTKey tt_key(
+    ExactStateKey state,
+    std::int64_t ply_from_root,
+    bool root_tactical_protection
+) noexcept {
+    std::size_t seed = ExactStateKeyHash{}(state);
+    // Preserve the original hash sequence exactly so bucket and direct-map
+    // placement do not change.
+    hash_word(seed, static_cast<std::uint64_t>(ply_from_root));
+    hash_word(seed, root_tactical_protection ? 1 : 0);
+    return TTKey{
+        std::move(state),
+        pack_tt_ply_and_tactical(
+            ply_from_root,
+            root_tactical_protection
+        ),
+        seed,
+    };
+}
+
 struct TTKeyHash {
     std::size_t operator()(const TTKey& key) const noexcept {
-        std::size_t seed = ExactStateKeyHash{}(key.state);
-        hash_word(seed, static_cast<std::uint64_t>(key.ply_from_root));
-        hash_word(seed, key.root_tactical_protection ? 1 : 0);
-        return seed;
+        return key.hash_value;
     }
 };
 
@@ -1627,9 +1667,10 @@ public:
     }
 
     void write_tt(const TTKey& key, TTEntry entry) {
+        const auto found = tt.find(key);
         if (
             root_contract_active
-            && !tt.contains(key)
+            && found == tt.end()
             && tt.size() >= config.root_contract_tt_capacity
         ) {
             throw StopSearch(
@@ -1638,7 +1679,6 @@ public:
             );
         }
         if (!tt_transactions.empty()) {
-            const auto found = tt.find(key);
             tt_transactions.back().push_back({
                 key,
                 found == tt.end()
@@ -1646,7 +1686,11 @@ public:
                     : std::optional<TTEntry>{found->second},
             });
         }
-        tt[key] = std::move(entry);
+        if (found == tt.end()) {
+            tt.emplace(key, std::move(entry));
+        } else {
+            found->second = std::move(entry);
+        }
         tt_entries_peak = std::max<std::uint64_t>(
             tt_entries_peak,
             static_cast<std::uint64_t>(tt.size())
@@ -1705,11 +1749,11 @@ public:
             return NodeResult{evaluate(state), {}, UNKNOWN_PROOF_BOUNDS};
         }
 
-        const TTKey key{
+        const TTKey key = tt_key(
             exact_key(state),
             ply_from_root,
-            descendant_tactical_protection(),
-        };
+            descendant_tactical_protection()
+        );
         auto entry = tt.find(key);
         const bool had_entry = entry != tt.end();
         const std::int64_t existing_depth = had_entry
