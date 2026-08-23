@@ -206,14 +206,21 @@ async function main() {
   const version = await fetch(`${args.endpoint}/json/version`, {
     cache: "no-store",
   }).then((response) => response.json());
-  const targetResponse = await fetch(
-    `${args.endpoint}/json/new?${encodeURIComponent("about:blank")}`,
-    { method: "PUT", cache: "no-store" },
-  );
-  if (!targetResponse.ok) {
-    throw new Error(`Opera CDP target creation failed: ${targetResponse.status}`);
+  const browser = await connect(version.webSocketDebuggerUrl);
+  const { browserContextId } = await browser.call("Target.createBrowserContext");
+  const { targetId } = await browser.call("Target.createTarget", {
+    url: "about:blank",
+    browserContextId,
+  });
+  const targets = await fetch(`${args.endpoint}/json/list`, {
+    cache: "no-store",
+  }).then((response) => response.json());
+  const target = targets.find((entry) => entry.id === targetId);
+  if (!target?.webSocketDebuggerUrl) {
+    await browser.call("Target.disposeBrowserContext", { browserContextId });
+    browser.socket.close();
+    throw new Error("Opera isolated CDP target was not discoverable");
   }
-  const target = await targetResponse.json();
   const { socket, call } = await connect(target.webSocketDebuggerUrl);
   try {
     await call("Runtime.enable");
@@ -223,9 +230,19 @@ async function main() {
     });
     await call("Page.navigate", { url: args.url });
     const local = await waitFor(call, READY_LOCAL_ENGINE, args.timeoutMs);
-    const hostedHealth = await evaluate(call, String.raw`fetch("/api/health", {
-      cache: "no-store",
-    }).then((response) => response.json())`);
+    const hostedHealth = await evaluate(call, String.raw`(() => {
+      const configuredOrigin = document
+        .querySelector('meta[name="spc-api-origin"]')
+        ?.getAttribute("content")
+        ?.trim()
+        ?.replace(/\/$/, "");
+      const healthUrl = new URL(
+        "/api/health",
+        configuredOrigin || location.origin,
+      );
+      return fetch(healthUrl, { cache: "no-store" })
+        .then((response) => response.json());
+    })()`);
     const played = await evaluate(call, PLAY_G4);
     if (played?.played !== true) throw new Error("Opera fallback probe could not play g2g4");
     const result = await waitFor(call, FALLBACK_FINISHED, args.timeoutMs);
@@ -282,9 +299,9 @@ async function main() {
     process.stdout.write(`${JSON.stringify(receipt)}\n`);
   } finally {
     socket.close();
-    await fetch(`${args.endpoint}/json/close/${target.id}`, {
-      cache: "no-store",
-    }).catch(() => undefined);
+    await browser.call("Target.disposeBrowserContext", { browserContextId })
+      .catch(() => undefined);
+    browser.socket.close();
   }
 }
 
