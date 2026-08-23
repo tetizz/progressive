@@ -42,6 +42,10 @@ PROXY_DISCLAIMER = (
 )
 
 
+class _IncompleteLabelSearch(ValueError):
+    """A bounded teacher search that produced no cacheable exact label."""
+
+
 def _canonical_json(payload: Mapping[str, Any]) -> bytes:
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
@@ -666,7 +670,7 @@ def _build_cached_position(
         or result.work_limit_reached
         or result.completed_depth != result.requested_depth
     ):
-        raise ValueError(
+        raise _IncompleteLabelSearch(
             f"label search incomplete for {position.case_id}: "
             f"depth={result.completed_depth}/{result.requested_depth}, "
             f"timed_out={result.timed_out}, work_limit={result.work_limit_reached}"
@@ -796,13 +800,20 @@ def build_training_cache(
         for trace_step in range(1, trace_steps):
             if state is None or state.position_hash in seen_hashes:
                 break
-            evidence, state = _build_cached_position(
-                position,
-                state,
-                trace_step=trace_step,
-                champion=champion,
-                config=config,
-            )
+            try:
+                evidence, state = _build_cached_position(
+                    position,
+                    state,
+                    trace_step=trace_step,
+                    champion=champion,
+                    config=config,
+                )
+            except _IncompleteLabelSearch:
+                # Supplied roots are mandatory and fail above. Derived rows are
+                # optional proxy extensions, like terminal or duplicate
+                # continuations: if exact bounded research cannot certify one,
+                # end only that trace and never cache partial evidence.
+                break
             cached.append(evidence)
             seen_hashes.add(evidence.position_hash)
     if not cached:

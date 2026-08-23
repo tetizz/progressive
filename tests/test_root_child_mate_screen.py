@@ -1026,6 +1026,50 @@ def test_collect_all_root_scores_still_runs_the_immediate_mate_screen(
     )
 
 
+@pytest.mark.parametrize(
+    ("configured_work", "expected_collect_all", "expected_best_only"),
+    (
+        (50_000, 50_000, 50_000 // 3),
+        (
+            10_000_000,
+            search_module.ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT,
+            search_module.ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT,
+        ),
+    ),
+)
+def test_collect_all_uses_available_shared_work_up_to_the_safety_guard(
+    configured_work: int,
+    expected_collect_all: int,
+    expected_best_only: int,
+) -> None:
+    collect_all = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            max_generation_positions=configured_work,
+            collect_all_root_scores=True,
+        ),
+        PROFILE,
+    )
+    best_only = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            max_generation_positions=configured_work,
+            collect_all_root_scores=False,
+        ),
+        PROFILE,
+    )
+
+    assert collect_all._root_child_mate_screen_budget == expected_collect_all
+    assert best_only._root_child_mate_screen_budget == expected_best_only
+    assert (
+        collect_all._root_child_mate_screen_remaining()
+        == expected_collect_all
+    )
+    assert best_only._root_child_mate_screen_remaining() == expected_best_only
+
+
 def test_collect_all_rejects_and_rescores_only_the_unsafe_incumbent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
