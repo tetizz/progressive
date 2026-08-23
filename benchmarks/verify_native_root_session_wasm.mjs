@@ -413,9 +413,8 @@ const retryImport = call(
 assert.equal(retryImport.status, "complete", JSON.stringify(retryImport));
 assert.equal(wasm._spc_root_session_destroy(shortImportSession.session_id), 1);
 
-// Enumeration completes exactly at its measured credit. Candidate evaluation
-// needs one final uncharged completion check, so measured+1 completes while
-// measured fails closed, matching the canonical Python contract gate.
+// Candidate evaluation completes exactly at its measured credit. One fewer
+// unit fails closed, matching the canonical Python contract gate.
 async function preparedSession() {
   const created = create();
   const deadline = Math.floor(performance.now() + 60_000);
@@ -452,7 +451,7 @@ const exactCredit = call(
     nativeBefore: exactPrepared.root.work.native_work_after,
     childDepth: 1,
     deadline: exactPrepared.deadline,
-    credit: measuredDepthTwoWork + 1,
+    credit: measuredDepthTwoWork,
     iteration: "exact-credit",
     task: "exact-credit",
   }),
@@ -471,7 +470,7 @@ const oneShort = call(
     nativeBefore: shortPrepared.root.work.native_work_after,
     childDepth: 1,
     deadline: shortPrepared.deadline,
-    credit: measuredDepthTwoWork,
+    credit: measuredDepthTwoWork - 1,
     iteration: "one-short",
     task: "one-short",
   }),
