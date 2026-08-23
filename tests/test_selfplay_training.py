@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 import sqlite3
@@ -297,4 +298,32 @@ def test_texel_coordinate_tuner_uses_train_only_and_improves_holdout() -> None:
     assert candidate.profile_id != baseline_profile().profile_id
     assert report["candidate_train_loss"] < report["baseline_train_loss"]
     assert report["candidate_holdout_loss"] < report["baseline_holdout_loss"]
+    assert report["train_feature_buckets"] == 3
+    assert report["loss_surface_collapsed_exactly"] is True
     assert "fixed-suite match" in candidate.notes
+
+
+def test_texel_tuner_collapses_equal_feature_vectors_with_exact_weighted_targets() -> None:
+    first = replace(_sample(20, 75, 1.0, "train"), sample_weight=0.25)
+    second = replace(_sample(21, 75, 0.0, "train"), sample_weight=0.75)
+    holdout = _sample(22, 75, 0.25, "holdout")
+    corpus = SelfPlayCorpus(
+        seed=2,
+        holdout_percent=50,
+        database_evidence=({"filename": "collapse-fixture"},),
+        completed_games=3,
+        excluded_games=0,
+        samples=(first, second, holdout),
+    )
+
+    _, report = tune_selfplay_profile(
+        corpus,
+        baseline_profile(),
+        scales=(400,),
+        step_schedule=(25,),
+        regularization=0.0,
+    )
+
+    assert report["train_samples"] == 2
+    assert report["train_feature_buckets"] == 1
+    assert report["holdout_feature_buckets"] == 1
