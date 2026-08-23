@@ -1329,6 +1329,12 @@ class SeriesSearcher:
             self.stats.native_series_mate_unsupported += 1
         return False, None, True
 
+    def _root_child_safety_screen_required(self) -> bool:
+        """Whether a capped root needs a separate one-series reply proof."""
+
+        cap = self.limits.max_series_per_node
+        return cap is not None and cap < ROOT_CHILD_MATE_SCREEN_FRONTIER
+
     def _root_child_immediate_mate(
         self,
         state: ProgressiveState,
@@ -1352,15 +1358,11 @@ class SeriesSearcher:
         the legacy recovery screen; later tactical replies retain width 832.
         """
 
-        if (
-            self.limits.collect_all_root_scores
-            or self.limits.max_series_per_node is None
+        if not self._root_child_safety_screen_required():
             # A root already running the established one-series verifier width
             # is itself the safety screen. Recursively screening the selected
             # reply asks a different two-series question and can consume the
             # verifier's fixed evidence budget before depth one completes.
-            or self.limits.max_series_per_node >= ROOT_CHILD_MATE_SCREEN_FRONTIER
-        ):
             return None
 
         cache_key = self._tt_key(state)
@@ -2882,7 +2884,7 @@ class SeriesSearcher:
         repeated with a reset root window until a screened winner survives.
         """
 
-        if self.limits.collect_all_root_scores:
+        if not self._root_child_safety_screen_required():
             return self._search_root_pass(
                 state,
                 depth,
