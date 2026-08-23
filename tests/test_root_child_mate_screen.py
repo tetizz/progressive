@@ -996,6 +996,175 @@ def test_interrupted_safety_retry_keeps_the_last_completed_root_depth(
     assert result.stats.root_safety_retries == 1
 
 
+def test_collect_all_root_scores_still_runs_the_immediate_mate_screen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _live_loss_s4_state()
+    unsafe = play_series(root, LIVE_LOSS_S4)
+    reply_mate = play_series(unsafe.final_state, LIVE_LOSS_S5_MATE)
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_root_child_promotion_mate",
+        lambda _searcher, _state: reply_mate,
+    )
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            collect_all_root_scores=True,
+        ),
+        PROFILE,
+    )
+
+    screened = searcher._root_child_immediate_mate(unsafe.final_state)
+
+    assert screened == reply_mate
+    assert searcher.stats.root_safety_screen_calls == 1
+    assert (
+        unsafe.final_state.transposition_key
+        in searcher._root_child_proven_mate_keys
+    )
+
+
+def test_collect_all_rejects_and_rescores_only_the_unsafe_incumbent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _live_loss_s4_state()
+    unsafe = play_series(root, LIVE_LOSS_S4)
+    safe = play_series(root, ("f6f5", "f5e4", "e4d3", "d3d2"))
+    reply_mate = play_series(unsafe.final_state, LIVE_LOSS_S5_MATE)
+    frontier = search_module._GeneratedSeriesList(
+        [unsafe, safe],
+        width_complete=True,
+    )
+    screened: list[tuple[int, str, int, int]] = []
+
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_ordered_generated",
+        lambda *_args, **_kwargs: frontier,
+    )
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_start_native_subtree",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def score_child(
+        _searcher: SeriesSearcher,
+        state: ProgressiveState,
+        _depth: int,
+        _alpha: int,
+        _beta: int,
+        _ply_from_root: int,
+    ) -> tuple[int, tuple[SeriesResult, ...], tuple[int, int]]:
+        score = (
+            -400
+            if state.transposition_key == unsafe.final_state.transposition_key
+            else 100
+        )
+        return score, (), search_module.UNKNOWN_PROOF_BOUNDS
+
+    def screen_child(
+        searcher: SeriesSearcher,
+        state: ProgressiveState,
+    ) -> SeriesResult | None:
+        screened.append(state.transposition_key)
+        if state.transposition_key == unsafe.final_state.transposition_key:
+            return reply_mate
+        searcher._mark_root_child_exact_exhausted(state.transposition_key)
+        return None
+
+    monkeypatch.setattr(SeriesSearcher, "_minimax", score_child)
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_root_child_immediate_mate",
+        screen_child,
+    )
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            collect_all_root_scores=True,
+        ),
+        PROFILE,
+    )
+
+    score, pv, alternatives, proof = searcher._search_root(root, 1, ())
+
+    expected_loss = searcher._terminal_score(
+        reply_mate,
+        unsafe.final_state.board.turn,
+        2,
+    )
+    assert expected_loss is not None
+    assert score == 100
+    assert pv == (safe,)
+    assert proof is None
+    assert [item.series for item in alternatives] == [safe, unsafe]
+    assert alternatives[1].score == expected_loss
+    assert alternatives[1].principal_variation == (reply_mate,)
+    assert len(alternatives) == len(frontier) == 2
+    assert searcher._root_scores_complete
+    assert screened == [
+        unsafe.final_state.transposition_key,
+        safe.final_state.transposition_key,
+    ]
+    assert searcher.stats.root_safety_passes == 2
+    assert searcher.stats.root_safety_retries == 1
+
+
+def test_collect_all_interruption_is_fail_closed_only_for_screened_caps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _live_loss_s4_state()
+    candidate = play_series(root, LIVE_LOSS_S4)
+    scored = search_module.ScoredSeries(candidate, -400)
+
+    def interrupt_with_partial_score(
+        _searcher: SeriesSearcher,
+        _state: ProgressiveState,
+        _depth: int,
+        _required_prefix: tuple[str, ...],
+        _overrides: object,
+    ) -> None:
+        raise search_module._RootInterrupted(
+            (scored,),
+            search_module._Timeout(),
+            candidate,
+        )
+
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_search_root_pass",
+        interrupt_with_partial_score,
+    )
+    capped = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            collect_all_root_scores=True,
+        ),
+        PROFILE,
+    )
+    with pytest.raises(search_module._RootInterrupted) as capped_failure:
+        capped._search_root(root, 1, ())
+    assert capped_failure.value.scored == ()
+
+    for unscreened_cap in (None, search_module.ROOT_CHILD_MATE_SCREEN_FRONTIER):
+        unscreened = SeriesSearcher(
+            SearchLimits(
+                depth_series=1,
+                max_series_per_node=unscreened_cap,
+                collect_all_root_scores=True,
+            ),
+            PROFILE,
+        )
+        with pytest.raises(search_module._RootInterrupted) as unscreened_failure:
+            unscreened._search_root(root, 1, ())
+        assert unscreened_failure.value.scored == (scored,)
+
+
 @pytest.mark.parametrize(
     ("cause_type", "timed_out", "work_limit_reached"),
     (
