@@ -1,8 +1,8 @@
 # Published and engine reply comparison
 
-Generated: `2026-08-23T15:33:50+00:00`<br>
+Generated: `2026-08-23T22:00:34+00:00`<br>
 Engine: `spc-0.9.0`<br>
-Source fingerprint: `e41dc0e25186d438`<br>
+Source fingerprint: `34a3104a3dddf4c4`<br>
 Rules: `scottish-modern-common-v1`
 Horizon: White 1 move, fixed Black candidate 2-move series, then a screened White 3-move response.
 
@@ -14,16 +14,16 @@ Lower scores are better for Black. A deterministic tactical/diversity frontier r
 
 | Black series | Source | Score after White's best response | Best White series | Unique / raw White series |
 |:---|:---|---:|:---|---:|
-| e6 / Ke7 | selective engine candidate | +661 | Qg4 / Qxg7 / Qxh8 | 2510 / 4964 |
-| e5 / Qe7 | Italian opening-book prior | +687 | d3 / Bg5 / Bxe7 | 2402 / 5162 |
-| d5 / dxe4 | Italian opening-book prior | +708 | Qg4 / Qxc8 / Bb5+ | 2495 / 5020 |
-| e5 / f6 | community drawing hypothesis | +763 | Bc4 / Bxg8 / Qh5+ | 2239 / 4366 |
-| d5 / e5 | Italian opening-book prior | +784 | Qg4 / Qxc8 / Bb5+ | 2474 / 4976 |
-| d5 / d4 | Italian opening-book prior | +808 | Qg4 / Qxc8 / Bb5+ | 2413 / 4959 |
-| e5 / Qh4 | two-series engine baseline | +1225 | Qg4 / Qxh4 / Ke2 | 2056 / 5120 |
-| e6 / Nf6 | Italian opening-book prior | +1267 | e5 / exf6 / fxg7 | 2326 / 4383 |
-| e5 / Nh6 | Italian opening-book prior | +1339 | Qg4 / Qxg7 / Qxh8 | 2393 / 4983 |
-| d5 / Nc6 | Italian opening-book prior | +1497 | Ba6 / Bxb7 / Bxc6+ | 2611 / 5130 |
+| e6 / Ke7 | selective engine candidate | +661 | Qg4 / Qxg7 / Qxh8 | 5225 / 10397 |
+| e5 / Qe7 | Italian opening-book prior | +687 | d3 / Bg5 / Bxe7 | 4849 / 10517 |
+| d5 / dxe4 | Italian opening-book prior | +708 | Qg4 / Qxc8 / Bb5+ | 3570 / 7127 |
+| e5 / f6 | community drawing hypothesis | +763 | Bc4 / Bxg8 / Qh5+ | 3330 / 6327 |
+| d5 / e5 | Italian opening-book prior | +784 | Qg4 / Qxc8 / Bb5+ | 4148 / 7686 |
+| d5 / d4 | Italian opening-book prior | +808 | Qg4 / Qxc8 / Bb5+ | 3438 / 6643 |
+| e5 / Qh4 | two-series engine baseline | +1225 | Qg4 / Qxh4 / Ke2 | 4803 / 10834 |
+| e6 / Nf6 | Italian opening-book prior | +1235 | Qg4 / Qxg7 / Qxh8 | 8372 / 23770 |
+| e5 / Nh6 | Italian opening-book prior | +1339 | Qg4 / Qxg7 / Qxh8 | 4933 / 13655 |
+| d5 / Nc6 | Italian opening-book prior | +1497 | Ba6 / Bxb7 / Bxc6+ | 4144 / 7193 |
 
 ## 1.d4
 
@@ -31,17 +31,17 @@ Lower scores are better for Black. A deterministic tactical/diversity frontier r
 
 | Black series | Source | Score after White's best response | Best White series | Unique / raw White series |
 |:---|:---|---:|:---|---:|
-| e5 / Bb4+ | two-series engine baseline | +496 | Bd2 / Bxb4 / dxe5 | 1275 / 1742 |
-| e6 / Bb4+ | selective engine candidate | +512 | Qd2 / Qxb4 / Kd2 | 1216 / 1682 |
-| c5 / cxd4 | Italian opening-book prior | +565 | Bg5 / Bxe7 / Bxd8 | 2961 / 5471 |
-| d5 / Nc6 | Italian opening-book prior | +597 | Bf4 / Bxc7 / Bxd8 | 2145 / 3715 |
-| c5 / d5 | Italian opening-book prior | +611 | Bg5 / Bxe7 / Bxd8 | 2604 / 4687 |
-| d5 / c6 | community drawing hypothesis | +703 | Bg5 / Bxe7 / Bxd8 | 2150 / 3643 |
-| d5 / h5 | Italian opening-book prior | +713 | e3 / Qxh5 / Qxh8 | 2396 / 4141 |
-| e5 / exd4 | Italian opening-book prior | +915 | Bg5 / Bxd8 / Bxc7 | 2972 / 5909 |
-| e5 / e4 | community refutation candidate | +1089 | Bg5 / Bxd8 / Bxc7 | 2049 / 3528 |
-| d6 / Nf6 | Italian opening-book prior | +1273 | Bh6 / Bxg7 / Bxh8 | 2393 / 4116 |
-| f5 / Nf6 | Italian opening-book prior | +1285 | Bh6 / Bxg7 / Bxh8 | 2508 / 4247 |
+| e5 / Bb4+ | two-series engine baseline | +412 | Qd2 / Qxb4 / Kd2 | 15625 / 50430 |
+| e6 / Bb4+ | selective engine candidate | +512 | Qd2 / Qxb4 / Kd2 | 3919 / 8903 |
+| c5 / cxd4 | Italian opening-book prior | +555 | Bd2 / Ba5 / Bxd8 | 7802 / 15867 |
+| d5 / Nc6 | Italian opening-book prior | +597 | Bf4 / Bxc7 / Bxd8 | 5054 / 11151 |
+| c5 / d5 | Italian opening-book prior | +611 | Bg5 / Bxe7 / Bxd8 | 5370 / 10497 |
+| d5 / c6 | community drawing hypothesis | +703 | Bg5 / Bxe7 / Bxd8 | 4958 / 9272 |
+| d5 / h5 | Italian opening-book prior | +713 | e3 / Qxh5 / Qxh8 | 5536 / 11661 |
+| e5 / e4 | community refutation candidate | +717 | Bg5 / Bxd8 / Kd2 | 14648 / 31684 |
+| d6 / Nf6 | Italian opening-book prior | +749 | Bh6 / Bxg7 / Bxf6 | 8718 / 18780 |
+| f5 / Nf6 | Italian opening-book prior | +759 | Bh6 / Bxg7 / Bxf6 | 7973 / 15784 |
+| e5 / exd4 | Italian opening-book prior | +841 | Bg5 / Bxd8 / Bg5 | 8121 / 17085 |
 
 ## Interpretation limit
 

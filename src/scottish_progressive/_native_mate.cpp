@@ -890,7 +890,8 @@ struct MateSearchIdentityHash {
 [[nodiscard]] std::int64_t mate_covering_priority(
     const BoardState& board,
     bool mover,
-    std::size_t depth
+    std::size_t depth,
+    std::int64_t series_number
 ) noexcept {
     const Position position = evaluation_position(board);
     const int enemy_king = king_square(position, !mover);
@@ -937,13 +938,17 @@ struct MateSearchIdentityHash {
         board.promoted & board.occupied[mover ? 1 : 0]
     );
 
+    // Favor shallower transpositions through the measured midgame envelope.
+    // Later series keep the low-frontier legacy order because their much wider
+    // state spaces use UNKNOWN as a deliberate bounded-product fallback.
+    const std::int64_t depth_ordering = series_number <= 8 ? -64 : 1;
     return static_cast<std::int64_t>(covered) * 1'000
         + static_cast<std::int64_t>(pressure) * 100
         + static_cast<std::int64_t>(occupied_ring) * 50
         + static_cast<std::int64_t>(near_pressure) * 4
         + static_cast<std::int64_t>(best_pawn_progress) * 300
         + static_cast<std::int64_t>(promoted_attackers) * 800
-        + static_cast<std::int64_t>(depth);
+        + static_cast<std::int64_t>(depth) * depth_ordering;
 }
 
 struct MateSearchNode {
@@ -1010,7 +1015,12 @@ struct MateSearchNodeWorse {
         request.board,
         {},
         0,
-        mate_covering_priority(request.board, mover, 0),
+        mate_covering_priority(
+            request.board,
+            mover,
+            0,
+            request.series_number
+        ),
     };
     std::priority_queue<
         MateSearchNode,
@@ -1122,7 +1132,12 @@ struct MateSearchNodeWorse {
                 child,
                 std::move(moves),
                 pending_ep_targets,
-                mate_covering_priority(child, mover, depth + 1),
+                mate_covering_priority(
+                    child,
+                    mover,
+                    depth + 1,
+                    request.series_number
+                ),
             });
             response.stats.peak_frontier = std::max(
                 response.stats.peak_frontier,

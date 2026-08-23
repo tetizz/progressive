@@ -1,7 +1,7 @@
 {
-  "generated_at": "2026-08-23T15:33:50+00:00",
+  "generated_at": "2026-08-23T22:00:33+00:00",
   "engine_version": "spc-0.9.0",
-  "source_fingerprint": "e41dc0e25186d438",
+  "source_fingerprint": "34a3104a3dddf4c4",
   "ruleset_version": "scottish-modern-common-v1",
   "moves": [
     "e2e4",
@@ -30,11 +30,11 @@
       "exact_width": false,
       "timed_out": false,
       "nodes": 240,
-      "raw_generated_series": 15555,
-      "unique_generated_series": 9236,
-      "intra_series_transpositions": 6319,
+      "raw_generated_series": 19351,
+      "unique_generated_series": 11202,
+      "intra_series_transpositions": 8149,
       "branch_caps": 17,
-      "elapsed_seconds": 0.03955579997273162,
+      "elapsed_seconds": 0.05197180004324764,
       "alternatives": [
         {
           "black_series": "d7d5/d5e4",
@@ -103,11 +103,11 @@
       "exact_width": false,
       "timed_out": false,
       "nodes": 272,
-      "raw_generated_series": 13393,
-      "unique_generated_series": 8845,
-      "intra_series_transpositions": 4548,
+      "raw_generated_series": 16810,
+      "unique_generated_series": 11251,
+      "intra_series_transpositions": 5559,
       "branch_caps": 17,
-      "elapsed_seconds": 0.034991599968634546,
+      "elapsed_seconds": 0.04729620000580326,
       "alternatives": [
         {
           "black_series": "e7e6/e8e7",

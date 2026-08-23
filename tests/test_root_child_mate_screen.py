@@ -337,10 +337,10 @@ def test_adaptive_early_s5_screen_rejects_the_second_live_loss() -> None:
     assert play_series(blunder.final_state, screened.moves).outcome == Outcome.CHECKMATE
     assert searcher.stats.native_series_mate_calls == 1
     assert searcher.stats.native_series_mate_found == 1
-    assert searcher.stats.native_series_mate_positions == 600
-    assert searcher.stats.native_series_mate_edges == 24_006
+    assert searcher.stats.native_series_mate_positions == 207
+    assert searcher.stats.native_series_mate_edges == 8_471
     assert searcher.stats.root_safety_screen_stages == 1
-    assert searcher.stats.work_positions == 30_837
+    assert searcher.stats.work_positions == 14_909
     assert searcher.stats.work_positions < 81_476 // 2
 
 
@@ -1387,7 +1387,7 @@ def test_hosted_depth_two_selects_a_screened_reply_to_the_second_live_loss() -> 
     assert result.best_series.moves != LIVE_LOSS_S4
     assert result.completed_depth == 2
     assert result.score == -673
-    assert result.stats.work_positions == 1_738_091
+    assert result.stats.work_positions == 1_702_771
     assert result.stats.root_safety_passes == 2
     assert result.stats.root_safety_retries == 0
     assert result.stats.root_safety_screen_calls == 2
@@ -1710,7 +1710,7 @@ def test_website_depth_four_selects_stronger_safe_root_tactical_line() -> None:
     assert not result.exact_width
     assert result.stats.tactical_frontier_states_retained > 0
     assert result.stats.tactical_frontier_reserve_drops > 0
-    assert result.stats.work_positions == 7_375_652
+    assert result.stats.work_positions == 7_288_723
 
     prior = analyze(
         root,

@@ -25,7 +25,7 @@ NATIVE_SOURCE_HASHES = {
     "native_eval.hpp": "f88e5f3bab2608e7592cdb5faee3ec441466628044382889d2424ebd02e99772",
 }
 NATIVE_IDENTITY = (
-    "5081d5920c50b1ad0f7dbf409fe7ef397f89ddf1f017dffdbb91812569380ff9"
+    "eb854063a3f4417267fd51dead4bd25a4055922ff1647b5dbace8a9d7367de70"
 )
 NATIVE_SURFACE = {
     "SOURCE_IDENTITY",
@@ -202,22 +202,22 @@ assert 'scottish_progressive._native_mate' not in sys.modules
             "quiet-prefix-live-s5",
             _live_s5(),
             ("c3d5", "d3e4", "e4h7", "d5f4", "h7g6"),
-            (600, 24_006, 472, 579, 1, 421, 5),
+            (207, 8_471, 48, 315, 1, 311, 5),
         ),
         (
             "promotion-s8",
             play_series(S7_STATE, BLUNDERING_S7).final_state,
             (
-                "c8c7",
-                "a7a5",
-                "a5a4",
-                "a4b3",
-                "b3b2",
-                "a8a4",
-                "a4e4",
-                "b2c1q",
+                "h8g8",
+                "g8e8",
+                "b8c6",
+                "c6a5",
+                "a5c4",
+                "c4e3",
+                "e8d8",
+                "c3d2",
             ),
-            (35_336, 926_320, 77_259, 45_012, 1, 232, 8),
+            (13_260, 401_050, 35_552, 35_535, 1, 13_091, 8),
         ),
         (
             "nonpromotion-s17",
@@ -355,7 +355,7 @@ def test_realistic_opening_series_two_through_four_are_exact_exhaustions(
     expected_work = {
         2: (21, 466),
         3: (472, 14_932),
-        4: (3_512, 95_146),
+        4: (3_511, 95_121),
     }
     for boundary in boundaries:
         native_probe = find_native_series_mate(

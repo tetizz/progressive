@@ -245,12 +245,12 @@ def main() -> int:
     ]:
         raise AssertionError("live S5 mate result changed")
     if live["stats"] != {
-        "positions_visited": 600,
-        "moves_generated": 24006,
-        "transpositions_merged": 472,
-        "checking_series": 579,
+        "positions_visited": 207,
+        "moves_generated": 8471,
+        "transpositions_merged": 48,
+        "checking_series": 315,
         "checkmates": 1,
-        "peak_frontier": 421,
+        "peak_frontier": 311,
         "max_depth_reached": 5,
     }:
         raise AssertionError("live S5 mate stats changed")
