@@ -2,14 +2,14 @@
   "abi_version": 1,
   "contract_version": 1,
   "schema": "spc-browser-wasm-manifest-v1",
-  "source_fingerprint": "cb444d22a3c997cc",
+  "source_fingerprint": "723745e3e7bf1014",
   "variants": {
     "single": {
-      "kernel_sha256": "48440aaa9d8254fd7074d762aa89ac6326c1e3551c4f5a91d8b84c20cc868d9f",
+      "kernel_sha256": "a11fe38228d48c3b62f7e8366774961989f1fcb4b3be561142779671f7f6ae21",
       "mate_certificate": {
         "abi_version": 1,
         "allocator": "dlmalloc",
-        "certificate_id": "spc-mate-23d2cfdee5c0c820",
+        "certificate_id": "spc-mate-22737741c2276bcb",
         "contract_version": 1,
         "engine": {
           "engine_version": "spc-0.9.0",
@@ -52,7 +52,7 @@
           "_malloc",
           "_free"
         ],
-        "kernel_sha256": "48440aaa9d8254fd7074d762aa89ac6326c1e3551c4f5a91d8b84c20cc868d9f",
+        "kernel_sha256": "a11fe38228d48c3b62f7e8366774961989f1fcb4b3be561142779671f7f6ae21",
         "mate_capability_certified": true,
         "memory": {
           "estimated_peak_bytes": 67108864,
@@ -72,17 +72,17 @@
         },
         "runtime_variant": "single",
         "schema": "spc-series-mate-certificate-v1",
-        "source_fingerprint": "cb444d22a3c997cc",
+        "source_fingerprint": "723745e3e7bf1014",
         "status": "certified",
         "support_files": [],
         "thread_count": 1,
-        "wasm_sha256": "993d9d31ca98a1753fe93e24d41b12ff13252c5a127674898a06d891c6d5022f",
+        "wasm_sha256": "50a66bdaff3ae0c03ff34c722fb6e900ea0c31bbd0fb6444d8c12b8847002e8e",
         "wasm_simd": true
       },
       "module_js": "spc-engine.js",
       "module_js_sha256": "3cb0cfcfc047c40cd1c72d44e519122bb46c7d4dd38a647d5297302fb8181d8e",
       "prefix_certificate": {
-        "certificate_id": "spc-prefix-fbb9f4bd9361abf7",
+        "certificate_id": "spc-prefix-e76f81fbb4685adf",
         "contract_version": 1,
         "engine": {
           "engine_version": "spc-0.9.0",
@@ -121,16 +121,16 @@
           "schema": "spc-boundary-prefix-contract-v1"
         },
         "runtime_variant": "single",
-        "source_fingerprint": "cb444d22a3c997cc",
+        "source_fingerprint": "723745e3e7bf1014",
         "status": "certified",
         "support_files": [],
         "thread_count": 1,
-        "wasm_sha256": "993d9d31ca98a1753fe93e24d41b12ff13252c5a127674898a06d891c6d5022f"
+        "wasm_sha256": "50a66bdaff3ae0c03ff34c722fb6e900ea0c31bbd0fb6444d8c12b8847002e8e"
       },
       "root_session_certificate": {
         "abi_version": 2,
         "allocator": "dlmalloc",
-        "certificate_id": "spc-root-session-5b909301ef9476ed",
+        "certificate_id": "spc-root-session-ec909aca29b60af3",
         "contract_version": 1,
         "engine": {
           "engine_version": "spc-0.9.0",
@@ -138,6 +138,8 @@
           "ruleset_version": "scottish-modern-common-v1"
         },
         "evidence": {
+          "aspiration_fail_high_low_white_black": true,
+          "aspiration_fail_soft_window": true,
           "browser_worker_smoke": true,
           "canonical_root_tactical_policy": true,
           "combined_artifact": true,
@@ -154,7 +156,7 @@
           "persistent_d1_d2_session": true,
           "selected_owner_warm_exact_certification": true,
           "start_w32_d5_completed_depth": 5,
-          "start_w32_d5_elapsed_seconds": 33.79410000002384,
+          "start_w32_d5_elapsed_seconds": 26.044,
           "start_w32_d5_width": 32,
           "work_limit_fail_closed": true
         },
@@ -179,10 +181,10 @@
         ],
         "geometry": {
           "aggregate_maximum_bytes": 536870912,
-          "desktop_initial_full_wave": 4,
+          "desktop_initial_full_wave": 8,
           "desktop_workers": 8,
           "play_limits": {
-            "default_generation_positions": 4000000000,
+            "default_generation_positions": 100000000,
             "default_seconds": 60.0,
             "maximum_seconds": 60.0,
             "safety_reserve_positions": 1000000
@@ -191,7 +193,7 @@
             "external_cache_weight": 0,
             "mate_score": 1000000,
             "max_depth": 5,
-            "max_work": 4000000000,
+            "max_work": 100000000,
             "root_contract_eval_capacity": 262144,
             "root_contract_tt_capacity": 262144,
             "root_tactical_protection": false,
@@ -210,7 +212,7 @@
           },
           "supported_lower_geometries": []
         },
-        "kernel_sha256": "48440aaa9d8254fd7074d762aa89ac6326c1e3551c4f5a91d8b84c20cc868d9f",
+        "kernel_sha256": "a11fe38228d48c3b62f7e8366774961989f1fcb4b3be561142779671f7f6ae21",
         "memory": {
           "estimated_peak_bytes": 67108864,
           "growth_enabled": true,
@@ -224,6 +226,7 @@
         "root_session_contract": {
           "abi_version": 2,
           "capabilities": {
+            "aspiration_windows": true,
             "call_work_credit": true,
             "canonical_root_tactical_policy": true,
             "enumerate": true,
@@ -243,6 +246,7 @@
           "hard_limits": {
             "chess960": false,
             "external_cache_weight_lte_series_cache_capacity": true,
+            "maximum_aspiration_attempts": 4,
             "maximum_depth": 8,
             "maximum_ep_targets": 8,
             "maximum_eval_capacity": 1048576,
@@ -259,6 +263,7 @@
             "maximum_wasm_memory_bytes": 268435456,
             "maximum_weight": 300,
             "maximum_width": 512,
+            "minimum_aspiration_initial_delta": 2048,
             "minimum_depth": 1,
             "minimum_eval_capacity": 1,
             "minimum_external_cache_weight": 0,
@@ -328,17 +333,17 @@
         },
         "runtime_variant": "single",
         "schema": "spc-root-session-certificate-v1",
-        "source_fingerprint": "cb444d22a3c997cc",
+        "source_fingerprint": "723745e3e7bf1014",
         "status": "certified",
         "support_files": [],
         "thread_count": 1,
-        "wasm_sha256": "993d9d31ca98a1753fe93e24d41b12ff13252c5a127674898a06d891c6d5022f",
+        "wasm_sha256": "50a66bdaff3ae0c03ff34c722fb6e900ea0c31bbd0fb6444d8c12b8847002e8e",
         "wasm_simd": true
       },
       "support_files": [],
       "thread_count": 1,
       "wasm": "spc-root-session.wasm",
-      "wasm_sha256": "993d9d31ca98a1753fe93e24d41b12ff13252c5a127674898a06d891c6d5022f"
+      "wasm_sha256": "50a66bdaff3ae0c03ff34c722fb6e900ea0c31bbd0fb6444d8c12b8847002e8e"
     }
   }
 }
