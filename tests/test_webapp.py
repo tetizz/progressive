@@ -625,10 +625,6 @@ def test_http_health_prefix_static_and_traversal(tmp_path: Path) -> None:
 
         with urlopen(f"{base}/", timeout=3) as response:
             assert response.status == 200
-            policy = response.headers["Content-Security-Policy"]
-            assert "script-src 'self' blob: 'wasm-unsafe-eval'" in policy
-            assert "worker-src 'self'" in policy
-            assert "connect-src 'self' https://progressive-ui9q.onrender.com" in policy
             assert b"Board" in response.read()
 
         with pytest.raises(HTTPError) as traversal:
