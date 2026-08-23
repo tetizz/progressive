@@ -360,15 +360,15 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
 
     principal_variation = [
         {
-            "moves": ["b2b3"],
-            "machine_notation": "b2b3",
+            "moves": ["f2f3"],
+            "machine_notation": "f2f3",
             "child_boundary": {"series": 2, "side_to_move": "black"},
         }
     ]
     selected = {
         "candidate_identity": "candidate-00",
-        "move": "b2b3",
-        "score": 951,
+        "move": "f2f3",
+        "score": 617,
         "proof_bounds": [-1, 1],
         "principal_variation": principal_variation,
         "principal_variation_sha256": promoter._canonical_sha256(principal_variation),
@@ -377,7 +377,7 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
         {
             "candidate_identity": f"candidate-{index:02d}",
             "bound": "exact" if index == 0 else "upper",
-            "score": 951 - index,
+            "score": 617 - index,
             "proof_bounds": [-1, 1],
         }
         for index in range(20)
@@ -853,20 +853,20 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
 
 
 def _root_bound_fixture() -> tuple[dict[str, object], dict[str, object]]:
-    principal_variation = [{"moves": ["b2b3"], "machine_notation": "b2b3"}]
+    principal_variation = [{"moves": ["f2f3"], "machine_notation": "f2f3"}]
     bounds = [
         {
             "candidate_identity": f"candidate-{index:02d}",
             "bound": "exact" if index == 0 else "upper",
-            "score": 951 - index,
+            "score": 617 - index,
             "proof_bounds": [-1, 1],
         }
         for index in range(20)
     ]
     result = {
         "candidate_identity": "candidate-00",
-        "move": "b2b3",
-        "score": 951,
+        "move": "f2f3",
+        "score": 617,
         "proof_bounds": [-1, 1],
         "principal_variation": principal_variation,
         "root_bounds": bounds,
@@ -1095,7 +1095,7 @@ def test_root_oracle_builder_rejects_disjoint_candidate_universes() -> None:
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        ("score", "951", "candidate score"),
+        ("score", "617", "candidate score"),
         ("proof_bounds", [-1, True], "candidate proof bounds"),
     ],
 )

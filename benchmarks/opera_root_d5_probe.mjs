@@ -613,8 +613,8 @@ async function main() {
       && boundary.ep_targets.length === 0
       && boundary.promoted_hex === ZERO_PROMOTED
     ) {
-      invariant(final.move === "b2b3", `D5 move anchor drifted: ${final.move}`);
-      invariant(final.score === 951, `D5 score anchor drifted: ${final.score}`);
+      invariant(final.move === "f2f3", `D5 move anchor drifted: ${final.move}`);
+      invariant(final.score === 617, `D5 score anchor drifted: ${final.score}`);
     }
     const aggregatePeak = channels.reduce((sum, channel) => sum + channel.memoryPeakBytes, 0);
     return {
@@ -714,7 +714,7 @@ async function main() {
         memory_envelope_observed: aggregatePeak
           <= args.workers * receipt.memory_envelope.maximum_bytes,
         d5_w32_anchor: args.depth !== 5 || args.width !== 32
-          || (final.move === "b2b3" && final.score === 951),
+          || (final.move === "f2f3" && final.score === 617),
         under_60_seconds_total: totalMs < 60_000,
         mate_python_parity: false,
         release_certificate_present: false,

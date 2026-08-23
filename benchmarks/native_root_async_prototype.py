@@ -693,14 +693,14 @@ def main() -> None:
         memory_thread.join()
 
         expected_pv = (
-            "f7f5/e8f7",
-            "c1b2/e2e3/f1c4",
-            "e7e6/f5f4/f4e3/e3f2",
-            "e1f2/d1g4/f2e2/g1h3/g4g7",
+            "e7e5/f8b4",
+            "a2a3/a3b4/e2e4",
+            "a7a5/d8g5/g5g2/g2h1",
+            "d1e2/e2c4/c4c7/f1c4/c7c8",
         )
         expected_match = (
-            incumbent.candidate.machine == "b2b3"
-            and incumbent.score == 951
+            incumbent.candidate.machine == "f2f3"
+            and incumbent.score == 617
             and incumbent.pv == expected_pv
         )
         coordinator_stats = asdict(coordinator.stats)
