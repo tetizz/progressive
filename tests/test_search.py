@@ -368,6 +368,131 @@ def test_incomplete_reach_probe_does_not_create_na3_scoring_artifact() -> None:
     assert e4_evaluation.total > na3_evaluation.total
 
 
+@pytest.mark.parametrize(
+    "series",
+    [
+        pytest.param(
+            (
+                ("e2e4",),
+                ("f7f5", "e8f7"),
+                ("b1c3", "d1g4", "g4f5"),
+            ),
+            id="depth-three-check",
+        ),
+        pytest.param(
+            (
+                ("e2e3",),
+                ("f7f6", "e8f7"),
+                ("f1b5", "b5d7", "d7c8"),
+                ("f6f5", "f5f4", "f4e3", "e3f2"),
+            ),
+            id="depth-four-check",
+        ),
+        pytest.param(
+            (
+                ("b2b3",),
+                ("f7f5", "e8f7"),
+                ("c1b2", "e2e3", "f1c4"),
+                ("e7e6", "f5f4", "f4e3", "e3f2"),
+                ("e1f2", "d1g4", "f2e2", "g1h3", "g4g7"),
+            ),
+            id="depth-five-check",
+        ),
+    ],
+)
+def test_checked_cutoff_evaluation_avoids_unreachable_turn_artifacts(
+    series: tuple[tuple[str, ...], ...],
+) -> None:
+    state = ProgressiveState.initial()
+    for moves in series:
+        state = play_series(state, moves).final_state
+
+    assert state.board.is_check()
+    breakdown = evaluate(state)
+
+    # A checked side must answer before either color can execute an arbitrary
+    # same-side checking route.  Keep the direct check term, but do not score a
+    # second hypothetical turn or spend the leaf budget probing one.
+    assert breakdown.series_reach == 0
+    assert breakdown.white_reach_nodes == breakdown.black_reach_nodes == 0
+    assert breakdown.reach_complete
+
+
+def test_off_turn_promotion_threat_is_not_erased_by_a_possible_capture() -> None:
+    hanging = ProgressiveState.from_fen(
+        "7k/8/8/8/8/8/4Kp2/8 w - - 0 1",
+        5,
+    )
+    surviving = ProgressiveState.from_fen(
+        "7k/8/8/8/8/8/5p2/K7 w - - 0 1",
+        5,
+    )
+
+    # Capturability is not a proof that taking the pawn is safe or forced.
+    assert evaluate(hanging).promotion_corridors == -870
+    assert evaluate(surviving).promotion_corridors == -870
+
+
+def test_pinned_geometric_attack_does_not_erase_promotion_corridor() -> None:
+    state = ProgressiveState.from_fen(
+        "k3r3/8/8/8/8/8/4R1p1/4K3 w - - 0 1",
+        1,
+    )
+
+    # Re2 attacks g2 geometrically, but Rxg2 exposes the king on e1. The
+    # promotion threat must remain until search proves that it can be removed.
+    assert evaluate(state).promotion_corridors == -705
+
+
+def test_checked_leaf_with_zero_reach_budget_is_not_falsely_incomplete() -> None:
+    state = ProgressiveState.from_fen(
+        "6kQ/8/8/8/8/8/8/K7 b - - 0 1",
+        2,
+    )
+    searcher = SeriesSearcher(
+        SearchLimits(depth_series=1, max_generation_positions=1)
+    )
+
+    breakdown = searcher._evaluate(state)
+
+    assert breakdown.reach_complete
+    assert breakdown.series_reach == 0
+    assert breakdown.white_reach_nodes == breakdown.black_reach_nodes == 0
+    assert searcher.stats.static_evaluation_positions == 1
+    assert searcher.stats.evaluation_reach_positions == 0
+    assert searcher.stats.incomplete_reach_evaluations == 0
+    assert not searcher._evaluation_work_limit_reached
+    assert not searcher._selective
+
+
+def test_hanging_checking_queen_is_not_scored_as_a_winning_attack() -> None:
+    state = ProgressiveState.from_fen(
+        "6kr/8/8/8/7Q/8/8/K7 w - - 0 1",
+        1,
+    )
+    hanging_check = play_series(state, ("h4h8",)).final_state
+
+    breakdown = evaluate(hanging_check)
+    assert hanging_check.board.is_check()
+    assert breakdown.material == 975
+    assert breakdown.immediate_vulnerability == -975
+    assert breakdown.total == 248
+
+    result = analyze(
+        state,
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            max_generation_positions=250_000,
+            collect_all_root_scores=True,
+        ),
+    )
+    assert result.completed_depth == 1
+    assert result.exact_width
+    assert result.best_series is not None
+    assert result.best_series.moves != ("h4h8",)
+
+
 def test_evaluation_reach_probe_respects_shared_deterministic_budget() -> None:
     state = ProgressiveState.initial()
     breakdown = evaluate(state, max_reach_positions=7)
@@ -446,7 +571,7 @@ def test_wide_frontier_scoring_cannot_overshoot_combined_work_cap() -> None:
         SearchLimits(
             depth_series=1,
             max_series_per_node=64,
-            max_generation_positions=1_736,
+            max_generation_positions=1_697,
         ),
     )
 
@@ -466,11 +591,11 @@ def test_wide_frontier_scoring_cannot_overshoot_combined_work_cap() -> None:
     assert not result.root_scores_complete
     assert result.stats.frontier_prunes > 0
     assert result.stats.peak_frontier_states > 64
-    assert result.stats.work_positions == 1_736
-    assert result.stats.series_generation_positions == 114
+    assert result.stats.work_positions == 1_697
+    assert result.stats.series_generation_positions == 203
     assert result.stats.frontier_score_positions == 1_493
     assert result.stats.static_evaluation_positions == 1
-    assert result.stats.evaluation_reach_positions == 128
+    assert result.stats.evaluation_reach_positions == 0
     assert result.stats.quiet_adjudication_positions == 0
     assert result.stats.work_positions == (
         result.stats.series_generation_positions
@@ -510,8 +635,8 @@ def test_iterative_deepening_reuses_bounded_complete_series_frontier() -> None:
     assert result.stats.series_generation_positions == 200
     assert result.stats.frontier_score_positions == 1_493
     assert result.stats.static_evaluation_positions == 1
-    assert result.stats.evaluation_reach_positions == 128
-    assert result.stats.generation_positions == 1_822
+    assert result.stats.evaluation_reach_positions == 0
+    assert result.stats.generation_positions == 1_694
     assert result.stats.series_generation_cache_peak <= (
         SERIES_GENERATION_CACHE_CAPACITY
     )
@@ -571,7 +696,7 @@ def test_prefix_cache_reuse_cannot_bypass_generation_work_payment() -> None:
         SearchLimits(
             depth_series=3,
             max_series_per_node=64,
-            max_generation_positions=195,
+            max_generation_positions=71,
         ),
         required_prefix=prefix,
     )
@@ -584,7 +709,7 @@ def test_prefix_cache_reuse_cannot_bypass_generation_work_payment() -> None:
     assert unpaid.proof is None
     assert unpaid.forced is None
     assert not unpaid.root_scores_complete
-    assert unpaid.stats.work_positions == 195
+    assert unpaid.stats.work_positions == 71
     assert unpaid.stats.series_generation_cache_hits == 0
 
     paid = analyze(
@@ -592,10 +717,9 @@ def test_prefix_cache_reuse_cannot_bypass_generation_work_payment() -> None:
         SearchLimits(
             depth_series=3,
             max_series_per_node=64,
-            # Four positions stay reserved until root generation succeeds,
-            # enough to produce one legal series if the ordinary frontier
-            # exhausts its share of the deterministic budget.
-            max_generation_positions=200,
+            # One additional position lets the completed retained frontier
+            # and root evaluation settle without bypassing work accounting.
+            max_generation_positions=72,
         ),
         required_prefix=prefix,
     )
@@ -608,8 +732,8 @@ def test_prefix_cache_reuse_cannot_bypass_generation_work_payment() -> None:
     assert paid.stats.series_generation_positions == 35
     assert paid.stats.frontier_score_positions == 32
     assert paid.stats.static_evaluation_positions == 1
-    assert paid.stats.evaluation_reach_positions == 128
-    assert paid.stats.generation_positions == 196
+    assert paid.stats.evaluation_reach_positions == 0
+    assert paid.stats.generation_positions == 68
     assert paid.stats.series_generation_cache_hits == 2
 
 
@@ -870,9 +994,9 @@ def test_high_series_quiet_transition_is_charged_to_global_work_budget() -> None
     # Black's only legal move is the quiet countercheck 20...Kb8+, producing a
     # series-21 child at quiet=10. Historically its mating-series exception
     # probe ignored max_generation_positions and could dominate a whole league
-    # batch. Static evaluation, one reach node, and generation cost three
-    # positions; the proof probe gets the remaining 29 and must conservatively
-    # stop as manual-proof-required.
+    # batch. Static evaluation and generation cost two positions; checked-
+    # boundary reach is suppressed, so the proof probe gets the remaining 30
+    # and must conservatively stop as manual-proof-required.
     state = ProgressiveState.from_fen(
         "r7/k6R/8/K7/8/8/8/8 b - - 0 1", 20, quiet_series=9
     )
@@ -900,8 +1024,8 @@ def test_high_series_quiet_transition_is_charged_to_global_work_budget() -> None
     assert result.stats.series_generation_positions == 1
     assert result.stats.frontier_score_positions == 0
     assert result.stats.static_evaluation_positions == 1
-    assert result.stats.evaluation_reach_positions == 1
-    assert result.stats.quiet_adjudication_positions == 29
+    assert result.stats.evaluation_reach_positions == 0
+    assert result.stats.quiet_adjudication_positions == 30
     assert result.stats.quiet_adjudication_limit_hits == 1
     assert result.stats.generation_work_limit_hits == 1
     assert result.elapsed_seconds < 0.5
@@ -1085,7 +1209,7 @@ def test_quiet_adjudication_in_deeper_pass_keeps_fast_kqk_fallback() -> None:
     )
 
     assert shallow.best_series is not None
-    assert shallow.best_series.moves == ("g2h2",)
+    assert shallow.best_series.moves == ("a1b2",)
     assert result.score == shallow.score
     assert result.best_series == shallow.best_series
     assert result.principal_variation == shallow.principal_variation
@@ -1122,7 +1246,7 @@ def test_live_series_22_kqk_keeps_unknown_move_only_production_fallback() -> Non
         "g2f1/f1e1/e1f1/f1e1/e1f1/f1e1/e1f1/f1e1/e1f1/f1e1/e1f1/"
         "f1e1/e1f1/f1e1/e1f1/f1e1/e1f1/f1e1/e1f1/f1e1/e1f2/f2e3"
     )
-    assert result.score == shallow.score == result.root_evaluation.total == 1_641
+    assert result.score == shallow.score == result.root_evaluation.total == 1_381
     assert result.best_series == shallow.best_series
     assert result.principal_variation == shallow.principal_variation
     assert result.principal_variation == (result.best_series,)

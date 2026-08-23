@@ -155,16 +155,27 @@ def test_fixed_exact_parity_anchors() -> None:
         (
             WHITE_ANCHOR,
             True,
-            -837,
-            "a5b5",
+            -633,
+            "a4b4",
             (
-                "a5b5",
-                "d2d4/d4f6",
-                "a4f4/b5b4/f4f6",
-                "f7e7/e7f6/d8c6",
+                "a4b4",
+                "d2d6/f7f6",
+                "b4d4/d4d5/d5d6",
+                "f6f5/f5e5/e5d6/d8c6",
             ),
         ),
-        (BLACK_ANCHOR, True, 426, "b2b1/b1e4", None),
+        (
+            BLACK_ANCHOR,
+            True,
+            338,
+            "b2g7/g7h7",
+            (
+                "b2g7/g7h7",
+                "h4g5/e4h4/h4h7",
+                "a3b4/b4b5/b5b6/b6b7",
+                "g5g4/g4f4/f4e3/e3d2/h7c7",
+            ),
+        ),
     )
     for state, collect_all, score, best, pv in cases:
         baseline = _search(state, pvs=False, collect_all=collect_all)
@@ -182,7 +193,7 @@ def test_fixed_exact_parity_anchors() -> None:
     assert _semantic_signature(candidate) == _semantic_signature(baseline)
     second = candidate.alternatives[1]
     assert second.series.machine_notation == "e4c2"
-    assert second.score == -837
+    assert second.score == -577
 
 
 def test_512_sparse_boundaries_match_full_alpha_beta_exactly() -> None:
@@ -366,33 +377,33 @@ def test_hard_s4_depth_five_completes_with_exact_safety_under_production_work() 
         ),
         baseline_profile(),
     )
-    # Later-root transactional scouts reject 31 non-improving S4 candidates;
-    # proven mover-mate bounds stop their partial frontier generation and keep
-    # the delivered-mate series as a proof-only hint for the next scout depth.
-    # Score-only transactional bounds also elide repeated one-point subtrees.
-    assert result.stats.work_positions == 6_800_617
+    # Later-root transactional scouts reject 31 non-improving S4 candidates.
+    # The exact-capture leaf evaluator deliberately spends more work than the
+    # old geometric vulnerability proxy, while staying below the production
+    # cap and retaining a byte-exact release regression for this hard gate.
+    assert result.stats.work_positions == 7_597_147
     assert result.stats.root_pvs_zero_window_searches == 31
-    assert result.stats.root_safety_screen_positions == 831_549
+    assert result.stats.root_safety_screen_positions == 402_577
     assert (
         result.stats.native_series_mate_positions
         + result.stats.native_series_mate_edges
-        == 794_493
+        == 367_132
     )
-    assert result.stats.native_series_mate_calls == 2
-    assert result.stats.native_series_mate_exhausted == 2
-    assert result.stats.native_series_mate_cache_hits == 3
+    assert result.stats.native_series_mate_calls == 1
+    assert result.stats.native_series_mate_exhausted == 1
+    assert result.stats.native_series_mate_cache_hits == 4
     assert result.completed_depth == 5
     assert not result.work_limit_reached
-    assert result.score == -1808
+    assert result.score == -1543
     assert result.best_series.machine_notation == "b8c6/c6d4/g8f6/d4f3"
     assert tuple(
         item.machine_notation for item in result.principal_variation
     ) == (
         "b8c6/c6d4/g8f6/d4f3",
-        "g2f3/d1d6/e1d2/h1g1/d6f8",
-        "e8f8/a7a5/a8a6/a6c6/f8e7/c6d6",
-        "d2e1/e2e4/e4e5/b1c3/g1g7/f1h3/e5d6",
-        "e7f8/f6d5/d5b4/c7d6/h8g8/g8g7/g7g5/b4c2",
+        "g2f3/d1d6/e1d2/h1g1/d6e7",
+        "f8e7/f6g4/g4h2/d7d5/h2f1",
+        "g1f1/f1g1/g1g7/g7f7/f7h7/h7h8",
+        "e8f7/c8d7/a8h8/h8h1/h1b1/b1c1/d5d4/c1a1",
     )
 
 

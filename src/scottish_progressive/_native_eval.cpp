@@ -519,6 +519,66 @@ constexpr auto RAY_MASKS = ray_masks();
     return false;
 }
 
+[[nodiscard]] Bitboard ray_attacks_from(
+    int source,
+    std::size_t direction,
+    Bitboard occupancy
+) noexcept {
+    Bitboard attacks = RAY_MASKS[static_cast<std::size_t>(source)][direction];
+    const Bitboard blockers = attacks & occupancy;
+    if (blockers == 0) {
+        return attacks;
+    }
+    const int blocker = RAY_ASCENDING[direction]
+        ? static_cast<int>(std::countr_zero(blockers))
+        : 63 - static_cast<int>(std::countl_zero(blockers));
+    return attacks
+        & ~RAY_MASKS[static_cast<std::size_t>(blocker)][direction];
+}
+
+[[nodiscard]] Bitboard attacks_from(
+    const Position& position,
+    int source,
+    int piece_type,
+    bool color
+) noexcept {
+    const std::size_t source_index = static_cast<std::size_t>(source);
+    if (piece_type == KNIGHT) {
+        return KNIGHT_ATTACK_MASKS[source_index];
+    }
+    if (piece_type == KING) {
+        return KING_ATTACK_MASKS[source_index];
+    }
+    if (piece_type == PAWN) {
+        Bitboard attacks = 0;
+        const int file = source & 7;
+        const int rank = source >> 3;
+        const int target_rank = rank + (color == WHITE ? 1 : -1);
+        for (const int file_delta : {-1, 1}) {
+            const int target_file = file + file_delta;
+            if (inside(target_file, target_rank)) {
+                attacks |= bit(square(target_file, target_rank));
+            }
+        }
+        return attacks;
+    }
+
+    const Bitboard occupancy = position.occupied[0] | position.occupied[1];
+    const std::size_t first_direction =
+        piece_type == BISHOP ? 4 : 0;
+    const std::size_t final_direction =
+        piece_type == ROOK ? 4 : 8;
+    Bitboard attacks = 0;
+    for (
+        std::size_t direction = first_direction;
+        direction < final_direction;
+        ++direction
+    ) {
+        attacks |= ray_attacks_from(source, direction, occupancy);
+    }
+    return attacks;
+}
+
 [[nodiscard]] bool is_check(const Position& position) noexcept {
     const bool mover = position.white_to_move;
     const int king = king_square(position, mover);
@@ -1058,9 +1118,12 @@ void add_standard_castling(
         std::int64_t distance_bonus = 0;
         std::int64_t scaled_bonus = 0;
         std::int64_t result = 0;
+        if (!checked_subtract(budget, best, distance_bonus)) {
+            return std::nullopt;
+        }
+        distance_bonus = std::min<std::int64_t>(4, distance_bonus);
         if (
-            !checked_subtract(budget, best, distance_bonus)
-            || !checked_multiply(distance_bonus, 55, scaled_bonus)
+            !checked_multiply(distance_bonus, 55, scaled_bonus)
             || !checked_add(650, scaled_bonus, result)
         ) {
             return std::nullopt;
@@ -1071,6 +1134,82 @@ void add_standard_castling(
     return std::max<std::int64_t>(0, 180 - deficit * 45);
 }
 
+[[nodiscard]] Bitboard direct_capture_targets(
+    const Position& position,
+    const BoardState& board,
+    bool validate_check_evasions
+) noexcept {
+    const bool attacker = board.white_to_move;
+    const bool victim = !attacker;
+    const Bitboard victim_occupancy = board.occupied[victim ? 1 : 0];
+    const Bitboard attacker_occupancy = board.occupied[attacker ? 1 : 0];
+    const int attacker_king = king_square(position, attacker);
+    if (attacker_king < 0) {
+        return 0;
+    }
+    const bool attacker_in_check = validate_check_evasions
+        && board_attacked_by(board, attacker_king, victim);
+    Bitboard captured = 0;
+    Bitboard pieces = attacker_occupancy;
+    while (pieces != 0) {
+        const int source = static_cast<int>(std::countr_zero(pieces));
+        pieces &= pieces - 1;
+        const int piece_type = piece_type_at(position, source);
+        Bitboard targets = attacks_from(
+            position,
+            source,
+            piece_type,
+            attacker
+        ) & victim_occupancy;
+        if (targets == 0) {
+            continue;
+        }
+        bool requires_legal_replay = attacker_in_check
+            || source == attacker_king;
+        if (!requires_legal_replay) {
+            const int file_delta = std::abs(
+                (source & 7) - (attacker_king & 7)
+            );
+            const int rank_delta = std::abs(
+                (source >> 3) - (attacker_king >> 3)
+            );
+            const bool could_be_pinned = file_delta == 0
+                || rank_delta == 0
+                || file_delta == rank_delta;
+            if (could_be_pinned) {
+                BoardState without_source = board;
+                clear_piece(without_source, source);
+                requires_legal_replay = board_attacked_by(
+                    without_source,
+                    attacker_king,
+                    victim
+                );
+            }
+        }
+        if (!requires_legal_replay) {
+            captured |= targets;
+            continue;
+        }
+        while (targets != 0) {
+            const int target = static_cast<int>(
+                std::countr_zero(targets)
+            );
+            targets &= targets - 1;
+            const int promotion = piece_type == PAWN
+                    && ((target >> 3) == 0 || (target >> 3) == 7)
+                ? QUEEN
+                : 0;
+            if (legal_after_move(
+                    board,
+                    Move{source, target, promotion, -1, false}
+                )) {
+                captured |= bit(target);
+            }
+        }
+    }
+    return captured;
+}
+
 [[nodiscard]] int attacked_material(
     const Position& position,
     bool victim
@@ -1078,21 +1217,66 @@ void add_standard_castling(
     const bool attacker = !victim;
     const Bitboard victim_occupancy = position.occupied[victim ? 1 : 0];
     const Bitboard attacker_occupancy = position.occupied[attacker ? 1 : 0];
-    const Bitboard occupancy = victim_occupancy | attacker_occupancy;
-    Bitboard pieces = victim_occupancy;
-    int value = 0;
-    while (pieces != 0) {
-        const int target = static_cast<int>(std::countr_zero(pieces));
-        pieces &= pieces - 1;
-        if (attacked_by(
+    const BoardState board{
+        position.pawns,
+        position.knights,
+        position.bishops,
+        position.rooks,
+        position.queens,
+        position.kings,
+        position.occupied,
+        0,
+        0,
+        attacker,
+    };
+    const int attacker_king = king_square(position, attacker);
+    if (
+        attacker_king >= 0
+        && attacked_by(
+            position,
+            attacker_king,
+            victim,
+            victim_occupancy | attacker_occupancy,
+            victim_occupancy
+        )
+    ) {
+        Bitboard raw_targets = 0;
+        Bitboard pieces = attacker_occupancy;
+        while (pieces != 0) {
+            const int source = static_cast<int>(
+                std::countr_zero(pieces)
+            );
+            pieces &= pieces - 1;
+            raw_targets |= attacks_from(
                 position,
-                target,
-                attacker,
-                occupancy,
-                attacker_occupancy
-            )) {
-            value += PIECE_VALUES[piece_type_at(position, target)];
+                source,
+                piece_type_at(position, source),
+                attacker
+            ) & victim_occupancy;
         }
+        int raw_value = 0;
+        while (raw_targets != 0) {
+            const int target = static_cast<int>(
+                std::countr_zero(raw_targets)
+            );
+            raw_targets &= raw_targets - 1;
+            raw_value += PIECE_VALUES[piece_type_at(position, target)];
+        }
+        return raw_value;
+    }
+    Bitboard capturable_targets = direct_capture_targets(
+        position,
+        board,
+        false
+    );
+
+    int value = 0;
+    while (capturable_targets != 0) {
+        const int target = static_cast<int>(
+            std::countr_zero(capturable_targets)
+        );
+        capturable_targets &= capturable_targets - 1;
+        value += PIECE_VALUES[piece_type_at(position, target)];
     }
     return value;
 }
@@ -1171,7 +1355,7 @@ std::optional<std::int64_t> fast_evaluate(
     if (!add_scaled(
         floor_div(
             attacked_material(position, BLACK)
-            - attacked_material(position, WHITE),
+                - attacked_material(position, WHITE),
             6
         ),
         weights.immediate_vulnerability
@@ -1349,6 +1533,60 @@ struct ReachIdentityHash {
     return useful;
 }
 
+[[nodiscard]] int immediately_capturable_material_native(
+    const BoardState& boundary,
+    const std::vector<int>& boundary_ep_targets,
+    const Position& position
+) {
+    const bool attacker = boundary.white_to_move;
+    const bool victim = !boundary.white_to_move;
+    Bitboard captured = direct_capture_targets(position, boundary, true);
+    const Bitboard attacker_occupancy = boundary.occupied[attacker ? 1 : 0];
+    const Bitboard victim_occupancy = boundary.occupied[victim ? 1 : 0];
+    const Bitboard occupancy = attacker_occupancy | victim_occupancy;
+    for (const int target : boundary_ep_targets) {
+        if (target < 0 || target >= 64 || (occupancy & bit(target)) != 0) {
+            continue;
+        }
+        const int target_file = target & 7;
+        const int target_rank = target >> 3;
+        const int expected_rank = attacker == WHITE ? 5 : 2;
+        const int source_rank = target_rank + (attacker == WHITE ? -1 : 1);
+        const int capture_square = target + (attacker == WHITE ? -8 : 8);
+        if (
+            target_rank != expected_rank
+            || capture_square < 0
+            || capture_square >= 64
+            || (boundary.pawns & victim_occupancy & bit(capture_square)) == 0
+        ) {
+            continue;
+        }
+        for (const int file_delta : {-1, 1}) {
+            const int source_file = target_file + file_delta;
+            if (!inside(source_file, source_rank)) {
+                continue;
+            }
+            const int source = square(source_file, source_rank);
+            if (
+                (boundary.pawns & attacker_occupancy & bit(source)) != 0
+                && legal_after_move(
+                    boundary,
+                    Move{source, target, 0, target, false}
+                )
+            ) {
+                captured |= bit(capture_square);
+            }
+        }
+    }
+    int value = 0;
+    while (captured != 0) {
+        const int target = static_cast<int>(std::countr_zero(captured));
+        captured &= captured - 1;
+        value += PIECE_VALUES[piece_type_at(position, target)];
+    }
+    return value;
+}
+
 [[nodiscard]] int reach_value_native(
     const ReachProbe& probe,
     std::int64_t budget
@@ -1399,22 +1637,34 @@ std::optional<FullEvaluation> full_evaluate(
         + (board.white_to_move == WHITE ? 0 : 1);
     const std::int64_t black_budget = series_number
         + (board.white_to_move == BLACK ? 0 : 1);
-    std::uint64_t reach_remaining = max_reach_positions;
-    const ReachProbe white_reach = probe_series_reach_native(
-        board,
-        board.white_to_move == WHITE ? ep_targets : std::vector<int>{},
-        WHITE,
-        static_cast<int>(std::min<std::int64_t>(2, white_budget)),
-        std::min<std::uint64_t>(128, reach_remaining)
-    );
-    reach_remaining -= std::min(reach_remaining, white_reach.nodes);
-    const ReachProbe black_reach = probe_series_reach_native(
-        board,
-        board.white_to_move == BLACK ? ep_targets : std::vector<int>{},
-        BLACK,
-        static_cast<int>(std::min<std::int64_t>(2, black_budget)),
-        std::min<std::uint64_t>(128, reach_remaining)
-    );
+    ReachProbe white_reach;
+    ReachProbe black_reach;
+    if (is_check(position)) {
+        const bool checker = !board.white_to_move;
+        white_reach = checker == WHITE
+            ? ReachProbe{0, 0, true}
+            : ReachProbe{std::nullopt, 0, true};
+        black_reach = checker == BLACK
+            ? ReachProbe{0, 0, true}
+            : ReachProbe{std::nullopt, 0, true};
+    } else {
+        std::uint64_t reach_remaining = max_reach_positions;
+        white_reach = probe_series_reach_native(
+            board,
+            board.white_to_move == WHITE ? ep_targets : std::vector<int>{},
+            WHITE,
+            static_cast<int>(std::min<std::int64_t>(2, white_budget)),
+            std::min<std::uint64_t>(128, reach_remaining)
+        );
+        reach_remaining -= std::min(reach_remaining, white_reach.nodes);
+        black_reach = probe_series_reach_native(
+            board,
+            board.white_to_move == BLACK ? ep_targets : std::vector<int>{},
+            BLACK,
+            static_cast<int>(std::min<std::int64_t>(2, black_budget)),
+            std::min<std::uint64_t>(128, reach_remaining)
+        );
+    }
 
     FullEvaluation result;
     result.white_reach = white_reach;
@@ -1443,7 +1693,9 @@ std::optional<FullEvaluation> full_evaluate(
         )) {
         return std::nullopt;
     }
-    if (white_reach.complete && black_reach.complete) {
+    if (is_check(position)) {
+        result.series_reach = 0;
+    } else if (white_reach.complete && black_reach.complete) {
         if (!assign_scaled(
                 reach_value_native(white_reach, white_budget)
                     - reach_value_native(black_reach, black_budget),
@@ -1453,8 +1705,14 @@ std::optional<FullEvaluation> full_evaluate(
             return std::nullopt;
         }
     }
-    const auto white_promotion = promotion_score(position, WHITE);
-    const auto black_promotion = promotion_score(position, BLACK);
+    const auto white_promotion = promotion_score(
+        position,
+        WHITE
+    );
+    const auto black_promotion = promotion_score(
+        position,
+        BLACK
+    );
     std::int64_t promotion_difference = 0;
     if (
         !white_promotion.has_value()
@@ -1472,12 +1730,16 @@ std::optional<FullEvaluation> full_evaluate(
     ) {
         return std::nullopt;
     }
+    const int capturable_material = immediately_capturable_material_native(
+        board,
+        ep_targets,
+        position
+    );
+    const std::int64_t vulnerability_raw = board.white_to_move == WHITE
+        ? capturable_material
+        : -capturable_material;
     if (!assign_scaled(
-            floor_div(
-                attacked_material(position, BLACK)
-                    - attacked_material(position, WHITE),
-                5
-            ),
+            vulnerability_raw,
             weights.immediate_vulnerability,
             result.immediate_vulnerability
         )) {
@@ -2431,6 +2693,7 @@ bool order_frontier(
         std::vector<std::optional<FrontierInspection>> calculated(
             pending.size()
         );
+        std::vector<std::int64_t> pending_scores(pending.size());
         std::atomic<bool> deadline_cancelled{false};
         BoundedNativePool::instance().run(
             pending.size(),
@@ -2464,6 +2727,7 @@ bool order_frontier(
             if (!calculated[index].has_value()) {
                 return context.unsupported("native frontier score overflow");
             }
+            pending_scores[index] = calculated[index]->score;
             context.frontier_score_cache.emplace(
                 pending[index].identity,
                 std::move(*calculated[index])
@@ -2471,15 +2735,7 @@ bool order_frontier(
         }
         for (std::size_t index = 0; index < frontier.size(); ++index) {
             if (score_sources[index] != no_pending) {
-                const auto cached = context.frontier_score_cache.find(
-                    pending[score_sources[index]].identity
-                );
-                if (cached == context.frontier_score_cache.end()) {
-                    return context.unsupported(
-                        "native frontier inspection cache miss"
-                    );
-                }
-                scores[index] = cached->second.score;
+                scores[index] = pending_scores[score_sources[index]];
             }
             ranked.push_back(RankedState{
                 std::move(frontier[index]),

@@ -496,7 +496,7 @@ def test_iterative_tt_growth_owns_preferred_pv_and_matches_cold_search() -> None
     deepened = warm.search_root_candidate(
         enumeration_identity=warm_manifest.enumeration_identity,
         candidate_identity=warm_candidate.candidate_identity,
-        child_depth=3,
+        child_depth=4,
         alpha=-2 * MATE_SCORE,
         beta=2 * MATE_SCORE,
         external_work=0,
@@ -515,7 +515,7 @@ def test_iterative_tt_growth_owns_preferred_pv_and_matches_cold_search() -> None
     expected = cold.search_root_candidate(
         enumeration_identity=cold_manifest.enumeration_identity,
         candidate_identity=cold_candidate.candidate_identity,
-        child_depth=3,
+        child_depth=4,
         alpha=-2 * MATE_SCORE,
         beta=2 * MATE_SCORE,
         external_work=0,
@@ -524,7 +524,7 @@ def test_iterative_tt_growth_owns_preferred_pv_and_matches_cold_search() -> None
     )
 
     assert seeded.status == deepened.status == expected.status == 0
-    # This fixture grows the table from 9 to 25 entries on the current exact
+    # This fixture grows the table from 9 to 55 entries on the current exact
     # search. More generally, require enough recursive inserts to put real
     # rehash pressure on references captured from the shallower TT entry.
     assert seeded.work.tt_entries >= 8
@@ -1396,7 +1396,7 @@ def test_transactional_ordinary_cutoff_hint_reproves_bound_without_generation(
 
     first, hinted = calls
     assert first.bound is hinted.bound is NativeSubtreeBound.UPPER
-    assert first.score == -666
+    assert first.score == -406
     assert first.child_principal_variation
     assert first.child_principal_variation[0].machine_notation == "e7e5/f8b4"
     assert first.child_principal_variation[0].outcome is None
@@ -1404,7 +1404,7 @@ def test_transactional_ordinary_cutoff_hint_reproves_bound_without_generation(
     assert hinted.score == first.score
     assert hinted.proof_bounds == first.proof_bounds
     assert hinted.root_series == first.root_series
-    assert first.work.call_native_work == 139
+    assert first.work.call_native_work == 26
     assert hinted.work.call_native_work == 0
     hinted_stats = dict(
         zip(SUBTREE_STAT_FIELDS, hinted.work.call_stats, strict=True)
@@ -1928,7 +1928,7 @@ def test_mover_mate_exit_preserves_capped_parallel_search_result() -> None:
             _session(
                 width=8,
                 depth=5,
-                max_work=4_956,
+                max_work=4_596,
                 native_threads=native_threads,
                 root_tactical_protection=True,
             ).search(
@@ -1945,14 +1945,38 @@ def test_mover_mate_exit_preserves_capped_parallel_search_result() -> None:
     serial, parallel = results
     assert serial == parallel
     assert serial.status == 0
-    assert serial.score == 1_627
+    assert serial.score == 1_367
     assert tuple(
         item.machine_notation for item in serial.principal_variation
     ) == ("c3f6", "f8g8/b5b3", "f6f5/f5c2/c2b3")
     assert not serial.evaluation_work_limit_reached
     stats = dict(zip(SUBTREE_STAT_FIELDS, serial.stats, strict=True))
-    assert stats["generation_positions"] == 4_956
+    assert stats["generation_positions"] == 4_596
     assert stats["generation_work_limit_hits"] == 0
+
+    one_below = _session(
+        width=8,
+        depth=5,
+        max_work=4_595,
+        native_threads=1,
+        root_tactical_protection=True,
+    ).search(
+        capped_exact,
+        depth=3,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        ply_from_root=0,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    assert one_below.status == 0
+    assert one_below.selective
+    assert one_below.evaluation_work_limit_reached
+    one_below_stats = dict(
+        zip(SUBTREE_STAT_FIELDS, one_below.stats, strict=True)
+    )
+    assert one_below_stats["generation_positions"] == 4_595
+    assert one_below_stats["generation_work_limit_hits"] == 1
 
 
 def test_checkmated_mover_is_not_misclassified_as_delivering_mate() -> None:
@@ -2063,12 +2087,12 @@ def test_per_call_work_credit_exact_one_over_and_retry_are_fail_closed() -> None
         external_work=baseline.work.native_work_after,
         remaining_nanoseconds=None,
         rollback_tt=True,
-        call_work_credit=child_work + 1,
+        call_work_credit=child_work,
     )
     assert exact.status == 0
     assert exact.score == measured.score
     assert exact.work.call_native_work == child_work
-    assert exact.work.call_work_credit == child_work + 1
+    assert exact.work.call_work_credit == child_work
 
     interrupted_worker, interrupted_manifest = imported_worker()
     tt_before = interrupted_manifest.work.tt_entries
@@ -2081,11 +2105,11 @@ def test_per_call_work_credit_exact_one_over_and_retry_are_fail_closed() -> None
         external_work=baseline.work.native_work_after,
         remaining_nanoseconds=None,
         rollback_tt=True,
-        call_work_credit=child_work,
+        call_work_credit=child_work - 1,
     )
     assert interrupted.status == 1
     assert interrupted.bound is NativeSubtreeBound.UNKNOWN
-    assert interrupted.work.call_native_work <= child_work
+    assert interrupted.work.call_native_work <= child_work - 1
     assert interrupted.work.tt_entries == tt_before
 
     retry = interrupted_worker.search_root_candidate(
@@ -2097,7 +2121,7 @@ def test_per_call_work_credit_exact_one_over_and_retry_are_fail_closed() -> None
         external_work=baseline.work.native_work_after,
         remaining_nanoseconds=None,
         rollback_tt=True,
-        call_work_credit=child_work + 1,
+        call_work_credit=child_work,
     )
     assert retry.status == 0
     assert retry.score == measured.score

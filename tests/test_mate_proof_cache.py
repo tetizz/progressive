@@ -425,13 +425,13 @@ def test_independent_web_requests_reuse_opening_exhausted_proofs() -> None:
         mate_proof_cache=cache,
     )
 
-    assert first["best_series_uci"] == second["best_series_uci"] == "g2g3"
+    assert first["best_series_uci"] == second["best_series_uci"] == "e2e3"
     assert first["completed_depth"] == second["completed_depth"] == 2
     assert first["stats"]["mate_proof_cache_hits"] == 0
-    assert first["stats"]["mate_proof_cache_store_attempts"] == 2
-    assert second["stats"]["mate_proof_cache_exhausted_hits"] == 2
+    assert first["stats"]["mate_proof_cache_store_attempts"] == 1
+    assert second["stats"]["mate_proof_cache_exhausted_hits"] == 1
     assert second["stats"]["mate_proof_cache_misses"] == 0
-    assert second["stats"]["mate_proof_cache_work_saved"] == 1_054
+    assert second["stats"]["mate_proof_cache_work_saved"] == 527
     assert (
         first["stats"]["generation_positions"]
         - second["stats"]["generation_positions"]

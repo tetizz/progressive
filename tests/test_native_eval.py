@@ -79,6 +79,20 @@ def test_native_fast_evaluation_matches_python_on_rule_edges(
         )
 
 
+def test_fast_ordering_cannot_turn_pinned_pseudo_capture_into_an_advantage() -> None:
+    state = ProgressiveState.from_fen(
+        "k3r3/8/8/8/8/8/4R1q1/4K3 w - - 0 1",
+        1,
+    )
+
+    assert evaluation._immediately_capturable_material(state) == 525
+    breakdown = evaluation.evaluate(state)
+    assert breakdown.immediate_vulnerability == 525
+    assert breakdown.total < 0
+    assert evaluation._python_fast_evaluate(state) < 0
+    _assert_native_matches_python(state)
+
+
 def test_native_fast_evaluation_matches_random_progressive_reachable_states() -> None:
     _require_native()
     rng = random.Random(20_260_820)
@@ -346,8 +360,7 @@ def test_native_accepts_series_above_signed_int32_without_wrapping(
         EvaluationWeights(),
     )
     assert evaluation.fast_evaluate(state) == expected
-    if series_number == 39_050_001:
-        assert expected == 2_147_750_710
+    assert expected == 930
 
 
 @pytest.mark.parametrize(
@@ -355,8 +368,6 @@ def test_native_accepts_series_above_signed_int32_without_wrapping(
     [
         (1 << 63) - 1,
         (1 << 63) + 1,
-        ((1 << 63) - 1) // 55 + 2,
-        432_870_825_515_397,
     ],
 )
 def test_unbounded_series_uses_python_before_native_int64_overflow(
@@ -381,6 +392,25 @@ def test_unbounded_series_uses_python_before_native_int64_overflow(
     assert evaluation.fast_evaluate(state) == expected
 
 
+@pytest.mark.parametrize(
+    "series_number",
+    [((1 << 63) - 1) // 55 + 2, 432_870_825_515_397],
+)
+def test_bounded_promotion_surplus_keeps_large_series_native_safe(
+    series_number: int,
+) -> None:
+    _require_native()
+    if series_number % 2 == 0:
+        series_number += 1
+    state = _promotion_state(series_number)
+
+    assert evaluation._native_fast_evaluation_is_safe(
+        state,
+        EvaluationWeights(),
+    )
+    assert evaluation.fast_evaluate(state) == 930
+
+
 def test_adversarial_weight_uses_unbounded_python_oracle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -399,11 +429,11 @@ def test_adversarial_weight_uses_unbounded_python_oracle(
     assert evaluation.fast_evaluate(state, weights) == expected
 
 
-def test_direct_native_api_reports_int64_overflow_instead_of_wrapping() -> None:
+def test_direct_native_api_handles_maximum_current_turn_series_without_growth() -> None:
     _require_native()
     state = _promotion_state((1 << 63) - 1)
     board = state.board
-    with pytest.raises(OverflowError, match="signed 64-bit"):
+    assert (
         evaluation._native_eval.fast_evaluate(
             board.pawns,
             board.knights,
@@ -421,3 +451,5 @@ def test_direct_native_api_reports_int64_overflow_instead_of_wrapping() -> None:
             100,
             100,
         )
+        == 930
+    )

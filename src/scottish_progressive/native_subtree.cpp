@@ -708,17 +708,13 @@ struct StopSearch final : std::exception {
     return UNKNOWN_PROOF_BOUNDS;
 }
 
-[[nodiscard]] std::array<int, 2> combine_proof_bounds(
-    bool mover,
-    const std::vector<std::array<int, 2>>& bounds,
-    bool all_branches_visited
-) noexcept {
-    if (bounds.empty()) {
-        return UNKNOWN_PROOF_BOUNDS;
-    }
-    int lower = mover == WHITE ? -1 : 1;
-    int upper = mover == WHITE ? -1 : 1;
-    for (const auto& item : bounds) {
+struct ProofBoundsAccumulator {
+    explicit ProofBoundsAccumulator(bool mover_value) noexcept
+        : mover(mover_value),
+          lower(mover == WHITE ? -1 : 1),
+          upper(mover == WHITE ? -1 : 1) {}
+
+    void push(const std::array<int, 2>& item) noexcept {
         if (mover == WHITE) {
             lower = std::max(lower, item[0]);
             upper = std::max(upper, item[1]);
@@ -726,18 +722,52 @@ struct StopSearch final : std::exception {
             lower = std::min(lower, item[0]);
             upper = std::min(upper, item[1]);
         }
+        ++count;
     }
-    if (!all_branches_visited) {
-        if (mover == WHITE) {
-            lower = std::max(lower, UNKNOWN_PROOF_BOUNDS[0]);
-            upper = std::max(upper, UNKNOWN_PROOF_BOUNDS[1]);
-        } else {
-            lower = std::min(lower, UNKNOWN_PROOF_BOUNDS[0]);
-            upper = std::min(upper, UNKNOWN_PROOF_BOUNDS[1]);
+
+    void clear() noexcept {
+        lower = mover == WHITE ? -1 : 1;
+        upper = mover == WHITE ? -1 : 1;
+        count = 0;
+    }
+
+    [[nodiscard]] std::array<int, 2> result(
+        bool all_branches_visited
+    ) const noexcept {
+        if (count == 0) {
+            return UNKNOWN_PROOF_BOUNDS;
         }
+        int result_lower = lower;
+        int result_upper = upper;
+        if (!all_branches_visited) {
+            if (mover == WHITE) {
+                result_lower = std::max(
+                    result_lower,
+                    UNKNOWN_PROOF_BOUNDS[0]
+                );
+                result_upper = std::max(
+                    result_upper,
+                    UNKNOWN_PROOF_BOUNDS[1]
+                );
+            } else {
+                result_lower = std::min(
+                    result_lower,
+                    UNKNOWN_PROOF_BOUNDS[0]
+                );
+                result_upper = std::min(
+                    result_upper,
+                    UNKNOWN_PROOF_BOUNDS[1]
+                );
+            }
+        }
+        return {result_lower, result_upper};
     }
-    return {lower, upper};
-}
+
+    bool mover;
+    int lower;
+    int upper;
+    std::size_t count = 0;
+};
 
 }  // namespace
 
@@ -1808,7 +1838,7 @@ public:
         std::optional<CompleteSeriesCandidate> best_candidate;
         std::vector<CompleteSeriesCandidate> best_child_pv;
         bool best_child_pv_canonical = true;
-        std::vector<std::array<int, 2>> child_bounds;
+        ProofBoundsAccumulator child_bounds(mover);
         bool cutoff_before_generation = false;
         const std::vector<std::string>* previsited_series = nullptr;
 
@@ -1836,7 +1866,7 @@ public:
                     ply_from_root + 1
                 );
             }
-            child_bounds.push_back(child.proof_bounds);
+            child_bounds.push(child.proof_bounds);
             best_score = child.score;
             best_candidate.emplace(std::move(*preferred_candidate));
             best_child_pv = std::move(child.pv);
@@ -1940,7 +1970,7 @@ public:
                         best_candidate.has_value()
                     );
                 }
-                child_bounds.push_back(child.proof_bounds);
+                child_bounds.push(child.proof_bounds);
                 if (
                     (mover == WHITE && child.score > best_score)
                     || (mover != WHITE && child.score < best_score)
@@ -2009,13 +2039,11 @@ public:
                 "native bound-only mate exit produced an exact result"
             );
         }
-        const auto proof_bounds = combine_proof_bounds(
-            mover,
-            child_bounds,
+        const auto proof_bounds = child_bounds.result(
             !cutoff_before_generation
                 && !stopped_on_mover_mate
                 && width_complete
-                && child_bounds.size() == series_count
+                && child_bounds.count == series_count
         );
         if (
             !had_entry

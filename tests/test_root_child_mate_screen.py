@@ -1173,24 +1173,38 @@ def test_hosted_depth_two_selects_a_screened_reply_to_the_second_live_loss() -> 
     assert result.best_series.moves == ("f6f5", "f5e4", "e4d3", "d3d2")
     assert result.best_series.moves != LIVE_LOSS_S4
     assert result.completed_depth == 2
-    assert result.score == 639
-    assert result.stats.work_positions < 2_000_000
-    assert result.stats.root_safety_passes == 4
-    assert result.stats.root_safety_retries == 2
-    assert result.stats.root_safety_screen_calls == 4
-    assert result.stats.root_safety_screen_stages == 4
+    assert result.score == -673
+    assert result.stats.work_positions == 1_738_091
+    assert result.stats.root_safety_passes == 2
+    assert result.stats.root_safety_retries == 0
+    assert result.stats.root_safety_screen_calls == 2
+    assert result.stats.root_safety_screen_stages == 2
     assert result.stats.root_safety_screen_positions < 1_750_000
-    assert result.stats.native_series_mate_calls == 3
-    assert result.stats.native_series_mate_found == 1
+    assert result.stats.native_series_mate_calls == 2
+    assert result.stats.native_series_mate_found == 0
     assert result.stats.native_series_mate_exhausted == 2
     assert result.stats.native_series_mate_work_limit_hits == 0
-    rejected = next(
-        item for item in result.alternatives if item.series.moves == LIVE_LOSS_S4
+
+    # A non-contending alternative need not carry proof metadata, but the
+    # exact safety screen must still expose its replayed mate directly.
+    unsafe_child = play_series(root, LIVE_LOSS_S4).final_state
+    unsafe_verifier = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            max_generation_positions=10_000_000,
+            time_limit_seconds=30.0,
+            collect_all_root_scores=False,
+            native_threads=1,
+        ),
+        PROFILE,
     )
-    assert rejected.score == MATE_SCORE - 2
-    assert rejected.proof == "white"
-    assert rejected.principal_variation
-    assert rejected.principal_variation[0].outcome == Outcome.CHECKMATE
+    unsafe_verifier._deadline = time.perf_counter() + 30.0
+    unsafe_mate = unsafe_verifier._root_child_immediate_mate(unsafe_child)
+    assert unsafe_mate is not None
+    assert play_series(unsafe_child, unsafe_mate.moves).outcome == Outcome.CHECKMATE
+    assert 0 < unsafe_verifier.stats.work_positions <= ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT
+
     selected_child = play_series(root, result.best_series.moves).final_state
     verifier = SeriesSearcher(
         SearchLimits(
@@ -1289,18 +1303,18 @@ def test_ordinary_opening_screen_is_staged_and_keeps_the_canonical_result(
     )
 
     assert result.best_series is not None
-    assert result.best_series.moves == ("g2g3",)
-    assert result.score == -150
+    assert result.best_series.moves == ("e2e3",)
+    assert result.score == -72
     # The screen is called only for successive exact root contenders. At S2,
-    # each authoritative native exhaustion is tiny; exact safety adds 972
-    # position/edge units and the opening remains near its prior 30k envelope
+    # each authoritative native exhaustion is tiny; exact safety adds 486
+    # position/edge units and the opening remains near its prior 16k envelope
     # without widening to 832.
     assert 0 < cheap_calls <= 8
     assert wide_calls == 0
-    assert result.stats.work_positions == 30_610
-    assert result.stats.native_series_mate_calls == 2
-    assert result.stats.native_series_mate_exhausted == 2
-    assert result.stats.root_safety_exact_exhausted_children == 2
+    assert result.stats.work_positions == 15_481
+    assert result.stats.native_series_mate_calls == 1
+    assert result.stats.native_series_mate_exhausted == 1
+    assert result.stats.root_safety_exact_exhausted_children == 1
     assert result.stats.tactical_frontier_states_retained == 0
     assert result.stats.tactical_frontier_reserve_drops == 0
     assert result.stats.tactical_final_series_retained == 0
@@ -1319,19 +1333,19 @@ def test_ordinary_opening_screen_is_staged_and_keeps_the_canonical_result(
     (
         (
             ProgressiveState.initial(),
-            ("g2g3",),
-            -150,
-            30_610,
-            1_054,
-            972,
+            ("e2e3",),
+            -72,
+            15_481,
+            527,
+            486,
         ),
         (
             play_series(ProgressiveState.initial(), ("e2e4",)).final_state,
-            ("f7f5", "e8f7"),
-            848,
-            68_537,
-            31_162,
-            30_046,
+            ("d7d5", "d5e4"),
+            530,
+            40_442,
+            16_560,
+            15_978,
         ),
     ),
 )
@@ -1370,13 +1384,13 @@ def test_public_faster_opening_contract_settles_every_reply_exactly(
         + result.stats.native_series_mate_edges
         == expected_native_work
     )
-    assert result.stats.native_series_mate_calls == 2
-    assert result.stats.native_series_mate_exhausted == 2
+    assert result.stats.native_series_mate_calls == 1
+    assert result.stats.native_series_mate_exhausted == 1
     assert result.stats.native_series_mate_found == 0
     assert result.stats.native_series_mate_work_limit_hits == 0
     assert result.stats.native_series_mate_deadline_hits == 0
     assert result.stats.native_series_mate_unsupported == 0
-    assert result.stats.root_safety_exact_exhausted_children == 2
+    assert result.stats.root_safety_exact_exhausted_children == 1
     assert result.stats.root_safety_unknown_interruptions == 0
     assert result.stats.root_safety_budget_interruptions == 0
 
@@ -1420,13 +1434,13 @@ def test_root_tactical_protection_keeps_depth_three_opening_result() -> None:
 
     assert result.best_series is not None
     assert result.best_series.moves == ("e2e4",)
-    assert result.score == 848
+    assert result.score == 530
     assert result.completed_depth == 3
-    assert result.stats.work_positions == 244_372
+    assert result.stats.work_positions == 161_605
     assert result.stats.root_pvs_zero_window_searches > 0
-    assert result.stats.native_series_mate_calls == 3
-    assert result.stats.native_series_mate_exhausted == 3
-    assert result.stats.root_safety_exact_exhausted_children == 3
+    assert result.stats.native_series_mate_calls == 2
+    assert result.stats.native_series_mate_exhausted == 2
+    assert result.stats.root_safety_exact_exhausted_children == 2
     assert result.stats.tactical_frontier_states_retained == 0
     assert result.stats.tactical_frontier_reserve_drops == 0
 
@@ -1477,12 +1491,13 @@ def test_website_depth_four_selects_stronger_safe_root_tactical_line() -> None:
 
     assert result.best_series is not None
     assert result.best_series.moves == ROOT_TACTICAL_S4
-    assert result.score == 1_078
+    assert result.score == 730
     assert result.completed_depth == 4
     assert result.proof is None
     assert not result.exact_width
     assert result.stats.tactical_frontier_states_retained > 0
     assert result.stats.tactical_frontier_reserve_drops > 0
+    assert result.stats.work_positions == 7_375_652
 
     prior = analyze(
         root,
@@ -1492,7 +1507,7 @@ def test_website_depth_four_selects_stronger_safe_root_tactical_line() -> None:
     )
     assert prior.best_series is not None
     assert prior.best_series.moves == PRIOR_SAFE_S4
-    assert prior.score == 1_885
+    assert prior.score == 1_627
     assert prior.completed_depth == 4
     # Scores are white-centric heuristic values, so Black prefers the lower
     # score. Neither selective result is a proof of a win.
@@ -1623,7 +1638,7 @@ def test_s7_cap32_misses_terminal_mate_that_cap832_ranks_first() -> None:
     assert wide_retained[0].moves == target
     assert wide_retained[0].outcome == Outcome.CHECKMATE
     assert wide_retained[0].ended_by_check
-    assert wide.stats.work_positions == 41_928
+    assert wide.stats.work_positions == 41_923
 
 
 def test_hosted_s7_widens_all_mating_cap32_and_plays_the_root_mate() -> None:
@@ -1677,7 +1692,7 @@ def test_hosted_s7_widens_all_mating_cap32_and_plays_the_root_mate() -> None:
     assert result.stats.root_safety_screen_positions < 1_000_000
     assert result.stats.root_safety_all_mating_widenings == 1
     assert result.stats.root_safety_widened_candidates == 832
-    assert result.stats.root_safety_widening_positions == 41_928
+    assert result.stats.root_safety_widening_positions == 41_923
     assert result.stats.root_safety_widened_terminal_mates == 1
     assert result.stats.root_safety_widened_exact_children == 0
     assert result.stats.work_positions < 1_000_000

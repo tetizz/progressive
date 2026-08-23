@@ -244,7 +244,10 @@ def _promotion_distance(
     return distance
 
 
-def _promotion_score(state: ProgressiveState, color: chess.Color) -> int:
+def _promotion_score(
+    state: ProgressiveState,
+    color: chess.Color,
+) -> int:
     budget = state.series_number if state.board.turn == color else state.series_number + 1
     best: int | None = None
     for square in state.board.pieces(chess.PAWN, color):
@@ -254,18 +257,101 @@ def _promotion_score(state: ProgressiveState, color: chess.Color) -> int:
     if best is None:
         return 0
     if best <= budget:
-        return 650 + (budget - best) * 55
+        # A large late-game series budget should establish that promotion is
+        # possible, not grow this one heuristic without bound.
+        return 650 + min(4, budget - best) * 55
     return max(0, 180 - (best - budget) * 45)
 
 
-def _attacked_material(board: chess.Board, victim: chess.Color) -> int:
+def _direct_capture_targets(
+    board: chess.Board,
+    victim: chess.Color,
+    *,
+    validate_check_evasions: bool,
+) -> set[int]:
+    """Returns occupied targets capturable without enumerating quiet moves."""
+
     attacker = not victim
-    value = 0
-    for square in chess.scan_forward(board.occupied_co[victim]):
-        piece = board.piece_at(square)
-        if piece is not None and board.is_attacked_by(attacker, square):
-            value += PIECE_VALUES[piece.piece_type]
-    return value
+    probe = board.copy(stack=False)
+    probe.turn = attacker
+    probe.ep_square = None
+    probe.castling_rights = chess.BB_EMPTY
+    attacker_in_check = probe.is_check()
+    captured: set[int] = set()
+    for target in chess.scan_forward(board.occupied_co[victim]):
+        for source in chess.scan_forward(int(board.attackers(attacker, target))):
+            source_piece = board.piece_at(source)
+            if source_piece is None:
+                continue
+            requires_legal_replay = (
+                (validate_check_evasions and attacker_in_check)
+                or source_piece.piece_type == chess.KING
+                or probe.is_pinned(attacker, source)
+            )
+            if not requires_legal_replay:
+                captured.add(target)
+                break
+            promotion = (
+                chess.QUEEN
+                if source_piece.piece_type == chess.PAWN
+                and chess.square_rank(target) in (0, 7)
+                else None
+            )
+            if probe.is_legal(chess.Move(source, target, promotion=promotion)):
+                captured.add(target)
+                break
+    return captured
+
+
+def _attacked_material(board: chess.Board, victim: chess.Color) -> int:
+    """Values distinct pieces with a legal one-move capture against them."""
+
+    attacker = not victim
+    probe = board.copy(stack=False)
+    probe.turn = attacker
+    probe.ep_square = None
+    probe.castling_rights = chess.BB_EMPTY
+    # At a checked boundary this is only an ordering proxy for the following
+    # complete series. Requiring every pseudo-capture to be the first evasion
+    # erased forcing routes that the exact search subsequently proves. Keep
+    # the historical attack-map signal there; away from check, enforce king
+    # safety so absolute pins cannot invent material.
+    if probe.is_check():
+        return sum(
+            PIECE_VALUES[piece.piece_type]
+            for square in chess.scan_forward(board.occupied_co[victim])
+            if (piece := board.piece_at(square)) is not None
+            and board.is_attacked_by(attacker, square)
+        )
+    return sum(
+        PIECE_VALUES[piece.piece_type]
+        for square in _direct_capture_targets(
+            board,
+            victim,
+            validate_check_evasions=False,
+        )
+        if (piece := board.piece_at(square)) is not None
+    )
+
+
+def _immediately_capturable_material(state: ProgressiveState) -> int:
+    """Values distinct pieces the actual mover can legally capture now."""
+
+    board = state.board.copy(stack=False)
+    captured = _direct_capture_targets(
+        board,
+        not board.turn,
+        validate_check_evasions=True,
+    )
+    for ep_target in state.ep_targets:
+        board.ep_square = ep_target
+        if any(board.generate_legal_ep()):
+            captured.add(ep_target + (-8 if board.turn == chess.WHITE else 8))
+    return sum(
+        PIECE_VALUES[piece.piece_type]
+        for square in captured
+        if (piece := state.board.piece_at(square)) is not None
+    )
 
 
 def _first_move_mobility(state: ProgressiveState, color: chess.Color) -> int:
@@ -320,25 +406,43 @@ def _python_evaluate(
     reach_remaining = (
         256 if max_reach_positions is None else max(0, max_reach_positions)
     )
-    white_reach = probe_series_reach(
-        state,
-        chess.WHITE,
-        max_moves=min(2, white_budget),
-        node_limit=min(128, reach_remaining),
-    )
-    reach_remaining -= white_reach.nodes
-    black_reach = probe_series_reach(
-        state,
-        chess.BLACK,
-        max_moves=min(2, black_budget),
-        node_limit=min(128, reach_remaining),
-    )
+    if board.is_check():
+        # The checked side must evade before either color can execute an
+        # arbitrary same-side checking route.  Record the checker's direct
+        # distance without paying for or scoring an unreachable continuation.
+        checker = not board.turn
+        white_reach = (
+            ReachProbe(0, 0, True)
+            if checker == chess.WHITE
+            else ReachProbe(None, 0, True)
+        )
+        black_reach = (
+            ReachProbe(0, 0, True)
+            if checker == chess.BLACK
+            else ReachProbe(None, 0, True)
+        )
+    else:
+        white_reach = probe_series_reach(
+            state,
+            chess.WHITE,
+            max_moves=min(2, white_budget),
+            node_limit=min(128, reach_remaining),
+        )
+        reach_remaining -= white_reach.nodes
+        black_reach = probe_series_reach(
+            state,
+            chess.BLACK,
+            max_moves=min(2, black_budget),
+            node_limit=min(128, reach_remaining),
+        )
     # A failed bounded probe is unknown, not proof that a checking route does
     # not exist. Scoring one side's found route against the other side's
     # incomplete search created large move-order artifacts (notably 1.Na3 over
     # 1.e4 from the initial position). Retain the diagnostic distances but do
     # not turn an asymmetric unknown into evaluation points.
-    if white_reach.complete and black_reach.complete:
+    if board.is_check():
+        series_reach = 0
+    elif white_reach.complete and black_reach.complete:
         series_reach = weights.scale(
             "series_reach",
             _reach_value(white_reach, white_budget) - _reach_value(
@@ -350,15 +454,22 @@ def _python_evaluate(
 
     promotion_corridors = weights.scale(
         "promotion_corridors",
-        _promotion_score(state, chess.WHITE) - _promotion_score(state, chess.BLACK),
+        _promotion_score(
+            state,
+            chess.WHITE,
+        )
+        - _promotion_score(
+            state,
+            chess.BLACK,
+        ),
+    )
+    capturable_material = _immediately_capturable_material(state)
+    vulnerability_raw = (
+        capturable_material if board.turn == chess.WHITE else -capturable_material
     )
     immediate_vulnerability = weights.scale(
         "immediate_vulnerability",
-        (
-            _attacked_material(board, chess.BLACK)
-            - _attacked_material(board, chess.WHITE)
-        )
-        // 5,
+        vulnerability_raw,
     )
     useful_mobility = weights.scale(
         "useful_mobility",
@@ -566,12 +677,12 @@ def _native_fast_evaluation_is_safe(
 
     # Board material, flight squares, attacked material, and check are bounded
     # by 64 squares. Only the progressive promotion budget grows with series.
-    max_promotion_score = 650 + (series_number + 1) * 55
+    max_promotion_score = 650 + 4 * 55
     raw_bounds = (
         64 * PIECE_VALUES[chess.QUEEN],
         8 * 20,
         max_promotion_score,
-        (64 * PIECE_VALUES[chess.QUEEN] + 5) // 6,
+        64 * PIECE_VALUES[chess.QUEEN],
         140,
     )
     products = [
