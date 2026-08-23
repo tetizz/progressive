@@ -9,7 +9,7 @@
       "mate_certificate": {
         "abi_version": 1,
         "allocator": "dlmalloc",
-        "certificate_id": "spc-mate-83541b120e74208e",
+        "certificate_id": "spc-mate-6c23b5884bdcd4a8",
         "contract_version": 1,
         "engine": {
           "engine_version": "spc-0.9.0",
@@ -82,7 +82,7 @@
       "module_js": "spc-engine.js",
       "module_js_sha256": "3cb0cfcfc047c40cd1c72d44e519122bb46c7d4dd38a647d5297302fb8181d8e",
       "prefix_certificate": {
-        "certificate_id": "spc-prefix-aa22261c4c2f8ef9",
+        "certificate_id": "spc-prefix-bafb8e18bc366abd",
         "contract_version": 1,
         "engine": {
           "engine_version": "spc-0.9.0",
@@ -130,7 +130,7 @@
       "root_session_certificate": {
         "abi_version": 2,
         "allocator": "dlmalloc",
-        "certificate_id": "spc-root-session-11e88f817a37ac43",
+        "certificate_id": "spc-root-session-f4e636c3b03aec26",
         "contract_version": 1,
         "engine": {
           "engine_version": "spc-0.9.0",
@@ -154,7 +154,7 @@
           "persistent_d1_d2_session": true,
           "selected_owner_warm_exact_certification": true,
           "start_w32_d5_completed_depth": 5,
-          "start_w32_d5_elapsed_seconds": 25.310299999952317,
+          "start_w32_d5_elapsed_seconds": 25.525699999988078,
           "start_w32_d5_width": 32,
           "work_limit_fail_closed": true
         },
