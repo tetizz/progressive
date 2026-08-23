@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import sqlite3
 import tempfile
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Protocol, Sequence
 
 import chess
 
@@ -22,6 +22,62 @@ from .rules import SeriesLegalityError, play_series
 SELFPLAY_CORPUS_SCHEMA = 1
 SELFPLAY_CORPUS_METHOD = "replayed-league-value-corpus-v1"
 SELFPLAY_TUNER_METHOD = "deterministic-texel-coordinate-v1"
+
+
+class ValueTrainingSample(Protocol):
+    """Minimal loss surface shared by league and native value corpora."""
+
+    features: CachedFeatures
+    target_white_score: float
+    sample_weight: float
+
+
+class ValueTrainingCorpus(Protocol):
+    @property
+    def corpus_id(self) -> str: ...
+
+    @property
+    def train_samples(self) -> Sequence[ValueTrainingSample]: ...
+
+    @property
+    def holdout_samples(self) -> Sequence[ValueTrainingSample]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _WeightedValuePoint:
+    features: CachedFeatures
+    target_white_score: float
+    sample_weight: float
+
+
+def _collapse_loss_equivalent_samples(
+    samples: Sequence[ValueTrainingSample],
+) -> tuple[_WeightedValuePoint, ...]:
+    """Collapse equal seven-feature vectors without changing weighted loss."""
+
+    buckets: dict[tuple[int, ...], list[Any]] = {}
+    for sample in samples:
+        weight = float(sample.sample_weight)
+        target = float(sample.target_white_score)
+        if not math.isfinite(weight) or weight <= 0.0:
+            raise ValueError("value-training sample weights must be positive and finite")
+        if not math.isfinite(target) or not 0.0 <= target <= 1.0:
+            raise ValueError("value-training targets must be finite values in [0, 1]")
+        key = tuple(getattr(sample.features, name) for name in FEATURE_NAMES)
+        bucket = buckets.get(key)
+        if bucket is None:
+            buckets[key] = [sample.features, target * weight, weight]
+        else:
+            bucket[1] += target * weight
+            bucket[2] += weight
+    return tuple(
+        _WeightedValuePoint(
+            features=values[0],
+            target_white_score=values[1] / values[2],
+            sample_weight=values[2],
+        )
+        for _, values in sorted(buckets.items())
+    )
 
 
 def _canonical_json(payload: Mapping[str, Any]) -> bytes:
@@ -525,7 +581,7 @@ def _probability(score: int, scale: int) -> float:
 
 
 def _weighted_log_loss(
-    samples: Sequence[SelfPlaySample],
+    samples: Sequence[ValueTrainingSample],
     weights: EvaluationWeights,
     *,
     scale: int,
@@ -551,7 +607,7 @@ def _weighted_log_loss(
 
 
 def tune_selfplay_profile(
-    corpus: SelfPlayCorpus,
+    corpus: ValueTrainingCorpus,
     parent: EngineProfile,
     *,
     name: str = "self-play Texel candidate",
@@ -565,10 +621,12 @@ def tune_selfplay_profile(
     profile must still pass tactical gates and a separate color-swapped match.
     """
 
-    train = corpus.train_samples
-    holdout = corpus.holdout_samples
-    if not train:
+    raw_train = corpus.train_samples
+    raw_holdout = corpus.holdout_samples
+    if not raw_train:
         raise ValueError("self-play corpus has no training samples")
+    train = _collapse_loss_equivalent_samples(raw_train)
+    holdout = _collapse_loss_equivalent_samples(raw_holdout)
     if not scales or any(scale <= 0 for scale in scales):
         raise ValueError("scales must contain positive integers")
     if not step_schedule or any(step <= 0 for step in step_schedule):
@@ -694,8 +752,11 @@ def tune_selfplay_profile(
         "scale": scale,
         "regularization": regularization,
         "step_schedule": list(step_schedule),
-        "train_samples": len(train),
-        "holdout_samples": len(holdout),
+        "train_samples": len(raw_train),
+        "holdout_samples": len(raw_holdout),
+        "train_feature_buckets": len(train),
+        "holdout_feature_buckets": len(holdout),
+        "loss_surface_collapsed_exactly": True,
         "baseline_train_loss": baseline_train_loss,
         "candidate_train_loss": tuned_train_loss,
         "baseline_holdout_loss": (

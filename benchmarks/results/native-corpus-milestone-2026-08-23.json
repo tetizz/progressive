@@ -1,0 +1,132 @@
+{
+  "format": "spc-native-corpus-milestone-evidence-v1",
+  "captured_at": "2026-08-23T19:30:00Z",
+  "claim_scope": {
+    "deployment_effect": "none; every trained candidate remained unpromoted",
+    "raw_artifacts_committed": false,
+    "statement": "Compact tracked transcription of local source-bound generation, tuning, tactical, and fixed-suite receipts. SHA-256 values bind the ignored raw JSON artifacts retained in the working tree.",
+    "storage_contract_note": "Historical corpus roots predate manifest-bound per-shard outcome sidecars; current hardened generation gives the same record data a different manifest root.",
+    "stockfish_comparison": "This evidence does not establish Stockfish-level strength."
+  },
+  "runtime": {
+    "cpu": "AMD Ryzen 7 9800X3D 8-Core Processor",
+    "logical_processors": 16,
+    "native_source_identity_sha256": "5081d5920c50b1ad0f7dbf409fe7ef397f89ddf1f017dffdbb91812569380ff9",
+    "operating_system": "Microsoft Windows 11 Home",
+    "python_chess_version": "1.11.2",
+    "python_version": "3.14.4",
+    "repository_base_commit": "c4513352b49c08ff48fc971a74cd3ddfad8c174f",
+    "generation_engine_source_fingerprint": "2bacb55012b8a420"
+  },
+  "generation": {
+    "top_heavy_train": {
+      "accepted_games": 4000,
+      "attempts": 4096,
+      "attempts_per_second": 132.83813464774445,
+      "binary_shard_bytes": 7987408,
+      "boundary_occurrences": 38397,
+      "corpus_sha256": "952500bd974978be16805e7fc32e06bbf66f517719fb012433df1579eb291f52",
+      "elapsed_seconds": 30.83451909996802,
+      "generation_contract_sha256": "d9d3d194023998a94c08997358b1dbc8567d6b6bd3a0e465f4aa6be68839b91d",
+      "policy": "rank-mixture-8000-1500-500",
+      "profile_id": "spc-68942034c41b4cc4",
+      "receipt_sha256": "f3f9f23d51d882496c42db3ba6ebf1aa40722c5c5804b368632c2a0acb95a2f6",
+      "rejected_attempts": 96,
+      "restart": {
+        "already_complete_shards": 8,
+        "generated_attempts": 0,
+        "generated_shards": 0,
+        "receipt_sha256": "56fd03848d876a52cb5e04d40b0ce671d712fdf9743849990a620cd2d1113a29",
+        "reproduced_corpus_sha256": "952500bd974978be16805e7fc32e06bbf66f517719fb012433df1579eb291f52",
+        "reproduced_unique_progressive_states": 5289
+      },
+      "seed": 730194821,
+      "timing_scope": "pending-shard generation, authoritative replay, and atomic publication; final store and CLI payload verification excluded",
+      "unique_progressive_states": 5289,
+      "workers": 8
+    },
+    "top_heavy_holdout": {
+      "accepted_games": 1999,
+      "attempts": 2048,
+      "boundary_occurrences": 19004,
+      "corpus_sha256": "0a441a56bd4696c58065f05bb62377376877e8e7ce99c1dec05c6ffb0e046aae",
+      "generation_contract_sha256": "ce972a21057ff9e8dcccb935a6a762ec2fcbf8901216ab9eaa24b881513b0ddd",
+      "receipt_sha256": "763e145f8143551b04d2405c2fe5451edc5450d7b7f49c5a89b814c6db283503",
+      "rejected_attempts": 49,
+      "seed": 730194822,
+      "unique_progressive_states": 3061
+    },
+    "uniform_bootstrap_train": {
+      "accepted_games": 16375,
+      "attempts": 16384,
+      "attempts_per_second": 299.8785268668654,
+      "boundary_occurrences": 108488,
+      "corpus_sha256": "c56a70751bba438b54b33c762833ac865a31fdd4243aba2abf194f690733d26d",
+      "elapsed_seconds": 54.63545579998754,
+      "generation_contract_sha256": "05664c399b83f84753c2426ec47e7ce9002f0bb3bb1f4eef0181b259a242283e",
+      "policy": "uniform",
+      "profile_id": "spc-534fff4218489a07",
+      "receipt_sha256": "5481c3c53c83fffb4d4701401a6263a74231bb660364222cc5d46c4998e9a82d",
+      "rejected_attempts": 9,
+      "seed": 730194828,
+      "unique_progressive_states": 40300,
+      "workers": 8
+    },
+    "uniform_bootstrap_holdout": {
+      "accepted_games": 8186,
+      "attempts": 8192,
+      "attempts_per_second": 312.07208420185816,
+      "boundary_occurrences": 53619,
+      "corpus_sha256": "0b12726abd8470b63dd68831191aee01c757dbfe310fd7e51a78f054773e45ff",
+      "elapsed_seconds": 26.2503454000107,
+      "generation_contract_sha256": "bff860b4d90ca64d49542a0403b6daab92bc07695b6e417c5a03fe33bc0da9ed",
+      "receipt_sha256": "84e4cb0204ea4f0d524f1c6eb9b99c7e847932ab486656aed0d1dec48478051e",
+      "rejected_attempts": 6,
+      "seed": 730194829,
+      "unique_progressive_states": 22013
+    }
+  },
+  "training_and_strength": {
+    "wdl_order": ["wins", "draws", "losses"],
+    "top_heavy_candidate": {
+      "candidate_profile_id": "spc-534fff4218489a07",
+      "development_match": {
+        "game_wdl": [13, 1, 6],
+        "pair_wdl": [4, 6, 0],
+        "report_id": "strength-fe50b13400130bedbbe6",
+        "report_sha256": "b1934443829861428e51bddd502807e755ec1d593d0228c90a764906ac772e23"
+      },
+      "fresh_match": {
+        "completed_games": 49,
+        "game_wdl": [25, 0, 24],
+        "incomplete_games": 1,
+        "pair_wdl": [2, 21, 1],
+        "report_id": "strength-fbbd81f1b40ec6011de2",
+        "report_sha256": "de1958243fe52d0076edaed875bd317029db263ad205c39f061cb380ba3eaacd"
+      },
+      "promotion_decision": "rejected; baseline retained",
+      "tactical_gate_passed": true,
+      "tactical_receipt_sha256": "221949d18f577226d9a949804e3fc49e0422aec5292441dc60cf08a9c83273fe",
+      "training_receipt_sha256": "6d23728b918206df18794d8477c659a05a256490112fa8c41b279c50a8cfb03b"
+    },
+    "uniform_bootstrap_candidate": {
+      "candidate_profile_id": "spc-3a3d3c40405f2d0b",
+      "development_match": {
+        "game_wdl": [7, 0, 3],
+        "pair_wdl": [2, 3, 0],
+        "report_id": "strength-4485b009b1181be517e6",
+        "report_sha256": "9003aec67231d72401b727b943cb411406666e2cb8eae47e4c7a82dd114c6ded"
+      },
+      "fresh_match": {
+        "completed_games": 50,
+        "game_wdl": [21, 1, 28],
+        "incomplete_games": 0,
+        "pair_wdl": [1, 19, 5],
+        "report_id": "strength-18c2b463ab667e6c5910",
+        "report_sha256": "5ec09eccb5d2090c1307175563d92d6717d2f4f4e90377652e8e7c8457d047c0"
+      },
+      "grid_receipt_sha256": "07153fb030274b5393de79bce5dce724efbd604cee7395c5b2df2a74be3f5571",
+      "promotion_decision": "rejected; baseline retained"
+    }
+  }
+}
