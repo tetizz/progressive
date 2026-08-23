@@ -6,6 +6,7 @@ from scottish_progressive.league import (
     HUMAN_FIRST_GAME_CONTENDER_HYPOTHESES,
     HUMAN_FIRST_GAME_REFUTATION,
     HUMAN_FIRST_GAME_REPLY_VERIFIER_WIDTH,
+    HUMAN_FIRST_GAME_ROOT_WORK_LIMIT,
     HUMAN_FIRST_GAME_ROOT_WIDTH,
     _evaluate_human_first_game_refutation,
     _replay_tactical_refutation_anchor,
@@ -74,6 +75,8 @@ def test_first_game_gate_selects_best_retained_safe_candidate_without_win_claim(
     assert all(item["pass_required"] is False for item in hypotheses)
     assert all("not a win proof" in item["evidence_label"] for item in hypotheses)
     assert evidence["retained_candidates"] == HUMAN_FIRST_GAME_ROOT_WIDTH
+    assert evidence["root_work_limit"] == HUMAN_FIRST_GAME_ROOT_WORK_LIMIT
+    assert evidence["work_positions"] <= evidence["root_work_limit"]
     assert evidence["selector_ordinary_static_quota_slots"] == 16
     assert evidence["selector_tactical_reserve_slots"] == 16
     assert (
