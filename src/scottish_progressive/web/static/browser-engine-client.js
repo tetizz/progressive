@@ -22,6 +22,7 @@
   const MAX_INITIAL_MEMORY_BYTES = 128 * 1024 * 1024;
   const MAXIMUM_MEMORY_BYTES = 256 * 1024 * 1024;
   const MAX_ESTIMATED_PEAK_MEMORY_BYTES = 192 * 1024 * 1024;
+  const CHECKED_PV_SELECTION_POLICY = "reject-adverse-checked-pv-mates-v1";
   const PREFIX_API = globalThis.ScottishProgressiveBrowserPrefix || null;
   const ROOT_RUNNER_API = globalThis.ScottishProgressiveBrowserRootIteration || null;
   const scriptVersion = (() => {
@@ -570,7 +571,26 @@
       || result.root_search_mode !== "streaming-root-iteration"
       || typeof result.root_scores_complete !== "boolean"
       || result.root_bound_coverage_complete !== true
+      || result.selection_policy !== CHECKED_PV_SELECTION_POLICY
+      || !exactInteger(
+        result.pv_horizon_line_rejections,
+        0,
+        request.limits.max_series,
+      )
+      || result.selection_policy_filtered
+        !== (result.pv_horizon_line_rejections > 0)
+      || result.selection_policy_filtered
+        && (completedDepth < 3 || completedDepth % 2 !== 1)
+      || result.root_bound_coverage_scope !== (
+        result.selection_policy_filtered
+          ? "selection-eligible-candidates"
+          : "all-retained-candidates"
+      )
+      || result.unfiltered_score_winner_selected
+        !== !result.selection_policy_filtered
       || result.stats?.coverage_complete !== true
+      || result.stats?.pv_horizon_line_rejections
+        !== result.pv_horizon_line_rejections
       || !receipt
       || receipt.runtime !== "browser-wasm"
       || receipt.search_mode !== "streaming-root-iteration"
@@ -592,6 +612,12 @@
       || receipt.canonical_replay_certified !== true
       || receipt.mate_safety_certified !== true
       || receipt.root_bound_coverage_complete !== true
+      || receipt.selection_policy !== result.selection_policy
+      || receipt.selection_policy_filtered !== result.selection_policy_filtered
+      || receipt.pv_horizon_line_rejections !== result.pv_horizon_line_rejections
+      || receipt.root_bound_coverage_scope !== result.root_bound_coverage_scope
+      || receipt.unfiltered_score_winner_selected
+        !== result.unfiltered_score_winner_selected
       || !exactInteger(
         receipt.safety_reserve_positions,
         1,

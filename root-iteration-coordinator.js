@@ -16,6 +16,7 @@
   const UNKNOWN = "unknown";
   const WHITE = "white";
   const BLACK = "black";
+  const CHECKED_PV_SELECTION_POLICY = "reject-adverse-checked-pv-mates-v1";
   const MIN_ASPIRATION_INITIAL_DELTA = 2_048;
   const MAX_ASPIRATION_ATTEMPTS = 4;
 
@@ -751,6 +752,7 @@
           bound: record.exact ? EXACT : record.bound?.kind ?? UNKNOWN,
           score: record.exact ? record.score : record.bound?.score ?? null,
           proof_bounds: Object.freeze([...record.proofBounds]),
+          selection_eligible: record.policyRejected !== true,
         }))
         .sort((left, right) => left.candidate_identity.localeCompare(
           right.candidate_identity,
@@ -802,6 +804,7 @@
         ownerId: null,
         bound: null,
         override: false,
+        policyRejected: false,
         safetyStatus: candidate.terminal_score !== null ? "terminal" : null,
         aspirationEnabled: aspirationCandidateIds.has(candidate.candidate_identity),
         aspirationCenter: request.aspiration?.center_score ?? null,
@@ -817,6 +820,7 @@
     let taskSequence = 0;
     let incumbentEpoch = 0;
     let safetyRevision = 0;
+    let pvHorizonLineRejections = 0;
     let incumbent = null;
     let incumbentSignature = null;
     let invalidated = false;
@@ -870,7 +874,11 @@
     const recomputeIncumbent = () => {
       let next = null;
       for (const record of records.values()) {
-        if (record.exact && better(record, next, whiteToMove)) next = record;
+        if (
+          record.exact
+          && record.policyRejected !== true
+          && better(record, next, whiteToMove)
+        ) next = record;
       }
       const nextSignature = next === null
         ? null
@@ -967,6 +975,11 @@
           safety_revision: 0,
           safety_status: "terminal",
           safety_certified: true,
+          selection_policy: CHECKED_PV_SELECTION_POLICY,
+          selection_policy_filtered: false,
+          pv_horizon_line_rejections: 0,
+          coverage_scope: "all-retained-candidates",
+          unfiltered_score_winner_selected: true,
           coverage_complete: true,
           root_scores_complete: manifest.candidates.length === 1,
           width_complete: manifest.width_complete,
@@ -1330,13 +1343,40 @@
         while (true) {
           recomputeIncumbent();
           if (!incumbent) {
-            throw new RootCoordinatorError(
-              "No exact root incumbent survived reduction.",
-              "root-incumbent-missing",
+            const eligible = [...records.values()].filter(
+              (record) => record.policyRejected !== true,
             );
+            if (eligible.length === 0) {
+              throw new RootCoordinatorError(
+                "Every retained root candidate was rejected by the checked-PV safety policy.",
+                "root-policy-frontier-exhausted",
+                { work: ledger.snapshot() },
+              );
+            }
+            const seed = eligible.find((record) => !record.exact);
+            const worker = workers.find((item) => item.alive && !item.busy);
+            if (!seed || !worker) {
+              throw new RootCoordinatorError(
+                "No exact eligible root incumbent survived reduction.",
+                "root-incumbent-missing",
+              );
+            }
+            dispatch(worker, seed, "full");
+            const outcome = await consumeOne();
+            const followup = handleSearchOutcome(outcome);
+            if (followup !== null) {
+              throw new RootCoordinatorError(
+                "An eligible full-window seed did not become exact.",
+                "root-incumbent-missing",
+              );
+            }
+            continue;
           }
           const uncovered = [...records.values()]
-            .filter((record) => !coversFinal(record, incumbent, whiteToMove))
+            .filter((record) => (
+              record.policyRejected !== true
+              && !coversFinal(record, incumbent, whiteToMove)
+            ))
             .map((record) => record.candidate.candidate_identity);
           if (uncovered.length === 0) return;
           fillIdle(uncovered);
@@ -1385,6 +1425,10 @@
       let safetyStatus = null;
       while (true) {
         recomputeIncumbent();
+        if (incumbent === null) {
+          await ensureFinalCoverage();
+          recomputeIncumbent();
+        }
         if (incumbent.safetyStatus === "found") {
           throw new RootCoordinatorError(
             "The retained frontier is exhausted by authoritative reply mates and must widen.",
@@ -1468,7 +1512,7 @@
           || safety.generation !== generation
           || safety.safety_revision !== safetyRevision
           || safety.candidate_identity !== incumbent.candidate.candidate_identity
-          || !["found", "exhausted", "unknown"].includes(safety.status)
+          || !["found", "exhausted", "line-rejected", "unknown"].includes(safety.status)
           || !exactInteger(safety.work_used, 0, reservation.credit)
         ) {
           ledger.settle(reservation, 0, { lost: true });
@@ -1484,6 +1528,7 @@
           candidate_identity: incumbent.candidate.candidate_identity,
           safety_revision: safetyRevision,
           status: safety.status,
+          safety_scope: safety.safety_scope ?? null,
           work_used: safety.work_used,
         }));
         if (safety.status === "unknown") {
@@ -1497,6 +1542,34 @@
           incumbent.safetyStatus = "exhausted";
           safetyStatus = "exhausted";
           break;
+        }
+        if (safety.status === "line-rejected") {
+          const rejection = safety.line_rejection;
+          if (
+            safety.safety_scope !== "pv-horizon"
+            || !rejection
+            || rejection.schema !== "spc-pv-horizon-line-rejection-v1"
+            || rejection.reason !== "adverse-immediate-series-mate"
+            || !exactInteger(rejection.mate_ply, 2)
+            || rejection.mate_ply % 2 !== 0
+            || typeof rejection.horizon_series !== "string"
+            || !rejection.horizon_series
+            || !safety.reply_mate
+            || safety.override_score !== undefined
+            || safety.proof_bounds !== undefined
+          ) {
+            throw new RootCoordinatorError(
+              "A checked-PV line rejection carried an invalid policy receipt.",
+              "root-safety-result-invalid",
+              { work: ledger.snapshot() },
+            );
+          }
+          incumbent.policyRejected = true;
+          incumbent.safetyStatus = "line-rejected";
+          pvHorizonLineRejections += 1;
+          safetyRevision += 1;
+          await ensureFinalCoverage();
+          continue;
         }
         if (
           !Number.isSafeInteger(safety.override_score)
@@ -1532,7 +1605,10 @@
         throw invalidationError();
       }
       const coverageComplete = [...records.values()].every(
-        (record) => coversFinal(record, incumbent, whiteToMove),
+        (record) => (
+          record.policyRejected === true
+          || coversFinal(record, incumbent, whiteToMove)
+        ),
       );
       if (!coverageComplete) {
         throw new RootCoordinatorError(
@@ -1562,6 +1638,13 @@
         safety_revision: safetyRevision,
         safety_status: safetyStatus,
         safety_certified: safetyStatus === "exhausted" || safetyStatus === "terminal",
+        selection_policy: CHECKED_PV_SELECTION_POLICY,
+        selection_policy_filtered: pvHorizonLineRejections > 0,
+        pv_horizon_line_rejections: pvHorizonLineRejections,
+        coverage_scope: pvHorizonLineRejections > 0
+          ? "selection-eligible-candidates"
+          : "all-retained-candidates",
+        unfiltered_score_winner_selected: pvHorizonLineRejections === 0,
         coverage_complete: true,
         root_scores_complete: rootScoresComplete,
         root_bounds: publicRootBounds(records),

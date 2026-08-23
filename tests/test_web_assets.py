@@ -124,6 +124,53 @@ def test_pages_never_binds_the_certified_local_engine_to_render_identity() -> No
     assert 'error?.code === "browser-analysis-deadline"' in app
 
 
+def test_hosted_fallback_revalidates_identity_and_preserves_the_saved_game() -> None:
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    fallback = app[
+        app.index("function hostedEngineIdentity") :
+        app.index("async function requestRemoteJson")
+    ]
+    routing = app[
+        app.index("async function requestJson") :
+        app.index("function playPrefixDeadlineError")
+    ]
+    validator = app[
+        app.index("async function validateHostedAnalysisIdentity") :
+        app.index("async function requestRemoteJson")
+    ]
+    play_turn = app[
+        app.index("async function maybeRunEngineTurn") :
+        app.index("async function startNewPlayGame")
+    ]
+
+    assert "async function validateHostedAnalysisIdentity" in fallback
+    assert '/^[0-9a-f]{16}$/' in fallback
+    assert 'requestRemoteJson("/api/health"' in fallback
+    assert "sameHostedEngineIdentity(received, currentHosted)" in fallback
+    assert "sameLoadedChampion(expected, currentHosted)" in fallback
+    assert "hostedFallbackAuthorities.set(payload" in validator
+    assert "applyHostedFallbackRuntime(" not in validator
+    assert "signal?.aborted" in validator
+    assert "monotonicNow() > deadlineMs" in validator
+    assert "sameHostedEngineIdentity(expected, loadedChampionIdentity())" in validator
+    assert "browserEngineClient?.close(`hosted fallback selected: ${reason}`)" in fallback
+    assert "state.play.engineFingerprint = identity.source_fingerprint" in fallback
+    assert 'state.play.runtimeMode = "server"' in fallback
+    assert 'dom.engine_status_text.textContent = "Engine online"' in fallback
+    assert "analysis.source_fingerprint =" not in fallback
+    assert "const hostedFallback = stagedHostedFallback(analysis)" in play_turn
+    assert "hostedFallback.expected, loadedChampionIdentity()" in play_turn
+    assert play_turn.index("if (!checked.complete && !checked.outcome)") < play_turn.index(
+        "await animateCheckedEngineSeries"
+    ) < play_turn.index(
+        "applyHostedFallbackRuntime(hostedFallback.health, hostedFallback.reason)"
+    ) < play_turn.index("applyPrefixPayload(checked")
+    assert "Continued safely on the hosted engine" in app
+    assert "localFallbackReason" in routing
+    assert "fallbackReason: localFallbackReason" in routing
+    assert "await validateHostedAnalysisIdentity" in routing
+
+
 def test_pages_artifact_versions_every_executable_asset(
     tmp_path: Path,
 ) -> None:
@@ -816,8 +863,10 @@ def test_play_mode_uses_compiled_replay_locally_and_server_replay_as_fallback() 
     assert "analysisReceipt: true" in engine_turn
     assert "? analysis.checked_prefix" in engine_turn
     assert 'analysis.legal_validation_runtime !== "compiled-wasm"' in engine_turn
-    assert "analysis.engine_profile_id !== state.play.engineProfileId" in engine_turn
-    assert "analysis.source_fingerprint !== state.play.engineFingerprint" in engine_turn
+    assert "const expectedReplyIdentity = hostedFallback?.identity || loadedChampionIdentity()" in engine_turn
+    assert "sameHostedEngineIdentity(expectedReplyIdentity, receivedReplyIdentity)" in engine_turn
+    assert "analysis.engine_profile_id !== expectedReplyIdentity.engine_profile_id" in engine_turn
+    assert "analysis.source_fingerprint !== expectedReplyIdentity.source_fingerprint" in engine_turn
     assert 'state.mode !== "analyze"' in app
     assert 'seriesColor() === state.play.humanColor' in app
     assert "@media (max-width: 560px)" in styles

@@ -301,7 +301,11 @@ function manifestFor(boundary, generation, preferredSeries, { terminalFirst = fa
   };
 }
 
-function prefixResult(request, identity, { child = null, outcome = null } = {}) {
+function prefixResult(
+  request,
+  identity,
+  { child = null, outcome = null, endedByCheck = outcome === "checkmate" } = {},
+) {
   const complete = child !== null;
   const finalFen = complete ? child.fen : request.boundary.fen;
   const remaining = request.boundary.series - request.prefix.length;
@@ -333,10 +337,12 @@ function prefixResult(request, identity, { child = null, outcome = null } = {}) 
     remaining,
     moves_remaining: remaining,
     complete,
-    completion_reason: complete ? outcome === "checkmate" ? "checkmate" : "budget" : null,
-    check: outcome === "checkmate",
-    ended_by_check: outcome === "checkmate",
-    in_check: outcome === "checkmate",
+    completion_reason: complete
+      ? endedByCheck ? outcome === "checkmate" ? "checkmate" : "check" : "budget"
+      : null,
+    check: endedByCheck,
+    ended_by_check: endedByCheck,
+    in_check: endedByCheck,
     outcome,
     unused_moves: complete ? remaining : 0,
     legal_next: complete ? [] : [{ uci: "e2e4", san: "e4" }],
@@ -376,6 +382,8 @@ class MockWorld {
     crashGeneration = null,
     searchDelayMs = 2,
     policyDrift = null,
+    horizonMateFirst = false,
+    favorableHorizonFirst = false,
   } = {}) {
     this.foundFirst = foundFirst;
     this.foundAll = foundAll;
@@ -386,6 +394,8 @@ class MockWorld {
     this.crashGeneration = crashGeneration;
     this.searchDelayMs = searchDelayMs;
     this.policyDrift = policyDrift;
+    this.horizonMateFirst = horizonMateFirst;
+    this.favorableHorizonFirst = favorableHorizonFirst;
     this.workers = [];
     this.live = 0;
     this.peakLive = 0;
@@ -398,6 +408,7 @@ class MockWorld {
     this.createBoundaries = [];
     this.canonicalProtections = [];
     this.deadlineEpochs = [];
+    this.pvTransitions = new Map();
   }
 
   factory = (_url, options) => new MockWorker(this, options);
@@ -597,6 +608,34 @@ class MockWorld {
         ? score <= payload.alpha ? "upper" : score >= payload.beta ? "lower" : "exact"
         : "exact";
       const work = setupWork(worker, payload, 1);
+      let childPv = [];
+      const pvLength = payload.candidate_identity === "c0"
+        ? this.horizonMateFirst && payload.child_depth === 4
+          ? 4
+          : this.favorableHorizonFirst && payload.child_depth === 3 ? 3 : 0
+        : 0;
+      if (pvLength > 0) {
+        let start = worker.manifest.candidates[0].root_series.child_boundary;
+        childPv = Array.from({ length: pvLength }, (_, pvIndex) => {
+          const series = start.series;
+          const moves = candidateMoves(series, 0);
+          const child = exactState(boundaryPayload(flipFen(start.fen), series + 1));
+          const endedByCheck = pvIndex === pvLength - 1;
+          this.pvTransitions.set(
+            JSON.stringify([start.fen, start.series, moves]),
+            { child, endedByCheck },
+          );
+          start = child;
+          return {
+            moves,
+            machine_notation: moves.join("/"),
+            transposition_count: 1,
+            child_boundary: child,
+            outcome: null,
+            ended_by_check: endedByCheck,
+          };
+        });
+      }
       return {
         schema: "spc-root-candidate-result-v1",
         abi_version: 2,
@@ -618,7 +657,7 @@ class MockWorld {
         bound,
         score,
         proof_bounds: [-1, 1],
-        child_pv: [],
+        child_pv: childPv,
         work,
         product_publishable: false,
         safety_certified: false,
@@ -628,6 +667,17 @@ class MockWorld {
     }
     if (type === "prefix") {
       this.prefixWorkerNames.push(worker.name);
+      const transition = this.pvTransitions.get(JSON.stringify([
+        payload.boundary.fen,
+        payload.boundary.series,
+        payload.prefix,
+      ]));
+      if (transition) {
+        return prefixResult(payload, IDENTITY, {
+          child: transition.child,
+          endedByCheck: transition.endedByCheck,
+        });
+      }
       const candidate = worker.manifest?.candidates.find((item) => (
         sameJson(item.root_series.moves, payload.prefix)
       ));
@@ -650,7 +700,16 @@ class MockWorld {
         return result;
       }
       const found = this.foundAll
-        || (this.foundFirst && payload.candidate_identity === "c0");
+        || (this.foundFirst && payload.candidate_identity === "c0")
+        || (
+          this.horizonMateFirst
+          && payload.candidate_identity === "c0"
+          && payload.authoritative_child_boundary?.series === 6
+        ) || (
+          this.favorableHorizonFirst
+          && payload.candidate_identity === "c0"
+          && payload.authoritative_child_boundary?.series === 5
+        );
       if (!found) {
         const result = {
           ...payload,
@@ -1085,6 +1144,76 @@ async function testPersistentPoolTwoTurns() {
     (error) => error?.code === "browser-root-result-invalid",
     "incomplete root-bound coverage must never publish",
   );
+  for (const [label, mutation] of [
+    ["unknown selection policy", {
+      selection_policy: "untrusted-policy-v0",
+    }],
+    ["selection filter/count disagreement", {
+      selection_policy_filtered: true,
+    }],
+    ["non-integer rejection count", {
+      pv_horizon_line_rejections: -0.5,
+      stats: {
+        ...second.stats,
+        pv_horizon_line_rejections: -0.5,
+      },
+      runtime_receipt: {
+        ...second.runtime_receipt,
+        pv_horizon_line_rejections: -0.5,
+      },
+    }],
+    ["result coverage-scope disagreement", {
+      root_bound_coverage_scope: "selection-eligible-candidates",
+    }],
+    ["statistics rejection-count disagreement", {
+      stats: {
+        ...second.stats,
+        pv_horizon_line_rejections: second.pv_horizon_line_rejections + 1,
+      },
+    }],
+    ["receipt selection-policy disagreement", {
+      runtime_receipt: {
+        ...second.runtime_receipt,
+        selection_policy: "untrusted-policy-v0",
+      },
+    }],
+    ["receipt rejection-count disagreement", {
+      runtime_receipt: {
+        ...second.runtime_receipt,
+        pv_horizon_line_rejections: second.pv_horizon_line_rejections + 1,
+      },
+    }],
+    ["receipt selection-filter disagreement", {
+      runtime_receipt: {
+        ...second.runtime_receipt,
+        selection_policy_filtered: true,
+      },
+    }],
+    ["receipt coverage-scope disagreement", {
+      runtime_receipt: {
+        ...second.runtime_receipt,
+        root_bound_coverage_scope: "selection-eligible-candidates",
+      },
+    }],
+    ["receipt unfiltered-winner disagreement", {
+      runtime_receipt: {
+        ...second.runtime_receipt,
+        unfiltered_score_winner_selected: false,
+      },
+    }],
+    ["unfiltered-winner disagreement", {
+      unfiltered_score_winner_selected: false,
+    }],
+  ]) {
+    assert.throws(
+      () => browserClientApi.validatePublishedRootAnalysis({
+        ...second,
+        ...mutation,
+      }, secondPayload, client.identity),
+      (error) => error?.code === "browser-root-result-invalid",
+      `${label} must never publish`,
+    );
+  }
   client.close();
 }
 
@@ -1198,6 +1327,178 @@ async function testImmediateMatePublishesWithBoundCoverage() {
   assert.equal(result.root_bound_coverage_complete, true);
   assert.equal(result.checked_prefix.outcome, "checkmate");
   assert.equal(world.safetyReceipts.length, 0);
+  client.close();
+}
+
+async function testCheckedPvHorizonMateRejectsTheProvisionalWinner() {
+  const world = new MockWorld({ horizonMateFirst: true });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  const requestPayload = payload(boundaryPayload(WHITE_FEN, 1), 5);
+  const result = await client.analyzeRoot(
+    requestPayload,
+    { deadlineMs: performance.now() + 20_000 },
+  );
+  assert.equal(
+    result.completed_depth,
+    5,
+    String(result.runtime_receipt?.interruption_code || "D5 did not complete"),
+  );
+  assert.notDeepEqual(result.best_full_series, candidateMoves(1, 0));
+  const horizonProof = world.safetyReceipts.find((receipt) => (
+    receipt.candidate_identity === "c0"
+    && receipt.authoritative_child_boundary?.series === 6
+    && receipt.status === "found"
+  ));
+  assert(horizonProof, "the selected checked D5 horizon must receive an exact S6 mate probe");
+  assert.equal(horizonProof.call_work_credit, 16_384);
+  assert.equal(horizonProof.override_score, -CONFIG.mate_score + 2);
+  assert.equal(result.selection_policy_filtered, true);
+  assert.equal(result.pv_horizon_line_rejections, 1);
+  const assertFilteredMutationRejected = (label, mutate) => {
+    const candidate = structuredClone(result);
+    mutate(candidate);
+    assert.throws(
+      () => browserClientApi.validatePublishedRootAnalysis(
+        candidate,
+        requestPayload,
+        client.identity,
+      ),
+      (error) => error?.code === "browser-root-result-invalid",
+      `${label} must never publish`,
+    );
+  };
+  for (const [label, mutate] of [
+    ["aligned unknown selection policy", (candidate) => {
+      candidate.selection_policy = "untrusted-policy-v0";
+      candidate.runtime_receipt.selection_policy = "untrusted-policy-v0";
+    }],
+    ["aligned fractional rejection count", (candidate) => {
+      candidate.pv_horizon_line_rejections = 1.5;
+      candidate.stats.pv_horizon_line_rejections = 1.5;
+      candidate.runtime_receipt.pv_horizon_line_rejections = 1.5;
+    }],
+    ["aligned excessive rejection count", (candidate) => {
+      const excessive = requestPayload.max_series + 1;
+      candidate.pv_horizon_line_rejections = excessive;
+      candidate.stats.pv_horizon_line_rejections = excessive;
+      candidate.runtime_receipt.pv_horizon_line_rejections = excessive;
+    }],
+    ["aligned false selection filter", (candidate) => {
+      candidate.selection_policy_filtered = false;
+      candidate.runtime_receipt.selection_policy_filtered = false;
+    }],
+    ["aligned all-candidate coverage scope", (candidate) => {
+      candidate.root_bound_coverage_scope = "all-retained-candidates";
+      candidate.runtime_receipt.root_bound_coverage_scope = "all-retained-candidates";
+    }],
+    ["aligned unfiltered winner", (candidate) => {
+      candidate.unfiltered_score_winner_selected = true;
+      candidate.runtime_receipt.unfiltered_score_winner_selected = true;
+    }],
+    ["statistics rejection-count drift", (candidate) => {
+      candidate.stats.pv_horizon_line_rejections = 0;
+    }],
+    ["receipt selection-policy drift", (candidate) => {
+      candidate.runtime_receipt.selection_policy = "untrusted-policy-v0";
+    }],
+    ["receipt selection-filter drift", (candidate) => {
+      candidate.runtime_receipt.selection_policy_filtered = false;
+    }],
+    ["receipt rejection-count drift", (candidate) => {
+      candidate.runtime_receipt.pv_horizon_line_rejections = 0;
+    }],
+    ["receipt coverage-scope drift", (candidate) => {
+      candidate.runtime_receipt.root_bound_coverage_scope = "all-retained-candidates";
+    }],
+    ["receipt unfiltered-winner drift", (candidate) => {
+      candidate.runtime_receipt.unfiltered_score_winner_selected = true;
+    }],
+  ]) {
+    assertFilteredMutationRejected(label, mutate);
+  }
+  client.close();
+}
+
+
+async function testCheckedPvHorizonIsRootedAndFailClosed() {
+  for (const mutate of [
+    async (base, worker, type, request) => {
+      const result = await base(worker, type, request);
+      if (type !== "prefix" || request.boundary.series !== 3) return result;
+      return prefixResult(request, IDENTITY, {
+        child: exactState(boundaryPayload(flipFen(ALT_WHITE_FEN), 4)),
+        endedByCheck: false,
+      });
+    },
+    async (base, worker, type, request) => {
+      const result = await base(worker, type, request);
+      if (type !== "prefix" || request.boundary.series !== 5) return result;
+      return {
+        ...result,
+        completion_reason: "budget",
+        check: false,
+        ended_by_check: false,
+        in_check: false,
+      };
+    },
+    async (base, worker, type, request) => {
+      const result = await base(worker, type, request);
+      if (
+        type !== "root-safety"
+        || request.authoritative_child_boundary?.series !== 6
+      ) return result;
+      return { ...result, safety_revision: result.safety_revision + 1 };
+    },
+  ]) {
+    const world = new MockWorld({ horizonMateFirst: true });
+    const base = world.handle.bind(world);
+    world.handle = (worker, type, request) => mutate(base, worker, type, request);
+    const client = browserClientApi.createClient({
+      workerUrl: "mock-worker.js",
+      workerFactory: world.factory,
+      navigatorValue: DESKTOP_NAVIGATOR,
+    });
+    await preflight(client);
+    const result = await client.analyzeRoot(
+      payload(boundaryPayload(WHITE_FEN, 1), 5),
+      { deadlineMs: performance.now() + 20_000 },
+    );
+    assert.equal(result.completed_depth, 4, "an unrooted D5 veto must not publish");
+    assert.equal(result.runtime_receipt.interruption_code, "root-safety-unknown");
+    assert.equal(result.selection_policy_filtered, false);
+    client.close();
+  }
+}
+
+
+async function testFavorableCheckedHorizonIsNotVetoed() {
+  const world = new MockWorld({ favorableHorizonFirst: true });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  const result = await client.analyzeRoot(
+    payload(boundaryPayload(WHITE_FEN, 1), 4),
+    { deadlineMs: performance.now() + 20_000 },
+  );
+  assert.equal(result.completed_depth, 4);
+  assert.deepEqual(result.best_full_series, candidateMoves(1, 0));
+  assert.equal(result.selection_policy_filtered, false);
+  assert.equal(result.pv_horizon_line_rejections, 0);
+  assert.equal(
+    world.safetyReceipts.some((receipt) => (
+      receipt.authoritative_child_boundary?.series === 5
+    )),
+    false,
+    "a root-mover mate at an odd horizon ply must not be treated as adverse",
+  );
   client.close();
 }
 
@@ -1438,6 +1739,9 @@ function testGeometry() {
 testAspirationAggregateAndAffinityContract();
 await testPersistentPoolTwoTurns();
 await testWhiteAndBlackMateMapping();
+await testCheckedPvHorizonMateRejectsTheProvisionalWinner();
+await testCheckedPvHorizonIsRootedAndFailClosed();
+await testFavorableCheckedHorizonIsNotVetoed();
 await testCrashReturnsLastSafeAndReprobes();
 await testMateProofCacheAcrossFiveDepthsAndBoundaries();
 await testUnknownMateProofNeverCaches();
@@ -1465,6 +1769,10 @@ process.stdout.write(JSON.stringify({
   pooled_native_prefix: true,
   preflight_heap_released: true,
   white_black_mate_mapping: true,
+  checked_pv_horizon_mate_rejected: true,
+  checked_pv_horizon_root_chain_fail_closed: true,
+  stale_horizon_safety_reply_fail_closed: true,
+  favorable_checked_horizon_not_vetoed: true,
   pruned_bounds_publish: true,
   immediate_mate_with_alternatives: true,
   all_mating_frontier_terminal_mate_rescue: true,

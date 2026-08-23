@@ -226,6 +226,7 @@
   let playPonderCleanup = Promise.resolve();
   let activePlayEngineTurn = null;
   let activeNewPlayGame = null;
+  const hostedFallbackAuthorities = new WeakMap();
 
   function randomStorageId(prefix) {
     const random = globalThis.crypto?.randomUUID?.()
@@ -297,27 +298,205 @@
     )) ? authority : null;
   }
 
-  function validateHostedAnalysisIdentity(payload) {
-    const analysis = first(payload?.analysis, payload?.result, payload);
-    const expected = {
+  function hostedEngineIdentity(value) {
+    return {
+      source_fingerprint: first(value?.source_fingerprint, value?.fingerprint, null),
+      engine_profile_id: first(value?.engine_profile_id, null),
+      engine_version: first(value?.engine_version, value?.version, null),
+      ruleset_version: first(
+        value?.ruleset_version,
+        value?.rules_version,
+        value?.ruleset,
+        null,
+      ),
+    };
+  }
+
+  function completeHostedEngineIdentity(value) {
+    const identity = hostedEngineIdentity(value);
+    const boundedToken = (item) => (
+      typeof item === "string"
+      && item.length >= 1
+      && item.length <= 128
+      && /^[A-Za-z0-9._:+/-]+$/.test(item)
+    );
+    return /^[0-9a-f]{16}$/.test(identity.source_fingerprint || "")
+      && boundedToken(identity.engine_profile_id)
+      && boundedToken(identity.engine_version)
+      && boundedToken(identity.ruleset_version)
+      ? identity
+      : null;
+  }
+
+  function sameHostedEngineIdentity(left, right) {
+    return Boolean(left && right)
+      && Object.keys(left).every((key) => left[key] === right[key]);
+  }
+
+  function sameLoadedChampion(left, right) {
+    return Boolean(left && right)
+      && ["engine_profile_id", "engine_version", "ruleset_version"]
+        .every((key) => left[key] === right[key]);
+  }
+
+  function hostedEngineIdentityError(message) {
+    const error = new Error(message);
+    error.code = "hosted-engine-identity-mismatch";
+    error.fallbackRequired = false;
+    return error;
+  }
+
+  function loadedChampionIdentity() {
+    return completeHostedEngineIdentity({
       source_fingerprint: state.play.engineFingerprint,
       engine_profile_id: state.play.engineProfileId,
       engine_version: state.play.engineVersion,
       ruleset_version: state.play.rulesetVersion,
-    };
-    const mismatched = Object.entries(expected).some(([key, wanted]) => (
-      typeof wanted === "string"
-      && Boolean(wanted)
-      && analysis?.[key] !== wanted
-    ));
-    if (mismatched) {
-      const error = new Error(
-        "The hosted fallback did not echo the loaded engine identity.",
+    });
+  }
+
+  function stagedHostedFallback(payload) {
+    return payload && typeof payload === "object"
+      ? hostedFallbackAuthorities.get(payload) || null
+      : null;
+  }
+
+  function applyHostedFallbackRuntime(health, reason) {
+    const identity = completeHostedEngineIdentity(health);
+    if (!identity) {
+      throw hostedEngineIdentityError(
+        "The hosted fallback health response omitted its engine identity.",
       );
-      error.code = "hosted-engine-identity-mismatch";
-      error.fallbackRequired = false;
-      throw error;
     }
+    browserEngineClient?.close(`hosted fallback selected: ${reason}`);
+    const profileName = first(health.engine_profile_name, health.profile_name);
+    const limits = health.analysis_limits || {};
+    state.play.engineName = String(profileName || "Current champion");
+    state.play.engineProfileId = identity.engine_profile_id;
+    state.play.engineVersion = identity.engine_version;
+    state.play.engineFingerprint = identity.source_fingerprint;
+    state.play.rulesetVersion = identity.ruleset_version;
+    state.play.runtimeCpuCount = first(health.runtime?.cpu_count, null);
+    state.play.runtimeCpuCountSource = first(health.runtime?.cpu_count_source, null);
+    state.play.nativeThreads = Math.max(1, Math.floor(asNumber(
+      first(health.runtime?.native_threads, limits.native_threads),
+      1,
+    )));
+    state.play.nativeThreadsPolicy = first(
+      health.runtime?.native_threads_policy,
+      null,
+    );
+    state.play.browserWasmReady = false;
+    state.play.browserRootReady = false;
+    state.play.browserRootWorkerCount = 0;
+    state.play.browserPrefixReady = false;
+    state.play.browserWasmReason = String(reason || "browser-local-search-failed");
+    state.play.browserWasmArtifact = null;
+    state.play.runtimeMode = "server";
+    state.maximumAnalysisDepth = Math.max(1, Math.floor(asNumber(
+      limits.maximum_depth,
+      state.maximumAnalysisDepth,
+    )));
+    state.maximumAnalysisSeconds = Math.max(0.1, asNumber(
+      first(limits.maximum_seconds, limits.max_seconds),
+      state.maximumAnalysisSeconds,
+    ));
+    state.maximumBranchCap = Math.max(1, Math.floor(asNumber(
+      first(limits.maximum_max_series, limits.maximum_series, limits.max_series),
+      state.maximumBranchCap,
+    )));
+    state.maximumGenerationPositions = Math.max(1_000, Math.floor(asNumber(
+      limits.maximum_generation_positions,
+      state.maximumGenerationPositions,
+    )));
+    state.maximumAlternatives = Math.max(0, Math.floor(asNumber(
+      limits.maximum_alternatives,
+      state.maximumAlternatives,
+    )));
+    state.play.recommendedDepth = Math.max(1, Math.floor(asNumber(
+      health.engine_profile_recommended_depth,
+      state.play.recommendedDepth,
+    )));
+    state.play.recommendedBranchCap = Math.max(1, Math.floor(asNumber(
+      health.engine_profile_recommended_branch_cap,
+      state.play.recommendedBranchCap,
+    )));
+    state.play.timeLimitSeconds = Math.max(0.1, Math.min(
+      state.maximumAnalysisSeconds,
+      asNumber(limits.default_seconds, state.play.timeLimitSeconds),
+    ));
+    state.play.generationPositions = Math.max(1_000, Math.min(
+      state.maximumGenerationPositions,
+      Math.floor(asNumber(
+        limits.default_generation_positions,
+        state.play.generationPositions,
+      )),
+    ));
+    dom.depth_control.max = String(state.maximumAnalysisDepth);
+    dom.cap_control.max = String(state.maximumBranchCap);
+    dom.time_control.max = String(state.maximumAnalysisSeconds);
+    dom.alternatives_control.max = String(Math.min(12, state.maximumAlternatives));
+    dom.rules_version.textContent = identity.ruleset_version;
+    state.play.healthReady = true;
+    dom.engine_status.classList.add("is-online");
+    dom.engine_status.classList.remove("is-offline");
+    dom.engine_status_text.textContent = "Engine online";
+    dom.engine_status.title = [
+      profileName,
+      identity.engine_version,
+      identity.source_fingerprint,
+      "hosted engine fallback",
+      `local engine: ${state.play.browserWasmReason}`,
+    ].filter(Boolean).join(" · ");
+    renderPlaySurface();
+  }
+
+  async function validateHostedAnalysisIdentity(
+    payload,
+    { signal = null, deadlineMs = null, fallbackReason = null } = {},
+  ) {
+    const analysis = first(payload?.analysis, payload?.result, payload);
+    const expected = loadedChampionIdentity();
+    const received = completeHostedEngineIdentity(analysis);
+    if (sameHostedEngineIdentity(expected, received)) return payload;
+    const health = await requestRemoteJson("/api/health", {
+      signal,
+      analysisDeadlineMs: deadlineMs,
+    });
+    const currentHosted = completeHostedEngineIdentity(health);
+    if (
+      health?.ok !== true
+      || !received
+      || !currentHosted
+      || !sameHostedEngineIdentity(received, currentHosted)
+      || !sameLoadedChampion(expected, currentHosted)
+    ) {
+      throw hostedEngineIdentityError(
+        "The hosted fallback did not match the loaded champion and current health identity.",
+      );
+    }
+    if (signal?.aborted) {
+      throw new DOMException("Request cancelled", "AbortError");
+    }
+    if (Number.isFinite(deadlineMs) && monotonicNow() > deadlineMs) {
+      throw analysisDeadlineError();
+    }
+    if (!sameHostedEngineIdentity(expected, loadedChampionIdentity())) {
+      throw hostedEngineIdentityError(
+        "The loaded champion changed while the hosted fallback was being verified.",
+      );
+    }
+    if (!payload || typeof payload !== "object") {
+      throw hostedEngineIdentityError(
+        "The hosted fallback response could not carry a staged identity authority.",
+      );
+    }
+    hostedFallbackAuthorities.set(payload, Object.freeze({
+      expected,
+      identity: currentHosted,
+      health,
+      reason: fallbackReason || "browser-hosted-engine-identity-rebind",
+    }));
     return payload;
   }
 
@@ -438,6 +617,7 @@
     let analysisBody = null;
     let analysisDeadlineMs = Number(options.analysisDeadlineMs);
     let analysisSearchDeadlineMs = Number(options.analysisSearchDeadlineMs);
+    let localFallbackReason = null;
     if (path === "/api/analyze" && options.body !== undefined) {
       try {
         analysisBody = typeof options.body === "string"
@@ -473,6 +653,7 @@
             || error?.code === "browser-root-deadline"
           ) throw error;
           if (error?.fallbackRequired !== true) throw error;
+          localFallbackReason = String(error?.code || "browser-root-analysis-failed");
           // A failed or uncertified depth may use the hosted lane only while
           // the same absolute deadline and loaded identity remain valid.
         }
@@ -492,6 +673,7 @@
             || error?.code === "browser-analysis-deadline"
           ) throw error;
           if (error?.fallbackRequired !== true) throw error;
+          localFallbackReason = String(error?.code || "browser-analysis-failed");
           // The server remains the fail-closed path for an unsupported,
           // uncertified, stale, interrupted, or malformed local result.
         }
@@ -521,7 +703,11 @@
     options.onTransport?.("render-server");
     const remotePayload = await requestRemoteJson(path, remoteOptions);
     return path === "/api/analyze"
-      ? validateHostedAnalysisIdentity(remotePayload)
+      ? await validateHostedAnalysisIdentity(remotePayload, {
+        signal: remoteOptions.signal,
+        deadlineMs: analysisDeadlineMs,
+        fallbackReason: localFallbackReason,
+      })
       : remotePayload;
   }
 
@@ -3624,7 +3810,7 @@
         ? state.play.browserRootReady
           ? `This device · ${state.play.runtimeCpuCount || "available"} logical processors · ${state.play.browserRootWorkerCount} certified single-thread Workers`
           : `This device · ${state.play.runtimeCpuCount || "available"} logical processors · ${state.play.nativeThreads} WebAssembly thread${state.play.nativeThreads === 1 ? "" : "s"}`
-        : `${state.play.runtimeCpuCount === null ? "CPU allocation unavailable" : `${state.play.runtimeCpuCount} CPU allocated`} · ${state.play.nativeThreads} native search thread${state.play.nativeThreads === 1 ? "" : "s"}${state.play.nativeThreadsPolicy === "single-thread-pool-avoidance" ? " · host-safe mode" : ""}`
+        : `${state.play.runtimeCpuCount === null ? "CPU allocation unavailable" : `${state.play.runtimeCpuCount} CPU allocated`} · ${state.play.nativeThreads} native search thread${state.play.nativeThreads === 1 ? "" : "s"}${state.play.nativeThreadsPolicy === "single-thread-pool-avoidance" ? " · host-safe mode" : ""}${state.play.browserWasmReason ? " · Continued safely on the hosted engine" : ""}`
       : "Preparing on-device WebAssembly…";
     renderPlaySearchEvidence();
     renderPlayHistory();
@@ -3840,18 +4026,22 @@
         );
       }
       if (sequence !== state.play.sequence || key !== playPositionKey() || state.mode !== "play") return;
-      state.play.lastSearch = playSearchEvidence(analysis, search);
-      state.play.activeSearch = null;
-      if (state.play.engineProfileId && analysis.engine_profile_id !== state.play.engineProfileId) {
+      const hostedFallback = stagedHostedFallback(analysis);
+      const expectedReplyIdentity = hostedFallback?.identity || loadedChampionIdentity();
+      const receivedReplyIdentity = completeHostedEngineIdentity(analysis);
+      if (!sameHostedEngineIdentity(expectedReplyIdentity, receivedReplyIdentity)) {
+        throw new Error("The reply engine identity changed before the move was validated.");
+      }
+      if (expectedReplyIdentity?.engine_profile_id && analysis.engine_profile_id !== expectedReplyIdentity.engine_profile_id) {
         throw new Error("The reply came from a different engine profile than the loaded champion.");
       }
-      if (state.play.engineFingerprint && analysis.source_fingerprint !== state.play.engineFingerprint) {
+      if (expectedReplyIdentity?.source_fingerprint && analysis.source_fingerprint !== expectedReplyIdentity.source_fingerprint) {
         throw new Error("The reply engine fingerprint changed during the game.");
       }
-      if (state.play.engineVersion && analysis.engine_version !== state.play.engineVersion) {
+      if (expectedReplyIdentity?.engine_version && analysis.engine_version !== expectedReplyIdentity.engine_version) {
         throw new Error("The reply engine version changed during the game.");
       }
-      if (state.play.rulesetVersion && analysis.ruleset_version !== state.play.rulesetVersion) {
+      if (expectedReplyIdentity?.ruleset_version && analysis.ruleset_version !== expectedReplyIdentity.ruleset_version) {
         throw new Error("The reply ruleset changed during the game.");
       }
       const moves = engineSeriesFromAnalysis(analysis);
@@ -3886,8 +4076,25 @@
       if (!checked.complete && !checked.outcome) {
         throw new Error("The engine reply did not complete the required progressive series.");
       }
+      state.play.lastSearch = playSearchEvidence(analysis, search);
+      state.play.activeSearch = null;
       await animateCheckedEngineSeries(checked, sequence);
       if (sequence !== state.play.sequence || state.mode !== "play") return;
+      if (hostedFallback) {
+        if (controller.signal.aborted) {
+          throw new DOMException("Request cancelled", "AbortError");
+        }
+        if (monotonicNow() > analysisReceiptDeadlineMs) {
+          throw analysisDeadlineError();
+        }
+        if (!sameHostedEngineIdentity(hostedFallback.expected, loadedChampionIdentity())) {
+          throw hostedEngineIdentityError(
+            "The loaded champion changed before the hosted move was accepted.",
+          );
+        }
+        applyHostedFallbackRuntime(hostedFallback.health, hostedFallback.reason);
+        hostedFallbackAuthorities.delete(analysis);
+      }
       applyPrefixPayload(checked, canonical, checked.san || canonical);
       state.play.lastEngineSeries = {
         series: state.boundary.series,

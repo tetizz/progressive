@@ -8,9 +8,11 @@
   const UCI_MOVE = /^[a-h][1-8][a-h][1-8][qrbn]?$/;
   const MATE_SCORE = 1_000_000;
   const MAX_LOCAL_DEPTH = 5;
+  const PV_HORIZON_MATE_WORK_LIMIT = 16_384;
   const ASPIRATION_INITIAL_DELTA = 2_048;
   const MAX_ASPIRATION_ATTEMPTS = 4;
   const ROOT_TACTICAL_POLICY = "canonical-boundary-policy-v1";
+  const CHECKED_PV_SELECTION_POLICY = "reject-adverse-checked-pv-mates-v1";
   const ROOT_IDENTITY_KEYS = Object.freeze([
     "source_fingerprint", "kernel_sha256", "module_js_sha256", "certificate_id",
     "runtime_variant", "thread_count", "engine_version", "ruleset_version", "profile_id",
@@ -772,6 +774,23 @@
     return Object.freeze({ ...value, moves: Object.freeze(moves), child_boundary: childBoundary });
   }
 
+  function checkedPvHorizon(candidate) {
+    const rawPv = candidate?.child_pv;
+    if (!Array.isArray(rawPv) || rawPv.length === 0) return null;
+    const pv = rawPv.map(normalizeRootSeries);
+    const horizon = pv.at(-1);
+    if (horizon.outcome !== null || horizon.ended_by_check !== true) return null;
+    const matePly = pv.length + 2;
+    // Only an opponent mate invalidates the selected line. At odd plies the
+    // root mover would be the mating side, which is favorable rather than a
+    // reason to veto its candidate.
+    if (matePly % 2 !== 0) return null;
+    return Object.freeze({
+      pv: Object.freeze(pv),
+      matePly,
+    });
+  }
+
   function sameBoundary(left, right) {
     const a = canonicalBoundary(left);
     const b = canonicalBoundary(right);
@@ -1472,6 +1491,11 @@
         root_search_mode: "streaming-root-iteration",
         root_scores_complete: false,
         root_bound_coverage_complete: true,
+        root_bound_coverage_scope: "all-retained-candidates",
+        unfiltered_score_winner_selected: true,
+        selection_policy: CHECKED_PV_SELECTION_POLICY,
+        selection_policy_filtered: false,
+        pv_horizon_line_rejections: 0,
         exact_width: false,
         timed_out: false,
         work_limit_reached: false,
@@ -1486,6 +1510,7 @@
           coverage_complete: true,
           safety_status: "terminal-mate-rescue",
           terminal_mate_rescues: 1,
+          pv_horizon_line_rejections: 0,
           mate_cache_hits: mateCacheHits,
           mate_cache_misses: mateCacheMisses,
           mate_cache_entries: this.mateProofCache.size,
@@ -1515,6 +1540,11 @@
           canonical_replay_certified: true,
           mate_safety_certified: true,
           root_bound_coverage_complete: true,
+          root_bound_coverage_scope: "all-retained-candidates",
+          unfiltered_score_winner_selected: true,
+          selection_policy: CHECKED_PV_SELECTION_POLICY,
+          selection_policy_filtered: false,
+          pv_horizon_line_rejections: 0,
           terminal_mate_rescue: {
             trigger,
             status: "found",
@@ -1714,164 +1744,303 @@
               const ownerId = task.candidate?.owner_worker_id;
               const channel = this.pool.find((item) => item.id === ownerId) || this.pool[0];
               const rootSeries = normalizeRootSeries(task.candidate?.root_series);
-              const replayRequest = PREFIX_API.normalizePrefixRequest({
-                ...originalBoundary,
-                prefix: [...rootSeries.moves],
-              }, `${task.iteration_id}:${task.safety_revision}:safety-replay`, identity.prefix_contract);
-              const replay = await channel.call("prefix", replayRequest, {
-                signal: taskSignal,
-                deadlineMs: absoluteReceiptDeadline,
-              });
-              PREFIX_API.validatePrefixResult(replay, replayRequest, identity);
-              const authoritativeChild = normalizeExactBoundaryState(replay.next_state || {});
-              if (
-                !sameArray(replay.prefix, rootSeries.moves)
-                || replay.complete !== true
-                || replay.outcome !== null
-                || authoritativeChild === null
-                || !sameExactBoundary(authoritativeChild, rootSeries.child_boundary)
-              ) {
-                throw new RootIterationClientError(
-                  "The compiled root replay disagreed with the manifest child boundary.",
-                  "browser-root-safety-replay-invalid",
-                );
-              }
-              const cacheKey = mateProofCacheKey(identity, authoritativeChild);
-              let cached = this.mateProofCache.get(cacheKey) || null;
-              let safety;
-              if (cached) {
-                this.mateProofCache.delete(cacheKey);
-                this.mateProofCache.set(cacheKey, cached);
-                mateCacheHits += 1;
-                const memory = {
-                  memory_bytes: channel.memoryBytes,
-                  memory_peak_bytes: channel.memoryPeakBytes,
-                };
-                if (cached.status === "found") {
-                  const mateReplayRequest = PREFIX_API.normalizePrefixRequest({
-                    ...authoritativeChild,
-                    prefix: [...cached.moves],
-                  }, `${task.iteration_id}:${task.safety_revision}:mate-replay`, identity.prefix_contract);
-                  const checkedMate = await channel.call("prefix", mateReplayRequest, {
+              const proveBoundaryMate = async ({
+                startBoundary,
+                seriesPath,
+                matePly,
+                credit,
+                scope,
+              }) => {
+                if (!Array.isArray(seriesPath) || seriesPath.length === 0) {
+                  throw new RootIterationClientError(
+                    "The compiled safety replay has no rooted series path.",
+                    "browser-root-safety-replay-invalid",
+                  );
+                }
+                let replayBoundary = canonicalBoundary(startBoundary);
+                let authoritativeChild = null;
+                if (replayBoundary === null) {
+                  throw new RootIterationClientError(
+                    "The compiled safety replay has no canonical root boundary.",
+                    "browser-root-safety-replay-invalid",
+                  );
+                }
+                let replay = null;
+                for (let index = 0; index < seriesPath.length; index += 1) {
+                  const series = seriesPath[index];
+                  const replayRequest = PREFIX_API.normalizePrefixRequest({
+                    ...replayBoundary,
+                    prefix: [...series.moves],
+                  }, `${task.iteration_id}:${task.safety_revision}:${scope}-replay-${index}`, identity.prefix_contract);
+                  replay = await channel.call("prefix", replayRequest, {
                     signal: taskSignal,
                     deadlineMs: absoluteReceiptDeadline,
                   });
-                  PREFIX_API.validatePrefixResult(checkedMate, mateReplayRequest, identity);
-                  recordChannelMemory(checkedMate, channel);
-                  safety = {
-                    ...task,
-                    status: "found",
-                    work_used: 0,
-                    override_score: cached.override_score,
-                    proof_bounds: [...cached.proof_bounds],
-                    memory_bytes: channel.memoryBytes,
-                    memory_peak_bytes: channel.memoryPeakBytes,
-                    mate_cache: {
-                      schema: "spc-root-mate-proof-cache-receipt-v1",
-                      hit: true,
-                      proof_status: "found",
-                    },
-                    reply_mate: {
-                      moves: [...cached.moves],
-                      machine_notation: cached.moves.join("/"),
-                      outcome: "checkmate",
-                      ended_by_check: true,
-                      checked_prefix: checkedMate,
-                    },
-                  };
-                } else {
-                  safety = {
-                    ...task,
-                    status: "exhausted",
-                    work_used: 0,
-                    ...memory,
-                    mate_cache: {
-                      schema: "spc-root-mate-proof-cache-receipt-v1",
-                      hit: true,
-                      proof_status: "exhausted",
-                    },
-                  };
+                  PREFIX_API.validatePrefixResult(replay, replayRequest, identity);
+                  const nextChild = normalizeExactBoundaryState(replay.next_state || {});
+                  if (
+                    !sameArray(replay.prefix, series.moves)
+                    || replay.complete !== true
+                    || replay.outcome !== series.outcome
+                    || replay.ended_by_check !== series.ended_by_check
+                    || nextChild === null
+                    || !sameExactBoundary(nextChild, series.child_boundary)
+                  ) {
+                    throw new RootIterationClientError(
+                      "The compiled safety replay disagreed with the rooted searched PV.",
+                      "browser-root-safety-replay-invalid",
+                    );
+                  }
+                  authoritativeChild = nextChild;
+                  replayBoundary = nextChild;
                 }
-              } else {
-                mateCacheMisses += 1;
-                safety = await channel.call("root-safety", {
-                  ...task,
-                  session_id: channel.sessionId,
-                  deadline_epoch_ms: deadlineEpochMs,
-                  authoritative_child_boundary: authoritativeChild,
-                  authoritative_root_replay: replay,
-                  remaining_time_ms: Math.max(0, Math.floor(
-                    task.deadline_monotonic_ms - monotonicNow(),
-                  )),
-                }, { signal: taskSignal, deadlineMs: absoluteReceiptDeadline });
-                safety = {
-                  ...safety,
-                  mate_cache: {
-                    schema: "spc-root-mate-proof-cache-receipt-v1",
-                    hit: false,
-                    proof_status: String(safety?.status || "unknown"),
-                  },
-                };
-              }
-              recordChannelMemory(safety, channel);
-              if (safety?.status === "found") {
-                const replyMoves = safety.reply_mate?.moves;
-                const mateReplayRequest = PREFIX_API.normalizePrefixRequest({
-                  ...authoritativeChild,
-                  prefix: Array.isArray(replyMoves) ? [...replyMoves] : null,
-                }, `${task.iteration_id}:${task.safety_revision}:mate-replay`, identity.prefix_contract);
-                const checkedMate = safety.reply_mate?.checked_prefix;
-                PREFIX_API.validatePrefixResult(checkedMate, mateReplayRequest, identity);
-                const childIsWhite = authoritativeChild.side_to_move === "white";
-                const expectedOverride = childIsWhite ? MATE_SCORE - 2 : -MATE_SCORE + 2;
-                const expectedProof = childIsWhite ? [1, 1] : [-1, -1];
-                if (
-                  !sameArray(checkedMate.prefix, replyMoves)
-                  || checkedMate.complete !== true
-                  || checkedMate.outcome !== "checkmate"
-                  || checkedMate.ended_by_check !== true
-                  || safety.override_score !== expectedOverride
-                  || !sameJson(safety.proof_bounds, expectedProof)
-                  || safety.reply_mate.machine_notation !== replyMoves.join("/")
-                  || safety.reply_mate.outcome !== "checkmate"
-                  || safety.reply_mate.ended_by_check !== true
-                ) {
+                const series = seriesPath.at(-1);
+
+                const cacheKey = mateProofCacheKey(identity, authoritativeChild);
+                let cached = this.mateProofCache.get(cacheKey) || null;
+                const cacheHit = cached !== null;
+                let safety;
+                if (cached) {
+                  this.mateProofCache.delete(cacheKey);
+                  this.mateProofCache.set(cacheKey, cached);
+                  mateCacheHits += 1;
+                  if (cached.status === "found") {
+                    const mateReplayRequest = PREFIX_API.normalizePrefixRequest({
+                      ...authoritativeChild,
+                      prefix: [...cached.moves],
+                    }, `${task.iteration_id}:${task.safety_revision}:${scope}-mate-replay`, identity.prefix_contract);
+                    const checkedMate = await channel.call("prefix", mateReplayRequest, {
+                      signal: taskSignal,
+                      deadlineMs: absoluteReceiptDeadline,
+                    });
+                    PREFIX_API.validatePrefixResult(
+                      checkedMate,
+                      mateReplayRequest,
+                      identity,
+                    );
+                    recordChannelMemory(checkedMate, channel);
+                    safety = {
+                      ...task,
+                      status: "found",
+                      work_used: 0,
+                      proof_bounds: [...cached.proof_bounds],
+                      memory_bytes: channel.memoryBytes,
+                      memory_peak_bytes: channel.memoryPeakBytes,
+                      reply_mate: {
+                        moves: [...cached.moves],
+                        machine_notation: cached.moves.join("/"),
+                        outcome: "checkmate",
+                        ended_by_check: true,
+                        checked_prefix: checkedMate,
+                      },
+                    };
+                  } else {
+                    safety = {
+                      ...task,
+                      status: "exhausted",
+                      work_used: 0,
+                      memory_bytes: channel.memoryBytes,
+                      memory_peak_bytes: channel.memoryPeakBytes,
+                    };
+                  }
+                } else {
+                  mateCacheMisses += 1;
+                  const safetyRequest = {
+                    ...task,
+                    candidate: { ...task.candidate, root_series: series },
+                    call_work_credit: credit,
+                    session_id: channel.sessionId,
+                    deadline_epoch_ms: deadlineEpochMs,
+                    authoritative_child_boundary: authoritativeChild,
+                    authoritative_root_replay: replay,
+                    remaining_time_ms: Math.max(0, Math.floor(
+                      task.deadline_monotonic_ms - monotonicNow(),
+                    )),
+                  };
+                  safety = await channel.call("root-safety", safetyRequest, {
+                    signal: taskSignal,
+                    deadlineMs: absoluteReceiptDeadline,
+                  });
+                  const echoedKeys = [
+                    "schema", "request_id", "iteration_id", "source_fingerprint",
+                    "kernel_sha256", "module_js_sha256", "certificate_id",
+                    "runtime_variant", "thread_count", "engine_version",
+                    "ruleset_version", "profile_id", "generation",
+                    "safety_revision", "incumbent_epoch", "candidate_identity",
+                    "call_work_credit", "session_id", "deadline_epoch_ms",
+                  ];
+                  if (
+                    !safety
+                    || typeof safety !== "object"
+                    || Array.isArray(safety)
+                    || !["found", "exhausted", "unknown"].includes(safety.status)
+                    || echoedKeys.some((key) => safety[key] !== safetyRequest[key])
+                    || !sameJson(safety.candidate, safetyRequest.candidate)
+                    || !sameExactBoundary(
+                      safety.authoritative_child_boundary,
+                      authoritativeChild,
+                    )
+                    || !sameJson(safety.authoritative_root_replay, replay)
+                  ) {
+                    throw new RootIterationClientError(
+                      "The compiled reply-mate proof did not echo its rooted safety request.",
+                      "browser-root-mate-proof-invalid",
+                    );
+                  }
+                }
+                recordChannelMemory(safety, channel);
+                if (!exactInteger(safety?.work_used, 0, credit)) {
                   throw new RootIterationClientError(
-                    "The compiled reply-mate proof did not match Python root semantics.",
+                    "The compiled reply-mate proof exceeded its bounded work credit.",
                     "browser-root-mate-proof-invalid",
                   );
                 }
-                if (!cached) {
-                  cached = Object.freeze({
-                    status: "found",
-                    moves: Object.freeze([...replyMoves]),
-                    override_score: safety.override_score,
-                    proof_bounds: Object.freeze([...safety.proof_bounds]),
-                  });
+
+                const childIsWhite = authoritativeChild.side_to_move === "white";
+                const proofBounds = childIsWhite ? [1, 1] : [-1, -1];
+                if (safety?.status === "found") {
+                  const replyMoves = safety.reply_mate?.moves;
+                  const mateReplayRequest = PREFIX_API.normalizePrefixRequest({
+                    ...authoritativeChild,
+                    prefix: Array.isArray(replyMoves) ? [...replyMoves] : null,
+                  }, cached === null
+                    ? `${task.iteration_id}:${task.safety_revision}:mate-replay`
+                    : `${task.iteration_id}:${task.safety_revision}:${scope}-mate-replay`,
+                  identity.prefix_contract);
+                  const checkedMate = safety.reply_mate?.checked_prefix;
+                  PREFIX_API.validatePrefixResult(
+                    checkedMate,
+                    mateReplayRequest,
+                    identity,
+                  );
+                  const kernelOverride = childIsWhite
+                    ? MATE_SCORE - 2
+                    : -MATE_SCORE + 2;
+                  if (
+                    !sameArray(checkedMate.prefix, replyMoves)
+                    || checkedMate.complete !== true
+                    || checkedMate.outcome !== "checkmate"
+                    || checkedMate.ended_by_check !== true
+                    || (cached === null && safety.override_score !== kernelOverride)
+                    || !sameJson(safety.proof_bounds, proofBounds)
+                    || safety.reply_mate.machine_notation !== replyMoves.join("/")
+                    || safety.reply_mate.outcome !== "checkmate"
+                    || safety.reply_mate.ended_by_check !== true
+                  ) {
+                    throw new RootIterationClientError(
+                      "The compiled reply-mate proof did not match replayed progressive chess.",
+                      "browser-root-mate-proof-invalid",
+                    );
+                  }
+                  if (cached === null) {
+                    cached = Object.freeze({
+                      status: "found",
+                      moves: Object.freeze([...replyMoves]),
+                      proof_bounds: Object.freeze([...proofBounds]),
+                    });
+                  }
+                } else if (
+                  safety?.status === "exhausted"
+                  && (
+                    safety.reply_mate !== undefined
+                    || safety.override_score !== undefined
+                    || safety.proof_bounds !== undefined
+                  )
+                ) {
+                  throw new RootIterationClientError(
+                    "An exhausted reply-mate proof carried an override.",
+                    "browser-root-mate-proof-invalid",
+                  );
                 }
-              } else if (
-                safety?.status === "exhausted"
-                && (
-                  safety.reply_mate !== undefined
-                  || safety.override_score !== undefined
-                  || safety.proof_bounds !== undefined
-                )
-              ) {
-                throw new RootIterationClientError(
-                  "An exhausted reply-mate proof carried an override.",
-                  "browser-root-mate-proof-invalid",
+                if (cached === null && safety?.status === "exhausted") {
+                  cached = Object.freeze({ status: "exhausted" });
+                }
+                if (cached !== null && !this.mateProofCache.has(cacheKey)) {
+                  this.mateProofCache.set(cacheKey, cached);
+                  while (this.mateProofCache.size > this.mateProofCacheLimit) {
+                    this.mateProofCache.delete(this.mateProofCache.keys().next().value);
+                  }
+                }
+
+                const normalized = {
+                  ...task,
+                  status: safety.status,
+                  work_used: safety.work_used,
+                  memory_bytes: channel.memoryBytes,
+                  memory_peak_bytes: channel.memoryPeakBytes,
+                  safety_scope: scope,
+                  mate_cache: {
+                    schema: "spc-root-mate-proof-cache-receipt-v1",
+                    hit: cacheHit,
+                    proof_status: String(safety.status || "unknown"),
+                  },
+                };
+                if (safety.status === "found") {
+                  normalized.override_score = childIsWhite
+                    ? MATE_SCORE - matePly
+                    : -MATE_SCORE + matePly;
+                  normalized.proof_bounds = [...proofBounds];
+                  normalized.reply_mate = safety.reply_mate;
+                }
+                return normalized;
+              };
+
+              let workUsed = 0;
+              const horizon = checkedPvHorizon(task.candidate);
+              if (horizon !== null && task.call_work_credit - workUsed > 1) {
+                const horizonCredit = Math.min(
+                  PV_HORIZON_MATE_WORK_LIMIT,
+                  task.call_work_credit - workUsed - 1,
                 );
-              }
-              if (!cached && safety?.status === "exhausted") {
-                cached = Object.freeze({ status: "exhausted" });
-              }
-              if (cached && safety?.mate_cache?.hit === false) {
-                this.mateProofCache.set(cacheKey, cached);
-                while (this.mateProofCache.size > this.mateProofCacheLimit) {
-                  this.mateProofCache.delete(this.mateProofCache.keys().next().value);
+                const horizonSafety = await proveBoundaryMate({
+                  startBoundary: originalBoundary,
+                  seriesPath: [rootSeries, ...horizon.pv],
+                  matePly: horizon.matePly,
+                  credit: horizonCredit,
+                  scope: "pv-horizon",
+                });
+                workUsed += horizonSafety.work_used;
+                if (horizonSafety.status === "found") {
+                  const {
+                    override_score: _discardedOverride,
+                    proof_bounds: _discardedProofBounds,
+                    ...evidence
+                  } = horizonSafety;
+                  return {
+                    ...evidence,
+                    status: "line-rejected",
+                    work_used: workUsed,
+                    line_rejection: {
+                      schema: "spc-pv-horizon-line-rejection-v1",
+                      reason: "adverse-immediate-series-mate",
+                      mate_ply: horizon.matePly,
+                      horizon_series: horizon.pv.at(-1).machine_notation,
+                    },
+                  };
                 }
               }
-              return safety;
+
+              const rootCredit = task.call_work_credit - workUsed;
+              if (rootCredit < 1) {
+                return {
+                  ...task,
+                  status: "unknown",
+                  work_used: workUsed,
+                  memory_bytes: channel.memoryBytes,
+                  memory_peak_bytes: channel.memoryPeakBytes,
+                };
+              }
+              const rootSafety = await proveBoundaryMate({
+                startBoundary: originalBoundary,
+                seriesPath: [rootSeries],
+                matePly: 2,
+                credit: rootCredit,
+                scope: "root-child",
+              });
+              return {
+                ...rootSafety,
+                work_used: workUsed + rootSafety.work_used,
+              };
             };
             let iteration;
             try {
@@ -1941,6 +2110,17 @@
               iteration.status !== "complete"
               || iteration.coverage_complete !== true
               || iteration.safety_certified !== true
+              || iteration.selection_policy !== CHECKED_PV_SELECTION_POLICY
+              || !exactInteger(iteration.pv_horizon_line_rejections, 0)
+              || iteration.selection_policy_filtered
+                !== (iteration.pv_horizon_line_rejections > 0)
+              || iteration.coverage_scope !== (
+                iteration.selection_policy_filtered
+                  ? "selection-eligible-candidates"
+                  : "all-retained-candidates"
+              )
+              || iteration.unfiltered_score_winner_selected
+                !== !iteration.selection_policy_filtered
               || !["exhausted", "terminal"].includes(iteration.safety_status)
             ) {
               throw new RootIterationClientError(
@@ -2037,6 +2217,12 @@
               root_search_mode: "streaming-root-iteration",
               root_scores_complete: iteration.root_scores_complete,
               root_bound_coverage_complete: iteration.coverage_complete,
+              root_bound_coverage_scope: iteration.coverage_scope,
+              unfiltered_score_winner_selected:
+                iteration.unfiltered_score_winner_selected,
+              selection_policy: iteration.selection_policy,
+              selection_policy_filtered: iteration.selection_policy_filtered,
+              pv_horizon_line_rejections: iteration.pv_horizon_line_rejections,
               exact_width: iteration.width_complete,
               timed_out: false,
               work_limit_reached: false,
@@ -2050,6 +2236,7 @@
                 initial_full_wave: geometry.initial_full_wave,
                 coverage_complete: true,
                 safety_status: iteration.safety_status,
+                pv_horizon_line_rejections: iteration.pv_horizon_line_rejections,
                 mate_cache_hits: mateCacheHits,
                 mate_cache_misses: mateCacheMisses,
                 mate_cache_entries: this.mateProofCache.size,
@@ -2090,6 +2277,12 @@
                 canonical_replay_certified: true,
                 mate_safety_certified: true,
                 root_bound_coverage_complete: true,
+                root_bound_coverage_scope: iteration.coverage_scope,
+                unfiltered_score_winner_selected:
+                  iteration.unfiltered_score_winner_selected,
+                selection_policy: iteration.selection_policy,
+                selection_policy_filtered: iteration.selection_policy_filtered,
+                pv_horizon_line_rejections: iteration.pv_horizon_line_rejections,
                 aspiration: {
                   ...aspiration,
                   owner_worker_id: aspirationOwnerId,

@@ -239,27 +239,34 @@ function workers(count, definitions, options = {}) {
 }
 
 
+function safetyReply(task, values) {
+  return {
+    request_id: task.request_id,
+    iteration_id: task.iteration_id,
+    source_fingerprint: task.source_fingerprint,
+    kernel_sha256: task.kernel_sha256,
+    module_js_sha256: task.module_js_sha256,
+    certificate_id: task.certificate_id,
+    runtime_variant: task.runtime_variant,
+    thread_count: task.thread_count,
+    engine_version: task.engine_version,
+    ruleset_version: task.ruleset_version,
+    profile_id: task.profile_id,
+    generation: task.generation,
+    safety_revision: task.safety_revision,
+    candidate_identity: task.candidate_identity,
+    ...values,
+  };
+}
+
+
 function exhaustedSafety(events = [], workUsed = 0) {
   return async (task) => {
     events.push({ event: "safety-probe", task });
-    return {
-      request_id: task.request_id,
-      iteration_id: task.iteration_id,
-      source_fingerprint: task.source_fingerprint,
-      kernel_sha256: task.kernel_sha256,
-      module_js_sha256: task.module_js_sha256,
-      certificate_id: task.certificate_id,
-      runtime_variant: task.runtime_variant,
-      thread_count: task.thread_count,
-      engine_version: task.engine_version,
-      ruleset_version: task.ruleset_version,
-      profile_id: task.profile_id,
-      generation: task.generation,
-      safety_revision: task.safety_revision,
-      candidate_identity: task.candidate_identity,
+    return safetyReply(task, {
       status: "exhausted",
       work_used: workUsed,
-    };
+    });
   };
 }
 
@@ -579,6 +586,77 @@ async function testResponseOrderPermutations() {
   }
   assert.equal(permutations.length, 8);
   assert(signatures.every(([id, score]) => id === "l" && score === 50));
+}
+
+
+async function testCheckedPvPolicyVeto() {
+  const definitions = [
+    { id: "a", key: "a2a3", score: 100 },
+    { id: "b", key: "b2b3", score: 90 },
+  ];
+  const pool = workers(1, definitions);
+  const safetyProbe = async (task) => {
+    if (task.candidate_identity !== "a") {
+      return safetyReply(task, { status: "exhausted", work_used: 1 });
+    }
+    return safetyReply(task, {
+      status: "line-rejected",
+      safety_scope: "pv-horizon",
+      work_used: 2,
+      line_rejection: {
+        schema: "spc-pv-horizon-line-rejection-v1",
+        reason: "adverse-immediate-series-mate",
+        mate_ply: 6,
+        horizon_series: "a1a2/a2a3/a3a4/a4a5/a5a6",
+      },
+      reply_mate: { outcome: "checkmate", moves: ["h8h1"] },
+    });
+  };
+  const result = await api.runRootIteration({
+    request: request(1),
+    manifest: manifest(definitions),
+    workers: pool,
+    safetyProbe,
+  });
+  assert.equal(result.selected.candidate_identity, "b");
+  assert.equal(result.selected.score, 90);
+  assert.equal(result.selected.safety_override, false);
+  assert.equal(result.selection_policy, "reject-adverse-checked-pv-mates-v1");
+  assert.equal(result.selection_policy_filtered, true);
+  assert.equal(result.pv_horizon_line_rejections, 1);
+  assert.equal(result.coverage_scope, "selection-eligible-candidates");
+  assert.equal(result.unfiltered_score_winner_selected, false);
+  assert.equal(result.safety_revision, 1);
+  assert.equal(result.safety_certified, true);
+  assert.equal(result.work.safety_committed_work, 3);
+  const rejected = result.root_bounds.find((item) => item.candidate_identity === "a");
+  assert.equal(rejected.score, 100, "a line veto must not forge the searched score");
+  assert.deepEqual(rejected.proof_bounds, [-1, 1]);
+  assert.equal(rejected.selection_eligible, false);
+  assert.equal(
+    result.root_bounds.find((item) => item.candidate_identity === "b")?.selection_eligible,
+    true,
+  );
+  assert.deepEqual(
+    result.tasks.filter((item) => item.event === "safety")
+      .map((item) => [item.candidate_identity, item.status, item.safety_scope]),
+    [
+      ["a", "line-rejected", "pv-horizon"],
+      ["b", "exhausted", null],
+    ],
+  );
+
+  const single = [{ id: "a", key: "a2a3", score: 100 }];
+  await assert.rejects(api.runRootIteration({
+    request: request(1, { iteration_id: "all-policy-rejected" }),
+    manifest: manifest(single),
+    workers: workers(1, single),
+    safetyProbe,
+  }), (error) => {
+    assert.equal(error?.code, "root-policy-frontier-exhausted");
+    assert.equal(error?.work?.safety_committed_work, 2);
+    return true;
+  });
 }
 
 
@@ -1135,6 +1213,7 @@ await testWhiteCanonicalTies();
 await testBlackMirror();
 await testTerminalProductionOrder();
 await testSafetyRevisionAndBoundInvalidation();
+await testCheckedPvPolicyVeto();
 await testResponseOrderPermutations();
 await testAspirationWideningAndFallback();
 await testProtocolFaults();
@@ -1144,7 +1223,7 @@ await testUnsupportedEnvelope();
 
 process.stdout.write(`${JSON.stringify({
   schema: "spc-root-iteration-coordinator-verifier-v1",
-  scenarios: 17,
+  scenarios: 19,
   response_order_permutations: 8,
   response_order_worker_count: 8,
   streaming_first_wave: true,
@@ -1154,6 +1233,8 @@ process.stdout.write(`${JSON.stringify({
   canonical_ties: true,
   terminal_production_order: true,
   safety_revision_bound_invalidation: true,
+  checked_pv_policy_veto_without_score_forgery: true,
+  all_policy_vetoes_fail_closed: true,
   exact_aspiration_widening: true,
   aspiration_full_window_fallback: true,
   black_aspiration_mirror: true,

@@ -1380,9 +1380,11 @@ class AnalysisBoardHandler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "same-origin")
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
-            "base-uri 'none'; frame-ancestors 'none'",
+            "default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval'; "
+            "worker-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; connect-src 'self' "
+            "https://progressive-ui9q.onrender.com; object-src 'none'; "
+            "base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
         )
         self.end_headers()
         if self.command != "HEAD":
