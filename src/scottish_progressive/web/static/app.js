@@ -3931,7 +3931,10 @@
     try {
       return await transition;
     } finally {
-      if (activeNewPlayGame === transition) activeNewPlayGame = null;
+      if (activeNewPlayGame === transition) {
+        activeNewPlayGame = null;
+        renderAll();
+      }
     }
   }
 

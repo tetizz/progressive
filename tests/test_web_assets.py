@@ -1143,7 +1143,8 @@ def test_new_game_transition_is_single_flight_across_a_deferred_drain() -> None:
 
     assert "if (activeNewPlayGame) return activeNewPlayGame;" in start
     assert "activeNewPlayGame = transition;" in start
-    assert "if (activeNewPlayGame === transition) activeNewPlayGame = null;" in start
+    assert "if (activeNewPlayGame === transition)" in start
+    assert start.index("activeNewPlayGame = null;") < start.index("renderAll();")
     assert "while (activeNewPlayGame) await activeNewPlayGame;" in start
     assert select_color.index("await waitForActiveNewPlayGame();") < (
         select_color.index("state.play.humanColor = color;")
@@ -1162,8 +1163,10 @@ const drain = new Promise((resolve) => { releaseDrain = resolve; });
 let starts = 0;
 let replacementCommits = 0;
 let laterActionApplied = 0;
+let renderCalls = 0;
 let liveSession = "old-session";
 let storedSession = "old-session";
+function renderAll() { renderCalls += 1; }
 function performStartNewPlayGame() {
   starts += 1;
   return (async () => {
@@ -1191,6 +1194,7 @@ function performStartNewPlayGame() {
   if (laterActionApplied !== 1) throw new Error("later action did not resume after the new game");
   if (liveSession !== storedSession) throw new Error("live and durable sessions diverged");
   if (activeNewPlayGame !== null) throw new Error("settled new-game transition stayed active");
+  if (renderCalls !== 1) throw new Error(`expected one settled-state render, got ${renderCalls}`);
   process.stdout.write("ok");
 })().catch((error) => { console.error(error); process.exit(1); });
 """
