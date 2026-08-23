@@ -23,6 +23,8 @@ namespace {
 
 constexpr std::uint32_t ABI_VERSION = 1;
 constexpr std::int64_t MATE_SCORE = 1'000'000;
+constexpr std::uint64_t MAX_EXACT_JAVASCRIPT_INTEGER =
+    (std::uint64_t{1} << 53) - 1;
 constexpr std::uint64_t CACHE_CAPACITY = 16'384;
 constexpr std::size_t MAX_BOUNDARY_FEN_BYTES = 512;
 constexpr std::int32_t MAX_QUIET_SERIES = 1'000'000;
@@ -1271,10 +1273,17 @@ void write_stats(
 ) {
     stream << "{\"nodes\":" << stats.nodes
            << ",\"leaf_evaluations\":" << stats.leaf_evaluations
-           << ",\"generated_raw_series\":" << stats.generated_raw_series
+           << ",\"generated_raw_series\":"
+           << std::min(
+               stats.generated_raw_series,
+               MAX_EXACT_JAVASCRIPT_INTEGER
+           )
            << ",\"generated_unique_series\":" << stats.generated_unique_series
            << ",\"intra_series_transpositions\":"
-           << stats.intra_series_transpositions
+           << std::min(
+               stats.intra_series_transpositions,
+               MAX_EXACT_JAVASCRIPT_INTEGER
+           )
            << ",\"tt_hits\":" << stats.tt_hits
            << ",\"alpha_beta_cutoffs\":" << stats.alpha_beta_cutoffs
            << ",\"pvs_zero_window_searches\":"
@@ -1297,7 +1306,11 @@ void write_stats(
            << ",\"frontier_prunes\":" << stats.frontier_prunes
            << ",\"frontier_states_pruned\":"
            << stats.frontier_states_pruned
-           << ",\"frontier_paths_pruned\":" << stats.frontier_paths_pruned
+           << ",\"frontier_paths_pruned\":"
+           << std::min(
+               stats.frontier_paths_pruned,
+               MAX_EXACT_JAVASCRIPT_INTEGER
+           )
            << ",\"tactical_frontier_states_retained\":"
            << stats.tactical_frontier_states_retained
            << ",\"tactical_frontier_reserve_drops\":"

@@ -226,9 +226,10 @@ spc compare-replies --output-dir reports
   self-play fit, natural-selection runs, independent match results, and why no
   v0.7, v0.8, or v0.9 challenger was promoted.
 
-The shallow run ranks `1.g3` and `1.c3` first, but that ordering collapses an
-important horizon: White has not yet received the three-move series. In the
-selective three-series extension, `1.e4` scores `+848` and `1.d4` `+752` under
+The shallow run ranks `1.e3` first and `1.e4` second, but that ordering
+collapses an important horizon: White has not yet received the three-move
+series. In the
+selective three-series extension, `1.e4` scores `+530` and `1.d4` `+452` under
 the current heuristic. Those are useful hypotheses only; branch pruning and
 uncalibrated evaluation weights make neither a proof nor an objective answer.
 

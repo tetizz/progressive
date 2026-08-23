@@ -46,6 +46,15 @@ const boundary = Object.freeze({
   promoted_hex: "0000000000000000",
   chess960: false,
 });
+const neuralS2Boundary = Object.freeze({
+  fen: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+  series: 2,
+  quiet_series: 0,
+  ep_targets: [],
+  promoted_hex: "0000000000000000",
+  chess960: false,
+});
+const NEURAL_S2_ORDER_POLICY = "root-order-s3-neural-model1-blend75";
 const config = Object.freeze({
   max_depth: 2,
   width: 4,
@@ -67,6 +76,7 @@ const config = Object.freeze({
     boundary_check: 100,
   },
 });
+const neuralS2Config = Object.freeze({ ...config, width: 32 });
 
 let createSequence = 0;
 function createRequest(overrides = {}) {
@@ -355,6 +365,79 @@ assert.equal(aspirationRollbackRejected.status, "unsupported");
 assert.equal(aspirationRollbackRejected.error_code, "candidate-task-invalid");
 assert.equal(wasm._spc_root_session_destroy(coordinator.session_id), 1);
 assert.equal(wasm._spc_root_session_destroy(coordinator.session_id), 0);
+
+// Production neural ordering is scoped to Black's Series 2 after a real
+// completed White opening series. Freeze its full root manifest and one
+// persistent D1/D2 lane for the native/Python differential gate.
+const neuralS2Coordinator = create({
+  boundary: neuralS2Boundary,
+  config: neuralS2Config,
+});
+const neuralS2Deadline = Math.floor(performance.now() + 60_000);
+const neuralS2Enumeration = enumerate(
+  neuralS2Coordinator.session_id,
+  0,
+  neuralS2Deadline,
+  [],
+  500_000,
+  "neural-s2-enumerate",
+);
+assert.equal(
+  neuralS2Enumeration.status,
+  "complete",
+  JSON.stringify(neuralS2Enumeration),
+);
+assert.equal(neuralS2Enumeration.requested_width, 32);
+assert.equal(neuralS2Enumeration.candidates.length, 32);
+assert.ok(
+  neuralS2Enumeration.enumeration_identity.includes(NEURAL_S2_ORDER_POLICY),
+  "Series-2 enumeration did not identify the promoted neural ordering policy",
+);
+const neuralS2Manifest = manifestOf(neuralS2Enumeration);
+for (const [index, retained] of neuralS2Manifest.candidates.entries()) {
+  assert.equal(retained.order_index, index);
+  assert.equal(retained.order_key, retained.root_series.machine_notation);
+  assert.equal(retained.root_series.child_boundary.series, 3);
+}
+const neuralS2Candidate = neuralS2Manifest.candidates[0];
+const neuralS2DepthOne = call(
+  wasm._spc_root_session_search_json,
+  [neuralS2Coordinator.session_id],
+  searchTask({
+    candidate: neuralS2Candidate,
+    manifest: neuralS2Manifest,
+    nativeBefore: neuralS2Enumeration.work.native_work_after,
+    childDepth: 0,
+    deadline: neuralS2Deadline,
+    iteration: "neural-s2-depth-1",
+    task: "neural-s2-depth-1",
+  }),
+);
+assert.equal(neuralS2DepthOne.status, "complete", JSON.stringify(neuralS2DepthOne));
+assert.equal(neuralS2DepthOne.bound, "exact");
+const neuralS2DepthTwo = call(
+  wasm._spc_root_session_search_json,
+  [neuralS2Coordinator.session_id],
+  searchTask({
+    candidate: neuralS2Candidate,
+    manifest: neuralS2Manifest,
+    nativeBefore: neuralS2DepthOne.work.native_work_after,
+    childDepth: 1,
+    deadline: neuralS2Deadline,
+    iteration: "neural-s2-depth-2",
+    task: "neural-s2-depth-2",
+  }),
+);
+assert.equal(neuralS2DepthTwo.status, "complete", JSON.stringify(neuralS2DepthTwo));
+assert.equal(neuralS2DepthTwo.bound, "exact");
+assert.equal(
+  neuralS2DepthTwo.work.native_work_before,
+  neuralS2DepthOne.work.native_work_after,
+);
+assert.ok(
+  neuralS2DepthTwo.work.call_native_work <= neuralS2DepthTwo.work.call_work_credit,
+);
+assert.equal(wasm._spc_root_session_destroy(neuralS2Coordinator.session_id), 1);
 
 function aspirationSemantic(result) {
   return {
@@ -993,6 +1076,29 @@ process.stdout.write(`${JSON.stringify({
   candidate_identity: candidate.candidate_identity,
   candidate_order_key: candidate.order_key,
   long_path_moves: longPathManifest.candidates[0].root_series.moves,
+  neural_s2: {
+    ordering_policy: NEURAL_S2_ORDER_POLICY,
+    boundary: neuralS2Boundary,
+    config: neuralS2Config,
+    enumeration_identity: neuralS2Enumeration.enumeration_identity,
+    candidate_identity: neuralS2Candidate.candidate_identity,
+    candidate_order_key: neuralS2Candidate.order_key,
+    manifest: neuralS2Manifest,
+    depth_one: {
+      score: neuralS2DepthOne.score,
+      proof_bounds: neuralS2DepthOne.proof_bounds,
+      root_series: neuralS2DepthOne.root_series,
+      child_pv: neuralS2DepthOne.child_pv,
+      work: neuralS2DepthOne.work,
+    },
+    depth_two: {
+      score: neuralS2DepthTwo.score,
+      proof_bounds: neuralS2DepthTwo.proof_bounds,
+      root_series: neuralS2DepthTwo.root_series,
+      child_pv: neuralS2DepthTwo.child_pv,
+      work: neuralS2DepthTwo.work,
+    },
+  },
   depth_one: {
     score: depthOne.score,
     proof_bounds: depthOne.proof_bounds,

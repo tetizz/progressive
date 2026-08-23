@@ -11,16 +11,21 @@ import chess
 from scottish_progressive.model import ProgressiveState, SeriesResult
 from scottish_progressive.native_subtree import (
     SUBTREE_STAT_FIELDS,
+    NativeRootCandidateResult,
+    NativeRootEnumerationResult,
+    NativeRetainedRootCandidate,
     NativeSubtreeSession,
     NativeSubtreeWorkReceipt,
     native_subtree_available,
 )
 from scottish_progressive.profiles import baseline_profile
+from scottish_progressive.rules import play_series
 from scottish_progressive.search import MATE_SCORE
 
 
 ROOT = Path(__file__).resolve().parents[1]
 NODE_GATE = ROOT / "benchmarks" / "verify_native_root_session_wasm.mjs"
+NEURAL_S2_ORDER_POLICY = "root-order-s3-neural-model1-blend75"
 
 
 def _work(receipt: NativeSubtreeWorkReceipt) -> dict[str, Any]:
@@ -87,9 +92,44 @@ def _series(series: SeriesResult) -> dict[str, Any]:
     }
 
 
-def _session() -> NativeSubtreeSession:
+def _candidate(candidate: NativeRetainedRootCandidate) -> dict[str, Any]:
+    return {
+        "candidate_identity": candidate.candidate_identity,
+        "order_index": candidate.order_index,
+        "order_key": candidate.order_key,
+        "terminal_score": candidate.terminal_score,
+        "terminal_proof_bounds": list(candidate.terminal_proof_bounds),
+        "root_series": _series(candidate.series),
+    }
+
+
+def _manifest(manifest: NativeRootEnumerationResult) -> dict[str, Any]:
+    return {
+        "enumeration_identity": manifest.enumeration_identity,
+        "root_white_to_move": manifest.root_white_to_move,
+        "requested_width": manifest.requested_width,
+        "retained_count": manifest.retained_count,
+        "width_complete": manifest.width_complete,
+        "preferred_series": list(manifest.preferred_series),
+        "candidates": [_candidate(candidate) for candidate in manifest.candidates],
+    }
+
+
+def _candidate_result(result: NativeRootCandidateResult) -> dict[str, Any]:
+    return {
+        "score": result.score,
+        "proof_bounds": list(result.proof_bounds),
+        "root_series": (
+            None if result.root_series is None else _series(result.root_series)
+        ),
+        "child_pv": [_series(item) for item in result.child_principal_variation],
+        "work": _work(result.work),
+    }
+
+
+def _session(*, width: int = 4) -> NativeSubtreeSession:
     return NativeSubtreeSession(
-        max_series_per_node=4,
+        max_series_per_node=width,
         max_work=2_000_000,
         requested_depth=2,
         mate_score=MATE_SCORE,
@@ -181,6 +221,75 @@ def main() -> int:
         ] == wasm_result["child_pv"]
         assert _work(expected.work) == wasm_result["work"]
 
+    neural_actual = actual["neural_s2"]
+    assert neural_actual["ordering_policy"] == NEURAL_S2_ORDER_POLICY
+    e4_series = play_series(root, ("e2e4",))
+    neural_root = e4_series.final_state
+    assert neural_root.series_number == 2
+    assert neural_root.board.turn == chess.BLACK
+    assert neural_actual["boundary"] == {
+        "fen": neural_root.board.fen(en_passant="fen"),
+        "series": neural_root.series_number,
+        "quiet_series": neural_root.quiet_series,
+        "ep_targets": [
+            chess.square_name(square) for square in neural_root.ep_targets
+        ],
+        "promoted_hex": f"{neural_root.board.promoted:016x}",
+        "chess960": False,
+    }
+
+    neural_session = _session(width=32)
+    neural_manifest = neural_session.enumerate_root(
+        neural_root,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+        call_work_credit=500_000,
+    )
+    assert neural_manifest.status == 0
+    assert neural_manifest.requested_width == 32
+    assert neural_manifest.retained_count == 32
+    assert NEURAL_S2_ORDER_POLICY in neural_manifest.enumeration_identity
+    assert neural_manifest.enumeration_identity == neural_actual[
+        "enumeration_identity"
+    ]
+    assert _manifest(neural_manifest) == neural_actual["manifest"]
+
+    neural_candidate = neural_manifest.candidates[0]
+    assert neural_candidate.candidate_identity == neural_actual[
+        "candidate_identity"
+    ]
+    assert neural_candidate.order_key == neural_actual["candidate_order_key"]
+    neural_depth_one = neural_session.search_root_candidate(
+        enumeration_identity=neural_manifest.enumeration_identity,
+        candidate_identity=neural_candidate.candidate_identity,
+        child_depth=0,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=0,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+        call_work_credit=500_000,
+    )
+    neural_depth_two = neural_session.search_root_candidate(
+        enumeration_identity=neural_manifest.enumeration_identity,
+        candidate_identity=neural_candidate.candidate_identity,
+        child_depth=1,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=0,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+        call_work_credit=500_000,
+    )
+    for expected, wasm_result in (
+        (neural_depth_one, neural_actual["depth_one"]),
+        (neural_depth_two, neural_actual["depth_two"]),
+    ):
+        assert expected.status == 0
+        assert expected.root_series is not None
+        assert _candidate_result(expected) == wasm_result
+
     receipt = {
         "schema": "spc-root-session-differential-receipt-v1",
         "status": "passed",
@@ -188,12 +297,26 @@ def main() -> int:
             "initial-root-enumeration",
             "persistent-depth-1-candidate",
             "persistent-depth-2-candidate",
+            "neural-s2-e4-root-enumeration-width-32",
+            "neural-s2-e4-persistent-depth-1-candidate",
+            "neural-s2-e4-persistent-depth-2-candidate",
         ],
         "enumeration_identity": manifest.enumeration_identity,
         "candidate_identity": candidate.candidate_identity,
         "depth_1_score": depth_one.score,
         "depth_2_score": depth_two.score,
         "depth_2_work": depth_two.work.call_native_work,
+        "neural_s2": {
+            "ordering_policy": NEURAL_S2_ORDER_POLICY,
+            "enumeration_identity": neural_manifest.enumeration_identity,
+            "candidate_identity": neural_candidate.candidate_identity,
+            "candidate_order_key": neural_candidate.order_key,
+            "retained_count": neural_manifest.retained_count,
+            "depth_1_score": neural_depth_one.score,
+            "depth_1_work": neural_depth_one.work.call_native_work,
+            "depth_2_score": neural_depth_two.score,
+            "depth_2_work": neural_depth_two.work.call_native_work,
+        },
     }
     print(json.dumps(receipt, sort_keys=True))
     return 0

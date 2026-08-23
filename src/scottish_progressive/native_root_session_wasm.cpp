@@ -31,10 +31,11 @@
 namespace {
 
 constexpr std::uint32_t ROOT_ABI_VERSION = 2;
+constexpr std::uint64_t MAX_EXACT_JAVASCRIPT_INTEGER =
+    (std::uint64_t{1} << 53) - 1;
 constexpr std::size_t MAX_REQUEST_BYTES = 16U * 1024U * 1024U;
 constexpr std::size_t MAX_JSON_DEPTH = 24;
 constexpr std::size_t MAX_JSON_NODES = 250'000;
-constexpr std::uint64_t MAX_SAFE_JSON_INTEGER = 9'007'199'254'740'991ULL;
 constexpr std::uint64_t MAX_ROOT_WIDTH = 512;
 constexpr std::uint64_t MAX_CACHE_CAPACITY = 1'048'576;
 constexpr std::uint64_t MAX_WASM_MEMORY_BYTES = 256ULL * 1024ULL * 1024ULL;
@@ -602,7 +603,7 @@ void require_keys(
     const JsonValue& object,
     std::string_view name,
     std::uint64_t minimum = 0,
-    std::uint64_t maximum = MAX_SAFE_JSON_INTEGER
+    std::uint64_t maximum = MAX_EXACT_JAVASCRIPT_INTEGER
 ) {
     const JsonValue& value = field(object, name);
     if (
@@ -1330,10 +1331,17 @@ void write_stats(
 ) {
     stream << "{\"nodes\":" << stats.nodes
            << ",\"leaf_evaluations\":" << stats.leaf_evaluations
-           << ",\"generated_raw_series\":" << stats.generated_raw_series
+           << ",\"generated_raw_series\":"
+           << std::min(
+               stats.generated_raw_series,
+               MAX_EXACT_JAVASCRIPT_INTEGER
+           )
            << ",\"generated_unique_series\":" << stats.generated_unique_series
            << ",\"intra_series_transpositions\":"
-           << stats.intra_series_transpositions
+           << std::min(
+               stats.intra_series_transpositions,
+               MAX_EXACT_JAVASCRIPT_INTEGER
+           )
            << ",\"tt_hits\":" << stats.tt_hits
            << ",\"alpha_beta_cutoffs\":" << stats.alpha_beta_cutoffs
            << ",\"pvs_zero_window_searches\":"
@@ -1357,7 +1365,10 @@ void write_stats(
            << ",\"frontier_states_pruned\":"
            << stats.frontier_states_pruned
            << ",\"frontier_paths_pruned\":"
-           << stats.frontier_paths_pruned
+           << std::min(
+               stats.frontier_paths_pruned,
+               MAX_EXACT_JAVASCRIPT_INTEGER
+           )
            << ",\"tactical_frontier_states_retained\":"
            << stats.tactical_frontier_states_retained
            << ",\"tactical_frontier_reserve_drops\":"
@@ -1451,7 +1462,10 @@ void write_complete_series(
     stream << ",\"machine_notation\":";
     write_json_string(stream, machine_notation(candidate.path.moves));
     stream << ",\"transposition_count\":"
-           << candidate.path.transposition_count
+           << std::min(
+               candidate.path.transposition_count,
+               MAX_EXACT_JAVASCRIPT_INTEGER
+           )
            << ",\"child_boundary\":"
            << spc::wasm::exact_boundary_json(candidate_state(candidate))
            << ",\"outcome\":";
@@ -1605,6 +1619,14 @@ void write_manifest_fields(
         "transposition_count",
         1
     );
+    if (
+        result.path.transposition_count > MAX_EXACT_JAVASCRIPT_INTEGER
+    ) {
+        throw RequestError(
+            "manifest-invalid",
+            "root series transposition count is not a safe JSON integer"
+        );
+    }
     const auto child = parse_boundary_object(field(value, "child_boundary"));
     result.board = child.board;
     result.halfmove_clock = child.halfmove_clock;

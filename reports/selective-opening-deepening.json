@@ -1,7 +1,7 @@
 {
-  "generated_at": "2026-08-23T06:53:41+00:00",
+  "generated_at": "2026-08-23T15:27:40+00:00",
   "engine_version": "spc-0.9.0",
-  "source_fingerprint": "cb444d22a3c997cc",
+  "source_fingerprint": "5c6ef2f9a9f41877",
   "ruleset_version": "scottish-modern-common-v1",
   "moves": [
     "e2e4",
@@ -34,7 +34,7 @@
       "unique_generated_series": 9236,
       "intra_series_transpositions": 6319,
       "branch_caps": 17,
-      "elapsed_seconds": 0.04136810003546998,
+      "elapsed_seconds": 0.04018419998465106,
       "alternatives": [
         {
           "black_series": "d7d5/d5e4",
@@ -107,7 +107,7 @@
       "unique_generated_series": 8845,
       "intra_series_transpositions": 4548,
       "branch_caps": 17,
-      "elapsed_seconds": 0.0342670000391081,
+      "elapsed_seconds": 0.033954699989408255,
       "alternatives": [
         {
           "black_series": "e7e6/e8e7",

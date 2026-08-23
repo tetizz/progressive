@@ -16,6 +16,7 @@ from scottish_progressive.native_subtree import (
     native_subtree_available,
 )
 from scottish_progressive.profiles import baseline_profile
+from scottish_progressive.rules import play_series
 from scottish_progressive.search import (
     MATE_SCORE,
     SearchLimits,
@@ -593,12 +594,40 @@ def test_root_contract_derives_canonical_tactical_policy_from_boundary() -> None
     )
 
     assert early_manifest.status == late_manifest.status == 0
-    assert "|root-policycanonical-boundary-v1|root-tactical0" in (
-        early_manifest.enumeration_identity
+    assert (
+        "|root-policycanonical-boundary-v1|root-order-hand-v1|root-tactical0"
+        in early_manifest.enumeration_identity
     )
-    assert "|root-policycanonical-boundary-v1|root-tactical1" in (
-        late_manifest.enumeration_identity
+    assert (
+        "|root-policycanonical-boundary-v1|root-order-hand-v1|root-tactical1"
+        in late_manifest.enumeration_identity
     )
+
+
+def test_series_two_terminal_mate_scan_never_activates_neural_ordering() -> None:
+    series_two = play_series(ProgressiveState.initial(), ("e2e4",)).final_state
+    assert series_two.series_number == 2
+    assert series_two.board.turn == chess.BLACK
+    session = _session(width=32, depth=2, max_work=250_000)
+
+    ordinary = session.enumerate_root(
+        series_two,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    terminal_scan = session.enumerate_root(
+        series_two,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+        requested_width=32,
+        terminal_mate_scan=True,
+    )
+
+    assert ordinary.status == terminal_scan.status == 0
+    assert "|root-order-s3-neural-model1-blend75|" in ordinary.enumeration_identity
+    assert "|root-order-hand-v1|" in terminal_scan.enumeration_identity
 
 
 def test_root_import_ignores_legacy_policy_and_preserves_canonical_identity() -> None:

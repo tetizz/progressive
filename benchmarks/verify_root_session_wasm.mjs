@@ -10,8 +10,22 @@ const START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const START_BLACK_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1";
 const LIVE_S5 = "rn1q1bnr/ppp1pkpp/5p2/8/3Pp3/2NB4/PPP2PPP/R1BbK1NR w KQ - 0 7";
 const BARE_KINGS = "8/8/8/8/8/2k5/8/K7 w - - 0 1";
+const HIGH_SERIES_FEN = "8/8/8/8/1K6/8/1k6/8 b - - 100 110";
+const HIGH_SERIES_ROOT = [
+  "b2a1", "a1a2", "a2a1", "a1a2", "a2a1", "a1b2",
+  "b2c2", "c2b2", "b2c2", "c2b2", "b2c2", "c2b2",
+  "b2c2", "c2b2", "b2c2", "c2b2", "b2c2", "c2b2",
+  "b2c2", "c2b2", "b2c2", "c2b2", "b2c2", "c2b2",
+].join("/");
+const HIGH_SERIES_CHILD = [
+  "b4a4", "a4a5", "a5a4", "a4a5", "a5b4", "b4b5",
+  "b5b4", "b4b5", "b5b4", "b4b5", "b5b4", "b4b5",
+  "b5b4", "b4b5", "b5b4", "b4b5", "b5b4", "b4b5",
+  "b5b4", "b4b5", "b5b4", "b4b5", "b5b4", "b4b5", "b5b4",
+].join("/");
 const ZERO_PROMOTED = "0000000000000000";
 const MATE_SCORE = 1_000_000;
+const HIGH_SERIES_MAX_WORK = 250_000;
 const REQUIRED_EXPORTS = [
   "_spc_start_kernel_search_json",
   "_spc_boundary_kernel_search_json",
@@ -71,6 +85,23 @@ function parseArguments(argv) {
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+
+function assertSafeJsonIntegers(value, path = "$") {
+  if (typeof value === "number") {
+    assert.ok(Number.isSafeInteger(value), `unsafe JSON number at ${path}: ${value}`);
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertSafeJsonIntegers(item, `${path}[${index}]`));
+    return;
+  }
+  if (value !== null && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) {
+      assertSafeJsonIntegers(item, `${path}.${key}`);
+    }
+  }
 }
 
 
@@ -912,6 +943,183 @@ async function main() {
   assertWorkReceipt(timedOut, 0, credit);
   assert.equal(Module._spc_root_session_destroy(deadlineCreated.session_id), 1);
 
+  const highSeriesBoundary = {
+    fen: HIGH_SERIES_FEN,
+    series: 24,
+    quiet_series: 4,
+    ep_targets: [],
+    promoted_hex: ZERO_PROMOTED,
+    chess960: false,
+  };
+  const highSeriesConfig = {
+    ...config,
+    width: 32,
+    max_work: HIGH_SERIES_MAX_WORK,
+  };
+  const highSeriesCreated = elapsedCall(() => bridge.rootJson(
+    "_spc_root_session_create_json",
+    null,
+    {
+      ...createRequest("create-high-series", "high-series-json-safety", 7),
+      boundary: highSeriesBoundary,
+      config: highSeriesConfig,
+    },
+  ));
+  timings.createHighSeriesMs = highSeriesCreated.elapsedMs;
+  assert.equal(highSeriesCreated.value.status, "ready", JSON.stringify(highSeriesCreated.value));
+  assertSafeJsonIntegers(highSeriesCreated.value, "$.high_series_create");
+  const highSeriesSession = highSeriesCreated.value.session_id;
+  const highSeriesDeadline = Math.ceil(performance.now() + args.timeoutMs);
+  const highSeriesEnumerated = elapsedCall(() => bridge.rootJson(
+    "_spc_root_session_enumerate_json",
+    highSeriesSession,
+    {
+      ...route(
+        "spc-root-session-enumerate-v1",
+        "enumerate-high-series",
+        "high-series-json-safety",
+        7,
+        0,
+        HIGH_SERIES_MAX_WORK,
+        highSeriesDeadline,
+      ),
+      preferred_series: [],
+    },
+  ));
+  timings.enumerateHighSeriesMs = highSeriesEnumerated.elapsedMs;
+  assert.equal(
+    highSeriesEnumerated.value.status,
+    "complete",
+    JSON.stringify(highSeriesEnumerated.value),
+  );
+  assert.equal(highSeriesEnumerated.value.retained_count, 32);
+  assertSafeJsonIntegers(highSeriesEnumerated.value, "$.high_series_enumerate");
+  const highSeriesCounts = highSeriesEnumerated.value.candidates.map(
+    (item) => item.root_series.transposition_count,
+  );
+  assert.ok(highSeriesCounts.every((count) => count >= 1));
+  assert.equal(
+    Math.max(...highSeriesCounts),
+    Number.MAX_SAFE_INTEGER,
+    "Series-24 fixture did not exercise the JavaScript-safe count ceiling",
+  );
+  const highSeriesCandidate = highSeriesEnumerated.value.candidates.find(
+    (item) => item.root_series.machine_notation === HIGH_SERIES_ROOT,
+  );
+  assert.ok(highSeriesCandidate, "frozen Series-24 oracle root was not retained");
+  let highSeriesNativeWork = assertWorkReceipt(
+    highSeriesEnumerated.value,
+    0,
+    HIGH_SERIES_MAX_WORK,
+  );
+  const highSeriesSearched = elapsedCall(() => bridge.rootJson(
+    "_spc_root_session_search_json",
+    highSeriesSession,
+    searchRequest(
+      "search-high-series-d2",
+      "high-series-json-safety",
+      7,
+      highSeriesNativeWork,
+      HIGH_SERIES_MAX_WORK,
+      highSeriesDeadline,
+      highSeriesEnumerated.value,
+      highSeriesCandidate,
+      1,
+    ),
+  ));
+  timings.searchHighSeriesD2Ms = highSeriesSearched.elapsedMs;
+  assert.equal(
+    highSeriesSearched.value.status,
+    "complete",
+    JSON.stringify(highSeriesSearched.value),
+  );
+  assert.equal(highSeriesSearched.value.bound, "exact");
+  assert.equal(highSeriesSearched.value.score, 0);
+  assert.equal(highSeriesSearched.value.root_series.machine_notation, HIGH_SERIES_ROOT);
+  assert.equal(highSeriesSearched.value.child_pv[0]?.machine_notation, HIGH_SERIES_CHILD);
+  assertSafeJsonIntegers(highSeriesSearched.value, "$.high_series_search");
+  highSeriesNativeWork = assertWorkReceipt(
+    highSeriesSearched.value,
+    highSeriesNativeWork,
+    HIGH_SERIES_MAX_WORK,
+  );
+  assertCumulative(highSeriesEnumerated.value.work, highSeriesSearched.value.work);
+  const highSeriesManifest = manifestFrom(highSeriesEnumerated.value);
+  assert.equal(Module._spc_root_session_destroy(highSeriesSession), 1);
+
+  const highSeriesImportCreated = bridge.rootJson(
+    "_spc_root_session_create_json",
+    null,
+    {
+      ...createRequest("create-high-series-import", "high-series-import-safety", 8),
+      boundary: highSeriesBoundary,
+      config: highSeriesConfig,
+    },
+  );
+  assert.equal(highSeriesImportCreated.status, "ready", JSON.stringify(highSeriesImportCreated));
+  assertSafeJsonIntegers(highSeriesImportCreated, "$.high_series_import_create");
+  const highSeriesImportSession = highSeriesImportCreated.session_id;
+  const highSeriesImportDeadline = Math.ceil(performance.now() + args.timeoutMs);
+  const highSeriesImported = elapsedCall(() => bridge.rootJson(
+    "_spc_root_session_import_json",
+    highSeriesImportSession,
+    {
+      ...route(
+        "spc-root-session-import-v1",
+        "import-high-series",
+        "high-series-import-safety",
+        8,
+        0,
+        HIGH_SERIES_MAX_WORK,
+        highSeriesImportDeadline,
+      ),
+      external_work: highSeriesEnumerated.value.work.native_work_after,
+      manifest: highSeriesManifest,
+    },
+  ));
+  timings.importHighSeriesMs = highSeriesImported.elapsedMs;
+  assert.equal(
+    highSeriesImported.value.status,
+    "complete",
+    JSON.stringify(highSeriesImported.value),
+  );
+  assert.deepEqual(highSeriesImported.value.candidates, highSeriesEnumerated.value.candidates);
+  assertSafeJsonIntegers(highSeriesImported.value, "$.high_series_import");
+  const highSeriesImportNativeWork = assertWorkReceipt(
+    highSeriesImported.value,
+    0,
+    HIGH_SERIES_MAX_WORK,
+  );
+
+  const unsafeHighSeriesManifest = structuredClone(highSeriesManifest);
+  unsafeHighSeriesManifest.candidates[0].root_series.transposition_count =
+    Number.MAX_SAFE_INTEGER + 1;
+  const unsafeHighSeriesImport = bridge.rootJson(
+    "_spc_root_session_import_json",
+    highSeriesImportSession,
+    {
+      ...route(
+        "spc-root-session-import-v1",
+        "import-high-series-unsafe-count",
+        "high-series-import-safety",
+        8,
+        highSeriesImportNativeWork,
+        HIGH_SERIES_MAX_WORK,
+        highSeriesImportDeadline,
+      ),
+      external_work: highSeriesEnumerated.value.work.native_work_after,
+      manifest: unsafeHighSeriesManifest,
+    },
+  );
+  assert.equal(unsafeHighSeriesImport.status, "unsupported");
+  assert.equal(unsafeHighSeriesImport.error_code, "request-field-invalid");
+  assert.match(
+    unsafeHighSeriesImport.message,
+    /transposition_count is outside its exact integer envelope/,
+  );
+  assertSafeJsonIntegers(unsafeHighSeriesImport, "$.high_series_unsafe_import_reply");
+  assert.equal(Module._spc_root_session_destroy(highSeriesImportSession), 1);
+
   const prefix = bridge.prefixJson(START_FEN, 1, 0, "-", ZERO_PROMOTED, "");
   assert.equal(prefix.schema, "spc-boundary-prefix-v1");
   assert.equal(prefix.ok, true);
@@ -1001,6 +1209,9 @@ async function main() {
         aspirationFailSoft.black.memory_peak_bytes,
         importedDepthTwo.value.memory_peak_bytes,
         timedOut.memory_peak_bytes,
+        highSeriesSearched.value.memory_peak_bytes,
+        highSeriesImported.value.memory_peak_bytes,
+        unsafeHighSeriesImport.memory_peak_bytes,
       ),
     },
     config,
@@ -1022,6 +1233,9 @@ async function main() {
       canonical_root_tactical_policy: true,
       legacy_root_tactical_policy_rejected: true,
       canonical_root_tactical_boundary_echoes: true,
+      high_series_json_number_safety: true,
+      high_series_safe_manifest_import: true,
+      unsafe_transposition_count_rejected: true,
       mate_python_parity: false,
       browser_worker_smoke: false,
       opera_worker_smoke: false,
@@ -1036,6 +1250,11 @@ async function main() {
       imported_d2: exactCandidateResult(importedDepthTwo.value),
       native_work_after: nativeWork,
       imported_native_work_after: importedWork,
+      high_series_d2: exactCandidateResult(highSeriesSearched.value),
+      high_series_native_work_after: highSeriesNativeWork,
+      high_series_max_transposition_count: Math.max(...highSeriesCounts),
+      high_series_import_native_work_after: highSeriesImportNativeWork,
+      high_series_unsafe_import_error: unsafeHighSeriesImport.error_code,
     },
     mate_receipts: {
       found: mateFound.value,

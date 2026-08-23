@@ -1,0 +1,4934 @@
+{
+  "configuration": {
+    "branch_cap": 32,
+    "color_swapped": true,
+    "depth_series": 2,
+    "games": 40,
+    "max_game_work": 3000000,
+    "max_work_per_search": 250000,
+    "opening_suite_version": "spc-neutral-seeded-openings-v1-fb61e2ed50eb79b131e9",
+    "pairs": 20,
+    "profile": "baseline for both runtimes",
+    "seed": 730194821,
+    "seeded_openings": true,
+    "technical_series_watchdog": 40
+  },
+  "games": [
+    {
+      "candidate_color": "white",
+      "opening_case_id": "seeded-001-s2-406ba2f27f5b",
+      "pair_index": 0,
+      "reason": "checkmate",
+      "status": "loss",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 432,
+          "selected": "e7e6/e8e7",
+          "series_number": 2,
+          "wall_seconds": 0.10301870002876967,
+          "work_positions": 45455
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 251,
+          "selected": "c1f4/f4c7/c7d8",
+          "series_number": 3,
+          "wall_seconds": 0.14775349997216836,
+          "work_positions": 60841
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 989,
+          "selected": "e7d8/f8a3/d8e7/a3b4",
+          "series_number": 4,
+          "wall_seconds": 0.2898365999571979,
+          "work_positions": 85157
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 271,
+          "selected": "b1c3/e2e3/d1g4/e1d1/g4b4",
+          "series_number": 5,
+          "wall_seconds": 0.1950479000224732,
+          "work_positions": 85703
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 1483,
+          "selected": "d7d6/a7a5/a5b4/b4c3/c3b2/b2a1q",
+          "series_number": 6,
+          "wall_seconds": 0.09271399996941909,
+          "work_positions": 88969
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -2986,
+          "selected": "d1d2/c2c4/c4c5/c5c6/c6b7/b7a8q/a8c6",
+          "series_number": 7,
+          "wall_seconds": 3.756835400010459,
+          "work_positions": 88353
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": -999999,
+          "selected": "a1b1/b8c6/c6d4/g8f6/c8a6/h8c8/b1c1",
+          "series_number": 8,
+          "wall_seconds": 0.11169160000281408,
+          "work_positions": 14069
+        }
+      ],
+      "winner": "baseline"
+    },
+    {
+      "candidate_color": "black",
+      "opening_case_id": "seeded-001-s2-406ba2f27f5b",
+      "pair_index": 0,
+      "reason": "checkmate",
+      "status": "win",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 440,
+          "selected": "b8a6/d7d5",
+          "series_number": 2,
+          "wall_seconds": 0.09768160001840442,
+          "work_positions": 55278
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "c1f4/f4c7/c7d8",
+          "series_number": 3,
+          "wall_seconds": 0.02998019999358803,
+          "work_positions": 69526
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 711,
+          "selected": "a6c5/c5b3/b3a1/e8d8",
+          "series_number": 4,
+          "wall_seconds": 0.16049270000075921,
+          "work_positions": 88013
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 144,
+          "selected": "c2c3/d1b3/b3b7/b7a8/a8d5",
+          "series_number": 5,
+          "wall_seconds": 0.11430379998637363,
+          "work_positions": 87779
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 2043,
+          "selected": "d8c7/c8b7/b7d5/d5a2/a2b1/a1c2",
+          "series_number": 6,
+          "wall_seconds": 0.08244279999053106,
+          "work_positions": 88972
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -996,
+          "selected": "e1d1/g1f3/f3d2/d2b1/b1a3/d1c2/c2b3",
+          "series_number": 7,
+          "wall_seconds": 0.23331569996662438,
+          "work_positions": 88806
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 1070,
+          "selected": "f7f5/f5f4/f4f3/f3g2/g2f1q/f1h1/a7a5/h1d5",
+          "series_number": 8,
+          "wall_seconds": 0.5325646999990568,
+          "work_positions": 95407
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -3014,
+          "selected": "b3c2/b2b4/b4a5/c3c4/c4d5/a5a6/a6a7/a7a8q/a8f8",
+          "series_number": 9,
+          "wall_seconds": 0.8719792999909259,
+          "work_positions": 91947
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 808,
+          "selected": "e7e5/e5e4/e4e3/e3f2/f2f1q/g8f6/f6d5/h8f8/f8e8/e8e2",
+          "series_number": 10,
+          "wall_seconds": 0.20402240002295002,
+          "work_positions": 96391
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -2988,
+          "selected": "c2b3/h2h4/h4h5/h5h6/h6g7/g7g8q/g8d5/d5f3/f3f1/f1h1/a3b5",
+          "series_number": 11,
+          "wall_seconds": 0.1358401000034064,
+          "work_positions": 88206
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": -1735,
+          "selected": "c7b6/b6b5/e2a2/a2a1/a1h1/h1d1/b5c5/c5d4/d1d2/d4e3/e3e2/d2d3",
+          "series_number": 12,
+          "wall_seconds": 0.10303100000601262,
+          "work_positions": 44672
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -1785,
+          "selected": "b3a4/a4a5/a5a4/a4a5/a5a4/a4a5/a5a4/a4a5/a5a4/a4a5/a5a4/a4a5/a5b6",
+          "series_number": 13,
+          "wall_seconds": 0.23447310004848987,
+          "work_positions": 84427
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": -1761,
+          "selected": "d3a3/a3a1/a1a2/a2a1/a1a2/a2a1/a1a2/a2a1/a1a2/a2a1/a1a2/a2a1/a1g1/g1g6",
+          "series_number": 14,
+          "wall_seconds": 0.1660225000232458,
+          "work_positions": 44552
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -1819,
+          "selected": "b6a5/a5a4/a4a3/a3a2/a2a1/a1a2/a2a1/a1a2/a2a1/a1a2/a2a1/a1a2/a2a3/a3a4/a4b4",
+          "series_number": 15,
+          "wall_seconds": 0.5226930000353605,
+          "work_positions": 85187
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": -999999,
+          "selected": "e2e3/g6c6/c6c5/e3d4/d4d5/d5d6/h7h5/h5h4/h4h3/h3h2/h2h1q/h1a1/a1a2/d6c6/c5c3/a2a3",
+          "series_number": 16,
+          "wall_seconds": 0.07220970001071692,
+          "work_positions": 17563
+        }
+      ],
+      "winner": "candidate"
+    },
+    {
+      "candidate_color": "white",
+      "opening_case_id": "seeded-002-s2-2ac86c6fd04b",
+      "pair_index": 1,
+      "reason": "checkmate",
+      "status": "loss",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 530,
+          "selected": "d7d5/d5e4",
+          "series_number": 2,
+          "wall_seconds": 0.09975670004496351,
+          "work_positions": 40442
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -494,
+          "selected": "d2d3/d3e4/d1d8",
+          "series_number": 3,
+          "wall_seconds": 0.15766639995854348,
+          "work_positions": 61027
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 454,
+          "selected": "e8d8/c8h3/h3g2/g2h1",
+          "series_number": 4,
+          "wall_seconds": 0.097379999991972,
+          "work_positions": 87967
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -615,
+          "selected": "b1c3/c3d5/d5e7/e7g6/g6h8",
+          "series_number": 5,
+          "wall_seconds": 0.2596114000189118,
+          "work_positions": 90321
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": -999999,
+          "selected": "b8a6/a6b4/f8c5/c5e3/h1f3/b4c2",
+          "series_number": 6,
+          "wall_seconds": 0.037455899990163743,
+          "work_positions": 8406
+        }
+      ],
+      "winner": "baseline"
+    },
+    {
+      "candidate_color": "black",
+      "opening_case_id": "seeded-002-s2-2ac86c6fd04b",
+      "pair_index": 1,
+      "reason": "checkmate",
+      "status": "win",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 530,
+          "selected": "d7d5/d5e4",
+          "series_number": 2,
+          "wall_seconds": 0.10241160000441596,
+          "work_positions": 42577
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -494,
+          "selected": "d2d3/d3e4/d1d8",
+          "series_number": 3,
+          "wall_seconds": 0.15197380003519356,
+          "work_positions": 61027
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 454,
+          "selected": "e8d8/c8h3/h3g2/g2h1",
+          "series_number": 4,
+          "wall_seconds": 0.09646570001496002,
+          "work_positions": 87967
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -615,
+          "selected": "b1c3/c3d5/d5e7/e7g6/g6h8",
+          "series_number": 5,
+          "wall_seconds": 0.26453839999157935,
+          "work_positions": 90321
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": -999999,
+          "selected": "b8a6/a6b4/f8c5/c5e3/h1f3/b4c2",
+          "series_number": 6,
+          "wall_seconds": 0.03867440001340583,
+          "work_positions": 8406
+        }
+      ],
+      "winner": "candidate"
+    },
+    {
+      "candidate_color": "white",
+      "opening_case_id": "seeded-003-s2-93a59309eb64",
+      "pair_index": 2,
+      "reason": "checkmate",
+      "status": "win",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 176,
+          "selected": "e7e5/f8a3",
+          "series_number": 2,
+          "wall_seconds": 0.08428180002374575,
+          "work_positions": 39869
+        },
+        {
+          "completed_depth": 1,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 177,
+          "selected": "e2e3/d1h5/h5e5",
+          "series_number": 3,
+          "wall_seconds": 0.18735989998094738,
+          "work_positions": 130740
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 177,
+          "selected": "d8e7/a3b2/e7e5/b2a1",
+          "series_number": 4,
+          "wall_seconds": 0.08196580002550036,
+          "work_positions": 86311
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -2604,
+          "selected": "f1b5/g1f3/f3e5/e5d7/d7b8",
+          "series_number": 5,
+          "wall_seconds": 0.08329239999875426,
+          "work_positions": 88013
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 665,
+          "selected": "c8d7/a1c3/d7b5/b5d3/a8b8/c3d2",
+          "series_number": 6,
+          "wall_seconds": 0.1477188999997452,
+          "work_positions": 89675
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -2099,
+          "selected": "e1d2/c1b2/c2d3/h1c1/c1c7/c7b7/b7b8",
+          "series_number": 7,
+          "wall_seconds": 0.1173187000094913,
+          "work_positions": 91057
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 1541,
+          "selected": "e8d7/g8f6/h8b8/b8e8/e8e3/e3g3/g3g2/g2f2",
+          "series_number": 8,
+          "wall_seconds": 0.12873080000281334,
+          "work_positions": 91272
+        },
+        {
+          "completed_depth": 1,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 1446,
+          "selected": "d2e1/b2f6/e1f2/f6g7/g7d4/d4a7/a7b6/d3d4/d4d5",
+          "series_number": 9,
+          "wall_seconds": 0.21699380001518875,
+          "work_positions": 189668
+        },
+        {
+          "completed_depth": 1,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 2,
+          "selected": "f7f5/h7h5/h5h4/d7d6/d6d5/d5c6/c6b6/b6a5/h4h3/f5f4",
+          "series_number": 10,
+          "wall_seconds": 0.2335357999545522,
+          "work_positions": 160862
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 972,
+          "selected": "a2a3/f2e1/e1f2/f2f3/f3e4/e4f4/f4g3/g3g4/g4g3/g3h3/h3g4",
+          "series_number": 11,
+          "wall_seconds": 0.09303749998798594,
+          "work_positions": 88067
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 1196,
+          "selected": "a5b5/b5c4/c4d3/d3e2/e2e3/e3f2/f2g1/g1g2/g2g1/g1g2/g2h2/h2g2",
+          "series_number": 12,
+          "wall_seconds": 0.10226249997504056,
+          "work_positions": 86252
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 1271,
+          "selected": "g4f5/f5e6/e6d7/d7c8/a3a4/c8b7/a4a5/b7c6/a5a6/a6a7/a7a8q/a8a1/a1b2",
+          "series_number": 13,
+          "wall_seconds": 0.08581260003848001,
+          "work_positions": 39091
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 1309,
+          "selected": "g2f3/f3e3/e3d3/d3c4/c4d3/d3c4/c4d3/d3c4/c4d3/d3c4/c4d3/d3e3/e3f3/f3g4",
+          "series_number": 14,
+          "wall_seconds": 0.11062010005116463,
+          "work_positions": 84683
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 1463,
+          "selected": "b2b6/c6d5/d5e5/b6c6/c6g2",
+          "series_number": 15,
+          "wall_seconds": 0.07586949999677017,
+          "work_positions": 30386
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 999998,
+          "selected": "g4h4/h4h5/h5h4/h4h5/h5h4/h4h5/h5h4/h4h5/h5h4/h4h5/h5h4/h4h5/h5h4/h4h5/h5h4/h4h5",
+          "series_number": 16,
+          "wall_seconds": 0.624311999999918,
+          "work_positions": 125106
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 999999,
+          "selected": "e5d6/g2e4/d6c7/c7c8/c8d7/d7d6/d6d7/d7e6/e6f5/e4a8/a8a1/a1a2/a2a1/a1a2/a2a1/a1a2/a2h2",
+          "series_number": 17,
+          "wall_seconds": 0.06445199996232986,
+          "work_positions": 12643
+        }
+      ],
+      "winner": "candidate"
+    },
+    {
+      "candidate_color": "black",
+      "opening_case_id": "seeded-003-s2-93a59309eb64",
+      "pair_index": 2,
+      "reason": "checkmate",
+      "status": "win",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 131,
+          "selected": "d7d6/g8f6",
+          "series_number": 2,
+          "wall_seconds": 0.08311659999890253,
+          "work_positions": 45797
+        },
+        {
+          "completed_depth": 1,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 468,
+          "selected": "e2e3/d1f3/f1b5",
+          "series_number": 3,
+          "wall_seconds": 0.16349549998994917,
+          "work_positions": 117637
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 468,
+          "selected": "c8d7/d7b5/b5e2/e2f3",
+          "series_number": 4,
+          "wall_seconds": 0.13715760002378374,
+          "work_positions": 85120
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -999,
+          "selected": "e3e4/e4e5/e5f6/f6g7/g2f3",
+          "series_number": 5,
+          "wall_seconds": 0.33881909999763593,
+          "work_positions": 87295
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 338,
+          "selected": "e7e6/d8f6/f6b2/b2a1/h8g8/a1c1",
+          "series_number": 6,
+          "wall_seconds": 0.15782279998529702,
+          "work_positions": 91358
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -2730,
+          "selected": "e1e2/g1h3/h1c1/c1b1/b1b7/b7b1/g7f8q",
+          "series_number": 7,
+          "wall_seconds": 1.0202998999739066,
+          "work_positions": 88244
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": -999999,
+          "selected": "e8d7/b8c6/a8b8/b8b1/b1d1/g8g1/c6b4/d1e1",
+          "series_number": 8,
+          "wall_seconds": 0.04577109997626394,
+          "work_positions": 9947
+        }
+      ],
+      "winner": "candidate"
+    },
+    {
+      "candidate_color": "white",
+      "opening_case_id": "seeded-004-s2-6fd45bf8c4d4",
+      "pair_index": 3,
+      "reason": "checkmate",
+      "status": "win",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 385,
+          "selected": "g7g5/f8g7",
+          "series_number": 2,
+          "wall_seconds": 0.08860059996368363,
+          "work_positions": 50224
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -40,
+          "selected": "d2d4/d1d2/d2g5",
+          "series_number": 3,
+          "wall_seconds": 0.04049859999213368,
+          "work_positions": 69782
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 154,
+          "selected": "e7e5/d8g5/e5d4/g5a5",
+          "series_number": 4,
+          "wall_seconds": 0.11983580002561212,
+          "work_positions": 86782
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -1864,
+          "selected": "b2b4/b4a5/a5a6/a6b7/b7c8q",
+          "series_number": 5,
+          "wall_seconds": 0.123038399964571,
+          "work_positions": 88217
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 898,
+          "selected": "e8e7/b8a6/a8c8/d4d3/g7c3",
+          "series_number": 6,
+          "wall_seconds": 0.11378869996406138,
+          "work_positions": 86984
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -1363,
+          "selected": "c1d2/d2c3/e1c1/d1d3/c3h8/h8g7/g7f8",
+          "series_number": 7,
+          "wall_seconds": 2.470301199995447,
+          "work_positions": 89881
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 958,
+          "selected": "e7e6/a6b4/c7c5/c5c4/c4d3/d3e2/c8c3/e2f1q",
+          "series_number": 8,
+          "wall_seconds": 2.022465899994131,
+          "work_positions": 93336
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 999999,
+          "selected": "c1b2/b2c3/g1f3/h1f1/f1d1/g2g4/d1d6",
+          "series_number": 9,
+          "wall_seconds": 0.06078609998803586,
+          "work_positions": 10467
+        }
+      ],
+      "winner": "candidate"
+    },
+    {
+      "candidate_color": "black",
+      "opening_case_id": "seeded-004-s2-6fd45bf8c4d4",
+      "pair_index": 3,
+      "reason": "ten-series-draw",
+      "status": "draw",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 347,
+          "selected": "d7d6/g8h6",
+          "series_number": 2,
+          "wall_seconds": 0.08937880001030862,
+          "work_positions": 60818
+        },
+        {
+          "completed_depth": 1,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 518,
+          "selected": "e2e3/d1h5/f1b5",
+          "series_number": 3,
+          "wall_seconds": 0.14744620001874864,
+          "work_positions": 117471
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 518,
+          "selected": "d8d7/d7b5/b5h5/e8d7",
+          "series_number": 4,
+          "wall_seconds": 0.07423269998980686,
+          "work_positions": 85882
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -1437,
+          "selected": "c3d5/d5e7/e7f5/f5g7/g7h5",
+          "series_number": 5,
+          "wall_seconds": 0.09782500000437722,
+          "work_positions": 87913
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 576,
+          "selected": "h8g8/g8g2/g2f2/f2h2/f8e7/h2h1",
+          "series_number": 6,
+          "wall_seconds": 0.5133117000223137,
+          "work_positions": 90956
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -1808,
+          "selected": "c2c4/c4c5/c5d6/d6e7/h5g3/g3h1/e1f2",
+          "series_number": 7,
+          "wall_seconds": 0.9301694000023417,
+          "work_positions": 90437
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 814,
+          "selected": "b8c6/c6e5/d7e7/c8d7/a8g8/g8g1/g1c1/c1a1",
+          "series_number": 8,
+          "wall_seconds": 0.7108328000176698,
+          "work_positions": 95075
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -2406,
+          "selected": "d2d4/d4e5/e5e6/e6d7/d7d8r/d8b8/b8b7/b7a7/a7c7",
+          "series_number": 9,
+          "wall_seconds": 0.6305394999799319,
+          "work_positions": 93995
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": -916,
+          "selected": "e7d6/a1h1/h6f5/f5e3/d6c7/c7b6/h1h4/h4a4/a4a2/e3d1",
+          "series_number": 10,
+          "wall_seconds": 0.40157210000324994,
+          "work_positions": 120073
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -2140,
+          "selected": "f2f1/f1g2/g2h3/b2b4/h3g4/g4g5/g5f6/f6f7/f7g7/g7h7/h7g6",
+          "series_number": 11,
+          "wall_seconds": 0.31761919998098165,
+          "work_positions": 87657
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": -1158,
+          "selected": "b6c6/c6d7/a2f2/f2f4/d1b2/b2d3/f4b4/b4b5/b5a5/a5b5/b5a5/d3f4",
+          "series_number": 12,
+          "wall_seconds": 0.18017509998753667,
+          "work_positions": 55287
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -1246,
+          "selected": "g6f6/f6f7/f7f6/f6f7/f7f6/f6f7/f7f6/f6f7/f7f6/f6f7/f7f6/f6g7/g7f7",
+          "series_number": 13,
+          "wall_seconds": 0.09082409995608032,
+          "work_positions": 83699
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": -1244,
+          "selected": "a5d5/d7c7/d5f5",
+          "series_number": 14,
+          "wall_seconds": 0.17638429999351501,
+          "work_positions": 59469
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -1246,
+          "selected": "f7e7/e7e8/e8e7/e7e8/e8e7/e7e8/e8e7/e7e8/e8e7/e7e8/e8e7/e7e8/e8e7/e7e8/e8e7",
+          "series_number": 15,
+          "wall_seconds": 0.14466689998516813,
+          "work_positions": 83613
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": -787,
+          "selected": "c7b6/f5f8/f8a8/f4d5",
+          "series_number": 16,
+          "wall_seconds": 0.3506714999675751,
+          "work_positions": 77233
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -1274,
+          "selected": "e7d6/d6d5/d5c4/c4b3/b3b4/b4c3/c3c2/c2c3/c3c2/c2c3/c3c2/c2c3/c3c2/c2c3/c3c4/c4d5/d5d6",
+          "series_number": 17,
+          "wall_seconds": 0.07600979995913804,
+          "work_positions": 86510
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "a8a1/a1b1/b1e1/b6b5/b5b4/b4b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/e1d1",
+          "series_number": 18,
+          "wall_seconds": 0.12528509995900095,
+          "work_positions": 63763
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "d6e5/e5e4/e4e3/e3e2/e2d1/d1d2/d2d1/d1d2/d2d1/d1d2/d2d3/d3c4/c4b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4",
+          "series_number": 19,
+          "wall_seconds": 0.06425260001560673,
+          "work_positions": 60452
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b2a1/a1a2/a2a1/a1a2/a2a1/a1b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2",
+          "series_number": 20,
+          "wall_seconds": 0.06817040004534647,
+          "work_positions": 65791
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b4a4/a4a5/a5a4/a4a5/a5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4",
+          "series_number": 21,
+          "wall_seconds": 0.06995640002423897,
+          "work_positions": 66708
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b2a1/a1a2/a2a1/a1a2/a2a1/a1b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2",
+          "series_number": 22,
+          "wall_seconds": 0.0770143999834545,
+          "work_positions": 71683
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b4a4/a4a5/a5a4/a4a5/a5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4",
+          "series_number": 23,
+          "wall_seconds": 0.07821629999671131,
+          "work_positions": 72586
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b2a1/a1a2/a2a1/a1a2/a2a1/a1b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2",
+          "series_number": 24,
+          "wall_seconds": 0.08408199995756149,
+          "work_positions": 77545
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b4a4/a4a5/a5a4/a4a5/a5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4",
+          "series_number": 25,
+          "wall_seconds": 0.08453029999509454,
+          "work_positions": 78453
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b2a1/a1a2/a2a1/a1a2/a2a1/a1b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2",
+          "series_number": 26,
+          "wall_seconds": 0.08922720002010465,
+          "work_positions": 81341
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b4a4/a4a5/a5a4/a4a5/a5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4",
+          "series_number": 27,
+          "wall_seconds": 0.2118431000271812,
+          "work_positions": 82283
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b2a1/a1a2/a2a1/a1a2/a2a1/a1b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b1",
+          "series_number": 28,
+          "wall_seconds": 4.485091599985026,
+          "work_positions": 82353
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b4a3/a3a4/a4a3/a3b3/b3b4/b4b3/b3b4/b4b3/b3b4/b4b3/b3b4/b4b3/b3b4/b4b3/b3b4/b4b3/b3b4/b4b3/b3b4/b4b3/b3b4/b4b3/b3b4/b4b3/b3b4/b4b3/b3b4/b4b3/b3a3",
+          "series_number": 29,
+          "wall_seconds": 0.14160269999410957,
+          "work_positions": 2375
+        }
+      ]
+    },
+    {
+      "candidate_color": "white",
+      "opening_case_id": "seeded-005-s2-62ecfe0378c4",
+      "pair_index": 4,
+      "reason": "ten-series-draw",
+      "status": "draw",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 376,
+          "selected": "e7e6/e8e7",
+          "series_number": 2,
+          "wall_seconds": 0.0829710999969393,
+          "work_positions": 37674
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -911,
+          "selected": "d1a4/d2d3/c1g5",
+          "series_number": 3,
+          "wall_seconds": 0.1787008999963291,
+          "work_positions": 74731
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 376,
+          "selected": "e7e8/b7b5/b5a4/d8g5",
+          "series_number": 4,
+          "wall_seconds": 0.06064180005341768,
+          "work_positions": 85070
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -1419,
+          "selected": "g1f3/f3g5/g5e6/e1d2/e6c7",
+          "series_number": 5,
+          "wall_seconds": 0.5917582000256516,
+          "work_positions": 87201
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 290,
+          "selected": "e8d8/a4a3/a3b2/b2a1q/a1e5/d8c7",
+          "series_number": 6,
+          "wall_seconds": 0.47894719999749213,
+          "work_positions": 88596
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -2169,
+          "selected": "d3d4/d4e5/e5e6/e6f7/f7g8q/g8f8/f8h8",
+          "series_number": 7,
+          "wall_seconds": 0.7376739999745041,
+          "work_positions": 94066
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 2169,
+          "selected": "d7d5/c8f5/d5c4/b8a6/a6c5/a8h8/h8e8/c5e4",
+          "series_number": 8,
+          "wall_seconds": 0.6900898999883793,
+          "work_positions": 95644
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -1224,
+          "selected": "d2c1/g2g4/g4f5/f5f6/f6g7/g7g8q/g8d5/d5e4/e4e8",
+          "series_number": 9,
+          "wall_seconds": 0.4852699999464676,
+          "work_positions": 97519
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 3483,
+          "selected": "c4c3/c3c2/c2b1b/b1a2/a2f7/f7e8/e8b5/b5e2/e2d3/d3f5",
+          "series_number": 10,
+          "wall_seconds": 0.20965860004071146,
+          "work_positions": 92478
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 787,
+          "selected": "c1b2/f1d3/d3f5/f5h7/h1a1/a1a6/h7f5/b2c2/c2d2/a6a7",
+          "series_number": 11,
+          "wall_seconds": 0.23464270000113174,
+          "work_positions": 84059
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 2343,
+          "selected": "c7b6/b6b5/b5c4/c4d4/d4e5/e5f5/f5e4/e4f3/f3g2/g2h2/h2g2/g2f2",
+          "series_number": 12,
+          "wall_seconds": 0.06394029996590689,
+          "work_positions": 86588
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "a7a1/a1a2/a2b2/b2a2/a2b2/b2a2/a2b2/b2a2/a2b2/b2a2/a2b2/b2a2/d2c3",
+          "series_number": 13,
+          "wall_seconds": 0.08445559995016083,
+          "work_positions": 46559
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "f2e1/e1d1/d1c1/c1b1/b1a2/a2a1/a1a2/a2a3/a3a4/a4a5/a5b5/b5b6/b6b5/b5b6",
+          "series_number": 14,
+          "wall_seconds": 0.04865310003515333,
+          "work_positions": 47933
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "c3b2/b2a1/a1a2/a2a3/a3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2",
+          "series_number": 15,
+          "wall_seconds": 0.051761899958364666,
+          "work_positions": 50919
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b6a5/a5a4/a4a5/a5a4/a4b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5",
+          "series_number": 16,
+          "wall_seconds": 0.05278009996982291,
+          "work_positions": 51422
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b2a1/a1a2/a2a1/a1a2/a2a3/a3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3",
+          "series_number": 17,
+          "wall_seconds": 0.05790860002161935,
+          "work_positions": 56691
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b5a5/a5a6/a6a5/a5a6/a6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6",
+          "series_number": 18,
+          "wall_seconds": 0.060712500009685755,
+          "work_positions": 58652
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b3a2/a2a1/a1a2/a2a3/a3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2",
+          "series_number": 19,
+          "wall_seconds": 0.06533110002055764,
+          "work_positions": 62734
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b6a5/a5a4/a4a5/a5a4/a4b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5",
+          "series_number": 20,
+          "wall_seconds": 0.06687290000263602,
+          "work_positions": 63178
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b2a1/a1a2/a2a1/a1a2/a2a3/a3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3",
+          "series_number": 21,
+          "wall_seconds": 0.0721194000216201,
+          "work_positions": 68423
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b5a5/a5a6/a6a5/a5a6/a6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6",
+          "series_number": 22,
+          "wall_seconds": 0.07510349998483434,
+          "work_positions": 70415
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b3a2/a2a1/a1a2/a2a3/a3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3a2",
+          "series_number": 23,
+          "wall_seconds": 0.4098752000136301,
+          "work_positions": 72132
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b6a5/a5a4/a4a5/a5a4/a4b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4a4",
+          "series_number": 24,
+          "wall_seconds": 0.01533030002610758,
+          "work_positions": 1981
+        }
+      ]
+    },
+    {
+      "candidate_color": "black",
+      "opening_case_id": "seeded-005-s2-62ecfe0378c4",
+      "pair_index": 4,
+      "reason": "checkmate",
+      "status": "win",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 308,
+          "selected": "g8f6/h7h6",
+          "series_number": 2,
+          "wall_seconds": 0.081309900037013,
+          "work_positions": 46069
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -294,
+          "selected": "b1c3/c3d5/d5f6",
+          "series_number": 3,
+          "wall_seconds": 0.1549892999464646,
+          "work_positions": 61253
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 308,
+          "selected": "e7f6/d7d5/f8c5/c5f2",
+          "series_number": 4,
+          "wall_seconds": 0.4123983000172302,
+          "work_positions": 84026
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -192,
+          "selected": "e1f2/e2e4/d1g4/g4g7/g7h8",
+          "series_number": 5,
+          "wall_seconds": 0.1216433999943547,
+          "work_positions": 85598
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 2059,
+          "selected": "e8e7/d5c4/c4c3/c3b2/b2a1q/d8h8",
+          "series_number": 6,
+          "wall_seconds": 0.48061949998373166,
+          "work_positions": 87806
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -1823,
+          "selected": "g1f3/f3e5/e5f7/f7h8/c1b2/f1c4/h1a1",
+          "series_number": 7,
+          "wall_seconds": 0.9936987000401132,
+          "work_positions": 95792
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 1318,
+          "selected": "b7b5/b5c4/c4c3/c3d2/c8g4/d2d1q/d1a1/a1b2",
+          "series_number": 8,
+          "wall_seconds": 0.6723798000020906,
+          "work_positions": 99942
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -3100,
+          "selected": "f2g3/e4e5/g3g4/h8f7/f7d6/d6b5/b5c7/g4f4/e5e6",
+          "series_number": 9,
+          "wall_seconds": 0.918567200016696,
+          "work_positions": 87776
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": -999999,
+          "selected": "a7a5/a8a7/a7c7/b2g2/c7c3/c3e3/f6f5/e7e6/e3a3/a3f3",
+          "series_number": 10,
+          "wall_seconds": 0.1337747999932617,
+          "work_positions": 17947
+        }
+      ],
+      "winner": "candidate"
+    },
+    {
+      "candidate_color": "white",
+      "opening_case_id": "seeded-006-s2-981599bfebbb",
+      "pair_index": 5,
+      "reason": "checkmate",
+      "status": "loss",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 406,
+          "selected": "e7e6/e8e7",
+          "series_number": 2,
+          "wall_seconds": 0.08925149997230619,
+          "work_positions": 46968
+        },
+        {
+          "completed_depth": 1,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 410,
+          "selected": "d1a4/a4a7/a7c5",
+          "series_number": 3,
+          "wall_seconds": 0.17604409996420145,
+          "work_positions": 123015
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 410,
+          "selected": "e7f6/a8a2/f8c5/a2a1",
+          "series_number": 4,
+          "wall_seconds": 0.1758084000321105,
+          "work_positions": 84740
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -1746,
+          "selected": "g1f3/f3d4/d4e6/e6c5/c5d7",
+          "series_number": 5,
+          "wall_seconds": 0.4264670999837108,
+          "work_positions": 86640
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": -999999,
+          "selected": "b8d7/a1b1/b1c1",
+          "series_number": 6,
+          "wall_seconds": 0.044469599961303174,
+          "work_positions": 8577
+        }
+      ],
+      "winner": "baseline"
+    },
+    {
+      "candidate_color": "black",
+      "opening_case_id": "seeded-006-s2-981599bfebbb",
+      "pair_index": 5,
+      "reason": "checkmate",
+      "status": "loss",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 233,
+          "selected": "g8f6/h7h6",
+          "series_number": 2,
+          "wall_seconds": 0.08506980002857745,
+          "work_positions": 53602
+        },
+        {
+          "completed_depth": 1,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -481,
+          "selected": "d1b3/d2d3/b3f7",
+          "series_number": 3,
+          "wall_seconds": 0.24649910000152886,
+          "work_positions": 117623
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": -481,
+          "selected": "e8f7/c7c5/c5c4/c4d3",
+          "series_number": 4,
+          "wall_seconds": 0.08007919997908175,
+          "work_positions": 86939
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -1715,
+          "selected": "g1h3/h3f4/f4e6/e2d3/e6d8",
+          "series_number": 5,
+          "wall_seconds": 0.2691453999723308,
+          "work_positions": 88003
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 424,
+          "selected": "f7e8/e7e5/e5e4/e4d3/f8b4/b4c3",
+          "series_number": 6,
+          "wall_seconds": 0.8886741999885999,
+          "work_positions": 88566
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 999999,
+          "selected": "b1c3/c1d2/c3d5/a1c1/c1c8/d2b4/d5c7",
+          "series_number": 7,
+          "wall_seconds": 0.05301209999015555,
+          "work_positions": 9967
+        }
+      ],
+      "winner": "baseline"
+    },
+    {
+      "candidate_color": "white",
+      "opening_case_id": "seeded-007-s2-4f27afac6ed0",
+      "pair_index": 6,
+      "reason": "checkmate",
+      "status": "win",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": -35,
+          "selected": "e7e6/e8e7",
+          "series_number": 2,
+          "wall_seconds": 0.07852680003270507,
+          "work_positions": 41730
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -86,
+          "selected": "f3e5/e5f7/f7d8",
+          "series_number": 3,
+          "wall_seconds": 0.023334799974691123,
+          "work_positions": 68216
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 650,
+          "selected": "b7b5/c8b7/b7g2/g2h1",
+          "series_number": 4,
+          "wall_seconds": 0.10863630002131686,
+          "work_positions": 86368
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -271,
+          "selected": "d2d4/d1d3/d3h7/h7h8/c1g5",
+          "series_number": 5,
+          "wall_seconds": 0.13381040003150702,
+          "work_positions": 89024
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 1453,
+          "selected": "g8f6/b8c6/c6d4/a8d8/e7f7/d4c2",
+          "series_number": 6,
+          "wall_seconds": 0.37504139996599406,
+          "work_positions": 88041
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -689,
+          "selected": "e1d2/h8h7/h7c2/c2c7/c7d8/d8b8/b8b5",
+          "series_number": 7,
+          "wall_seconds": 2.6806751000112854,
+          "work_positions": 92825
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 2580,
+          "selected": "f6g4/g4h2/h1d5/d5c4/c4e2/e2b5/f7g6/h2f1",
+          "series_number": 8,
+          "wall_seconds": 0.4189454999868758,
+          "work_positions": 97351
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -1083,
+          "selected": "d2e1/a2a4/a4b5/a1a4/g5d2/b5b6/b6a7/a7a8q/a8e4",
+          "series_number": 9,
+          "wall_seconds": 0.20652869995683432,
+          "work_positions": 96179
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 2666,
+          "selected": "g6f7/f1d2/d2b1/b1c3/f8b4/d7d5/d5e4/e6e5/g7g5/c3a4",
+          "series_number": 10,
+          "wall_seconds": 0.32699039997532964,
+          "work_positions": 93171
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 1169,
+          "selected": "e1e2/b2b3/b3a4/f2f4/f4g5/a4a5/a5a6/a6a7/a7a8q/a8e4/e4b4",
+          "series_number": 11,
+          "wall_seconds": 0.37957699998514727,
+          "work_positions": 132343
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 2239,
+          "selected": "f7e6/e6f5/f5g5/g5f5/f5e6/e6d7/d7e6/e6f6/f6f7/f7e6/e6f6/f6g6",
+          "series_number": 12,
+          "wall_seconds": 0.24784239998552948,
+          "work_positions": 86121
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 1451,
+          "selected": "b4b8/b8h8/e2e3/e3e4/e4e5/h8h4/h4c4/c4f4/f4c4/c4a2/a2c4/c4a2/a2g8",
+          "series_number": 13,
+          "wall_seconds": 0.2143258000141941,
+          "work_positions": 25868
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 999998,
+          "selected": "g6h5/h5h4/h4h3/h3h2/h2h1/h1h2/h2h1/h1h2/h2h1/h1h2/h2h1/h1h2/h2h1/h1h2",
+          "series_number": 14,
+          "wall_seconds": 0.6020199999911711,
+          "work_positions": 127942
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 999999,
+          "selected": "e5e4/e4f3/f3f2/f2f3/f3f2/f2f3/f3f2/f2f3/f3f2/f2f3/f3f2/f2f3/f3f2/f2f3/g8g2",
+          "series_number": 15,
+          "wall_seconds": 0.05011229997035116,
+          "work_positions": 10732
+        }
+      ],
+      "winner": "candidate"
+    },
+    {
+      "candidate_color": "black",
+      "opening_case_id": "seeded-007-s2-4f27afac6ed0",
+      "pair_index": 6,
+      "reason": "checkmate",
+      "status": "loss",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 578,
+          "selected": "d7d5/c8f5",
+          "series_number": 2,
+          "wall_seconds": 0.07441960001597181,
+          "work_positions": 38443
+        },
+        {
+          "completed_depth": 1,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 748,
+          "selected": "e2e4/e4f5/f1b5",
+          "series_number": 3,
+          "wall_seconds": 0.15959270001621917,
+          "work_positions": 119975
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 748,
+          "selected": "c7c6/e7e6/d8h4/h4e4",
+          "series_number": 4,
+          "wall_seconds": 0.3553059999831021,
+          "work_positions": 84888
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -88,
+          "selected": "d1e2/e2e4/f3d4/d4c6/c6b8",
+          "series_number": 5,
+          "wall_seconds": 0.10260659997584298,
+          "work_positions": 87092
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 2966,
+          "selected": "e8d8/d5e4/e4e3/d8c7/e3d2",
+          "series_number": 6,
+          "wall_seconds": 4.306810599984601,
+          "work_positions": 87319
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 999999,
+          "selected": "b1d2/d2c4/c4b6/c1g5/a1d1/d1d8/b6a8",
+          "series_number": 7,
+          "wall_seconds": 0.06971000001067296,
+          "work_positions": 12676
+        }
+      ],
+      "winner": "baseline"
+    },
+    {
+      "candidate_color": "white",
+      "opening_case_id": "seeded-008-s2-063cbc99f968",
+      "pair_index": 7,
+      "reason": "checkmate",
+      "status": "win",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 372,
+          "selected": "d7d6/c8h3",
+          "series_number": 2,
+          "wall_seconds": 0.08598889998393133,
+          "work_positions": 43494
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 204,
+          "selected": "h1h3/h3h7/h7h8",
+          "series_number": 3,
+          "wall_seconds": 0.025116999982856214,
+          "work_positions": 69740
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 851,
+          "selected": "e7e5/d8h4/e8d7/h4h8",
+          "series_number": 4,
+          "wall_seconds": 0.08970830001635477,
+          "work_positions": 87034
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 146,
+          "selected": "e2e4/d1h5/h5e5/e5h2/h2h8",
+          "series_number": 5,
+          "wall_seconds": 0.08787079999456182,
+          "work_positions": 88448
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 2156,
+          "selected": "b8a6/a6b4/f8e7/g8f6/a8h8/b4c2",
+          "series_number": 6,
+          "wall_seconds": 1.0047015000018291,
+          "work_positions": 89611
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -152,
+          "selected": "e1d1/e4e5/e5f6/f6g7/g7h8q/f1e2/d1c2",
+          "series_number": 7,
+          "wall_seconds": 0.9710107000428252,
+          "work_positions": 92333
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 3500,
+          "selected": "e7h4/h4f2/f2d4/d4h8/h8g7/c7c5/f7f5/b7b6",
+          "series_number": 8,
+          "wall_seconds": 7.096797299978789,
+          "work_positions": 94935
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 999999,
+          "selected": "a2a4/a4a5/a5b6/a1a3/a3e3/b6b7/b7b8q/e2a6/a6b5",
+          "series_number": 9,
+          "wall_seconds": 0.06937079998897389,
+          "work_positions": 13640
+        }
+      ],
+      "winner": "candidate"
+    },
+    {
+      "candidate_color": "black",
+      "opening_case_id": "seeded-008-s2-063cbc99f968",
+      "pair_index": 7,
+      "reason": "checkmate",
+      "status": "win",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 235,
+          "selected": "d7d6/g8h6",
+          "series_number": 2,
+          "wall_seconds": 0.08845479995943606,
+          "work_positions": 64489
+        },
+        {
+          "completed_depth": 1,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 488,
+          "selected": "e2e3/d1h5/f1b5",
+          "series_number": 3,
+          "wall_seconds": 0.15928790002362803,
+          "work_positions": 122102
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 488,
+          "selected": "d8d7/d7b5/b5h5/e8d7",
+          "series_number": 4,
+          "wall_seconds": 0.06254730001091957,
+          "work_positions": 86108
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -1445,
+          "selected": "e3e4/e4e5/g2g4/g4h5/e5e6",
+          "series_number": 5,
+          "wall_seconds": 0.30470119998790324,
+          "work_positions": 87537
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": -190,
+          "selected": "d7c6/h6g4/g4f2/f2h1/h1g3/c6b5",
+          "series_number": 6,
+          "wall_seconds": 1.2917974999872968,
+          "work_positions": 90632
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -1870,
+          "selected": "e6f7/g1e2/h5h6/h6g7/g7f8q/f8h8/b1c3",
+          "series_number": 7,
+          "wall_seconds": 1.0105345000047237,
+          "work_positions": 90267
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": -999999,
+          "selected": "b5b6/c8e6/b8d7/a8f8/d7c5/f8f7/c5a4/f7f1",
+          "series_number": 8,
+          "wall_seconds": 0.04569429997354746,
+          "work_positions": 11319
+        }
+      ],
+      "winner": "candidate"
+    },
+    {
+      "candidate_color": "white",
+      "opening_case_id": "seeded-009-s2-13d91c2a225a",
+      "pair_index": 8,
+      "reason": "checkmate",
+      "status": "win",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 388,
+          "selected": "e7e5/e5f4",
+          "series_number": 2,
+          "wall_seconds": 0.07892639999045059,
+          "work_positions": 33323
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -627,
+          "selected": "e2e3/d1e2/e3f4",
+          "series_number": 3,
+          "wall_seconds": 0.14329199999338016,
+          "work_positions": 58467
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 388,
+          "selected": "d8e7/d7d5/c8g4/g4e2",
+          "series_number": 4,
+          "wall_seconds": 0.06308310001622885,
+          "work_positions": 84488
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -739,
+          "selected": "b1c3/c3d5/d5e7/e7f5/e1e2",
+          "series_number": 5,
+          "wall_seconds": 0.14206189999822527,
+          "work_positions": 87791
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 1330,
+          "selected": "f8a3/a3b2/b2a1/a1d4/g7g6/g6f5",
+          "series_number": 6,
+          "wall_seconds": 0.12880619999486953,
+          "work_positions": 92893
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -1355,
+          "selected": "c2c4/g1f3/c1b2/f3d4/d4b5/b2h8/h8g7",
+          "series_number": 7,
+          "wall_seconds": 0.34835929999826476,
+          "work_positions": 93207
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 1429,
+          "selected": "b8a6/a6b4/b4d3/e8d7/a7a6/a6b5/d3f4",
+          "series_number": 8,
+          "wall_seconds": 4.225462400005199,
+          "work_positions": 94837
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 999999,
+          "selected": "e2e3/g7e5/c4b5/b5b6/b6c7/c7c8r/c8e8/f1b5",
+          "series_number": 9,
+          "wall_seconds": 1.8254847999778576,
+          "work_positions": 26536
+        }
+      ],
+      "winner": "candidate"
+    },
+    {
+      "candidate_color": "black",
+      "opening_case_id": "seeded-009-s2-13d91c2a225a",
+      "pair_index": 8,
+      "reason": "ten-series-draw",
+      "status": "draw",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 324,
+          "selected": "g8f6/h7h6",
+          "series_number": 2,
+          "wall_seconds": 0.08457190002081916,
+          "work_positions": 55076
+        },
+        {
+          "completed_depth": 1,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 324,
+          "selected": "b1c3/c3d5/d5f6",
+          "series_number": 3,
+          "wall_seconds": 0.14924619998782873,
+          "work_positions": 116901
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 324,
+          "selected": "e7f6/f6f5/f8c5/d8h4",
+          "series_number": 4,
+          "wall_seconds": 0.2864289000281133,
+          "work_positions": 78887
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -476,
+          "selected": "g2g3/d2d4/d4c5/d1d5/g3h4",
+          "series_number": 5,
+          "wall_seconds": 0.14740570000139996,
+          "work_positions": 86765
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 1381,
+          "selected": "b8a6/a6b4/d7d6/c8e6/e6d5/d5h1",
+          "series_number": 6,
+          "wall_seconds": 2.2681926999939606,
+          "work_positions": 90944
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -1046,
+          "selected": "c5c6/c6b7/f1g2/g2d5/a2a3/a3b4/b7a8q",
+          "series_number": 7,
+          "wall_seconds": 1.4147293000132777,
+          "work_positions": 101377
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 2974,
+          "selected": "e8e7/a7a5/a5b4/h8a8/a8a1/h1d5/d5c4/a1c1",
+          "series_number": 8,
+          "wall_seconds": 0.1875877999700606,
+          "work_positions": 93543
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -1950,
+          "selected": "e1f2/g1f3/f3d2/d2c4/c4d6/f2g2/c2c3/c3b4/d6c8",
+          "series_number": 9,
+          "wall_seconds": 2.3326107999891974,
+          "work_positions": 89121
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 944,
+          "selected": "e7d7/c1c4/c4b4/b4f4/g7g5/g5h4/d7c8/c8b7/f4e4/e4e2",
+          "series_number": 10,
+          "wall_seconds": 0.5092013000394218,
+          "work_positions": 91104
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -102,
+          "selected": "g2f1/b2b4/b4b5/b5b6/b6c7/c7c8r/c8c5/c5f5/f1e2/e2d2/f5f7",
+          "series_number": 11,
+          "wall_seconds": 0.45931090001249686,
+          "work_positions": 140386
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 974,
+          "selected": "b7a8/a8b8/b8a8/a8b8/b8c8/c8d8/d8e8/e8f7/f7e6/e6d5/d5c4/c4b3",
+          "series_number": 12,
+          "wall_seconds": 0.13860490004299209,
+          "work_positions": 90558
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "d2d1/d1e1/e1f2/f2g2/g2h3/h3g4/g4h3/h3h4/h4h5/h5g6/g6g7/g7h6/h6g5",
+          "series_number": 13,
+          "wall_seconds": 0.08264450001297519,
+          "work_positions": 52748
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b3b2/b2c1/c1d1/d1e2/e2f1/f1f2/f2g1/g1g2/g2g1/g1g2/g2g1/g1g2/g2h2/h2g2",
+          "series_number": 14,
+          "wall_seconds": 0.05190189997665584,
+          "work_positions": 48394
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "g5f4/f4e3/e3d2/d2c2/c2b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2",
+          "series_number": 15,
+          "wall_seconds": 0.04955479997443035,
+          "work_positions": 49558
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "g2f1/f1e1/e1d1/d1d2/d2d3/d3c4/c4b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5",
+          "series_number": 16,
+          "wall_seconds": 0.05293920001713559,
+          "work_positions": 51377
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b2a1/a1a2/a2a1/a1a2/a2a3/a3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3",
+          "series_number": 17,
+          "wall_seconds": 0.06140959996264428,
+          "work_positions": 56691
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b5a5/a5a6/a6a5/a5a6/a6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6",
+          "series_number": 18,
+          "wall_seconds": 0.0616495999856852,
+          "work_positions": 58652
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b3a2/a2a1/a1a2/a2a3/a3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2",
+          "series_number": 19,
+          "wall_seconds": 0.0654103999841027,
+          "work_positions": 62734
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b6a5/a5a4/a4a5/a5a4/a4b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5",
+          "series_number": 20,
+          "wall_seconds": 0.06743540003662929,
+          "work_positions": 63178
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b2a1/a1a2/a2a1/a1a2/a2a3/a3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3",
+          "series_number": 21,
+          "wall_seconds": 0.07367559999693185,
+          "work_positions": 68423
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b5a5/a5a6/a6a5/a5a6/a6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6",
+          "series_number": 22,
+          "wall_seconds": 0.07532679999712855,
+          "work_positions": 70415
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b3a2/a2a1/a1a2/a2a3/a3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3a2",
+          "series_number": 23,
+          "wall_seconds": 0.4033617000095546,
+          "work_positions": 72132
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b6a5/a5a4/a4a5/a5a4/a4b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4a4",
+          "series_number": 24,
+          "wall_seconds": 0.015558800019789487,
+          "work_positions": 1981
+        }
+      ]
+    },
+    {
+      "candidate_color": "white",
+      "opening_case_id": "seeded-010-s2-443a148b9d7d",
+      "pair_index": 9,
+      "reason": "checkmate",
+      "status": "loss",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 343,
+          "selected": "b8a6/a6b4",
+          "series_number": 2,
+          "wall_seconds": 0.08492170000681654,
+          "work_positions": 48803
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -122,
+          "selected": "e2e3/d1g4/g4b4",
+          "series_number": 3,
+          "wall_seconds": 0.04295500001171604,
+          "work_positions": 71613
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 341,
+          "selected": "e7e6/d8f6/f6a1/f8b4",
+          "series_number": 4,
+          "wall_seconds": 0.08515780000016093,
+          "work_positions": 85740
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -1339,
+          "selected": "c1b2/b2a1/a1g7/f1b5/g7h8",
+          "series_number": 5,
+          "wall_seconds": 0.08793070004321635,
+          "work_positions": 87940
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 243,
+          "selected": "h7h5/h5h4/h4h3/h3g2/g2h1q/h1g1",
+          "series_number": 6,
+          "wall_seconds": 0.10034979996271431,
+          "work_positions": 89438
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -1902,
+          "selected": "e1e2/b1c3/c3d5/h8e5/h2h4/e5h2/h2g1",
+          "series_number": 7,
+          "wall_seconds": 0.7396139000193216,
+          "work_positions": 89770
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 24,
+          "selected": "e6d5/d5d4/d4e3/e3f2/f2g1q/g1b6/g8h6/b6b5",
+          "series_number": 8,
+          "wall_seconds": 1.2901597999734804,
+          "work_positions": 102458
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -3771,
+          "selected": "e2e3/c2c3/e3f3/c3c4/a2a3/f3f2/c4b5/b5b6/b6c7",
+          "series_number": 9,
+          "wall_seconds": 1.0251470999792218,
+          "work_positions": 92321
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": -2221,
+          "selected": "a7a5/a8a6/a6d6/d6d3/b4d6/d6c7/e8e7/d7d5/c8h3/d3d2",
+          "series_number": 10,
+          "wall_seconds": 0.5157543999957852,
+          "work_positions": 88782
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -3068,
+          "selected": "f2e1/a3a4/e1d2/d2c3/c3d4/d4c5/c5d5/d5c4/c4d3/d3c2/c2b2",
+          "series_number": 11,
+          "wall_seconds": 2.655655900016427,
+          "work_positions": 86322
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": -3296,
+          "selected": "f7f5/e7f7/c7d6/b7b5/b5a4/d6e7/f5f4/h3f5/f4f3/f3f2/f2f1q/f1b1",
+          "series_number": 12,
+          "wall_seconds": 0.2474692999967374,
+          "work_positions": 42270
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -3504,
+          "selected": "b2c3/c3c4/c4c3/c3c4/c4c3/c3c4/c4c3/c3c4/c4c3/c3d2/d2e2/e2f2/h4h5",
+          "series_number": 13,
+          "wall_seconds": 0.9145973999984562,
+          "work_positions": 84626
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": -999999,
+          "selected": "a4a3/a3a2/a2a1q/b1d3/a1g7/e7h4",
+          "series_number": 14,
+          "wall_seconds": 0.3520781000261195,
+          "work_positions": 41257
+        }
+      ],
+      "winner": "baseline"
+    },
+    {
+      "candidate_color": "black",
+      "opening_case_id": "seeded-010-s2-443a148b9d7d",
+      "pair_index": 9,
+      "reason": "checkmate",
+      "status": "win",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 343,
+          "selected": "b8a6/a6b4",
+          "series_number": 2,
+          "wall_seconds": 0.08732699998654425,
+          "work_positions": 69771
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -122,
+          "selected": "e2e3/d1g4/g4b4",
+          "series_number": 3,
+          "wall_seconds": 0.0428912999923341,
+          "work_positions": 71613
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 341,
+          "selected": "e7e6/d8f6/f6a1/f8b4",
+          "series_number": 4,
+          "wall_seconds": 0.08459100004984066,
+          "work_positions": 85740
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -1339,
+          "selected": "c1b2/b2a1/a1g7/f1b5/g7h8",
+          "series_number": 5,
+          "wall_seconds": 0.08917270001256838,
+          "work_positions": 87940
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 243,
+          "selected": "h7h5/h5h4/h4h3/h3g2/g2h1q/h1g1",
+          "series_number": 6,
+          "wall_seconds": 0.09989860001951456,
+          "work_positions": 89438
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -1902,
+          "selected": "e1e2/b1c3/c3d5/h8e5/h2h4/e5h2/h2g1",
+          "series_number": 7,
+          "wall_seconds": 0.7888886000146158,
+          "work_positions": 89770
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 24,
+          "selected": "e6d5/d5d4/d4e3/e3f2/f2g1q/g1b6/g8h6/b6b5",
+          "series_number": 8,
+          "wall_seconds": 1.351047899981495,
+          "work_positions": 102458
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -3771,
+          "selected": "e2e3/c2c3/e3f3/c3c4/a2a3/f3f2/c4b5/b5b6/b6c7",
+          "series_number": 9,
+          "wall_seconds": 1.0630961999995634,
+          "work_positions": 92321
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": -2221,
+          "selected": "a7a5/a8a6/a6d6/d6d3/b4d6/d6c7/e8e7/d7d5/c8h3/d3d2",
+          "series_number": 10,
+          "wall_seconds": 0.6398159000091255,
+          "work_positions": 88782
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -3068,
+          "selected": "f2e1/a3a4/e1d2/d2c3/c3d4/d4c5/c5d5/d5c4/c4d3/d3c2/c2b2",
+          "series_number": 11,
+          "wall_seconds": 2.368683999986388,
+          "work_positions": 86322
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": -3296,
+          "selected": "f7f5/e7f7/c7d6/b7b5/b5a4/d6e7/f5f4/h3f5/f4f3/f3f2/f2f1q/f1b1",
+          "series_number": 12,
+          "wall_seconds": 0.24930179998045787,
+          "work_positions": 42270
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -3504,
+          "selected": "b2c3/c3c4/c4c3/c3c4/c4c3/c3c4/c4c3/c3c4/c4c3/c3d2/d2e2/e2f2/h4h5",
+          "series_number": 13,
+          "wall_seconds": 1.0439063999801874,
+          "work_positions": 84626
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": -999999,
+          "selected": "a4a3/a3a2/a2a1q/b1d3/a1g7/e7h4",
+          "series_number": 14,
+          "wall_seconds": 0.3421265000361018,
+          "work_positions": 41257
+        }
+      ],
+      "winner": "candidate"
+    },
+    {
+      "candidate_color": "white",
+      "opening_case_id": "seeded-011-s2-4d8260f1d3be",
+      "pair_index": 10,
+      "reason": "checkmate",
+      "status": "loss",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 410,
+          "selected": "f7f6/e8f7",
+          "series_number": 2,
+          "wall_seconds": 0.08381720003671944,
+          "work_positions": 47070
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -86,
+          "selected": "f1g2/g2b7/b7a8",
+          "series_number": 3,
+          "wall_seconds": 0.0371820000000298,
+          "work_positions": 69295
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 581,
+          "selected": "g8h6/h6g4/g4f2/f2d1",
+          "series_number": 4,
+          "wall_seconds": 0.09227570000803098,
+          "work_positions": 86697
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -908,
+          "selected": "b1c3/c3d5/d5e7/e7g6/g6h8",
+          "series_number": 5,
+          "wall_seconds": 0.4860022999928333,
+          "work_positions": 87503
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": -999999,
+          "selected": "f7e6/c8b7/d1e3/f6f5/d8g5/g5h4",
+          "series_number": 6,
+          "wall_seconds": 0.0330365999834612,
+          "work_positions": 6767
+        }
+      ],
+      "winner": "baseline"
+    },
+    {
+      "candidate_color": "black",
+      "opening_case_id": "seeded-011-s2-4d8260f1d3be",
+      "pair_index": 10,
+      "reason": "checkmate",
+      "status": "loss",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 237,
+          "selected": "d7d5/g8h6",
+          "series_number": 2,
+          "wall_seconds": 0.08339099999284372,
+          "work_positions": 55209
+        },
+        {
+          "completed_depth": 1,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 432,
+          "selected": "e2e4/d1e2/e2b5",
+          "series_number": 3,
+          "wall_seconds": 0.2091519000241533,
+          "work_positions": 122302
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 432,
+          "selected": "d8d7/d7b5/b5b2/b2c1",
+          "series_number": 4,
+          "wall_seconds": 0.15843589999713004,
+          "work_positions": 74109
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -1807,
+          "selected": "e1e2/f1g2/g1h3/h1c1/e4d5",
+          "series_number": 5,
+          "wall_seconds": 0.13721670000813901,
+          "work_positions": 85224
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 544,
+          "selected": "c8d7/h6g4/g4f2/f2h3/e7e5/f8c5",
+          "series_number": 6,
+          "wall_seconds": 4.7302454999880865,
+          "work_positions": 90998
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 999999,
+          "selected": "c1f1/f1f7/d5d6/d6c7/d2d4/f7d7/c7c8q",
+          "series_number": 7,
+          "wall_seconds": 0.05336760001955554,
+          "work_positions": 9110
+        }
+      ],
+      "winner": "baseline"
+    },
+    {
+      "candidate_color": "white",
+      "opening_case_id": "seeded-012-s2-62690173e146",
+      "pair_index": 11,
+      "reason": "checkmate",
+      "status": "loss",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 404,
+          "selected": "e7e5/f8c5",
+          "series_number": 2,
+          "wall_seconds": 0.08870879997266456,
+          "work_positions": 54812
+        },
+        {
+          "completed_depth": 1,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 522,
+          "selected": "e2e3/d1h5/h5e5",
+          "series_number": 3,
+          "wall_seconds": 0.19062200002372265,
+          "work_positions": 125750
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 522,
+          "selected": "d8e7/e7e5/e5a1/a1b1",
+          "series_number": 4,
+          "wall_seconds": 0.07468590000644326,
+          "work_positions": 87167
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -1795,
+          "selected": "c2c3/f1d3/b3b4/b4c5/d3b1",
+          "series_number": 5,
+          "wall_seconds": 0.33489739999640733,
+          "work_positions": 87714
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": -394,
+          "selected": "b7b5/b5b4/b4c3/c3c2/c2b1q/b1c1",
+          "series_number": 6,
+          "wall_seconds": 0.08184160001110286,
+          "work_positions": 91200
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -2461,
+          "selected": "e1e2/g1h3/h1c1/c1b1/b1b8/b8a8/a8c8",
+          "series_number": 7,
+          "wall_seconds": 0.09930509998230264,
+          "work_positions": 86477
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 518,
+          "selected": "e8e7/g8f6/f6e4/e4f2/f2h3/h8c8/d7d6/h3g1",
+          "series_number": 8,
+          "wall_seconds": 1.1321554000023752,
+          "work_positions": 89866
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -2062,
+          "selected": "e2f1/g2g4/g4g5/g5g6/g6h7/h7h8q/h8c8/c8f5/f1g1",
+          "series_number": 9,
+          "wall_seconds": 0.9549941000295803,
+          "work_positions": 90885
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": -2123,
+          "selected": "e7f8/g7g6/g6f5/f5f4/f4e3/e3d2/f8g7/g7h6/d6c5/d2d1q",
+          "series_number": 10,
+          "wall_seconds": 1.3023762999800965,
+          "work_positions": 155132
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -2433,
+          "selected": "g1f2/a2a3/f2e3/e3f4/f4f5/f5f6/a3a4/a4a5/a5a6/f6f7/h2h3",
+          "series_number": 11,
+          "wall_seconds": 0.7412332000094466,
+          "work_positions": 86089
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": -999999,
+          "selected": "c5c4/d1b3/b3b6/c4c3/c3c2/c2c1q/c1a3/b6g6",
+          "series_number": 12,
+          "wall_seconds": 0.0887726999935694,
+          "work_positions": 13293
+        }
+      ],
+      "winner": "baseline"
+    },
+    {
+      "candidate_color": "black",
+      "opening_case_id": "seeded-012-s2-62690173e146",
+      "pair_index": 11,
+      "reason": "checkmate",
+      "status": "win",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 480,
+          "selected": "d7d5/g8f6",
+          "series_number": 2,
+          "wall_seconds": 0.09302160004153848,
+          "work_positions": 65940
+        },
+        {
+          "completed_depth": 1,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 468,
+          "selected": "e2e3/d1f3/f1b5",
+          "series_number": 3,
+          "wall_seconds": 0.17765530000906438,
+          "work_positions": 129788
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 468,
+          "selected": "c8d7/d7b5/b5e2/e2f3",
+          "series_number": 4,
+          "wall_seconds": 0.25739149999571964,
+          "work_positions": 85131
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -993,
+          "selected": "e3e4/e4d5/d5d6/d6c7/c7b8q",
+          "series_number": 5,
+          "wall_seconds": 0.4892553999670781,
+          "work_positions": 89419
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": -999999,
+          "selected": "a7a5/d8b8/b8a7/f6e4/a7d4/d4f2",
+          "series_number": 6,
+          "wall_seconds": 0.05291719996603206,
+          "work_positions": 10169
+        }
+      ],
+      "winner": "candidate"
+    },
+    {
+      "candidate_color": "white",
+      "opening_case_id": "seeded-013-s2-ff8d99d54e13",
+      "pair_index": 12,
+      "reason": "ten-series-draw",
+      "status": "draw",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 131,
+          "selected": "d7d6/c8h3",
+          "series_number": 2,
+          "wall_seconds": 0.08479330001864582,
+          "work_positions": 45801
+        },
+        {
+          "completed_depth": 1,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 270,
+          "selected": "e2e3/g2h3/f1b5",
+          "series_number": 3,
+          "wall_seconds": 0.1460683000041172,
+          "work_positions": 115622
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 105,
+          "selected": "d8d7/d7b5/b5h5/h5d1",
+          "series_number": 4,
+          "wall_seconds": 0.24323909997474402,
+          "work_positions": 114163
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -1390,
+          "selected": "e1d1/c2c4/c4c5/c5d6/h1g1",
+          "series_number": 5,
+          "wall_seconds": 0.08519620000151917,
+          "work_positions": 86482
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 589,
+          "selected": "e8d7/f7f5/f5f4/f4e3/e3f2/f2g1q",
+          "series_number": 6,
+          "wall_seconds": 0.4180513999890536,
+          "work_positions": 89484
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -3116,
+          "selected": "d1e2/d6c7/c7b8q/b8a8/a8a7/a7b6/b6g1",
+          "series_number": 7,
+          "wall_seconds": 0.6363978000008501,
+          "work_positions": 89747
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 1987,
+          "selected": "h7h5/h8h6/h6c6/c6c1/c1g1/g1b1/b1a1/a1a2",
+          "series_number": 8,
+          "wall_seconds": 0.5995147000066936,
+          "work_positions": 91376
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -2088,
+          "selected": "d2d4/d4d5/d5d6/d6e7/e7f8q/f8c5/c5h5/h5e5/e5g7",
+          "series_number": 9,
+          "wall_seconds": 0.34952799999155104,
+          "work_positions": 88612
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": -1218,
+          "selected": "g8e7/a2a1/a1g1/g1g7/e7d5/g7g3/b7b5/g3h3/d5f4",
+          "series_number": 10,
+          "wall_seconds": 0.17190789995947853,
+          "work_positions": 75077
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -1144,
+          "selected": "e2d1/b2b3/b3b4/d1c1/c1b1/b1b2/b2b1/b1b2/b2b1/b1c1/c1b2",
+          "series_number": 11,
+          "wall_seconds": 0.23822569998446852,
+          "work_positions": 84915
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "d7c7/c7c6/c6d5/d5c4/c4b4/b4c5/c5d5/b5b4/d5c6/c6b6/b6b7/h3h2",
+          "series_number": 12,
+          "wall_seconds": 0.21080390003044158,
+          "work_positions": 51918
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b2b1/b1c1/c1d1/d1e1/e1f1/f1g1/g1h2/h2g3/g3f4/f4e4/e4d5/d5c4/c4b4",
+          "series_number": 13,
+          "wall_seconds": 0.19280900002922863,
+          "work_positions": 88053
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b7a6/a6a7/a7a6/a6a7/a7a6/a6b6/b6b7/b7b6/b6b7/b7b6/b6b7/b7b6/b6b7/b7b6",
+          "series_number": 14,
+          "wall_seconds": 0.04808219999540597,
+          "work_positions": 47153
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b4a3/a3a2/a2a1/a1a2/a2b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2",
+          "series_number": 15,
+          "wall_seconds": 0.050629899953491986,
+          "work_positions": 50807
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b6a5/a5a4/a4a5/a5a4/a4b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5",
+          "series_number": 16,
+          "wall_seconds": 0.05282689997693524,
+          "work_positions": 51422
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b2a1/a1a2/a2a1/a1a2/a2a3/a3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3",
+          "series_number": 17,
+          "wall_seconds": 0.05838740000035614,
+          "work_positions": 56691
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b5a5/a5a6/a6a5/a5a6/a6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6",
+          "series_number": 18,
+          "wall_seconds": 0.061299199995119125,
+          "work_positions": 58652
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b3a2/a2a1/a1a2/a2a3/a3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2",
+          "series_number": 19,
+          "wall_seconds": 0.06567500001983717,
+          "work_positions": 62734
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b6a5/a5a4/a4a5/a5a4/a4b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5",
+          "series_number": 20,
+          "wall_seconds": 0.06676850002259016,
+          "work_positions": 63178
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b2a1/a1a2/a2a1/a1a2/a2a3/a3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3",
+          "series_number": 21,
+          "wall_seconds": 0.07262319995788857,
+          "work_positions": 68423
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b5a5/a5a6/a6a5/a5a6/a6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5a5",
+          "series_number": 22,
+          "wall_seconds": 0.08111390005797148,
+          "work_positions": 67012
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b3a2/a2a1/a1a2/a2a3/a3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3a2",
+          "series_number": 23,
+          "wall_seconds": 0.014111900003626943,
+          "work_positions": 1829
+        }
+      ]
+    },
+    {
+      "candidate_color": "black",
+      "opening_case_id": "seeded-013-s2-ff8d99d54e13",
+      "pair_index": 12,
+      "reason": "ten-series-draw",
+      "status": "draw",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 131,
+          "selected": "d7d6/c8h3",
+          "series_number": 2,
+          "wall_seconds": 0.08091869996860623,
+          "work_positions": 43909
+        },
+        {
+          "completed_depth": 1,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 270,
+          "selected": "e2e3/g2h3/f1b5",
+          "series_number": 3,
+          "wall_seconds": 0.15237300004810095,
+          "work_positions": 115622
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 105,
+          "selected": "d8d7/d7b5/b5h5/h5d1",
+          "series_number": 4,
+          "wall_seconds": 0.24330160004319623,
+          "work_positions": 114163
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -1390,
+          "selected": "e1d1/c2c4/c4c5/c5d6/h1g1",
+          "series_number": 5,
+          "wall_seconds": 0.08542230003513396,
+          "work_positions": 86482
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 589,
+          "selected": "e8d7/f7f5/f5f4/f4e3/e3f2/f2g1q",
+          "series_number": 6,
+          "wall_seconds": 0.3971855000127107,
+          "work_positions": 89484
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -3116,
+          "selected": "d1e2/d6c7/c7b8q/b8a8/a8a7/a7b6/b6g1",
+          "series_number": 7,
+          "wall_seconds": 0.6278866000357084,
+          "work_positions": 89747
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 1987,
+          "selected": "h7h5/h8h6/h6c6/c6c1/c1g1/g1b1/b1a1/a1a2",
+          "series_number": 8,
+          "wall_seconds": 0.5681218000245281,
+          "work_positions": 91376
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -2088,
+          "selected": "d2d4/d4d5/d5d6/d6e7/e7f8q/f8c5/c5h5/h5e5/e5g7",
+          "series_number": 9,
+          "wall_seconds": 0.34949560003587976,
+          "work_positions": 88612
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": -1218,
+          "selected": "g8e7/a2a1/a1g1/g1g7/e7d5/g7g3/b7b5/g3h3/d5f4",
+          "series_number": 10,
+          "wall_seconds": 0.1746784999850206,
+          "work_positions": 75077
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -1144,
+          "selected": "e2d1/b2b3/b3b4/d1c1/c1b1/b1b2/b2b1/b1b2/b2b1/b1c1/c1b2",
+          "series_number": 11,
+          "wall_seconds": 0.26084380003158003,
+          "work_positions": 84915
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "d7c7/c7c6/c6d5/d5c4/c4b4/b4c5/c5d5/b5b4/d5c6/c6b6/b6b7/h3h2",
+          "series_number": 12,
+          "wall_seconds": 0.20835720002651215,
+          "work_positions": 51918
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b2b1/b1c1/c1d1/d1e1/e1f1/f1g1/g1h2/h2g3/g3f4/f4e4/e4d5/d5c4/c4b4",
+          "series_number": 13,
+          "wall_seconds": 0.190982099971734,
+          "work_positions": 88053
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b7a6/a6a7/a7a6/a6a7/a7a6/a6b6/b6b7/b7b6/b6b7/b7b6/b6b7/b7b6/b6b7/b7b6",
+          "series_number": 14,
+          "wall_seconds": 0.04792209999868646,
+          "work_positions": 47153
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b4a3/a3a2/a2a1/a1a2/a2b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2",
+          "series_number": 15,
+          "wall_seconds": 0.05165480001596734,
+          "work_positions": 50807
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b6a5/a5a4/a4a5/a5a4/a4b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5",
+          "series_number": 16,
+          "wall_seconds": 0.053150399995502084,
+          "work_positions": 51422
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b2a1/a1a2/a2a1/a1a2/a2a3/a3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3",
+          "series_number": 17,
+          "wall_seconds": 0.05779320001602173,
+          "work_positions": 56691
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b5a5/a5a6/a6a5/a5a6/a6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6",
+          "series_number": 18,
+          "wall_seconds": 0.0619223999674432,
+          "work_positions": 58652
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b3a2/a2a1/a1a2/a2a3/a3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2",
+          "series_number": 19,
+          "wall_seconds": 0.06545160000678152,
+          "work_positions": 62734
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b6a5/a5a4/a4a5/a5a4/a4b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5/b5b4/b4b5",
+          "series_number": 20,
+          "wall_seconds": 0.06730410002637655,
+          "work_positions": 63178
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b2a1/a1a2/a2a1/a1a2/a2a3/a3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3",
+          "series_number": 21,
+          "wall_seconds": 0.07183979998808354,
+          "work_positions": 68423
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 0,
+          "selected": "b5a5/a5a6/a6a5/a5a6/a6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5b6/b6b5/b5a5",
+          "series_number": 22,
+          "wall_seconds": 0.0809775999514386,
+          "work_positions": 67012
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 0,
+          "selected": "b3a2/a2a1/a1a2/a2a3/a3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3b2/b2b3/b3a2",
+          "series_number": 23,
+          "wall_seconds": 0.013850799994543195,
+          "work_positions": 1829
+        }
+      ]
+    },
+    {
+      "candidate_color": "white",
+      "opening_case_id": "seeded-014-s2-43e223951f94",
+      "pair_index": 13,
+      "reason": "checkmate",
+      "status": "win",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 506,
+          "selected": "d7d6/e7e6",
+          "series_number": 2,
+          "wall_seconds": 0.11660410003969446,
+          "work_positions": 73039
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -22,
+          "selected": "d1h5/h5h7/h7h8",
+          "series_number": 3,
+          "wall_seconds": 0.043180599983315915,
+          "work_positions": 69913
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 651,
+          "selected": "d8g5/g5g2/g2g1/g1h1",
+          "series_number": 4,
+          "wall_seconds": 0.09926220000488684,
+          "work_positions": 86194
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -727,
+          "selected": "h8g7/g7g1/g1h1/h1b7/b7c8",
+          "series_number": 5,
+          "wall_seconds": 0.1418159000459127,
+          "work_positions": 88483
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 2330,
+          "selected": "e8e7/b8a6/a6b4/a8c8/e6e5/f8h6",
+          "series_number": 6,
+          "wall_seconds": 0.17150619998574257,
+          "work_positions": 87374
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -9,
+          "selected": "b1c3/d2d4/e3e4/c1h6/f1a6/a6c8/h6g5",
+          "series_number": 7,
+          "wall_seconds": 0.5398800999973901,
+          "work_positions": 92560
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 2376,
+          "selected": "f7f6/e5d4/d4c3/c3b2/b4a2/a2c3/g8h6/b2a1q",
+          "series_number": 8,
+          "wall_seconds": 0.46723449998535216,
+          "work_positions": 92699
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -2225,
+          "selected": "e1d2/e4e5/g5h6/h6e3/e3d4/d4c3/c3a1/c2c4/e5f6",
+          "series_number": 9,
+          "wall_seconds": 0.11023520003072917,
+          "work_positions": 86653
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 2076,
+          "selected": "e7d8/c7c5/d8c7/c7c8/d6d5/d5c4/c8b7/a7a5/a5a4/c4c3",
+          "series_number": 10,
+          "wall_seconds": 0.5997388999676332,
+          "work_positions": 86329
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 999999,
+          "selected": "d2c3/c3c4/c4c5/f6f7/c5b5/f2f3/f7f8q/a1e5/f8d6/b5a5/d6a6",
+          "series_number": 11,
+          "wall_seconds": 0.06415380001999438,
+          "work_positions": 10473
+        }
+      ],
+      "winner": "candidate"
+    },
+    {
+      "candidate_color": "black",
+      "opening_case_id": "seeded-014-s2-43e223951f94",
+      "pair_index": 13,
+      "reason": "checkmate",
+      "status": "win",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 518,
+          "selected": "d7d6/g8h6",
+          "series_number": 2,
+          "wall_seconds": 0.1092071000020951,
+          "work_positions": 65142
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 10,
+          "selected": "d1g4/g4g7/g7c3",
+          "series_number": 3,
+          "wall_seconds": 0.05424259998835623,
+          "work_positions": 70281
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 818,
+          "selected": "d6d5/d5d4/d4c3/c3d2",
+          "series_number": 4,
+          "wall_seconds": 0.08902919996762648,
+          "work_positions": 86867
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -1467,
+          "selected": "c1d2/d2a5/a5c7/c7d8/e1d2",
+          "series_number": 5,
+          "wall_seconds": 0.3479679999873042,
+          "work_positions": 87064
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 756,
+          "selected": "h6f5/f5e3/f8h6/e8d7/h8d8/e3g2",
+          "series_number": 6,
+          "wall_seconds": 0.16306799999438226,
+          "work_positions": 91375
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -1501,
+          "selected": "d2e2/b1c3/c3d5/d5e7/e7c8/f1g2/c8a7",
+          "series_number": 7,
+          "wall_seconds": 1.062638400006108,
+          "work_positions": 90925
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": -999999,
+          "selected": "b8c6/d7c7/d8d1/a8d8/c6e5/d1c1/d8d1/d1d2",
+          "series_number": 8,
+          "wall_seconds": 0.08493740000994876,
+          "work_positions": 14622
+        }
+      ],
+      "winner": "candidate"
+    },
+    {
+      "candidate_color": "white",
+      "opening_case_id": "seeded-015-s2-2bfa4e8d2a02",
+      "pair_index": 14,
+      "reason": "manual-adjudication-pending",
+      "status": "technical",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 452,
+          "selected": "e7e6/e8e7",
+          "series_number": 2,
+          "wall_seconds": 0.09950760001083836,
+          "work_positions": 46216
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 42,
+          "selected": "c1f4/f4c7/c7d8",
+          "series_number": 3,
+          "wall_seconds": 0.13134660001378506,
+          "work_positions": 60273
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 995,
+          "selected": "e7d8/d7d5/f8b4",
+          "series_number": 4,
+          "wall_seconds": 0.18151980004040524,
+          "work_positions": 85563
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 295,
+          "selected": "c2c3/d1a4/a4a7/a7a8/a8b8",
+          "series_number": 5,
+          "wall_seconds": 0.10813020000932738,
+          "work_positions": 86792
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 2343,
+          "selected": "g8e7/e7c6/b4c5/c5d4/c6b8/d4a7",
+          "series_number": 6,
+          "wall_seconds": 0.2622994999983348,
+          "work_positions": 88491
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -334,
+          "selected": "f2f4/f4f5/e1d2/f5f6/f6g7/e2e4/g7h8q",
+          "series_number": 7,
+          "wall_seconds": 0.5183379999944009,
+          "work_positions": 92756
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 3426,
+          "selected": "d8c7/b8c6/c6a5/a7g1/d5e4/g1d4/d4h8/h8g7",
+          "series_number": 8,
+          "wall_seconds": 2.457267999998294,
+          "work_positions": 91162
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -266,
+          "selected": "b1a3/a1e1/e1e4/e4e6/e6g6/g6g7/g7h7/a3b5",
+          "series_number": 9,
+          "wall_seconds": 4.651450300007127,
+          "work_positions": 120460
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 2612,
+          "selected": "c7b6/c8d7/d7b5/b5f1/b6c6/f1g2/g2h1/h1e4/e4h7/b7b5",
+          "series_number": 10,
+          "wall_seconds": 1.262600400019437,
+          "work_positions": 93589
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 974,
+          "selected": "a2a4/b2b4/c3c4/b4a5/a5a6/a6a7/a7a8r/a8h8/h8h7/h7f7/c4b5",
+          "series_number": 11,
+          "wall_seconds": 0.9558994999970309,
+          "work_positions": 196884
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 2127,
+          "selected": "c6b6/b6c5/c5d5/d5e6/e6f7/f7e6/e6d5/d5c4/c4b3/b3a3/a3a4/a4b5",
+          "series_number": 12,
+          "wall_seconds": 0.07712929998524487,
+          "work_positions": 88728
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 1433,
+          "selected": "h2h3/h3h4/h4h5/d2c2/c2d2/h5h6/h6h7/d2c2/c2b2/b2b3/h7h8q/h8d8/d8d5",
+          "series_number": 13,
+          "wall_seconds": 0.04576780000934377,
+          "work_positions": 20947
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 1347,
+          "selected": "b5a6/a6a7/a7a6/a6a7/a7a6/a6a7/a7a6/a6a7/a7a6/a6a7/a7a6/a6a7/a7a6/a6b6",
+          "series_number": 14,
+          "wall_seconds": 0.18151530000614002,
+          "work_positions": 83551
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 1415,
+          "selected": "b3a2/a2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/d5d7/d7d6",
+          "series_number": 15,
+          "wall_seconds": 0.07439709996106103,
+          "work_positions": 29303
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 1393,
+          "selected": "b6a5/a5a4/a4a5/a5a4/a4a5/a5a4/a4a5/a5a4/a4a5/a5a4/a4a5/a5a4/a4a5/a5a4/a4b5/b5c4",
+          "series_number": 16,
+          "wall_seconds": 0.1110943999956362,
+          "work_positions": 83635
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 1377,
+          "selected": "c2d2/d2e3/d6h2/e3f3/f3e3/e3f3/f3e3/h2g2/g2c6",
+          "series_number": 17,
+          "wall_seconds": 0.08280000003287569,
+          "work_positions": 36515
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 1373,
+          "selected": "c4b3/b3a2/a2a1/a1a2/a2a1/a1a2/a2a1/a1a2/a2a1/a1a2/a2a1/a1a2/a2a1/a1a2/a2a1/a1a2/a2a1/a1b2",
+          "series_number": 18,
+          "wall_seconds": 0.17109790001995862,
+          "work_positions": 83745
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 1411,
+          "selected": "c6a4/a4a5/a5a4/a4a5/a5a4/a4a5/a5a4/a4a5/a5a4/a4a5/a5a4/a4a5/a5a4/a4a5/a5c7/e3e4/c7c5/e4f3/c5b4",
+          "series_number": 19,
+          "wall_seconds": 3.840174399956595,
+          "work_positions": 33744
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 1381,
+          "selected": "b2c1/c1c2/c2c1/c1c2/c2c1/c1c2/c2c1/c1c2/c2c1/c1c2/c2c1/c1c2/c2c1/c1c2/c2c1/c1c2/c2c1/c1d1/d1c2/c2d3",
+          "series_number": 20,
+          "wall_seconds": 0.12545069999760017,
+          "work_positions": 83601
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 1365,
+          "selected": "b4a4/a4a2/f3f4/f4e5/a2b3",
+          "series_number": 21,
+          "wall_seconds": 4.100102700002026,
+          "work_positions": 45729
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 1363,
+          "selected": "d3d2/d2c1/c1d2/d2c1/c1d2/d2c1/c1d2/d2c1/c1d2/d2c1/c1d2/d2c1/c1d2/d2c1/c1d2/d2c1/c1d2/d2c1/c1d2/d2e1/e1e2/e2f2",
+          "series_number": 22,
+          "wall_seconds": 0.2408172999857925,
+          "work_positions": 83945
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 1373,
+          "selected": "b3a3/a3a1/a1a3/a3a4/a4a3/a3a4/a4a3/a3a4/a4a3/a3a4/a4a3/a3a4/a4a3/a3a4/a4a3/a3a4/a4a3/a3a4/a4a3/a3a4/a4a3/a3b4/b4d2",
+          "series_number": 23,
+          "wall_seconds": 4.904138599988073,
+          "work_positions": 21665
+        }
+      ]
+    },
+    {
+      "candidate_color": "black",
+      "opening_case_id": "seeded-015-s2-2bfa4e8d2a02",
+      "pair_index": 14,
+      "reason": "checkmate",
+      "status": "win",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 480,
+          "selected": "d7d5/c8h3",
+          "series_number": 2,
+          "wall_seconds": 0.10101270000450313,
+          "work_positions": 58768
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 338,
+          "selected": "c1f4/f4c7/c7d8",
+          "series_number": 3,
+          "wall_seconds": 0.0306233000010252,
+          "work_positions": 70440
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 1263,
+          "selected": "h3f5/f5c2/c2d1/d1a4",
+          "series_number": 4,
+          "wall_seconds": 0.13172750000376254,
+          "work_positions": 88915
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 64,
+          "selected": "d8e7/e2e4/e4d5/e7f8/f8g7",
+          "series_number": 5,
+          "wall_seconds": 0.10123470000689849,
+          "work_positions": 89030
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 1500,
+          "selected": "e8e7/g8f6/h8e8/f6h5/h5g7/e7d7",
+          "series_number": 6,
+          "wall_seconds": 0.12036060000536963,
+          "work_positions": 91292
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -158,
+          "selected": "e1d2/b1c3/c3a4/f1c4/d5d6/c4f7/f7e8",
+          "series_number": 7,
+          "wall_seconds": 0.15767460002098233,
+          "work_positions": 90520
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 2111,
+          "selected": "g7e8/b7b5/b5a4/a4a3/a3b2/b2a1q/a1g1/g1h1",
+          "series_number": 8,
+          "wall_seconds": 0.7096017000149004,
+          "work_positions": 93116
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -928,
+          "selected": "g2g4/g4g5/g5g6/g6g7/g7g8q/g8b3/b3b8/b8a8/a8h1",
+          "series_number": 9,
+          "wall_seconds": 0.6728903999901377,
+          "work_positions": 92225
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": -311,
+          "selected": "e8f6/f6g4/g4f2/f2h1/d7c6/c6d6/h1g3/d6d5/d5d4/g3e4",
+          "series_number": 10,
+          "wall_seconds": 0.24759919999632984,
+          "work_positions": 160264
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -525,
+          "selected": "d2c2/a2a3/a3a4/c2b3/b3b2/h2h3/a4a5/b2b3/b3b2/h3h4/h4h5",
+          "series_number": 11,
+          "wall_seconds": 0.07049429998733103,
+          "work_positions": 88183
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": -1906,
+          "selected": "a7a6/e4f6/f6h5/h5f4/d4c4/c4b4/h7h5/h5h4/h4h3/h3h2/h2h1q/h1g2",
+          "series_number": 12,
+          "wall_seconds": 0.2492357000010088,
+          "work_positions": 57513
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -999998,
+          "selected": "b2a1/a1b1/b1a1/a1b1/b1a1/a1b1/b1a1/a1b1/b1a1/a1b1/b1a1/a1b1/b1a1",
+          "series_number": 13,
+          "wall_seconds": 0.445156300032977,
+          "work_positions": 94664
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": -999999,
+          "selected": "b4a3/a3b3/g2a8/a8d8/d8d2/f4d5/d2c1",
+          "series_number": 14,
+          "wall_seconds": 0.07445949997054413,
+          "work_positions": 18824
+        }
+      ],
+      "winner": "candidate"
+    },
+    {
+      "candidate_color": "white",
+      "opening_case_id": "seeded-016-s2-807e87169b01",
+      "pair_index": 15,
+      "reason": "checkmate",
+      "status": "win",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 422,
+          "selected": "e7e6/e8e7",
+          "series_number": 2,
+          "wall_seconds": 0.0751709999749437,
+          "work_positions": 34138
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -540,
+          "selected": "d2d4/d4d5/d5d6",
+          "series_number": 3,
+          "wall_seconds": 0.1450878999894485,
+          "work_positions": 99232
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 240,
+          "selected": "e7e8/d8g5/g5c1/c1d1",
+          "series_number": 4,
+          "wall_seconds": 0.2703002000343986,
+          "work_positions": 78996
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -654,
+          "selected": "e1d1/d6c7/c7b8q/b8a8/a8c8",
+          "series_number": 5,
+          "wall_seconds": 0.19132519996492192,
+          "work_positions": 86450
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 2215,
+          "selected": "e8e7/g7g5/f8g7/g7b2/g8h6/h8c8",
+          "series_number": 6,
+          "wall_seconds": 0.7278086000005715,
+          "work_positions": 86385
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 612,
+          "selected": "f3f4/f4f5/f5e6/e6d7/d1d2/d7c8q/c8b7",
+          "series_number": 7,
+          "wall_seconds": 0.4360562000074424,
+          "work_positions": 92234
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 3592,
+          "selected": "e7f6/g5g4/g4g3/g3h2/h2g1q/g1g2/g2h1/h1b7",
+          "series_number": 8,
+          "wall_seconds": 0.29753390001133084,
+          "work_positions": 91210
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 190,
+          "selected": "c2c4/b1c3/f1g2/a1h1/g2b7/d2c2/c2b2/b7c8/h1h6",
+          "series_number": 9,
+          "wall_seconds": 0.2041750000207685,
+          "work_positions": 95757
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 2450,
+          "selected": "f6g7/f7f5/f5f4/f4f3/f3e2/e2e1q/e1e3/e3h6/h6h3/h3c8",
+          "series_number": 10,
+          "wall_seconds": 0.2371172999846749,
+          "work_positions": 86899
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 2642,
+          "selected": "a2a4/c3b5/b5a7/a7c8/c8d6/a4a5/a5a6/a6a7/a7a8q/a8d8/d8h4",
+          "series_number": 11,
+          "wall_seconds": 0.44432640000013635,
+          "work_positions": 97513
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 2606,
+          "selected": "g7f8/f8g7/g7f8/f8g7/g7f8/f8g7/g7f8/f8g7/g7f8/f8g7/h7h6/g7h7",
+          "series_number": 12,
+          "wall_seconds": 0.7695219999877736,
+          "work_positions": 84269
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 999999,
+          "selected": "b2a1/h4f6/d6e8/a1b2/f6f8/b2c2/c2b2/b2c2/c2b2/b2c2/c2b2/b2c2/f8g7",
+          "series_number": 13,
+          "wall_seconds": 0.11117180000292137,
+          "work_positions": 20647
+        }
+      ],
+      "winner": "candidate"
+    },
+    {
+      "candidate_color": "black",
+      "opening_case_id": "seeded-016-s2-807e87169b01",
+      "pair_index": 15,
+      "reason": "checkmate",
+      "status": "win",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 144,
+          "selected": "a7a5/h7h5",
+          "series_number": 2,
+          "wall_seconds": 0.079352899978403,
+          "work_positions": 49572
+        },
+        {
+          "completed_depth": 1,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 144,
+          "selected": "e2e3/f1c4/c4f7",
+          "series_number": 3,
+          "wall_seconds": 0.16831670003011823,
+          "work_positions": 117480
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 144,
+          "selected": "e8f7/e7e5/f8c5/d8h4",
+          "series_number": 4,
+          "wall_seconds": 0.36933050001971424,
+          "work_positions": 81852
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -762,
+          "selected": "g2g3/f3f4/d1g4/f4e5/g4h4",
+          "series_number": 5,
+          "wall_seconds": 0.15799480001442134,
+          "work_positions": 86021
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 1713,
+          "selected": "c5e3/g8e7/e7f5/f5h4/f7e6/h4g2",
+          "series_number": 6,
+          "wall_seconds": 0.2689455000218004,
+          "work_positions": 92892
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -680,
+          "selected": "e1f1/b2b4/b4a5/a5a6/a6b7/b7c8q/c8a6",
+          "series_number": 7,
+          "wall_seconds": 5.831936200032942,
+          "work_positions": 88919
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": -999999,
+          "selected": "a8a6/a6a2/a2c2/c2c3/e3g1/g2f4/c3c1",
+          "series_number": 8,
+          "wall_seconds": 0.09190050000324845,
+          "work_positions": 15854
+        }
+      ],
+      "winner": "candidate"
+    },
+    {
+      "candidate_color": "white",
+      "opening_case_id": "seeded-017-s2-255350017287",
+      "pair_index": 16,
+      "reason": "checkmate",
+      "status": "win",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 380,
+          "selected": "e7e6/e8e7",
+          "series_number": 2,
+          "wall_seconds": 0.08640299999387935,
+          "work_positions": 55829
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -570,
+          "selected": "d2d4/d4d5/d5d6",
+          "series_number": 3,
+          "wall_seconds": 0.14155920001212507,
+          "work_positions": 101886
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 212,
+          "selected": "e7e8/d8g5/g5c1/c1d1",
+          "series_number": 4,
+          "wall_seconds": 0.18726669996976852,
+          "work_positions": 75612
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -684,
+          "selected": "e1d1/d6c7/c7b8q/b8b7/b7a8",
+          "series_number": 5,
+          "wall_seconds": 0.06952219997765496,
+          "work_positions": 86041
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 2293,
+          "selected": "f7f5/f8a3/a3b2/b2a1/a1d4/d7d6",
+          "series_number": 6,
+          "wall_seconds": 0.3421208999934606,
+          "work_positions": 91007
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 437,
+          "selected": "a8b8/b8d6/d6a3/e2e3/f1e2/e3d4/a3a4",
+          "series_number": 7,
+          "wall_seconds": 0.9152069999836385,
+          "work_positions": 94829
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 2498,
+          "selected": "c8d7/d7a4/e6e5/e5d4/d4d3/e8d7/d7c6/d3e2",
+          "series_number": 8,
+          "wall_seconds": 0.3601632000063546,
+          "work_positions": 92260
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 3388,
+          "selected": "g1e2/g2g4/g4f5/f5f6/f6g7/g7h8q/h8g8/g8g4/g4a4",
+          "series_number": 9,
+          "wall_seconds": 0.7023649999755435,
+          "work_positions": 199609
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 3376,
+          "selected": "c6b6/b6c5/c5d6/d6e6/e6f6/a7a5/h7h6/h6h5/f6g7/g7f6",
+          "series_number": 10,
+          "wall_seconds": 1.0778913000249304,
+          "work_positions": 87118
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 999999,
+          "selected": "a4a2/a2g8/e2g3/h1e1/e1e3/e3e6",
+          "series_number": 11,
+          "wall_seconds": 0.17364870000164956,
+          "work_positions": 25486
+        }
+      ],
+      "winner": "candidate"
+    },
+    {
+      "candidate_color": "black",
+      "opening_case_id": "seeded-017-s2-255350017287",
+      "pair_index": 16,
+      "reason": "checkmate",
+      "status": "loss",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 296,
+          "selected": "g8f6/h7h6",
+          "series_number": 2,
+          "wall_seconds": 0.08516019996022806,
+          "work_positions": 66285
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -170,
+          "selected": "b1c3/c3d5/d5f6",
+          "series_number": 3,
+          "wall_seconds": 0.12766240001656115,
+          "work_positions": 57609
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 296,
+          "selected": "e7f6/f8c5/d8e7/c5f2",
+          "series_number": 4,
+          "wall_seconds": 0.4043840999947861,
+          "work_positions": 82515
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -170,
+          "selected": "e1f2/e2e4/d1g4/g4g7/g7h8",
+          "series_number": 5,
+          "wall_seconds": 0.13085290003800765,
+          "work_positions": 85727
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 2129,
+          "selected": "e7f8/f6f5/f5e4/f8h8/e8e7/h8g7",
+          "series_number": 6,
+          "wall_seconds": 0.3036161999916658,
+          "work_positions": 87231
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -1208,
+          "selected": "g2g4/g4g5/g5h6/h6g7/g7g8q/g8g2/g2e4",
+          "series_number": 7,
+          "wall_seconds": 0.28247199999168515,
+          "work_positions": 95225
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 3170,
+          "selected": "e7f6/d7d5/c8h3/d5e4/b8d7/d7e5/a8d8/e5g4",
+          "series_number": 8,
+          "wall_seconds": 1.8750373999937437,
+          "work_positions": 89712
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -473,
+          "selected": "f2g3/d2d3/c1f4/d3e4/a1d1/d1d8/d8f8/f1h3/h3g4",
+          "series_number": 9,
+          "wall_seconds": 0.7133095000172034,
+          "work_positions": 98973
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 3395,
+          "selected": "b7b5/b5b4/b4a3/a3b2/b2b1q/b1b4/b4e4/f6g7/g7h7/e4e1",
+          "series_number": 10,
+          "wall_seconds": 0.8298844000091776,
+          "work_positions": 90094
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 999999,
+          "selected": "g3f3/f4e5/g4h5/f8a8/a8h8",
+          "series_number": 11,
+          "wall_seconds": 0.13894959999015555,
+          "work_positions": 23655
+        }
+      ],
+      "winner": "baseline"
+    },
+    {
+      "candidate_color": "white",
+      "opening_case_id": "seeded-018-s2-726cfd0e90f4",
+      "pair_index": 17,
+      "reason": "checkmate",
+      "status": "win",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 418,
+          "selected": "e7e6/e8e7",
+          "series_number": 2,
+          "wall_seconds": 0.08930359996156767,
+          "work_positions": 49501
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -570,
+          "selected": "d2d4/d4d5/d5d6",
+          "series_number": 3,
+          "wall_seconds": 0.15003039996372536,
+          "work_positions": 104776
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 224,
+          "selected": "c7d6/d8b6/b6b2/b2a1",
+          "series_number": 4,
+          "wall_seconds": 0.19602839997969568,
+          "work_positions": 84837
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -675,
+          "selected": "d1d4/d4g7/g7g8/g8h8/h8a1",
+          "series_number": 5,
+          "wall_seconds": 0.12568389996886253,
+          "work_positions": 89913
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 1299,
+          "selected": "b8a6/a6b4/f8g7/g7a1/a1g7/b4c2",
+          "series_number": 6,
+          "wall_seconds": 0.4733691999572329,
+          "work_positions": 88199
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -1072,
+          "selected": "e1d2/c1b2/b2g7/e2e4/e4e5/g7f6",
+          "series_number": 7,
+          "wall_seconds": 0.18518139998195693,
+          "work_positions": 90889
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 1785,
+          "selected": "e7f8/c2e1/e1g2/d6e5/g2h4/h4f3",
+          "series_number": 8,
+          "wall_seconds": 3.971954700013157,
+          "work_positions": 89271
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 999999,
+          "selected": "d2c1/f1b5/h1h7/h7h8",
+          "series_number": 9,
+          "wall_seconds": 0.09498850000090897,
+          "work_positions": 16799
+        }
+      ],
+      "winner": "candidate"
+    },
+    {
+      "candidate_color": "black",
+      "opening_case_id": "seeded-018-s2-726cfd0e90f4",
+      "pair_index": 17,
+      "reason": "checkmate",
+      "status": "win",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 302,
+          "selected": "g8f6/h7h6",
+          "series_number": 2,
+          "wall_seconds": 0.09331019996898249,
+          "work_positions": 70411
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -715,
+          "selected": "b1c3/c3d5/d5f6",
+          "series_number": 3,
+          "wall_seconds": 0.12711860000854358,
+          "work_positions": 56820
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 302,
+          "selected": "e7f6/f6f5/d8h4/h4h1",
+          "series_number": 4,
+          "wall_seconds": 0.1522780999657698,
+          "work_positions": 86350
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -715,
+          "selected": "e2e3/d1g4/g4g7/g7h6/h6h1",
+          "series_number": 5,
+          "wall_seconds": 0.8070254000485875,
+          "work_positions": 87822
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": -999999,
+          "selected": "f5f4/f4e3/h8h1/h1g1/e3e2/e2f1q",
+          "series_number": 6,
+          "wall_seconds": 0.03110159997595474,
+          "work_positions": 7764
+        }
+      ],
+      "winner": "candidate"
+    },
+    {
+      "candidate_color": "white",
+      "opening_case_id": "seeded-019-s2-85061fcb5658",
+      "pair_index": 18,
+      "reason": "checkmate",
+      "status": "win",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 424,
+          "selected": "e7e6/e8e7",
+          "series_number": 2,
+          "wall_seconds": 0.09027179999975488,
+          "work_positions": 54464
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -574,
+          "selected": "d2d4/d4d5/d5d6",
+          "series_number": 3,
+          "wall_seconds": 0.14709320000838488,
+          "work_positions": 99914
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 224,
+          "selected": "c7d6/d8b6/b6b2/b2b4",
+          "series_number": 4,
+          "wall_seconds": 0.19613179995212704,
+          "work_positions": 84902
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -618,
+          "selected": "d1d2/d2b4/b4b7/b7c8/e1d2",
+          "series_number": 5,
+          "wall_seconds": 0.12069690000498667,
+          "work_positions": 88255
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 1389,
+          "selected": "b8c6/c6d4/d4e2/e2g1/a8c8/g1f3",
+          "series_number": 6,
+          "wall_seconds": 0.1319981999695301,
+          "work_positions": 89005
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -977,
+          "selected": "d2e2/a1a3/a3c3/c3c8/c8f8/f8g8/g8h8",
+          "series_number": 7,
+          "wall_seconds": 0.3743629999808036,
+          "work_positions": 92787
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 1601,
+          "selected": "h7h5/h5h4/h4h3/h3g2/f3d2/g2h1q/h1c6/e7f6",
+          "series_number": 8,
+          "wall_seconds": 2.6966657000011764,
+          "work_positions": 91579
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": 999999,
+          "selected": "b1a3/a3b5/b5d6/c1d2/h8h5/d2a5/f1g2/h5g5/a5d8",
+          "series_number": 9,
+          "wall_seconds": 0.08639230002881959,
+          "work_positions": 15227
+        }
+      ],
+      "winner": "candidate"
+    },
+    {
+      "candidate_color": "black",
+      "opening_case_id": "seeded-019-s2-85061fcb5658",
+      "pair_index": 18,
+      "reason": "checkmate",
+      "status": "loss",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 302,
+          "selected": "g8f6/h7h6",
+          "series_number": 2,
+          "wall_seconds": 0.09272900002542883,
+          "work_positions": 76493
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -250,
+          "selected": "b1c3/c3d5/d5f6",
+          "series_number": 3,
+          "wall_seconds": 0.126737900020089,
+          "work_positions": 57821
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 302,
+          "selected": "e7f6/f8c5/d8e7/c5f2",
+          "series_number": 4,
+          "wall_seconds": 0.406666100025177,
+          "work_positions": 83061
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -170,
+          "selected": "e1f2/e2e4/d1g4/g4g7/g7h8",
+          "series_number": 5,
+          "wall_seconds": 0.13997550000203773,
+          "work_positions": 85883
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 2135,
+          "selected": "e7f8/f6f5/f5e4/f8h8/h8g7/e8e7",
+          "series_number": 6,
+          "wall_seconds": 0.6230691999662668,
+          "work_positions": 87325
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -1206,
+          "selected": "d2d4/d4d5/c1h6/a1e1/h6g7/f1b5/e1e4",
+          "series_number": 7,
+          "wall_seconds": 0.5008744999649934,
+          "work_positions": 97529
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 2355,
+          "selected": "e7d6/c7c6/c6b5/b5a4/a4a3/a3b2/b2b1q/f7f5",
+          "series_number": 8,
+          "wall_seconds": 2.311672699986957,
+          "work_positions": 88089
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 999999,
+          "selected": "c2c3/c3c4/e4e1/e1b1/b1b7/g1f3/g7f8",
+          "series_number": 9,
+          "wall_seconds": 0.1056207999936305,
+          "work_positions": 18057
+        }
+      ],
+      "winner": "baseline"
+    },
+    {
+      "candidate_color": "white",
+      "opening_case_id": "seeded-020-s2-c229da66db1c",
+      "pair_index": 19,
+      "reason": "checkmate",
+      "status": "loss",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 449,
+          "selected": "g8f6/f6e4",
+          "series_number": 2,
+          "wall_seconds": 0.09195919998455793,
+          "work_positions": 63516
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -26,
+          "selected": "d2d3/d3e4/e1d2",
+          "series_number": 3,
+          "wall_seconds": 0.03871110000181943,
+          "work_positions": 71253
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 447,
+          "selected": "e7e6/d8f6/f6b2/b2b4",
+          "series_number": 4,
+          "wall_seconds": 0.41321400000015274,
+          "work_positions": 86879
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -135,
+          "selected": "c2c3/c3b4/d1c2/c2c7/c7c8",
+          "series_number": 5,
+          "wall_seconds": 0.12443360005272552,
+          "work_positions": 86616
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 2134,
+          "selected": "e8e7/b8a6/a8c8/c8c1/c1b1/b1a1",
+          "series_number": 6,
+          "wall_seconds": 0.21671889995923266,
+          "work_positions": 87454
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -557,
+          "selected": "b4b5/b5a6/a6b7/b7b8q/b8a7/a7d4/d4a1",
+          "series_number": 7,
+          "wall_seconds": 0.4164061999763362,
+          "work_positions": 92445
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": 2504,
+          "selected": "h7h5/h5h4/h4g3/g3g2/g2f1q/f1a1/a1a2",
+          "series_number": 8,
+          "wall_seconds": 0.9674705999786966,
+          "work_positions": 94543
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "candidate",
+          "score": -1248,
+          "selected": "d2e3/f2f4/f4f5/f5e6/e6d7/d7d8r/d8f8/f8h8/h8b8",
+          "series_number": 9,
+          "wall_seconds": 1.5894368000444956,
+          "work_positions": 90367
+        },
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "baseline",
+          "score": -999999,
+          "selected": "a2b2/f7f5/e7d6/f5e4/d6e5/b2a1/a1a4/a4c4/c4f7/f7f4",
+          "series_number": 10,
+          "wall_seconds": 0.07603240001481026,
+          "work_positions": 9592
+        }
+      ],
+      "winner": "baseline"
+    },
+    {
+      "candidate_color": "black",
+      "opening_case_id": "seeded-020-s2-c229da66db1c",
+      "pair_index": 19,
+      "reason": "checkmate",
+      "status": "loss",
+      "trace": [
+        {
+          "completed_depth": 2,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 302,
+          "selected": "g8f6/h7h6",
+          "series_number": 2,
+          "wall_seconds": 0.08365049998974428,
+          "work_positions": 56648
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -609,
+          "selected": "b1c3/c3d5/d5f6",
+          "series_number": 3,
+          "wall_seconds": 0.13367950002430007,
+          "work_positions": 58521
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 302,
+          "selected": "e7f6/f8c5/d8e7/c5f2",
+          "series_number": 4,
+          "wall_seconds": 0.4840605999925174,
+          "work_positions": 84909
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -164,
+          "selected": "e1f2/e2e4/d1g4/g4g7/g7h8",
+          "series_number": 5,
+          "wall_seconds": 0.12712699995609,
+          "work_positions": 85910
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 2135,
+          "selected": "e7f8/f6f5/f5e4/f8h8/e8e7/h8g7",
+          "series_number": 6,
+          "wall_seconds": 0.2681092999991961,
+          "work_positions": 87199
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -1250,
+          "selected": "g3g4/g4g5/g5h6/h6g7/g7g8q/g8g2/g2e4",
+          "series_number": 7,
+          "wall_seconds": 0.26468810002552345,
+          "work_positions": 95929
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 3170,
+          "selected": "e7f6/d7d5/c8h3/d5e4/b8d7/d7e5/a8d8/e5g4",
+          "series_number": 8,
+          "wall_seconds": 1.9626688999705948,
+          "work_positions": 89843
+        },
+        {
+          "completed_depth": 0,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": -473,
+          "selected": "f2g3/d2d3/c1f4/d3e4/a1d1/d1d8/d8f8/f1h3/h3g4",
+          "series_number": 9,
+          "wall_seconds": 0.7489788000239059,
+          "work_positions": 99154
+        },
+        {
+          "completed_depth": 0,
+          "mover": "black",
+          "runtime": "candidate",
+          "score": 3397,
+          "selected": "c7c5/c5c4/c4c3/c3b2/b2b1q/b1b4/b4e4/f6g7/g7f8/e4h1",
+          "series_number": 10,
+          "wall_seconds": 1.2673028000281192,
+          "work_positions": 89037
+        },
+        {
+          "completed_depth": 2,
+          "mover": "white",
+          "runtime": "baseline",
+          "score": 999999,
+          "selected": "f4e5/e5f6/a2a3/a3a4/a4a5/a5a6/a6b7/b7b8q",
+          "series_number": 11,
+          "wall_seconds": 0.3058621999807656,
+          "work_positions": 20854
+        }
+      ],
+      "winner": "baseline"
+    }
+  ],
+  "pairs": [
+    {
+      "candidate_points": 1.0,
+      "opening_case_id": "seeded-001-s2-406ba2f27f5b",
+      "pair_index": 0,
+      "result": "draw"
+    },
+    {
+      "candidate_points": 1.0,
+      "opening_case_id": "seeded-002-s2-2ac86c6fd04b",
+      "pair_index": 1,
+      "result": "draw"
+    },
+    {
+      "candidate_points": 2.0,
+      "opening_case_id": "seeded-003-s2-93a59309eb64",
+      "pair_index": 2,
+      "result": "win"
+    },
+    {
+      "candidate_points": 1.5,
+      "opening_case_id": "seeded-004-s2-6fd45bf8c4d4",
+      "pair_index": 3,
+      "result": "win"
+    },
+    {
+      "candidate_points": 1.5,
+      "opening_case_id": "seeded-005-s2-62ecfe0378c4",
+      "pair_index": 4,
+      "result": "win"
+    },
+    {
+      "candidate_points": 0.0,
+      "opening_case_id": "seeded-006-s2-981599bfebbb",
+      "pair_index": 5,
+      "result": "loss"
+    },
+    {
+      "candidate_points": 1.0,
+      "opening_case_id": "seeded-007-s2-4f27afac6ed0",
+      "pair_index": 6,
+      "result": "draw"
+    },
+    {
+      "candidate_points": 2.0,
+      "opening_case_id": "seeded-008-s2-063cbc99f968",
+      "pair_index": 7,
+      "result": "win"
+    },
+    {
+      "candidate_points": 1.5,
+      "opening_case_id": "seeded-009-s2-13d91c2a225a",
+      "pair_index": 8,
+      "result": "win"
+    },
+    {
+      "candidate_points": 1.0,
+      "opening_case_id": "seeded-010-s2-443a148b9d7d",
+      "pair_index": 9,
+      "result": "draw"
+    },
+    {
+      "candidate_points": 0.0,
+      "opening_case_id": "seeded-011-s2-4d8260f1d3be",
+      "pair_index": 10,
+      "result": "loss"
+    },
+    {
+      "candidate_points": 1.0,
+      "opening_case_id": "seeded-012-s2-62690173e146",
+      "pair_index": 11,
+      "result": "draw"
+    },
+    {
+      "candidate_points": 1.0,
+      "opening_case_id": "seeded-013-s2-ff8d99d54e13",
+      "pair_index": 12,
+      "result": "draw"
+    },
+    {
+      "candidate_points": 2.0,
+      "opening_case_id": "seeded-014-s2-43e223951f94",
+      "pair_index": 13,
+      "result": "win"
+    },
+    {
+      "candidate_points": null,
+      "opening_case_id": "seeded-015-s2-2bfa4e8d2a02",
+      "pair_index": 14,
+      "result": "incomplete"
+    },
+    {
+      "candidate_points": 2.0,
+      "opening_case_id": "seeded-016-s2-807e87169b01",
+      "pair_index": 15,
+      "result": "win"
+    },
+    {
+      "candidate_points": 1.0,
+      "opening_case_id": "seeded-017-s2-255350017287",
+      "pair_index": 16,
+      "result": "draw"
+    },
+    {
+      "candidate_points": 2.0,
+      "opening_case_id": "seeded-018-s2-726cfd0e90f4",
+      "pair_index": 17,
+      "result": "win"
+    },
+    {
+      "candidate_points": 1.0,
+      "opening_case_id": "seeded-019-s2-85061fcb5658",
+      "pair_index": 18,
+      "result": "draw"
+    },
+    {
+      "candidate_points": 0.0,
+      "opening_case_id": "seeded-020-s2-c229da66db1c",
+      "pair_index": 19,
+      "result": "loss"
+    }
+  ],
+  "runtimes": {
+    "baseline": {
+      "expected_native_source_identity": "017d181971386013129ba15b3b42d2aaa76ccc7c63cdce8cc724b29d0a8ea08d",
+      "native_available": true,
+      "native_source_identity": "017d181971386013129ba15b3b42d2aaa76ccc7c63cdce8cc724b29d0a8ea08d",
+      "source_fingerprint": "6646333ea88f5040",
+      "source_root": "baseline-control:path-overflow-20260823"
+    },
+    "candidate": {
+      "expected_native_source_identity": "7a4a953b0bc0a10b256c1a29fc48166027d9907a7094e05db0b3b58ec3e43bc8",
+      "native_available": true,
+      "native_source_identity": "7a4a953b0bc0a10b256c1a29fc48166027d9907a7094e05db0b3b58ec3e43bc8",
+      "source_fingerprint": "080b1e7d28f21d33",
+      "source_root": "candidate:neural-ordering-rebase@9deb4f8"
+    }
+  },
+  "schema": "spc-code-strength-match-v1",
+  "summary": {
+    "candidate_points": 23.5,
+    "candidate_score_rate": 0.6025641025641025,
+    "candidate_score_rate_scope": "completed-games-only; includes one candidate-black win from an incomplete color pair",
+    "candidate_wdl": {
+      "draws": 5,
+      "losses": 13,
+      "wins": 21
+    },
+    "completed_games": 39,
+    "complete_pair_candidate_points": 22.5,
+    "complete_pair_games": 38,
+    "complete_pair_score_rate": 0.5921052631578947,
+    "completed_pairs": 19,
+    "pair_wdl": {
+      "draws": 8,
+      "incomplete": 1,
+      "losses": 3,
+      "wins": 8
+    },
+    "technical_games": 1,
+    "wall_seconds": 193.38750249997247
+  }
+}

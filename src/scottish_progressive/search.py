@@ -3185,6 +3185,16 @@ class SeriesSearcher:
                     self._selective = True
                     self._root_scores_complete = completed_root_scores_complete
                     adjudication = "manual-proof-required"
+                    if (
+                        not self.limits.collect_all_root_scores
+                        and best_pv
+                        and best_pv[0].outcome is None
+                    ):
+                        # Match the public shape that the retained depth would
+                        # have had as a completed best-move-only result. Unlike
+                        # a deadline/work interruption, quiet adjudication is a
+                        # semantic stop rather than a diagnostic partial pass.
+                        alternatives = ()
                     break
                 if isinstance(pending, _RootAdjudicationPending):
                     # No iteration completed, but root generation did. Return
@@ -3241,6 +3251,18 @@ class SeriesSearcher:
             or self._quiet_work_limit_reached
             or self._evaluation_work_limit_reached
         )
+        if (
+            not self.limits.collect_all_root_scores
+            and completed_depth == self.limits.depth_series
+            and best_pv
+            and best_pv[0].outcome is None
+        ):
+            # A fully completed best-move-only pass may retain a few exact root
+            # candidates for internal PVS and safety bookkeeping, but it has
+            # not scored the whole root. Hide that partial subset. Interrupted
+            # deeper iterations must still preserve the last completed depth's
+            # receipt, and an authoritative terminal result remains publishable.
+            alternatives = ()
         return SearchResult(
             score=best_score,
             best_series=best_pv[0] if best_pv else None,

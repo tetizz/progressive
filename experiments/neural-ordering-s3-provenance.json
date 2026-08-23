@@ -1,0 +1,51 @@
+{
+  "accepted_gate_report_origin": "native-neural-ordering-s3-20260821/native-neural-artifacts/final-isolated-gate-report.json",
+  "accepted_gate_report_sha256": "455c68c1dee7b1809109e678e9d6254fa016c68dd9c1fee238d93038783d393d",
+  "activation": {
+    "production_root_contract": {
+      "default_enabled": true,
+      "scope": "root-series-2-black-only"
+    },
+    "python_complete_series": {
+      "default_enabled": false,
+      "environment": "SPC_NATIVE_NEURAL_S3",
+      "required_value": "1"
+    }
+  },
+  "artifact_id": "spc-nnue-955ab36e1657870a31ee1130",
+  "artifact_sha256": "4bbab0180470439a17441882b0e5a24870a4a004b4b0fded71646dd305bbcab8",
+  "base_commit": "9deb4f852115b49a51f2a569940a460e0d4f560d",
+  "blend_percent": 75,
+  "blend_policy": {
+    "artifact_recommended_percent": 100,
+    "deployed_percent": 75,
+    "reason": "The accepted opening gate selected the 75 percent hand/neural blend; the artifact recommendation is metadata, not the deployed policy."
+  },
+  "frozen_network": "neural-ordering-s3-network.json",
+  "inference_scope": "complete-boundaries-entering-series-3-only-v1",
+  "python_exhaustive_opening_gate": {
+    "completed_games": 39,
+    "completed_game_score_rate": 0.6025641025641025,
+    "completed_game_score_scope": "completed-games-only; includes one candidate-black win from an incomplete color pair",
+    "fully_paired_games": 38,
+    "fully_paired_points": 22.5,
+    "fully_paired_score_rate": 0.5921052631578947,
+    "pair_wdl": {
+      "draws": 8,
+      "incomplete": 1,
+      "losses": 3,
+      "wins": 8
+    },
+    "opening_roots": 20,
+    "report": "../reports/neural-ordering-s3-final-fair-seeded20-seed730194821.json",
+    "report_sha256": "4341226931692b07b4ba3cf77fb88b75c862a1d53684f6c389d70b9e3c16c93a",
+    "technical_games": 1
+  },
+  "production_revalidation": {
+    "historical_gate_production_eligible": false,
+    "status": "pending-final-integrated-native-wasm-and-browser-receipts",
+    "transfer_basis": "The frozen model is transferred only by exact all-20 root-manifest parity; final release identities and gate receipts must be recorded before deployment."
+  },
+  "schema": "spc-neural-ordering-provenance-v2",
+  "source_gate_commit": "6b1483c62b159f19b8304a6746dc22db90663726"
+}

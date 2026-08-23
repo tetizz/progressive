@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Callable, Iterable
 
 import chess
@@ -1143,6 +1144,8 @@ def _merged_series_generation(
 
 _NATIVE_SIGNED_MAX = (1 << 63) - 1
 _NATIVE_UNSIGNED_MAX = (1 << 64) - 1
+_NATIVE_S3_NEURAL_MODEL = 1
+_NATIVE_S3_NEURAL_BLEND_PERCENT = 75
 _NATIVE_GENERATION_IDENTITY_INITIALIZED = False
 _NATIVE_GENERATION_SOURCE_IDENTITY: str | None = None
 _NATIVE_GENERATION_STATS_FIELDS = (
@@ -1329,6 +1332,19 @@ def _native_complete_series_call(
             final_weights.immediate_vulnerability,
             final_weights.boundary_check,
         )
+        if (
+            os.environ.get("SPC_NATIVE_NEURAL_S3") == "1"
+            and state.series_number == 2
+            and state.board.turn == chess.BLACK
+        ):
+            # This frozen student was trained only on complete boundaries
+            # entering Series 3 after Black's Series 2. Keep the opt-in
+            # experiment fail-closed outside that exact scope; the native
+            # kernel independently revalidates it.
+            native_final += (
+                _NATIVE_S3_NEURAL_MODEL,
+                _NATIVE_S3_NEURAL_BLEND_PERCENT,
+            )
 
     arguments: tuple[object, ...] = (
         state.board.pawns,

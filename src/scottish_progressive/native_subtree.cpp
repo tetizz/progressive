@@ -25,6 +25,13 @@ constexpr std::array<int, 2> UNKNOWN_PROOF_BOUNDS{-1, 1};
 constexpr std::int64_t TACTICAL_DESCENDANT_PROMOTION_MAX_PLY = 2;
 constexpr std::int64_t ROOT_TACTICAL_PROTECTION_MIN_SERIES = 5;
 constexpr std::uint64_t MAX_TERMINAL_MATE_SCAN_WIDTH = 832;
+#ifdef __EMSCRIPTEN__
+constexpr std::uint64_t ROOT_CONTRACT_PATH_COUNT_SATURATION_LIMIT =
+    (std::uint64_t{1} << 53) - 1;
+#else
+constexpr std::uint64_t ROOT_CONTRACT_PATH_COUNT_SATURATION_LIMIT =
+    std::numeric_limits<std::uint64_t>::max();
+#endif
 
 [[nodiscard]] std::string machine_notation(
     const std::vector<std::string>& moves
@@ -319,6 +326,18 @@ void append_weights(std::string& result, const SubtreeSearchConfig& config) {
     result += "|ttcap" + std::to_string(config.root_contract_tt_capacity);
     result += "|evalcap" + std::to_string(config.root_contract_eval_capacity);
     result += "|root-policycanonical-boundary-v1";
+    if (
+        !terminal_mate_scan
+        && state.series_number == 2
+        && !state.board.white_to_move
+    ) {
+        result += "|root-order-s3-neural-model"
+            + std::to_string(S3_NEURAL_ORDERING_MODEL)
+            + "-blend"
+            + std::to_string(S3_NEURAL_ORDERING_BLEND_PERCENT);
+    } else {
+        result += "|root-order-hand-v1";
+    }
     result += canonical_root_tactical_protection
         ? "|root-tactical1"
         : "|root-tactical0";
@@ -411,9 +430,10 @@ void append_weights(std::string& result, const SubtreeSearchConfig& config) {
     std::uint64_t eval_entries_peak,
     std::uint64_t eval_capacity
 ) {
+    const SubtreeSearchStats call_stats = stats_delta(before, after);
     return SubtreeWorkReceipt{
         after,
-        stats_delta(before, after),
+        call_stats,
         external_work,
         before.generation_positions,
         after.generation_positions,
@@ -484,6 +504,8 @@ struct GenerationKey {
     std::int64_t ply_from_root = 0;
     bool tactical_protection = false;
     std::uint64_t effective_width = 0;
+    std::uint64_t path_count_saturation_limit = 0;
+    bool s3_neural_ordering = false;
 
     bool operator==(const GenerationKey&) const = default;
 };
@@ -554,6 +576,8 @@ struct GenerationKeyHash {
         hash_word(seed, static_cast<std::uint64_t>(key.ply_from_root));
         hash_word(seed, key.tactical_protection ? 1 : 0);
         hash_word(seed, key.effective_width);
+        hash_word(seed, key.path_count_saturation_limit);
+        hash_word(seed, key.s3_neural_ordering ? 1 : 0);
         return seed;
     }
 };
@@ -1326,11 +1350,26 @@ public:
         const std::uint64_t effective_width = width_override.value_or(
             config.max_series_per_node
         );
+        const std::uint64_t path_count_saturation_limit =
+            root_contract_active
+                ? ROOT_CONTRACT_PATH_COUNT_SATURATION_LIMIT
+                : std::numeric_limits<std::uint64_t>::max();
+        // The accepted student was gated on root move ordering after each of
+        // the 20 legal opening moves. Keep that evidence boundary exact: it is
+        // enabled only for browser/root-contract enumeration of Black's
+        // Series 2, and never changes descendant evaluation or minimax.
+        const bool s3_neural_ordering = root_contract_active
+            && generated_ply == 1
+            && state.series_number == 2
+            && !state.board.white_to_move
+            && !stop_on_mover_mate;
         const GenerationKey key{
             exact_key(state),
             generated_ply,
             tactical,
             effective_width,
+            path_count_saturation_limit,
+            s3_neural_ordering,
         };
         auto cached = generation_cache.find(key);
         if (cached != generation_cache.end()) {
@@ -1373,12 +1412,25 @@ public:
                 generated_ply,
                 config.mate_score,
                 config.fast_weights,
+                s3_neural_ordering
+                    ? S3_NEURAL_ORDERING_MODEL
+                    : std::uint8_t{0},
+                s3_neural_ordering
+                    ? S3_NEURAL_ORDERING_BLEND_PERCENT
+                    : 0,
             },
         };
         request.deadline = deadline;
         request.worker_threads = config.worker_threads;
         request.tactical_protection = tactical;
         request.stop_on_mover_mate = stop_on_mover_mate;
+        // Equivalent move-order multiplicity is telemetry, never a search
+        // score or ordering input. Let finite high-series searches continue
+        // after that counter exceeds its transport representation. Browser
+        // root sessions use a Number-safe ceiling; native Python sessions can
+        // retain the full uint64_t range.
+        request.path_count_overflow_mode = PathCountOverflowMode::Saturate;
+        request.path_count_saturation_limit = path_count_saturation_limit;
         CompleteSeriesResponse response = generate_complete_series(request);
         record_generation(response.stats);
         if (response.status == SeriesGenerationStatus::WorkLimit) {

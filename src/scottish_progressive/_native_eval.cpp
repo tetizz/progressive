@@ -1089,6 +1089,352 @@ void add_standard_castling(
     return true;
 }
 
+// Frozen final-boundary ordering student accepted by the isolated Series-3
+// gate. The inference core is model-shaped rather than search-shaped: it can
+// evaluate an immutable fixed-point network view, while activation remains an
+// explicit request opt-in and is validated to the trained boundary entering
+// Series 3 after Black's Series 2.
+constexpr const char* S3_NEURAL_ARTIFACT_ID =
+    "spc-nnue-955ab36e1657870a31ee1130";
+constexpr const char* S3_NEURAL_ARTIFACT_SHA256 =
+    "4bbab0180470439a17441882b0e5a24870a4a004b4b0fded71646dd305bbcab8";
+constexpr const char* S3_NEURAL_INFERENCE_SCOPE =
+    "complete-boundaries-entering-series-3-only-v1";
+
+constexpr std::uint64_t NEURAL_PIECE_SQUARE_OFFSET = 0;
+constexpr std::uint64_t NEURAL_PIECE_SQUARE_COUNT = 2 * 6 * 64;
+constexpr std::uint64_t NEURAL_PROMOTED_OFFSET =
+    NEURAL_PIECE_SQUARE_OFFSET + NEURAL_PIECE_SQUARE_COUNT;
+constexpr std::uint64_t NEURAL_PROMOTED_COUNT = 2 * 64;
+constexpr std::uint64_t NEURAL_MOVER_OFFSET =
+    NEURAL_PROMOTED_OFFSET + NEURAL_PROMOTED_COUNT;
+constexpr std::uint64_t NEURAL_SERIES_OFFSET = NEURAL_MOVER_OFFSET + 2;
+constexpr std::uint64_t NEURAL_MOVES_REMAINING_OFFSET =
+    NEURAL_SERIES_OFFSET + 17;
+constexpr std::uint64_t NEURAL_QUIET_OFFSET =
+    NEURAL_MOVES_REMAINING_OFFSET + 18;
+constexpr std::uint64_t NEURAL_CHECK_OFFSET = NEURAL_QUIET_OFFSET + 12;
+constexpr std::uint64_t NEURAL_CASTLING_OFFSET = NEURAL_CHECK_OFFSET + 1;
+constexpr std::uint64_t NEURAL_PROGRESSIVE_EP_OFFSET =
+    NEURAL_CASTLING_OFFSET + 4;
+constexpr std::uint64_t NEURAL_FEATURE_COUNT =
+    NEURAL_PROGRESSIVE_EP_OFFSET + 64;
+static_assert(NEURAL_FEATURE_COUNT == 1'014);
+
+constexpr std::array<std::int16_t, NEURAL_FEATURE_COUNT> S3_INPUT_WEIGHTS = {
+    0, 0, 0, 0, 0, 0, 0, 0, -600, -304, 654, -167, -385, -427, 704, 818,
+    446, -163, -814, 256, 364, 401, -782, -138, 788, -190, -576, 410, 149, 232, -820, -964,
+    1342, 416, -626, 451, 352, 991, 535, -256, 508, -418, 588, 623, -453, 838, 81, -983,
+    451, -533, -643, 334, -1469, 1154, -1395, -1469, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, -191, 0, 0, 0, 0, 528, 0, 0, 0, 0, -1469, 0, 0, 0, 0,
+    -26, 1652, -3, 0, 0, -759, 0, 259, 1401, 339, -302, 881, 735, 1092, 1543, 1587,
+    1287, 279, -942, -216, -452, -1084, -247, -665, 931, -689, -1114, 386, 52, 422, -1029, -790,
+    56, -219, -130, -1137, -644, -877, 971, -1080, 277, 0, -877, 1131, 0, -564, -1401, -908,
+    0, 0, -349, 0, 0, 89, 0, 0, 0, 416, 0, 843, 606, 0, -436, 0,
+    474, -326, -641, 1612, 669, 262, 1379, -538, -402, 596, 253, 287, -1059, 436, -1228, 1603,
+    931, 681, -278, -398, -406, 667, 303, -1469, 602, 755, -996, -430, -922, -197, -458, 1165,
+    91, -441, -348, -798, -362, 1059, -67, -675, -343, -181, -693, 968, 0, 715, 587, 228,
+    -944, 1002, 1363, 0, 0, 0, -336, 756, 1521, 0, 0, 0, 0, 0, 0, 0,
+    1517, 0, 0, 0, 0, 0, 0, 931, 1587, 931, 0, 0, 0, 0, 0, 0,
+    -669, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -377,
+    800, 931, 0, 0, 0, 0, 0, -1021, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 1419, -80, 209, 0, 0, 0, 0, 0, 0, -198, 143, 1524, 0, 0, 0,
+    -809, 1422, 88, 20, -1136, 78, 1569, 856, -224, -9, -355, -415, -825, 1453, 585, 972,
+    616, -751, 84, -825, 1060, 150, 58, 789, -569, -741, -888, -557, -79, 95, -813, 77,
+    -710, -625, -891, -1018, -677, -105, -236, -338, 351, -558, 358, 1538, -990, 274, -564, 524,
+    0, 0, 0, -343, -923, -1136, 0, 0, 0, 0, 0, 1430, 1101, 1296, 0, 0,
+    0, 0, -1469, 0, -1469, -1469, -1469, 0, 0, 1608, 0, 1532, -1469, 1572, 1559, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -676, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 357, -1196, 0, -997, 1615, -1108, -949, 0,
+    -198, -334, 439, -22, 557, -293, -542, -867, 339, 318, 792, -73, 455, 984, 429, -225,
+    213, 647, 283, 983, 316, -46, 29, 598, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, -574, 0, -1104, 0, 0, 0, 0,
+    0, 0, 0, -912, -733, -646, 0, 0, -551, 0, 221, 0, 0, -993, 0, -970,
+    0, 0, 0, 1235, 529, 0, 0, 0, 0, 279, 0, 0, 0, 0, 122, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    -360, 0, 2165, 0, 0, 0, 0, -969, 0, 2463, 0, 0, 0, 0, -1374, 0,
+    0, 0, -841, 0, 0, -934, 0, 0, -1259, 0, 0, 151, -193, 0, 0, -1245,
+    0, -114, 0, -1079, -1377, 0, -1290, 0, 0, 0, 68, 0, 0, -701, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, -1281, 0, 0, 0, 0, 0, 0, 0,
+    -1048, 0, 0, 0, 0, 0, 0, -1030, -163, 1273, 0, 0, 0, 0, 24, -368,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1425,
+    -1248, 0, 0, 0, 0, 0, -1158, 0, 0, 0, 0, -1372, 0, -1338, 0, 0,
+    0, 0, -1226, -1366, -1339, 0, 0, 0, 0, 0, 0, -1073, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 230, 77, 762, 0, 0, 0, 0, 0, 0, -2, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    917, 0, 0, 0, 0, 0, 917, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 917, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, -49, 108, 33, -452, 0, 0, 0, 0, 0, 0, 0,
+    0, 38, -888, -927, -359, -192, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 931, 0, -1100, 0, 272, -1469, 0, -1469, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0,
+};
+
+constexpr std::array<std::int32_t, 1> S3_HIDDEN_BIAS = {9'002};
+constexpr std::array<std::int32_t, 1> S3_OUTPUT_WEIGHTS = {256};
+
+struct FixedPointNetworkView {
+    const std::int16_t* input_weights;
+    const std::int32_t* hidden_bias;
+    const std::int32_t* output_weights;
+    std::uint64_t feature_count;
+    std::uint64_t hidden_size;
+    std::int64_t output_bias;
+    std::int64_t output_denominator;
+    std::int32_t activation_clip;
+    std::int64_t score_clip;
+};
+
+constexpr FixedPointNetworkView S3_NETWORK = {
+    S3_INPUT_WEIGHTS.data(),
+    S3_HIDDEN_BIAS.data(),
+    S3_OUTPUT_WEIGHTS.data(),
+    NEURAL_FEATURE_COUNT,
+    1,
+    -8'947'456,
+    2'048,
+    32'767,
+    500'000,
+};
+
+[[nodiscard]] std::uint64_t neural_color_index(bool color) noexcept {
+    return color == WHITE ? 0 : 1;
+}
+
+[[nodiscard]] bool valid_neural_board_bitboards(
+    const BoardState& board
+) noexcept {
+    const Bitboard black = board.occupied[0];
+    const Bitboard white = board.occupied[1];
+    if ((black & white) != 0) {
+        return false;
+    }
+
+    const std::array<Bitboard, 6> piece_masks = {
+        board.pawns,
+        board.knights,
+        board.bishops,
+        board.rooks,
+        board.queens,
+        board.kings,
+    };
+    Bitboard typed_occupancy = 0;
+    for (const Bitboard piece_mask : piece_masks) {
+        if ((typed_occupancy & piece_mask) != 0) {
+            return false;
+        }
+        typed_occupancy |= piece_mask;
+    }
+    const Bitboard occupied = black | white;
+    return typed_occupancy == occupied
+        && (board.promoted & ~occupied) == 0;
+}
+
+struct ActiveNeuralFeatures {
+    std::array<std::uint16_t, 192> values{};
+    std::size_t size = 0;
+    bool valid = true;
+
+    void push(std::uint64_t value) noexcept {
+        if (
+            !valid
+            || size >= values.size()
+            || value >= NEURAL_FEATURE_COUNT
+        ) {
+            valid = false;
+            return;
+        }
+        values[size++] = static_cast<std::uint16_t>(value);
+    }
+
+    [[nodiscard]] const std::uint16_t* begin() const noexcept {
+        return values.data();
+    }
+
+    [[nodiscard]] const std::uint16_t* end() const noexcept {
+        return values.data() + size;
+    }
+};
+
+[[nodiscard]] ActiveNeuralFeatures extract_neural_features(
+    const BoardState& board,
+    std::int64_t series_number,
+    std::int64_t quiet_series,
+    std::int64_t moves_remaining,
+    Bitboard progressive_ep_targets,
+    bool known_in_check
+) noexcept {
+    ActiveNeuralFeatures active;
+    const Position position = evaluation_position(board);
+    Bitboard occupied = board.occupied[0] | board.occupied[1];
+    while (occupied != 0) {
+        const int square_index = static_cast<int>(std::countr_zero(occupied));
+        occupied &= occupied - 1;
+        const Bitboard square_mask = bit(square_index);
+        const int piece_type = piece_type_at(position, square_index);
+        const bool color = (board.occupied[1] & square_mask) != 0;
+        active.push(
+            NEURAL_PIECE_SQUARE_OFFSET
+            + ((neural_color_index(color) * 6
+                + static_cast<std::uint64_t>(piece_type - 1)) * 64)
+            + static_cast<std::uint64_t>(square_index)
+        );
+        if ((board.promoted & square_mask) != 0) {
+            active.push(
+                NEURAL_PROMOTED_OFFSET
+                + neural_color_index(color) * 64
+                + static_cast<std::uint64_t>(square_index)
+            );
+        }
+    }
+    active.push(
+        NEURAL_MOVER_OFFSET + neural_color_index(board.white_to_move)
+    );
+    active.push(
+        NEURAL_SERIES_OFFSET
+        + static_cast<std::uint64_t>(std::min<std::int64_t>(series_number, 17))
+        - 1
+    );
+    active.push(
+        NEURAL_MOVES_REMAINING_OFFSET
+        + static_cast<std::uint64_t>(
+            std::min<std::int64_t>(moves_remaining, 17)
+        )
+    );
+    active.push(
+        NEURAL_QUIET_OFFSET
+        + static_cast<std::uint64_t>(std::min<std::int64_t>(quiet_series, 11))
+    );
+    if (known_in_check) {
+        active.push(NEURAL_CHECK_OFFSET);
+    }
+    constexpr std::array<int, 4> CASTLING_ROOK_SQUARES = {7, 0, 63, 56};
+    for (std::size_t index = 0; index < CASTLING_ROOK_SQUARES.size(); ++index) {
+        if ((board.castling_rights & bit(CASTLING_ROOK_SQUARES[index])) != 0) {
+            active.push(NEURAL_CASTLING_OFFSET + index);
+        }
+    }
+    while (progressive_ep_targets != 0) {
+        const int target = static_cast<int>(
+            std::countr_zero(progressive_ep_targets)
+        );
+        progressive_ep_targets &= progressive_ep_targets - 1;
+        active.push(
+            NEURAL_PROGRESSIVE_EP_OFFSET + static_cast<std::uint64_t>(target)
+        );
+    }
+    std::sort(active.values.begin(), active.values.begin() + active.size);
+    active.size = static_cast<std::size_t>(
+        std::unique(
+            active.values.begin(),
+            active.values.begin() + active.size
+        ) - active.values.begin()
+    );
+    return active;
+}
+
+[[nodiscard]] std::optional<std::int64_t> fixed_point_predict(
+    const FixedPointNetworkView& network,
+    const ActiveNeuralFeatures& active
+) noexcept {
+    std::array<std::int64_t, 128> hidden;
+    const std::size_t width = static_cast<std::size_t>(network.hidden_size);
+    if (
+        !active.valid
+        || network.input_weights == nullptr
+        || network.hidden_bias == nullptr
+        || network.output_weights == nullptr
+        || width == 0
+        || width > hidden.size()
+        || network.output_denominator <= 0
+        || network.activation_clip < 0
+        || network.score_clip < 0
+    ) {
+        return std::nullopt;
+    }
+    for (std::size_t index = 0; index < width; ++index) {
+        hidden[index] = network.hidden_bias[index];
+    }
+    for (const std::uint16_t feature : active) {
+        if (static_cast<std::uint64_t>(feature) >= network.feature_count) {
+            return std::nullopt;
+        }
+        const std::size_t offset = static_cast<std::size_t>(feature) * width;
+        for (std::size_t index = 0; index < width; ++index) {
+            hidden[index] += network.input_weights[offset + index];
+        }
+    }
+    std::int64_t accumulator = network.output_bias;
+    for (std::size_t index = 0; index < width; ++index) {
+        const std::int64_t activated = std::clamp<std::int64_t>(
+            hidden[index],
+            0,
+            network.activation_clip
+        );
+        std::int64_t term = 0;
+        if (
+            !checked_multiply(activated, network.output_weights[index], term)
+            || !checked_add(accumulator, term, accumulator)
+        ) {
+            return std::nullopt;
+        }
+    }
+    const std::int64_t magnitude = accumulator < 0 ? -accumulator : accumulator;
+    std::int64_t adjusted = 0;
+    if (!checked_add(magnitude, network.output_denominator / 2, adjusted)) {
+        return std::nullopt;
+    }
+    const std::int64_t divided = adjusted / network.output_denominator;
+    const std::int64_t score = accumulator < 0 ? -divided : divided;
+    return std::clamp<std::int64_t>(
+        score,
+        -network.score_clip,
+        network.score_clip
+    );
+}
+
+[[nodiscard]] std::optional<std::int64_t> blend_neural_score(
+    std::int64_t hand_score,
+    std::int64_t neural_score,
+    std::int64_t blend_percent
+) noexcept {
+    std::int64_t hand_term = 0;
+    std::int64_t neural_term = 0;
+    std::int64_t numerator = 0;
+    if (
+        !checked_multiply(hand_score, 100 - blend_percent, hand_term)
+        || !checked_multiply(neural_score, blend_percent, neural_term)
+        || !checked_add(hand_term, neural_term, numerator)
+    ) {
+        return std::nullopt;
+    }
+    const std::int64_t magnitude = numerator < 0 ? -numerator : numerator;
+    std::int64_t adjusted = 0;
+    if (!checked_add(magnitude, 50, adjusted)) {
+        return std::nullopt;
+    }
+    const std::int64_t divided = adjusted / 100;
+    return numerator < 0 ? -divided : divided;
+}
+
 [[nodiscard]] std::optional<std::int64_t> promotion_score(
     const Position& position,
     bool color
@@ -2402,7 +2748,8 @@ struct NativeGenerationContext {
     }
 
     bool add_path_count(std::uint64_t& target, std::uint64_t amount) {
-        if (target <= std::numeric_limits<std::uint64_t>::max() - amount) {
+        const std::uint64_t limit = request.path_count_saturation_limit;
+        if (target <= limit && amount <= limit - target) {
             target += amount;
             return true;
         }
@@ -2412,7 +2759,7 @@ struct NativeGenerationContext {
         ) {
             return unsupported("native series path counter overflow");
         }
-        target = std::numeric_limits<std::uint64_t>::max();
+        target = limit;
         if (
             response.stats.path_count_saturations
             != std::numeric_limits<std::uint64_t>::max()
@@ -3483,7 +3830,45 @@ FinalScoreCalculation calculate_final_series_score_value(
             "native final static score overflow",
         };
     }
-    return FinalScoreCalculation{*evaluated, nullptr};
+    if (selection.neural_ordering_model == 0) {
+        return FinalScoreCalculation{*evaluated, nullptr};
+    }
+
+    // Terminal results returned above remain authoritative. This student is
+    // used only to order non-terminal candidates at the complete boundary
+    // entering Series 3; it never replaces minimax leaf evaluation.
+    if (series.series_number != 3 || board.white_to_move != WHITE) {
+        return FinalScoreCalculation{
+            0,
+            "native neural final boundary escaped Series-3 scope",
+        };
+    }
+    const ActiveNeuralFeatures active = extract_neural_features(
+        board,
+        series.series_number,
+        series.quiet_series,
+        series.series_number,
+        target_bits(series.boundary_ep_targets),
+        series.ended_by_check
+    );
+    const auto neural_score = fixed_point_predict(S3_NETWORK, active);
+    if (!neural_score.has_value()) {
+        return FinalScoreCalculation{
+            0,
+            "native final neural score overflow",
+        };
+    }
+    const auto blended = blend_neural_score(
+        *evaluated,
+        *neural_score,
+        selection.neural_blend_percent
+    );
+    return blended.has_value()
+        ? FinalScoreCalculation{*blended, nullptr}
+        : FinalScoreCalculation{
+            0,
+            "native final neural blend overflow",
+        };
 }
 
 bool calculate_final_series_score(
@@ -3995,6 +4380,7 @@ CompleteSeriesResponse generate_complete_series(
             && request.path_count_overflow_mode
                 != PathCountOverflowMode::Saturate
         )
+        || request.path_count_saturation_limit == 0
         || (
             request.max_frontier_states.has_value()
             && *request.max_frontier_states == 0
@@ -4010,6 +4396,21 @@ CompleteSeriesResponse generate_complete_series(
                 request.final_series_score->max_returned_series == 0
                 || request.final_series_score->ply_from_root < 0
                 || request.final_series_score->mate_score < 1
+                || (
+                    request.final_series_score->neural_ordering_model == 0
+                    && request.final_series_score->neural_blend_percent != 0
+                )
+                || (
+                    request.final_series_score->neural_ordering_model != 0
+                    && (
+                        request.final_series_score->neural_ordering_model
+                            != S3_NEURAL_ORDERING_MODEL
+                        || request.final_series_score->neural_blend_percent < 0
+                        || request.final_series_score->neural_blend_percent > 100
+                        || request.series_number != 2
+                        || request.board.white_to_move != BLACK
+                    )
+                )
             )
         )
     ) {
@@ -4324,6 +4725,220 @@ bool parse_square_sequence(
     return true;
 }
 
+template <typename Value, std::size_t Size>
+PyObject* py_integer_tuple(const std::array<Value, Size>& values) {
+    PyObject* result = PyTuple_New(static_cast<Py_ssize_t>(values.size()));
+    if (result == nullptr) {
+        return nullptr;
+    }
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        PyObject* value = PyLong_FromLongLong(
+            static_cast<long long>(values[index])
+        );
+        if (value == nullptr) {
+            Py_DECREF(result);
+            return nullptr;
+        }
+        PyTuple_SET_ITEM(result, static_cast<Py_ssize_t>(index), value);
+    }
+    return result;
+}
+
+bool set_owned_dict_item(
+    PyObject* dictionary,
+    const char* key,
+    PyObject* value
+) {
+    if (value == nullptr) {
+        return false;
+    }
+    const int status = PyDict_SetItemString(dictionary, key, value);
+    Py_DECREF(value);
+    return status == 0;
+}
+
+PyObject* py_neural_ordering_identity(PyObject*, PyObject*) {
+    return Py_BuildValue(
+        "(ssKLLs)",
+        spc::native::S3_NEURAL_ARTIFACT_ID,
+        spc::native::S3_NEURAL_ARTIFACT_SHA256,
+        static_cast<unsigned long long>(spc::native::NEURAL_FEATURE_COUNT),
+        static_cast<long long>(spc::native::S3_NEURAL_ORDERING_MODEL),
+        static_cast<long long>(
+            spc::native::S3_NEURAL_ORDERING_BLEND_PERCENT
+        ),
+        spc::native::S3_NEURAL_INFERENCE_SCOPE
+    );
+}
+
+PyObject* py_neural_ordering_parameters(PyObject*, PyObject*) {
+    PyObject* result = PyDict_New();
+    if (result == nullptr) {
+        return nullptr;
+    }
+    const bool built = set_owned_dict_item(
+        result,
+        "feature_count",
+        PyLong_FromUnsignedLongLong(spc::native::S3_NETWORK.feature_count)
+    ) && set_owned_dict_item(
+        result,
+        "hidden_size",
+        PyLong_FromUnsignedLongLong(spc::native::S3_NETWORK.hidden_size)
+    ) && set_owned_dict_item(
+        result,
+        "input_weights",
+        py_integer_tuple(spc::native::S3_INPUT_WEIGHTS)
+    ) && set_owned_dict_item(
+        result,
+        "hidden_bias",
+        py_integer_tuple(spc::native::S3_HIDDEN_BIAS)
+    ) && set_owned_dict_item(
+        result,
+        "output_weights",
+        py_integer_tuple(spc::native::S3_OUTPUT_WEIGHTS)
+    ) && set_owned_dict_item(
+        result,
+        "output_bias",
+        PyLong_FromLongLong(spc::native::S3_NETWORK.output_bias)
+    ) && set_owned_dict_item(
+        result,
+        "output_denominator",
+        PyLong_FromLongLong(spc::native::S3_NETWORK.output_denominator)
+    ) && set_owned_dict_item(
+        result,
+        "activation_clip",
+        PyLong_FromLongLong(spc::native::S3_NETWORK.activation_clip)
+    ) && set_owned_dict_item(
+        result,
+        "score_clip",
+        PyLong_FromLongLong(spc::native::S3_NETWORK.score_clip)
+    );
+    if (!built) {
+        Py_DECREF(result);
+        return nullptr;
+    }
+    return result;
+}
+
+PyObject* py_neural_ordering_evaluate(PyObject*, PyObject* arguments) {
+    unsigned long long pawns = 0;
+    unsigned long long knights = 0;
+    unsigned long long bishops = 0;
+    unsigned long long rooks = 0;
+    unsigned long long queens = 0;
+    unsigned long long kings = 0;
+    unsigned long long white_occupied = 0;
+    unsigned long long black_occupied = 0;
+    unsigned long long promoted = 0;
+    unsigned long long castling_rights = 0;
+    int white_to_move = 0;
+    long long series_number = 0;
+    long long quiet_series = 0;
+    long long moves_remaining = 0;
+    int known_in_check = 0;
+    PyObject* ep_targets_object = nullptr;
+    if (!PyArg_ParseTuple(
+            arguments,
+            "KKKKKKKKKKpLLLpO:neural_ordering_evaluate",
+            &pawns,
+            &knights,
+            &bishops,
+            &rooks,
+            &queens,
+            &kings,
+            &white_occupied,
+            &black_occupied,
+            &promoted,
+            &castling_rights,
+            &white_to_move,
+            &series_number,
+            &quiet_series,
+            &moves_remaining,
+            &known_in_check,
+            &ep_targets_object
+        )) {
+        return nullptr;
+    }
+    if (
+        series_number < 1
+        || quiet_series < 0
+        || moves_remaining < 0
+        || moves_remaining > series_number
+    ) {
+        PyErr_SetString(
+            PyExc_ValueError,
+            "invalid progressive neural feature metadata"
+        );
+        return nullptr;
+    }
+    std::vector<int> ep_targets;
+    if (!parse_square_sequence(
+            ep_targets_object,
+            ep_targets,
+            "ep_targets must be an iterable of squares"
+        )) {
+        return nullptr;
+    }
+    const spc::native::BoardState board{
+        pawns,
+        knights,
+        bishops,
+        rooks,
+        queens,
+        kings,
+        {black_occupied, white_occupied},
+        promoted,
+        castling_rights,
+        white_to_move != 0,
+    };
+    if (!spc::native::valid_neural_board_bitboards(board)) {
+        PyErr_SetString(
+            PyExc_ValueError,
+            "invalid neural board bitboards"
+        );
+        return nullptr;
+    }
+    const auto active = spc::native::extract_neural_features(
+        board,
+        series_number,
+        quiet_series,
+        moves_remaining,
+        spc::native::target_bits(ep_targets),
+        known_in_check != 0
+    );
+    const auto score = spc::native::fixed_point_predict(
+        spc::native::S3_NETWORK,
+        active
+    );
+    if (!score.has_value()) {
+        PyErr_SetString(PyExc_OverflowError, "native neural inference overflow");
+        return nullptr;
+    }
+    PyObject* features = PyTuple_New(static_cast<Py_ssize_t>(active.size));
+    if (features == nullptr) {
+        return nullptr;
+    }
+    for (std::size_t index = 0; index < active.size; ++index) {
+        PyObject* value = PyLong_FromUnsignedLong(active.values[index]);
+        if (value == nullptr) {
+            Py_DECREF(features);
+            return nullptr;
+        }
+        PyTuple_SET_ITEM(features, static_cast<Py_ssize_t>(index), value);
+    }
+    PyObject* result = PyTuple_New(2);
+    PyObject* score_object = PyLong_FromLongLong(*score);
+    if (result == nullptr || score_object == nullptr) {
+        Py_XDECREF(result);
+        Py_XDECREF(score_object);
+        Py_DECREF(features);
+        return nullptr;
+    }
+    PyTuple_SET_ITEM(result, 0, features);
+    PyTuple_SET_ITEM(result, 1, score_object);
+    return result;
+}
+
 bool parse_string_sequence(
     PyObject* object,
     std::vector<std::string>& strings,
@@ -4453,16 +5068,17 @@ bool parse_optional_final_series_score(
     }
     PyObject* sequence = PySequence_Fast(
         object,
-        "final_series_score must be None or eight integers"
+        "final_series_score must be None, eight integers, or ten integers"
     );
     if (sequence == nullptr) {
         return false;
     }
-    if (PySequence_Fast_GET_SIZE(sequence) != 8) {
+    const Py_ssize_t size = PySequence_Fast_GET_SIZE(sequence);
+    if (size != 8 && size != 10) {
         Py_DECREF(sequence);
         PyErr_SetString(
             PyExc_ValueError,
-            "final_series_score must contain exactly eight integers"
+            "final_series_score must contain exactly eight or ten integers"
         );
         return false;
     }
@@ -4496,6 +5112,36 @@ bool parse_optional_final_series_score(
             return false;
         }
     }
+    long long neural_model = 0;
+    long long neural_blend_percent = 0;
+    if (size == 10) {
+        neural_model = PyLong_AsLongLong(
+            PySequence_Fast_GET_ITEM(sequence, 8)
+        );
+        neural_blend_percent = PyLong_AsLongLong(
+            PySequence_Fast_GET_ITEM(sequence, 9)
+        );
+        if (
+            (neural_model == -1 && PyErr_Occurred())
+            || (neural_blend_percent == -1 && PyErr_Occurred())
+        ) {
+            Py_DECREF(sequence);
+            return false;
+        }
+        if (
+            neural_model < 1
+            || neural_model > std::numeric_limits<std::uint8_t>::max()
+            || neural_blend_percent < 0
+            || neural_blend_percent > 100
+        ) {
+            Py_DECREF(sequence);
+            PyErr_SetString(
+                PyExc_ValueError,
+                "neural final-series ordering selection is out of range"
+            );
+            return false;
+        }
+    }
     Py_DECREF(sequence);
     selection = spc::native::FinalSeriesScore{
         static_cast<std::uint64_t>(cap),
@@ -4508,6 +5154,8 @@ bool parse_optional_final_series_score(
             parsed[5],
             parsed[6],
         },
+        static_cast<std::uint8_t>(neural_model),
+        neural_blend_percent,
     };
     return true;
 }
@@ -7271,6 +7919,24 @@ PyObject* py_subtree_insert_external_cache(PyObject*, PyObject* arguments) {
 }
 
 PyMethodDef METHODS[] = {
+    {
+        "neural_ordering_identity",
+        py_neural_ordering_identity,
+        METH_NOARGS,
+        PyDoc_STR("Return the frozen Series-3 ordering model identity and scope.")
+    },
+    {
+        "neural_ordering_parameters",
+        py_neural_ordering_parameters,
+        METH_NOARGS,
+        PyDoc_STR("Return every compiled frozen Series-3 inference parameter.")
+    },
+    {
+        "neural_ordering_evaluate",
+        py_neural_ordering_evaluate,
+        METH_VARARGS,
+        PyDoc_STR("Return canonical active features and the frozen fixed-point score.")
+    },
     {
         "create_subtree_search",
         py_create_subtree_search,

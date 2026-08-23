@@ -21,11 +21,11 @@ from scottish_progressive.series_mate import (
 
 
 NATIVE_SOURCE_HASHES = {
-    "_native_eval.cpp": "5e2c7702ad963899419b4cd7d90b3736b7b4e623bcc7637843417b8d421bd426",
-    "native_eval.hpp": "c9037b4947831c259cbc6eddfa2ec6f025979addaa20f3a3e9012b7d6c69f7b9",
+    "_native_eval.cpp": "1aa876945790ddb908414a2f415355d32936015597984dada6815fcdc495884b",
+    "native_eval.hpp": "f88e5f3bab2608e7592cdb5faee3ec441466628044382889d2424ebd02e99772",
 }
 NATIVE_IDENTITY = (
-    "36c306d4170fb4fc03fbfb43ec9700d6afcbbad92ce267c9032547b2e8236b75"
+    "9f1259fd761b491e9a695e84ebe4b7fedb911b2c4cb38db78a815c9f661a8580"
 )
 NATIVE_SURFACE = {
     "SOURCE_IDENTITY",
@@ -38,6 +38,9 @@ NATIVE_SURFACE = {
     "generate_full_game_batch_v2",
     "has_legal_move",
     "legal_move_variants",
+    "neural_ordering_evaluate",
+    "neural_ordering_identity",
+    "neural_ordering_parameters",
     "prepare_complete_series",
     "prepare_complete_series_timed",
     "prepare_complete_series_timed_parallel",

@@ -3,6 +3,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -96,11 +97,19 @@ struct FullEvaluation {
     ReachProbe black_reach;
 };
 
+inline constexpr std::uint8_t S3_NEURAL_ORDERING_MODEL = 1;
+inline constexpr std::int64_t S3_NEURAL_ORDERING_BLEND_PERCENT = 75;
+
 struct FinalSeriesScore {
     std::uint64_t max_returned_series;
     std::int64_t ply_from_root;
     std::int64_t mate_score;
     FastWeights weights;
+    // Optional frozen ordering model. A non-zero model identifier may alter
+    // only the static ranking used by the final top-K cap; terminal outcomes
+    // and all uncapped generation remain authoritative and unchanged.
+    std::uint8_t neural_ordering_model = 0;
+    std::int64_t neural_blend_percent = 0;
 };
 
 enum class SeriesGenerationStatus : std::uint8_t {
@@ -178,6 +187,11 @@ struct CompleteSeriesRequest {
     // The full-game v2 exploration kernel opts into saturation because path
     // multiplicity is evidence only and is not consumed by its move selector.
     PathCountOverflowMode path_count_overflow_mode = PathCountOverflowMode::Reject;
+    // Saturating consumers may choose a lower transport-safe ceiling. Native
+    // root sessions use JavaScript's largest exactly representable integer;
+    // native-only consumers retain the full uint64_t range.
+    std::uint64_t path_count_saturation_limit =
+        std::numeric_limits<std::uint64_t>::max();
     // The binding converts a relative Python request budget to this process's
     // own steady-clock epoch. No cross-runtime clock-epoch assumption leaks
     // into the generation kernel.
