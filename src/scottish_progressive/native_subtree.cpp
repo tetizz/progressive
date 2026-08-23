@@ -24,6 +24,7 @@ constexpr bool WHITE = true;
 constexpr std::array<int, 2> UNKNOWN_PROOF_BOUNDS{-1, 1};
 constexpr std::int64_t TACTICAL_DESCENDANT_PROMOTION_MAX_PLY = 2;
 constexpr std::int64_t ROOT_TACTICAL_PROTECTION_MIN_SERIES = 5;
+constexpr std::uint64_t MAX_TERMINAL_MATE_SCAN_WIDTH = 832;
 
 [[nodiscard]] std::string machine_notation(
     const std::vector<std::string>& moves
@@ -293,14 +294,19 @@ void append_weights(std::string& result, const SubtreeSearchConfig& config) {
 [[nodiscard]] std::string enumeration_identity_impl(
     const SubtreeState& state,
     const SubtreeSearchConfig& config,
+    std::uint64_t requested_root_width,
+    bool terminal_mate_scan,
     bool canonical_root_tactical_protection,
     const std::vector<std::string>& preferred_series,
     bool width_complete,
     const std::vector<RetainedRootCandidate>& candidates
 ) {
-    std::string result = "spc-root-enumeration-v1|boundary";
+    std::string result = "spc-root-enumeration-v2|boundary";
     append_text_field(result, state_identity_impl(state));
-    result += "|width" + std::to_string(config.max_series_per_node);
+    result += "|descendant-width"
+        + std::to_string(config.max_series_per_node);
+    result += "|root-width" + std::to_string(requested_root_width);
+    result += terminal_mate_scan ? "|terminal-scan1" : "|terminal-scan0";
     result += "|maxwork";
     result += config.max_work.has_value()
         ? std::to_string(*config.max_work)
@@ -464,6 +470,7 @@ struct GenerationKey {
     ExactStateKey state;
     std::int64_t ply_from_root = 0;
     bool tactical_protection = false;
+    std::uint64_t effective_width = 0;
 
     bool operator==(const GenerationKey&) const = default;
 };
@@ -506,6 +513,7 @@ struct GenerationKeyHash {
         std::size_t seed = ExactStateKeyHash{}(key.state);
         hash_word(seed, static_cast<std::uint64_t>(key.ply_from_root));
         hash_word(seed, key.tactical_protection ? 1 : 0);
+        hash_word(seed, key.effective_width);
         return seed;
     }
 };
@@ -635,11 +643,13 @@ struct GeneratedSeries {
     std::optional<std::size_t> preferred_index;
     bool width_complete = false;
     bool stopped_on_mover_mate = false;
+    std::uint64_t checking_series = 0;
 };
 
 struct CacheEntry {
     CandidateSeriesStorage series;
     bool width_complete = false;
+    std::uint64_t checking_series = 0;
     std::uint64_t weight = 0;
     std::list<GenerationKey>::iterator recency;
 };
@@ -1003,7 +1013,7 @@ public:
         const auto recency = std::prev(generation_recency.end());
         generation_cache.emplace(
             external_cache_key,
-            CacheEntry{{}, false, weight, recency}
+            CacheEntry{{}, false, 0, weight, recency}
         );
         generation_cache_weight += weight;
         stats.series_generation_cache_peak = std::max(
@@ -1238,11 +1248,20 @@ public:
         const SubtreeState& state,
         std::int64_t generated_ply,
         const std::vector<std::string>* preferred_series,
-        bool stop_on_mover_mate = false
+        bool stop_on_mover_mate = false,
+        std::optional<std::uint64_t> width_override = std::nullopt
     ) {
         check_deadline();
         const bool tactical = tactical_protection(state, generated_ply);
-        const GenerationKey key{exact_key(state), generated_ply, tactical};
+        const std::uint64_t effective_width = width_override.value_or(
+            config.max_series_per_node
+        );
+        const GenerationKey key{
+            exact_key(state),
+            generated_ply,
+            tactical,
+            effective_width,
+        };
         auto cached = generation_cache.find(key);
         if (cached != generation_cache.end()) {
             generation_recency.splice(
@@ -1256,6 +1275,7 @@ public:
                 preferred_index(*cached->second.series, preferred_series),
                 cached->second.width_complete,
                 false,
+                cached->second.checking_series,
             };
         }
 
@@ -1275,11 +1295,11 @@ public:
             state.quiet_series,
             state.ep_targets,
             {},
-            config.max_series_per_node,
+            effective_width,
             remaining,
             config.fast_weights,
             FinalSeriesScore{
-                config.max_series_per_node,
+                effective_width,
                 generated_ply,
                 config.mate_score,
                 config.fast_weights,
@@ -1338,7 +1358,13 @@ public:
             auto recency = std::prev(generation_recency.end());
             generation_cache.emplace(
                 key,
-                CacheEntry{series, width_complete, weight, recency}
+                CacheEntry{
+                    series,
+                    width_complete,
+                    response.stats.checking_series,
+                    weight,
+                    recency,
+                }
             );
             generation_cache_weight += weight;
             stats.series_generation_cache_peak = std::max(
@@ -1356,6 +1382,7 @@ public:
             preferred,
             width_complete,
             stopped_on_mover_mate,
+            response.stats.checking_series,
         };
     }
 
@@ -2086,6 +2113,8 @@ SubtreeSearchResult SubtreeSearchSession::search(
 RetainedRootEnumerationResult SubtreeSearchSession::enumerate_retained_root(
     const SubtreeState& state,
     const std::vector<std::string>& preferred_series,
+    std::uint64_t requested_width,
+    bool terminal_mate_scan,
     std::uint64_t external_work,
     std::optional<std::uint64_t> call_work_credit,
     std::optional<std::chrono::steady_clock::time_point> deadline
@@ -2093,7 +2122,8 @@ RetainedRootEnumerationResult SubtreeSearchSession::enumerate_retained_root(
     const SubtreeSearchStats before = impl_->stats;
     RetainedRootEnumerationResult result;
     result.root_white_to_move = state.board.white_to_move;
-    result.requested_width = impl_->config.max_series_per_node;
+    result.requested_width = requested_width;
+    result.terminal_mate_scan = terminal_mate_scan;
     result.preferred_series = preferred_series;
     impl_->clear_retained_root();
     try {
@@ -2109,6 +2139,26 @@ RetainedRootEnumerationResult SubtreeSearchSession::enumerate_retained_root(
                 std::move(validation_error)
             );
         }
+        if (
+            requested_width == 0
+            || (
+                !terminal_mate_scan
+                && requested_width != impl_->config.max_series_per_node
+            )
+            || (
+                terminal_mate_scan
+                && (
+                    requested_width < impl_->config.max_series_per_node
+                    || requested_width > MAX_TERMINAL_MATE_SCAN_WIDTH
+                    || !preferred_series.empty()
+                )
+            )
+        ) {
+            throw StopSearch(
+                SubtreeSearchStatus::Unsupported,
+                "native root enumeration width or mode is invalid"
+            );
+        }
         result.canonical_root_tactical_protection =
             root_tactical_protection_eligible(state);
         impl_->retained_root_tactical_protection =
@@ -2119,7 +2169,7 @@ RetainedRootEnumerationResult SubtreeSearchSession::enumerate_retained_root(
                 "native root quiet adjudication remains Python/server-owned"
             );
         }
-        if (promotion_mate_eligible(state)) {
+        if (!terminal_mate_scan && promotion_mate_eligible(state)) {
             throw StopSearch(
                 SubtreeSearchStatus::Unsupported,
                 "native root promotion-mate lane is not implemented"
@@ -2128,9 +2178,12 @@ RetainedRootEnumerationResult SubtreeSearchSession::enumerate_retained_root(
         GeneratedSeries generated = impl_->generate(
             state,
             1,
-            preferred_series.empty() ? nullptr : &preferred_series
+            preferred_series.empty() ? nullptr : &preferred_series,
+            terminal_mate_scan,
+            requested_width
         );
         result.width_complete = generated.width_complete;
+        result.generation_checking_series = generated.checking_series;
         result.candidates.reserve(generated.series->size());
         for (
             std::size_t ordinal = 0;
@@ -2141,16 +2194,32 @@ RetainedRootEnumerationResult SubtreeSearchSession::enumerate_retained_root(
                 ordinal,
                 generated.preferred_index
             );
-            result.candidates.push_back(impl_->make_root_candidate(
+            RetainedRootCandidate candidate = impl_->make_root_candidate(
                 (*generated.series)[index],
                 state.board.white_to_move,
                 static_cast<std::uint64_t>(ordinal)
-            ));
+            );
+            if (
+                !terminal_mate_scan
+                || (
+                    candidate.series.outcome
+                        == CompleteSeriesOutcome::Checkmate
+                    && candidate.series.ended_by_check
+                )
+            ) {
+                // A terminal-scan result is a compact proof witness, not a
+                // broadened candidate manifest. Reindex the filtered output
+                // so its transport remains canonical and gap-free.
+                candidate.order_index = static_cast<std::uint64_t>(
+                    result.candidates.size()
+                );
+                result.candidates.push_back(std::move(candidate));
+            }
         }
         result.retained_count = static_cast<std::uint64_t>(
             result.candidates.size()
         );
-        if (result.candidates.empty()) {
+        if (!terminal_mate_scan && result.candidates.empty()) {
             throw StopSearch(
                 SubtreeSearchStatus::Unsupported,
                 "native root boundary has no complete candidate series"
@@ -2159,16 +2228,20 @@ RetainedRootEnumerationResult SubtreeSearchSession::enumerate_retained_root(
         result.enumeration_identity = enumeration_identity_impl(
             state,
             impl_->config,
+            requested_width,
+            terminal_mate_scan,
             result.canonical_root_tactical_protection,
             preferred_series,
             result.width_complete,
             result.candidates
         );
-        impl_->retained_root_state = state;
-        impl_->retained_enumeration_identity = result.enumeration_identity;
-        impl_->retained_preferred_series = preferred_series;
-        impl_->retained_root_candidates = result.candidates;
-        impl_->retained_width_complete = result.width_complete;
+        if (!terminal_mate_scan) {
+            impl_->retained_root_state = state;
+            impl_->retained_enumeration_identity = result.enumeration_identity;
+            impl_->retained_preferred_series = preferred_series;
+            impl_->retained_root_candidates = result.candidates;
+            impl_->retained_width_complete = result.width_complete;
+        }
     } catch (const StopSearch& stopped) {
         impl_->clear_retained_root();
         result.status = stopped.status;
@@ -2299,6 +2372,8 @@ RetainedRootEnumerationResult SubtreeSearchSession::import_retained_root(
         const std::string identity = enumeration_identity_impl(
             request.boundary,
             impl_->config,
+            request.requested_width,
+            false,
             canonical_root_tactical_protection,
             request.preferred_series,
             request.width_complete,

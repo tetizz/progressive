@@ -231,7 +231,7 @@ def test_retained_root_enumeration_matches_python_order_state_and_work(
         remaining_nanoseconds=None,
     )
     assert actual.status == 0
-    assert actual.enumeration_identity.startswith("spc-root-enumeration-v1|")
+    assert actual.enumeration_identity.startswith("spc-root-enumeration-v2|")
     assert actual.root_white_to_move
     assert actual.requested_width == 8
     assert actual.retained_count == len(actual.candidates) == len(expected)
@@ -303,6 +303,173 @@ def test_cached_root_enumeration_keeps_canonical_storage_and_exact_preference() 
     assert preferred_call["series_generation_cache_hits"] == 1
     assert repeated_call["generation_positions"] == 0
     assert repeated_call["series_generation_cache_hits"] == 1
+
+
+def test_terminal_mate_scan_stages_are_root_only_cache_isolated_and_fail_closed() -> None:
+    state = ProgressiveState.from_fen(
+        "rnk3nr/pp3ppp/8/8/8/1Pp1P3/P1PP1PPP/R1b1K1NR w K - 0 13",
+        7,
+    )
+    target = "d2c3/e1e2/g1f3/f3g5/h1d1/g5e6/d1d8"
+    session = _session(width=32, depth=5, max_work=2_000_000)
+
+    ordinary = session.enumerate_root(
+        state,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    assert ordinary.status == 4
+    assert "promotion-mate lane" in ordinary.message
+
+    stages: list[NativeRootEnumerationResult] = []
+    for root_width in (32, 64, 128, 256):
+        result = session.enumerate_root(
+            state,
+            preferred_series=None,
+            external_work=0,
+            remaining_nanoseconds=None,
+            requested_width=root_width,
+            terminal_mate_scan=True,
+        )
+        assert result.status == 0
+        assert result.terminal_mate_scan
+        assert result.requested_width == root_width
+        assert (
+            f"|descendant-width32|root-width{root_width}|terminal-scan1|"
+            in result.enumeration_identity
+        )
+        assert result.work.call_native_work > 0
+        stages.append(result)
+
+    assert all(not result.candidates for result in stages[:3])
+    assert all(not result.width_complete for result in stages[:3])
+    assert tuple(item.order_key for item in stages[3].candidates) == (target,)
+    mate = stages[3].candidates[0]
+    assert mate.terminal_score == MATE_SCORE - 1
+    assert mate.terminal_proof_bounds == (1, 1)
+    assert mate.series.outcome is Outcome.CHECKMATE
+    assert mate.series.ended_by_check
+
+    # A terminal scan is evidence-only. Its widened manifest can never become
+    # a searchable retained root or silently widen descendant generation.
+    rejected = session.search_root_candidate(
+        enumeration_identity=stages[3].enumeration_identity,
+        candidate_identity=mate.candidate_identity,
+        child_depth=1,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=0,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+    )
+    assert rejected.status == 4
+    assert rejected.bound is NativeSubtreeBound.UNKNOWN
+
+
+def test_terminal_mate_scan_width_cache_key_and_work_credit_are_exact() -> None:
+    state = ProgressiveState.from_fen(
+        "rnk3nr/pp3ppp/8/8/8/1Pp1P3/P1PP1PPP/R1b1K1NR w K - 0 13",
+        7,
+    )
+    probe = _session(width=32, depth=5, max_work=2_000_000)
+    for invalid_width in (0, 31, 833):
+        invalid = probe.enumerate_root(
+            state,
+            preferred_series=None,
+            external_work=0,
+            remaining_nanoseconds=None,
+            requested_width=invalid_width,
+            terminal_mate_scan=True,
+        )
+        assert invalid.status == 4
+        assert not invalid.enumeration_identity
+        assert not invalid.candidates
+    mismatched_ordinary = probe.enumerate_root(
+        state,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+        requested_width=64,
+        terminal_mate_scan=False,
+    )
+    assert mismatched_ordinary.status == 4
+    preferred_scan = probe.enumerate_root(
+        state,
+        preferred_series="d2c3/e1e2/g1f3/f3g5/h1d1/g5e6/d1d8",
+        external_work=0,
+        remaining_nanoseconds=None,
+        requested_width=64,
+        terminal_mate_scan=True,
+    )
+    assert preferred_scan.status == 4
+    width32 = probe.enumerate_root(
+        state,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+        requested_width=32,
+        terminal_mate_scan=True,
+    )
+    width64 = probe.enumerate_root(
+        state,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+        requested_width=64,
+        terminal_mate_scan=True,
+    )
+    assert width32.status == width64.status == 0
+    assert width32.work.call_native_work > 0
+    assert width64.work.call_native_work > 0
+    assert width32.enumeration_identity != width64.enumeration_identity
+
+    width832 = probe.enumerate_root(
+        state,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+        requested_width=832,
+        terminal_mate_scan=True,
+    )
+    assert width832.status == 0
+    assert width832.terminal_mate_scan
+    assert tuple(item.order_key for item in width832.candidates) == (
+        "a1c1/c1d1/d2c3/g1f3/f3g5/g5e6/d1d8",
+    )
+
+    measured = _session(width=32, depth=5, max_work=2_000_000).enumerate_root(
+        state,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+        requested_width=64,
+        terminal_mate_scan=True,
+    )
+    interrupted = _session(width=32, depth=5, max_work=2_000_000).enumerate_root(
+        state,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+        requested_width=64,
+        terminal_mate_scan=True,
+        call_work_credit=measured.work.call_native_work - 1,
+    )
+    exact = _session(width=32, depth=5, max_work=2_000_000).enumerate_root(
+        state,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+        requested_width=64,
+        terminal_mate_scan=True,
+        call_work_credit=measured.work.call_native_work,
+    )
+    assert interrupted.status == 1
+    assert interrupted.work.call_native_work == measured.work.call_native_work - 1
+    assert not interrupted.enumeration_identity
+    assert exact.status == 0
+    assert exact.work.call_native_work == measured.work.call_native_work
+    assert exact.enumeration_identity == measured.enumeration_identity
 
 
 def test_iterative_tt_growth_owns_preferred_pv_and_matches_cold_search() -> None:
@@ -956,6 +1123,8 @@ def test_raw_boundary_contract_rejects_invalid_state_fields() -> None:
             session._capsule,  # noqa: SLF001
             raw_state,
             (),
+            4,
+            False,
             0,
             None,
             None,

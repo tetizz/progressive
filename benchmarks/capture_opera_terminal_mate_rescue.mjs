@@ -105,6 +105,7 @@ const probeExpression = String.raw`(async () => {
         },
       };
     }
+    const elapsedSeconds = (performance.now() - started) / 1_000;
     const rescue = result.runtime_receipt?.terminal_mate_rescue;
     const checks = {
       publishable: result.publishable === true,
@@ -116,7 +117,12 @@ const probeExpression = String.raw`(async () => {
       rescue_triggered: result.stats?.terminal_mate_rescues === 1
         && rescue?.trigger === "native-promotion-frontier-deferred"
         && rescue?.status === "found",
-      real_work_scale: Number(rescue?.work_used) >= 10_000_000,
+      staged_root_line: Array.isArray(result.best_full_series)
+        && result.best_full_series.join("/")
+          === "d2c3/e1e2/g1f3/f3g5/h1d1/g5e6/d1d8",
+      exact_accelerated_work: Number(rescue?.work_used) === 48_733,
+      total_work_matches_rescue: Number(result.work) === Number(rescue?.work_used),
+      sub_ten_seconds: elapsedSeconds < 10,
       within_global_work: Number(result.work) <= payload.max_generation_positions,
       no_interruption: result.timed_out === false
         && result.work_limit_reached === false,
@@ -125,10 +131,10 @@ const probeExpression = String.raw`(async () => {
       throw new Error("terminal mate rescue checks failed: " + JSON.stringify(checks));
     }
     return {
-      schema: "spc-opera-terminal-mate-rescue-receipt-v1",
+      schema: "spc-opera-terminal-mate-rescue-receipt-v2",
       status: "passed",
       checks,
-      elapsed_seconds: (performance.now() - started) / 1_000,
+      elapsed_seconds: elapsedSeconds,
       best_full_series: result.best_full_series,
       requested_depth: result.requested_depth,
       completed_depth: result.completed_depth,

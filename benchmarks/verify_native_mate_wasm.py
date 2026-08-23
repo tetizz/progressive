@@ -64,6 +64,49 @@ CASES = (
         "max_work": 10_000_000,
         "time_limit_ms": 1,
     },
+    {
+        "name": "s7-max-positions-preserves-legacy-contract",
+        "fen": "rnk3nr/pp3ppp/8/8/8/1Pp1P3/P1PP1PPP/R1b1K1NR w K - 0 13",
+        "series": 7,
+        "max_positions": 10,
+        "max_work": 10_000_000,
+        "time_limit_ms": 30_000,
+    },
+)
+S7_RESCUE_FEN = "rnk3nr/pp3ppp/8/8/8/1Pp1P3/P1PP1PPP/R1b1K1NR w K - 0 13"
+ACCELERATED_CASES = (
+    {
+        "name": "s7-staged-root-found",
+        "fen": S7_RESCUE_FEN,
+        "series": 7,
+        "max_positions": 0,
+        "max_work": 10_000_000,
+        "time_limit_ms": 30_000,
+    },
+    {
+        "name": "s7-staged-root-work-limit",
+        "fen": S7_RESCUE_FEN,
+        "series": 7,
+        "max_positions": 0,
+        "max_work": 10,
+        "time_limit_ms": 30_000,
+    },
+    {
+        "name": "s7-staged-root-exhausted",
+        "fen": "8/8/8/8/8/2k5/8/K7 w - - 0 1",
+        "series": 7,
+        "max_positions": 0,
+        "max_work": 1_000_000,
+        "time_limit_ms": 30_000,
+    },
+    {
+        "name": "s7-nonchecking-stuck-is-not-mate",
+        "fen": "8/8/8/8/8/5k2/6q1/7K w - - 0 1",
+        "series": 7,
+        "max_positions": 0,
+        "max_work": 1_000_000,
+        "time_limit_ms": 30_000,
+    },
 )
 
 STAT_FIELDS = (
@@ -168,6 +211,10 @@ def main() -> int:
         {key: value for key, value in case.items() if key != "name"}
         for case in CASES
     ]
+    accelerated_wire_cases = [
+        {key: value for key, value in case.items() if key != "name"}
+        for case in ACCELERATED_CASES
+    ]
     completed = subprocess.run(
         [
             "node",
@@ -175,16 +222,18 @@ def main() -> int:
             "mate",
             str(args.module.resolve()),
         ],
-        input=json.dumps(wire_cases),
+        input=json.dumps(wire_cases + accelerated_wire_cases),
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=True,
         cwd=ROOT,
     )
-    results = json.loads(completed.stdout)
-    if len(results) != len(CASES):
+    all_results = json.loads(completed.stdout)
+    if len(all_results) != len(CASES) + len(ACCELERATED_CASES):
         raise AssertionError("WASM batch result count differs from request")
+    results = all_results[: len(CASES)]
+    accelerated_results = all_results[len(CASES) :]
     by_name = {case["name"]: result for case, result in zip(CASES, results, strict=True)}
     live = by_name["white-live-s5-found"]
     if live["proof_status"] != "found" or live["moves"] != [
@@ -218,10 +267,73 @@ def main() -> int:
     exhausted = by_name["bare-kings-exhausted"]
     if exhausted["proof_status"] != "exhausted" or not exhausted["complete"]:
         raise AssertionError("bare-kings exhaustion proof changed")
-    for name in ("work-limit-unknown", "deadline-unknown"):
+    for name in (
+        "work-limit-unknown",
+        "deadline-unknown",
+        "s7-max-positions-preserves-legacy-contract",
+    ):
         limited = by_name[name]
         if limited["proof_status"] != "unknown" or limited["complete"]:
             raise AssertionError(f"{name} must fail closed as unknown")
+
+    accelerated_by_name = {
+        case["name"]: result
+        for case, result in zip(
+            ACCELERATED_CASES,
+            accelerated_results,
+            strict=True,
+        )
+    }
+    staged = accelerated_by_name["s7-staged-root-found"]
+    if (
+        staged["kernel_status"] != "found"
+        or staged["proof_status"] != "found"
+        or staged["complete"] is not True
+        or staged["moves"] != [
+            "d2c3",
+            "e1e2",
+            "g1f3",
+            "f3g5",
+            "h1d1",
+            "g5e6",
+            "d1d8",
+        ]
+        or staged["stats"]["positions_visited"]
+            + staged["stats"]["moves_generated"]
+            != 48_733
+        or staged["stats"]["checkmates"] != 1
+        or staged["stats"]["max_depth_reached"] != 7
+    ):
+        raise AssertionError("late-series staged root mate result changed")
+    staged_limited = accelerated_by_name["s7-staged-root-work-limit"]
+    if (
+        staged_limited["kernel_status"] != "work_limit"
+        or staged_limited["proof_status"] != "unknown"
+        or staged_limited["complete"] is not False
+        or staged_limited["moves"]
+        or staged_limited["stats"]["positions_visited"]
+            + staged_limited["stats"]["moves_generated"]
+            != 10
+        or staged_limited["stats"]["max_depth_reached"] != 0
+    ):
+        raise AssertionError("late-series staged root work cap changed")
+    staged_exhausted = accelerated_by_name["s7-staged-root-exhausted"]
+    if (
+        staged_exhausted["kernel_status"] != "exhausted"
+        or staged_exhausted["proof_status"] != "exhausted"
+        or staged_exhausted["complete"] is not True
+        or staged_exhausted["moves"]
+    ):
+        raise AssertionError("late-series staged root exhaustion changed")
+    nonchecking_stuck = accelerated_by_name["s7-nonchecking-stuck-is-not-mate"]
+    if (
+        nonchecking_stuck["kernel_status"] != "exhausted"
+        or nonchecking_stuck["proof_status"] != "exhausted"
+        or nonchecking_stuck["complete"] is not True
+        or nonchecking_stuck["moves"]
+        or nonchecking_stuck["stats"]["checkmates"] != 0
+    ):
+        raise AssertionError("non-checking stuck line was mislabeled as mate")
 
     case_receipts = []
     for case, wire, wasm in zip(CASES, wire_cases, results, strict=True):
@@ -245,6 +357,28 @@ def main() -> int:
             }
         )
 
+    accelerated_receipts = [
+        {
+            "name": case["name"],
+            "input_sha256": canonical_sha256(wire),
+            "wasm_output_sha256": canonical_sha256(result),
+            "kernel_status": result["kernel_status"],
+            "proof_status": result["proof_status"],
+            "complete": result["complete"],
+            "moves": result["moves"],
+            "work": result["stats"]["positions_visited"]
+                + result["stats"]["moves_generated"],
+            "checkmates": result["stats"]["checkmates"],
+            "max_depth_reached": result["stats"]["max_depth_reached"],
+        }
+        for case, wire, result in zip(
+            ACCELERATED_CASES,
+            accelerated_wire_cases,
+            accelerated_results,
+            strict=True,
+        )
+    ]
+
     receipt = {
         "schema": "spc-mate-wasm-receipt-v2",
         "status": "passed",
@@ -252,6 +386,8 @@ def main() -> int:
         "artifact": identity,
         "cases": case_receipts,
         "case_set_sha256": canonical_sha256(case_receipts),
+        "accelerated_cases": accelerated_receipts,
+        "accelerated_case_set_sha256": canonical_sha256(accelerated_receipts),
         "signed_mate_overrides": {
             "white": {"override_score": 999_998, "proof_bounds": [1, 1]},
             "black": {"override_score": -999_998, "proof_bounds": [-1, -1]},
@@ -270,6 +406,7 @@ def main() -> int:
             "deadline_receipts": True,
             "prefix_replay": True,
             "case_input_output_hashes": True,
+            "late_series_staged_root": True,
         },
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

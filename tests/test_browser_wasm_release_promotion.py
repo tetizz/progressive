@@ -501,6 +501,61 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
         _hashed_case("work-unknown", side_to_move="white", proof_status="unknown"),
         _hashed_case("deadline-unknown", side_to_move="black", proof_status="unknown"),
     ]
+    accelerated_specs = {
+        "s7-staged-root-found": {
+            "kernel_status": "found",
+            "proof_status": "found",
+            "complete": True,
+            "moves": [
+                "d2c3",
+                "e1e2",
+                "g1f3",
+                "f3g5",
+                "h1d1",
+                "g5e6",
+                "d1d8",
+            ],
+            "work": 48_733,
+            "checkmates": 1,
+            "max_depth_reached": 7,
+        },
+        "s7-staged-root-work-limit": {
+            "kernel_status": "work_limit",
+            "proof_status": "unknown",
+            "complete": False,
+            "moves": [],
+            "work": 10,
+            "checkmates": 0,
+            "max_depth_reached": 0,
+        },
+        "s7-staged-root-exhausted": {
+            "kernel_status": "exhausted",
+            "proof_status": "exhausted",
+            "complete": True,
+            "moves": [],
+            "work": 302,
+            "checkmates": 0,
+            "max_depth_reached": 0,
+        },
+        "s7-nonchecking-stuck-is-not-mate": {
+            "kernel_status": "exhausted",
+            "proof_status": "exhausted",
+            "complete": True,
+            "moves": [],
+            "work": 1,
+            "checkmates": 0,
+            "max_depth_reached": 0,
+        },
+    }
+    accelerated_cases = [
+        {
+            "name": name,
+            "input_sha256": promoter._canonical_sha256({"input": name}),
+            "wasm_output_sha256": promoter._canonical_sha256({"output": name}),
+            **spec,
+        }
+        for name, spec in accelerated_specs.items()
+    ]
     mate_parity = {
         "schema": promoter.MATE_PARITY_SCHEMA,
         "status": "passed",
@@ -508,6 +563,10 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
         "artifact": identity,
         "cases": mate_cases,
         "case_set_sha256": promoter._canonical_sha256(mate_cases),
+        "accelerated_cases": accelerated_cases,
+        "accelerated_case_set_sha256": promoter._canonical_sha256(
+            accelerated_cases
+        ),
         "gates": {
             "python_parity": True,
             "authoritative_replay": True,
@@ -522,6 +581,7 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
             "deadline_receipts": True,
             "prefix_replay": True,
             "case_input_output_hashes": True,
+            "late_series_staged_root": True,
         },
     }
 
@@ -910,6 +970,43 @@ def test_rejects_legacy_opera_worker_receipt(tmp_path: Path) -> None:
 
     _rewrite(fixture, "opera", mutate)
     with pytest.raises(promoter.ReleaseGateError, match="Worker D1-D5 receipt did not pass"):
+        _validate(fixture)
+
+
+def test_rejects_missing_accelerated_mate_evidence(tmp_path: Path) -> None:
+    fixture = _valid_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        payload.pop("accelerated_cases")
+
+    _rewrite(fixture, "mate_parity", mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="accelerated mate cases"):
+        _validate(fixture)
+
+
+def test_rejects_resigned_accelerated_mate_work_drift(tmp_path: Path) -> None:
+    fixture = _valid_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        accelerated = payload["accelerated_cases"]
+        accelerated[0]["work"] = 48_734
+        payload["accelerated_case_set_sha256"] = promoter._canonical_sha256(
+            accelerated
+        )
+
+    _rewrite(fixture, "mate_parity", mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="result changed"):
+        _validate(fixture)
+
+
+def test_rejects_accelerated_mate_digest_tampering(tmp_path: Path) -> None:
+    fixture = _valid_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        payload["accelerated_case_set_sha256"] = "f" * 64
+
+    _rewrite(fixture, "mate_parity", mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="case-set digest"):
         _validate(fixture)
 
 

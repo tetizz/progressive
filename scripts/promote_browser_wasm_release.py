@@ -1067,6 +1067,96 @@ def _validate_mate_parity(receipt: Receipt, build: BuildEvidence) -> int:
         or found_sides != {"white", "black"}
     ):
         raise ReleaseGateError("mate parity proof-state accounting is incomplete")
+    accelerated = _list(
+        payload.get("accelerated_cases"),
+        "accelerated mate cases",
+    )
+    expected_accelerated = {
+        "s7-staged-root-found": {
+            "kernel_status": "found",
+            "proof_status": "found",
+            "complete": True,
+            "moves": [
+                "d2c3",
+                "e1e2",
+                "g1f3",
+                "f3g5",
+                "h1d1",
+                "g5e6",
+                "d1d8",
+            ],
+            "work": 48_733,
+            "checkmates": 1,
+            "max_depth_reached": 7,
+        },
+        "s7-staged-root-work-limit": {
+            "kernel_status": "work_limit",
+            "proof_status": "unknown",
+            "complete": False,
+            "moves": [],
+            "work": 10,
+            "checkmates": 0,
+            "max_depth_reached": 0,
+        },
+        "s7-staged-root-exhausted": {
+            "kernel_status": "exhausted",
+            "proof_status": "exhausted",
+            "complete": True,
+            "moves": [],
+            "work": 302,
+            "checkmates": 0,
+            "max_depth_reached": 0,
+        },
+        "s7-nonchecking-stuck-is-not-mate": {
+            "kernel_status": "exhausted",
+            "proof_status": "exhausted",
+            "complete": True,
+            "moves": [],
+            "work": 1,
+            "checkmates": 0,
+            "max_depth_reached": 0,
+        },
+    }
+    accelerated_names: set[str] = set()
+    for raw_case in accelerated:
+        case = _mapping(raw_case, "accelerated mate case")
+        name = _text(case.get("name"), "accelerated mate case name")
+        if name in accelerated_names:
+            raise ReleaseGateError("accelerated mate receipt duplicates a case")
+        accelerated_names.add(name)
+        expected = expected_accelerated.get(name)
+        if expected is None:
+            raise ReleaseGateError("accelerated mate receipt has an unknown case")
+        for key in ("input_sha256", "wasm_output_sha256"):
+            value = case.get(key)
+            if not isinstance(value, str) or not HEX_64.fullmatch(value):
+                raise ReleaseGateError(
+                    f"accelerated mate case {name!r} has an invalid {key}"
+                )
+        if (
+            case.get("kernel_status") != expected["kernel_status"]
+            or case.get("proof_status") != expected["proof_status"]
+            or case.get("complete") is not expected["complete"]
+            or _list(case.get("moves"), f"accelerated mate case {name!r} moves")
+                != expected["moves"]
+            or _integer(case.get("work"), f"accelerated mate case {name!r} work")
+                != expected["work"]
+            or _integer(
+                case.get("checkmates"),
+                f"accelerated mate case {name!r} checkmates",
+            ) != expected["checkmates"]
+            or _integer(
+                case.get("max_depth_reached"),
+                f"accelerated mate case {name!r} max depth",
+            ) != expected["max_depth_reached"]
+        ):
+            raise ReleaseGateError(
+                f"accelerated mate case {name!r} result changed"
+            )
+    if accelerated_names != set(expected_accelerated):
+        raise ReleaseGateError("accelerated mate receipt lacks required cases")
+    if payload.get("accelerated_case_set_sha256") != _canonical_sha256(accelerated):
+        raise ReleaseGateError("accelerated mate case-set digest is invalid")
     gates = _mapping(payload.get("gates"), "mate parity gates")
     for key in (
         "python_parity",
@@ -1082,6 +1172,7 @@ def _validate_mate_parity(receipt: Receipt, build: BuildEvidence) -> int:
         "deadline_receipts",
         "prefix_replay",
         "case_input_output_hashes",
+        "late_series_staged_root",
     ):
         _true(gates, key, "mate parity")
     return len(cases)

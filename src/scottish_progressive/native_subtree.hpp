@@ -151,6 +151,14 @@ struct RetainedRootEnumerationResult {
     std::uint64_t requested_width = 0;
     std::uint64_t retained_count = 0;
     bool width_complete = false;
+    // Evidence-only terminal scans may widen the root generation frontier
+    // without changing max_series_per_node for any descendant. Their
+    // candidates are delivered current-series checkmates only and are never
+    // installed as a searchable retained root.
+    bool terminal_mate_scan = false;
+    // Exact generator telemetry retained for in-process proof consumers. These
+    // counts are deliberately separate from the filtered mate-only manifest.
+    std::uint64_t generation_checking_series = 0;
     // Canonical boundary policy propagated to descendant generation. Root
     // ply one is always tactically protected independently of this flag.
     bool canonical_root_tactical_protection = false;
@@ -246,6 +254,8 @@ public:
     [[nodiscard]] RetainedRootEnumerationResult enumerate_retained_root(
         const SubtreeState& state,
         const std::vector<std::string>& preferred_series,
+        std::uint64_t requested_width,
+        bool terminal_mate_scan,
         std::uint64_t external_work,
         std::optional<std::uint64_t> call_work_credit,
         std::optional<std::chrono::steady_clock::time_point> deadline

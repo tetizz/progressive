@@ -120,6 +120,7 @@ class NativeRootEnumerationResult:
     work: NativeSubtreeWorkReceipt
     selective: bool
     evaluation_work_limit_reached: bool
+    terminal_mate_scan: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,7 +326,7 @@ def _enumeration_result(
     raw: object,
 ) -> NativeRootEnumerationResult:
     values = tuple(raw)
-    if len(values) != 12:
+    if len(values) != 13:
         raise RuntimeError("native retained-root enumeration shape mismatch")
     status = int(values[0])
     candidates = (
@@ -346,6 +347,7 @@ def _enumeration_result(
         work=_work_receipt(values[9]),
         selective=bool(values[10]),
         evaluation_work_limit_reached=bool(values[11]),
+        terminal_mate_scan=bool(values[12]),
     )
     if status == 0 and (
         not result.enumeration_identity
@@ -361,7 +363,7 @@ def _enumeration_result(
 
 
 class NativeSubtreeSession:
-    __slots__ = ("_capsule", "_native", "_root_states")
+    __slots__ = ("_capsule", "_descendant_width", "_native", "_root_states")
 
     def __init__(
         self,
@@ -383,6 +385,7 @@ class NativeSubtreeSession:
             raise RuntimeError("source-matched native subtree API is unavailable")
         weights = profile.weights
         self._native = native
+        self._descendant_width = max_series_per_node
         self._root_states: dict[str, ProgressiveState] = {}
         self._capsule = native.create_subtree_search(
             max_series_per_node,
@@ -477,6 +480,8 @@ class NativeSubtreeSession:
         external_work: int,
         remaining_nanoseconds: int | None,
         call_work_credit: int | None = None,
+        requested_width: int | None = None,
+        terminal_mate_scan: bool = False,
     ) -> NativeRootEnumerationResult:
         preferred = (
             ()
@@ -487,12 +492,14 @@ class NativeSubtreeSession:
             self._capsule,
             _state_tuple(state),
             preferred,
+            self._descendant_width if requested_width is None else requested_width,
+            terminal_mate_scan,
             external_work,
             call_work_credit,
             remaining_nanoseconds,
         )
         result = _enumeration_result(state, raw)
-        if result.status == 0:
+        if result.status == 0 and not result.terminal_mate_scan:
             self._root_states = {result.enumeration_identity: state}
         else:
             self._root_states.clear()

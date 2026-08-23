@@ -5977,7 +5977,10 @@ PyObject* retained_root_enumeration_tuple(
     PyObject* evaluation_limit = PyBool_FromLong(
         response.evaluation_work_limit_reached ? 1 : 0
     );
-    const std::array<PyObject*, 12> objects = {
+    PyObject* terminal_scan = PyBool_FromLong(
+        response.terminal_mate_scan ? 1 : 0
+    );
+    const std::array<PyObject*, 13> objects = {
         status,
         message,
         identity,
@@ -5990,6 +5993,7 @@ PyObject* retained_root_enumeration_tuple(
         work,
         selective,
         evaluation_limit,
+        terminal_scan,
     };
     if (std::any_of(objects.begin(), objects.end(), [](PyObject* object) {
             return object == nullptr;
@@ -6496,15 +6500,19 @@ PyObject* py_subtree_enumerate_root(PyObject*, PyObject* arguments) {
     PyObject* capsule = nullptr;
     PyObject* state_object = nullptr;
     PyObject* preferred_object = nullptr;
+    unsigned long long requested_width = 0;
+    int terminal_mate_scan = 0;
     unsigned long long external_work = 0;
     PyObject* credit_object = nullptr;
     PyObject* remaining_object = nullptr;
     if (!PyArg_ParseTuple(
             arguments,
-            "OOOKOO:subtree_enumerate_root",
+            "OOOKpKOO:subtree_enumerate_root",
             &capsule,
             &state_object,
             &preferred_object,
+            &requested_width,
+            &terminal_mate_scan,
             &external_work,
             &credit_object,
             &remaining_object
@@ -6542,6 +6550,8 @@ PyObject* py_subtree_enumerate_root(PyObject*, PyObject* arguments) {
         response = session->enumerate_retained_root(
             state,
             preferred,
+            requested_width,
+            terminal_mate_scan != 0,
             external_work,
             call_work_credit,
             deadline

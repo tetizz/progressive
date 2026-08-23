@@ -2076,6 +2076,8 @@ void accept_receipt(
     const auto result = session.core->enumerate_retained_root(
         session.boundary,
         preferred,
+        session.parsed_config.core.max_series_per_node,
+        false,
         routing.external_work,
         std::optional<std::uint64_t>{routing.call_work_credit},
         relative_deadline(routing)

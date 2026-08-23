@@ -31,6 +31,9 @@
 
 #if defined(__EMSCRIPTEN__)
 #include <emscripten/emscripten.h>
+#if defined(SPC_NATIVE_CORE_ONLY)
+#include "native_subtree.hpp"
+#endif
 #define SPC_MATE_WASM_EXPORT EMSCRIPTEN_KEEPALIVE
 #else
 #define SPC_MATE_WASM_EXPORT
@@ -1133,6 +1136,224 @@ struct MateSearchNodeWorse {
     return response;
 }
 
+#if defined(__EMSCRIPTEN__) && defined(SPC_NATIVE_CORE_ONLY)
+struct FastMatePrepass {
+    bool decisive = false;
+    SeriesMateSearchResponse response;
+};
+
+[[nodiscard]] std::uint64_t saturating_sum(
+    std::uint64_t left,
+    std::uint64_t right
+) noexcept {
+    return right > std::numeric_limits<std::uint64_t>::max() - left
+        ? std::numeric_limits<std::uint64_t>::max()
+        : left + right;
+}
+
+void add_mate_stats(
+    SeriesMateSearchStats& total,
+    const SeriesMateSearchStats& added
+) noexcept {
+    total.positions_visited = saturating_sum(
+        total.positions_visited,
+        added.positions_visited
+    );
+    total.moves_generated = saturating_sum(
+        total.moves_generated,
+        added.moves_generated
+    );
+    total.transpositions_merged = saturating_sum(
+        total.transpositions_merged,
+        added.transpositions_merged
+    );
+    total.checking_series = saturating_sum(
+        total.checking_series,
+        added.checking_series
+    );
+    total.checkmates = saturating_sum(total.checkmates, added.checkmates);
+    total.peak_frontier = std::max(
+        total.peak_frontier,
+        added.peak_frontier
+    );
+    total.max_depth_reached = std::max(
+        total.max_depth_reached,
+        added.max_depth_reached
+    );
+}
+
+[[nodiscard]] std::uint64_t mate_work(
+    const SeriesMateSearchStats& stats
+) noexcept {
+    return saturating_sum(stats.positions_visited, stats.moves_generated);
+}
+
+[[nodiscard]] FastMatePrepass staged_root_mate_prepass(
+    const SeriesMateSearchRequest& request
+) {
+    FastMatePrepass prepass;
+    // S1-S6 retain the certified exact-search work/signature contract. The
+    // retained-frontier prepass pays for itself on the S7+ explosion that
+    // triggers the browser's emergency mate lane.
+    if (request.series_number < 7 || request.max_positions.has_value()) {
+        return prepass;
+    }
+
+    // max_positions historically counts dequeued mate-search nodes only,
+    // while the subtree generator accounts positions plus scored frontier
+    // edges. Preserve that public distinction by leaving max_positions calls
+    // on the exact solver instead of translating between incomparable units.
+    const std::optional<std::uint64_t> budget = request.max_work;
+    spc::native::SubtreeSearchConfig config{
+        32,
+        budget,
+        1,
+        1'000'000,
+        2'048,
+        0,
+        1,
+        false,
+        spc::native::FastWeights{100, 100, 100, 100, 100},
+        spc::native::FullWeights{100, 100, 100, 100, 100, 100, 100},
+        1,
+        1,
+    };
+    spc::native::SubtreeState root{
+        spc::native::BoardState{
+            request.board.pawns,
+            request.board.knights,
+            request.board.bishops,
+            request.board.rooks,
+            request.board.queens,
+            request.board.kings,
+            request.board.occupied,
+            request.board.promoted,
+            request.board.castling_rights,
+            request.board.white_to_move,
+        },
+        0,
+        1,
+        request.series_number,
+        0,
+        request.ep_targets,
+    };
+    spc::native::SubtreeSearchSession session(config);
+    constexpr std::array<std::uint64_t, 6> STAGES{
+        32, 64, 128, 256, 512, 832,
+    };
+    for (const std::uint64_t width : STAGES) {
+        const std::uint64_t used = mate_work(prepass.response.stats);
+        if (budget.has_value() && used >= *budget) {
+            prepass.decisive = true;
+            prepass.response.status = SeriesMateSearchStatus::WorkLimit;
+            prepass.response.message =
+                "native staged root mate prepass reached the work limit";
+            return prepass;
+        }
+        const auto remaining = budget.has_value()
+            ? std::optional<std::uint64_t>{*budget - used}
+            : std::nullopt;
+        const auto result = session.enumerate_retained_root(
+            root,
+            {},
+            width,
+            true,
+            0,
+            remaining,
+            request.deadline
+        );
+        SeriesMateSearchStats stage_stats;
+        stage_stats.positions_visited =
+            result.work.call_stats.series_generation_positions;
+        stage_stats.moves_generated =
+            result.work.call_stats.frontier_score_positions;
+        stage_stats.transpositions_merged =
+            result.work.call_stats.intra_series_transpositions;
+        stage_stats.peak_frontier =
+            result.work.call_stats.peak_frontier_states;
+        // The subtree receipt does not expose a trustworthy deepest partial
+        // path. Keep this conservative; a published witness below supplies
+        // its exact replayed length.
+        stage_stats.max_depth_reached = 0;
+        stage_stats.checking_series = result.generation_checking_series;
+        add_mate_stats(prepass.response.stats, stage_stats);
+
+        if (result.status == spc::native::SubtreeSearchStatus::Deadline) {
+            prepass.decisive = true;
+            prepass.response.status = SeriesMateSearchStatus::Deadline;
+            prepass.response.message =
+                "native staged root mate prepass reached the deadline";
+            return prepass;
+        }
+        if (result.status == spc::native::SubtreeSearchStatus::WorkLimit) {
+            prepass.decisive = true;
+            prepass.response.status = SeriesMateSearchStatus::WorkLimit;
+            prepass.response.message =
+                "native staged root mate prepass reached the work limit";
+            return prepass;
+        }
+        if (result.status != spc::native::SubtreeSearchStatus::Complete) {
+            // Preserve all work already spent before falling back. Discarding
+            // these stats would let the exact lane exceed the caller's cap.
+            return prepass;
+        }
+        if (!result.candidates.empty()) {
+            prepass.decisive = true;
+            prepass.response.status = SeriesMateSearchStatus::Found;
+            prepass.response.message =
+                "native series mate found by staged root scan";
+            prepass.response.stats.checkmates = 1;
+            prepass.response.moves = result.candidates.front().series.path.moves;
+            prepass.response.stats.max_depth_reached = static_cast<std::uint64_t>(
+                prepass.response.moves.size()
+            );
+            return prepass;
+        }
+        if (result.width_complete) {
+            prepass.decisive = true;
+            prepass.response.status = SeriesMateSearchStatus::Exhausted;
+            prepass.response.message =
+                "native staged root scan exhausted the complete series frontier";
+            return prepass;
+        }
+    }
+    return prepass;
+}
+
+[[nodiscard]] SeriesMateSearchResponse find_series_mate_accelerated(
+    const SeriesMateSearchRequest& request
+) {
+    FastMatePrepass prepass = staged_root_mate_prepass(request);
+    if (prepass.decisive) {
+        return prepass.response;
+    }
+    const std::uint64_t prepass_work = mate_work(prepass.response.stats);
+    SeriesMateSearchRequest remaining = request;
+    if (remaining.max_work.has_value()) {
+        if (prepass_work >= *remaining.max_work) {
+            prepass.response.status = SeriesMateSearchStatus::WorkLimit;
+            prepass.response.message = "native series-mate total work limit reached";
+            return prepass.response;
+        }
+        remaining.max_work = *remaining.max_work - prepass_work;
+    }
+    if (remaining.max_positions.has_value()) {
+        if (prepass_work >= *remaining.max_positions) {
+            prepass.response.status = SeriesMateSearchStatus::WorkLimit;
+            prepass.response.message = "native series-mate work limit reached";
+            return prepass.response;
+        }
+        remaining.max_positions = *remaining.max_positions - prepass_work;
+    }
+    SeriesMateSearchResponse exact = find_series_mate(remaining);
+    add_mate_stats(prepass.response.stats, exact.stats);
+    prepass.response.status = exact.status;
+    prepass.response.message = std::move(exact.message);
+    prepass.response.moves = std::move(exact.moves);
+    return prepass.response;
+}
+#endif
+
 constexpr std::uint32_t MATE_WASM_ABI_VERSION = 1;
 
 [[nodiscard]] bool parse_i64_text(
@@ -1532,7 +1753,12 @@ void write_json_string(std::ostringstream& stream, const std::string& value) {
         request.deadline = std::chrono::steady_clock::now()
             + std::chrono::milliseconds(time_limit_ms);
     }
-    const SeriesMateSearchResponse response = find_series_mate(request);
+    const SeriesMateSearchResponse response =
+#if defined(__EMSCRIPTEN__) && defined(SPC_NATIVE_CORE_ONLY)
+        find_series_mate_accelerated(request);
+#else
+        find_series_mate(request);
+#endif
     const bool complete = response.status == SeriesMateSearchStatus::Found
         || response.status == SeriesMateSearchStatus::Exhausted;
     std::ostringstream stream;
