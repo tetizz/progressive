@@ -155,6 +155,37 @@ def test_s1_s4_s7_full_product_signature_and_stats_parity(
     assert _analysis_signature(actual) == _analysis_signature(expected)
 
 
+def test_legacy_subtree_stats_do_not_regress_after_path_count_saturation() -> None:
+    """A high-series two-king boundary must keep cumulative stats monotonic."""
+
+    _require_contract()
+    state = ProgressiveState.from_fen(
+        "8/8/8/1K6/8/8/1k6/8 b - - 112 109",
+        22,
+        quiet_series=6,
+    )
+
+    result = analyze(
+        state,
+        SearchLimits(
+            depth_series=2,
+            max_series_per_node=32,
+            max_generation_positions=250_000,
+            collect_all_root_scores=False,
+            native_threads=1,
+        ),
+        baseline_profile(),
+    )
+
+    assert result.best_series is not None
+    assert result.completed_depth == 2
+    # The Python-owned root frontier is added to a native descendant counter
+    # that has reached UINT64_MAX. Seeing at least that lower bound proves the
+    # native cumulative value clamped instead of wrapping to a smaller number.
+    assert result.stats.generated_raw_series >= (1 << 64) - 1
+    assert result.stats.intra_series_transpositions >= (1 << 64) - 1
+
+
 def _python_root(
     state: ProgressiveState,
     *,

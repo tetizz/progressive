@@ -1157,24 +1157,68 @@ public:
     }
 
     void record_generation(const SeriesGenerationStats& generation) {
-        stats.generated_raw_series += generation.raw_series;
-        stats.generated_unique_series += generation.unique_series;
-        stats.intra_series_transpositions += generation.transpositions_merged;
-        stats.series_generation_positions += generation.positions_visited;
-        stats.frontier_score_positions += generation.frontier_score_positions;
-        stats.generation_positions += generation.positions_visited
-            + generation.frontier_score_positions;
-        stats.frontier_prunes += generation.frontier_prunes;
-        stats.frontier_states_pruned += generation.frontier_states_pruned;
-        stats.frontier_paths_pruned += generation.frontier_paths_pruned;
-        stats.tactical_frontier_states_retained +=
-            generation.tactical_frontier_states_retained;
-        stats.tactical_frontier_reserve_drops +=
-            generation.tactical_frontier_reserve_drops;
-        stats.tactical_final_series_retained +=
-            generation.tactical_final_series_retained;
-        stats.tactical_final_reserve_drops +=
-            generation.tactical_final_reserve_drops;
+        // Path multiplicity grows combinatorially on high-series repetition
+        // boundaries. Individual generation calls fit in uint64_t, but their
+        // session-wide telemetry can exceed it after several child searches.
+        // These are monotonic counters exposed to Python, so wraparound would
+        // violate the cumulative-stats contract and abort an otherwise valid
+        // search. Clamp every accumulated generation counter instead.
+        stats.generated_raw_series = saturating_add(
+            stats.generated_raw_series,
+            generation.raw_series
+        );
+        stats.generated_unique_series = saturating_add(
+            stats.generated_unique_series,
+            generation.unique_series
+        );
+        stats.intra_series_transpositions = saturating_add(
+            stats.intra_series_transpositions,
+            generation.transpositions_merged
+        );
+        stats.series_generation_positions = saturating_add(
+            stats.series_generation_positions,
+            generation.positions_visited
+        );
+        stats.frontier_score_positions = saturating_add(
+            stats.frontier_score_positions,
+            generation.frontier_score_positions
+        );
+        stats.generation_positions = saturating_add(
+            stats.generation_positions,
+            generation.positions_visited
+        );
+        stats.generation_positions = saturating_add(
+            stats.generation_positions,
+            generation.frontier_score_positions
+        );
+        stats.frontier_prunes = saturating_add(
+            stats.frontier_prunes,
+            generation.frontier_prunes
+        );
+        stats.frontier_states_pruned = saturating_add(
+            stats.frontier_states_pruned,
+            generation.frontier_states_pruned
+        );
+        stats.frontier_paths_pruned = saturating_add(
+            stats.frontier_paths_pruned,
+            generation.frontier_paths_pruned
+        );
+        stats.tactical_frontier_states_retained = saturating_add(
+            stats.tactical_frontier_states_retained,
+            generation.tactical_frontier_states_retained
+        );
+        stats.tactical_frontier_reserve_drops = saturating_add(
+            stats.tactical_frontier_reserve_drops,
+            generation.tactical_frontier_reserve_drops
+        );
+        stats.tactical_final_series_retained = saturating_add(
+            stats.tactical_final_series_retained,
+            generation.tactical_final_series_retained
+        );
+        stats.tactical_final_reserve_drops = saturating_add(
+            stats.tactical_final_reserve_drops,
+            generation.tactical_final_reserve_drops
+        );
         stats.peak_frontier_states = std::max(
             stats.peak_frontier_states,
             generation.peak_frontier_states
@@ -1183,7 +1227,10 @@ public:
             selective = true;
         }
         if (generation.work_limit_reached) {
-            ++stats.generation_work_limit_hits;
+            stats.generation_work_limit_hits = saturating_add(
+                stats.generation_work_limit_hits,
+                1
+            );
         }
     }
 
