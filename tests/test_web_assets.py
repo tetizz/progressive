@@ -491,7 +491,8 @@ def test_play_strength_is_explicit_and_reports_completed_not_claimed_depth() -> 
     assert "receiptDeadlineMs: analysisDeadlineMs" in app
     assert "PLAY_STRENGTHS.strong.seconds = state.play.timeLimitSeconds" not in app
     assert "PLAY_STRENGTHS.strong.generationPositions = state.play.generationPositions" not in app
-    assert "generationPositions >= STRONG_PLAY_TECHNICAL_WORK_CEILING" in app
+    assert "generationPositions >= PLAY_TECHNICAL_WORK_CEILING" in app
+    assert app.count("generationPositions: PLAY_TECHNICAL_WORK_CEILING") == 2
     assert "best_move_only: true" in engine_turn
     assert "state.play.lastSearch = playSearchEvidence(analysis, search)" in engine_turn
     assert "Last completed search · depth ${evidence.completedDepth} · requested ${evidence.requestedDepth}" in evidence
@@ -508,7 +509,7 @@ def test_play_strength_is_explicit_and_reports_completed_not_claimed_depth() -> 
     assert "capped at ${work} generated positions" in evidence
     assert "state.play.healthReady" in evidence
     assert "state.play.healthReady = true;" in app
-    assert 'if (state.play.thinking) cancelEngineTurn();' in app
+    assert "state.play.thinking || activePlayEngineTurn" in app
     assert "function retryEngineTurn()" in app
     assert 'dom.play_retry_engine.addEventListener("click", () => { void retryEngineTurn(); })' in app
     assert "Search stopped — game saved" in app
@@ -941,6 +942,267 @@ claimedPlayPonder = record;
     assert completed.stdout == "ok"
 
 
+@pytest.mark.skipif(NODE is None, reason="Node.js is required for engine-turn cleanup tests")
+def test_cancelled_play_engine_turn_drains_before_a_restart_can_continue() -> None:
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    cancel = app[
+        app.index("function cancelEngineTurn") : app.index(
+            "function blockStalePlayMutation"
+        )
+    ]
+    flow = app[
+        app.index("async function continuePlayFlow") : app.index(
+            "async function undoMove"
+        )
+    ]
+    strength = app[
+        app.index("async function selectPlayStrength") : app.index(
+            "async function retryEngineTurn"
+        )
+    ]
+    # The source-level ordering is part of the product contract: changing
+    # strength cannot launch a replacement until the cancelled local lane has
+    # drained, and duplicate flow requests share one in-flight engine turn.
+    assert "const activeTurn = activePlayEngineTurn;" in cancel
+    assert "Promise.resolve(activeTurn).catch(() => null)" in cancel
+    assert "Promise.resolve(ponderCleanup).catch(() => null)" in cancel
+    cancel_start = strength.index("const cleanup = cancelEngineTurn();")
+    cancel_drain = strength.index("await cleanup;")
+    restart = strength.index("await continuePlayFlow();")
+    assert cancel_start < cancel_drain < restart
+    assert "state.play.sequence !== restartSequence" in strength
+    assert "playGameEnded()" in strength
+    assert "if (activePlayEngineTurn) return activePlayEngineTurn;" in flow
+    assert "activePlayEngineTurn = turn;" in flow
+    assert "if (activePlayEngineTurn === turn) activePlayEngineTurn = null;" in flow
+
+    runtime_script = r"""
+let release;
+let activePlayEngineTurn = new Promise((resolve) => { release = resolve; });
+let ponderReleased = false;
+const controller = new AbortController();
+const state = {
+  play: {
+    engineAbort: controller,
+    sequence: 9,
+    thinking: true,
+    animating: false,
+    activeSearch: {},
+    activeSearchRuntime: "browser-wasm",
+  },
+};
+function cancelPlayPonder() {
+  return Promise.resolve().then(() => { ponderReleased = true; });
+}
+""" + cancel + r"""
+(async () => {
+  let drained = false;
+  const cleanup = cancelEngineTurn().then(() => { drained = true; });
+  if (!controller.signal.aborted) throw new Error("engine search was not aborted");
+  if (state.play.sequence !== 10) throw new Error("engine sequence stayed claimable");
+  await Promise.resolve();
+  await Promise.resolve();
+  if (drained) throw new Error("restart was admitted before the local lane drained");
+  if (!ponderReleased) throw new Error("ponder cleanup was not included");
+  release();
+  await cleanup;
+  if (!drained) throw new Error("cancelled engine turn did not drain");
+  process.stdout.write("ok");
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+    completed = subprocess.run(
+        [str(NODE), "-e", runtime_script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.stdout == "ok"
+
+    single_flight_script = r"""
+let activePlayEngineTurn = null;
+let release;
+let starts = 0;
+const state = {
+  mode: "play",
+  complete: false,
+  nextState: null,
+  play: { active: true },
+};
+let playSessionExternalUpdate = false;
+let playSessionSaveBlocked = false;
+function playReviewActive() { return false; }
+function playGameEnded() { return false; }
+function advanceSeries() { throw new Error("unexpected handoff"); }
+function maybeRunEngineTurn() {
+  starts += 1;
+  return new Promise((resolve) => { release = resolve; });
+}
+""" + flow + r"""
+(async () => {
+  const first = continuePlayFlow();
+  const second = continuePlayFlow();
+  await Promise.resolve();
+  if (starts !== 1) throw new Error(`expected one engine turn, got ${starts}`);
+  release();
+  await Promise.all([first, second]);
+  if (activePlayEngineTurn !== null) throw new Error("settled engine turn stayed active");
+  process.stdout.write("ok");
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+    single_flight = subprocess.run(
+        [str(NODE), "-e", single_flight_script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert single_flight.stdout == "ok"
+
+    latest_action_script = r"""
+let release;
+let activePlayEngineTurn = new Promise((resolve) => { release = resolve; });
+const PLAY_STRENGTHS = { strong: {}, faster: {} };
+const state = {
+  mode: "play",
+  play: {
+    active: true,
+    strength: "strong",
+    sequence: 21,
+    thinking: true,
+    resigned: false,
+  },
+};
+let playSessionExternalUpdate = false;
+let playSessionSaveBlocked = false;
+let persistCalls = 0;
+let renderCalls = 0;
+let restartCalls = 0;
+function blockStalePlayMutation() { return false; }
+function waitForActiveNewPlayGame() { return Promise.resolve(); }
+function retryEngineTurn() { throw new Error("unexpected retry"); }
+function cancelEngineTurn() {
+  state.play.sequence += 1;
+  return activePlayEngineTurn;
+}
+function cancelPlayPonder() { return Promise.resolve(); }
+function playReviewActive() { return false; }
+function playGameEnded() { return state.play.resigned; }
+function persistPlaySession() { persistCalls += 1; }
+function renderPlaySurface() { renderCalls += 1; }
+function continuePlayFlow() { restartCalls += 1; return Promise.resolve(); }
+""" + strength + r"""
+(async () => {
+  const strengthChange = selectPlayStrength("faster");
+  await Promise.resolve();
+  if (state.play.sequence !== 22) throw new Error("strength cancellation did not advance sequence");
+
+  // A later Resign/New Game/Analyze cancellation must win while both callers
+  // are waiting for the same old local turn to drain.
+  state.play.sequence += 1;
+  state.play.resigned = true;
+  release();
+  await strengthChange;
+
+  if (persistCalls !== 0 || renderCalls !== 0 || restartCalls !== 0) {
+    throw new Error("an earlier strength waiter restarted after the later action");
+  }
+  process.stdout.write("ok");
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+    latest_action = subprocess.run(
+        [str(NODE), "-e", latest_action_script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert latest_action.stdout == "ok"
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is required for new-game transition tests")
+def test_new_game_transition_is_single_flight_across_a_deferred_drain() -> None:
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    start = app[
+        app.index("async function startNewPlayGame") : app.index(
+            "async function performStartNewPlayGame"
+        )
+    ]
+    select_color = app[
+        app.index("async function selectPlayColor") : app.index(
+            "async function resignPlayGame"
+        )
+    ]
+    resign = app[
+        app.index("async function resignPlayGame") : app.index(
+            "async function switchWorkspaceMode"
+        )
+    ]
+    switch_mode = app[
+        app.index("async function switchWorkspaceMode") : app.index(
+            "function legalMovesFrom"
+        )
+    ]
+
+    assert "if (activeNewPlayGame) return activeNewPlayGame;" in start
+    assert "activeNewPlayGame = transition;" in start
+    assert "if (activeNewPlayGame === transition) activeNewPlayGame = null;" in start
+    assert "while (activeNewPlayGame) await activeNewPlayGame;" in start
+    assert select_color.index("await waitForActiveNewPlayGame();") < (
+        select_color.index("state.play.humanColor = color;")
+    )
+    assert resign.index("await waitForActiveNewPlayGame();") < resign.index(
+        "await cancelEngineTurn();"
+    )
+    assert switch_mode.index("await waitForActiveNewPlayGame();") < (
+        switch_mode.index('if (mode === "analyze")')
+    )
+
+    runtime_script = r"""
+let activeNewPlayGame = null;
+let releaseDrain;
+const drain = new Promise((resolve) => { releaseDrain = resolve; });
+let starts = 0;
+let replacementCommits = 0;
+let laterActionApplied = 0;
+let liveSession = "old-session";
+let storedSession = "old-session";
+function performStartNewPlayGame() {
+  starts += 1;
+  return (async () => {
+    await drain;
+    liveSession = "new-session";
+    storedSession = liveSession;
+    replacementCommits += 1;
+  })();
+}
+""" + start + r"""
+(async () => {
+  const first = startNewPlayGame();
+  const second = startNewPlayGame();
+  const laterAction = (async () => {
+    await waitForActiveNewPlayGame();
+    laterActionApplied += 1;
+  })();
+  await Promise.resolve();
+  if (starts !== 1) throw new Error(`expected one new-game transition, got ${starts}`);
+  if (replacementCommits !== 0) throw new Error("replacement committed before the drain");
+  if (laterActionApplied !== 0) throw new Error("later action passed the active new-game transition");
+  releaseDrain();
+  await Promise.all([first, second, laterAction]);
+  if (replacementCommits !== 1) throw new Error(`expected one replacement, got ${replacementCommits}`);
+  if (laterActionApplied !== 1) throw new Error("later action did not resume after the new game");
+  if (liveSession !== storedSession) throw new Error("live and durable sessions diverged");
+  if (activeNewPlayGame !== null) throw new Error("settled new-game transition stayed active");
+  process.stdout.write("ok");
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+    completed = subprocess.run(
+        [str(NODE), "-e", runtime_script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.stdout == "ok"
+
+
 def test_play_ponder_claim_is_exact_stale_safe_and_visible() -> None:
     app = (STATIC / "app.js").read_text(encoding="utf-8")
     base_match = app[
@@ -984,6 +1246,39 @@ def test_play_ponder_claim_is_exact_stale_safe_and_visible() -> None:
     ):
         assert invalidation in app
     assert app.count("await playPonderCleanup.catch(() => null)") >= 3
+
+
+def test_play_ponder_accepts_the_last_certified_completed_depth() -> None:
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    prediction = app[
+        app.index("function certifiedLocalPonderPrediction") : app.index(
+            "function assertLivePlayPonder"
+        )
+    ]
+
+    assert "requestedDepth !== search.depth" in prediction
+    assert "completedDepth < 1" in prediction
+    assert "completedDepth > requestedDepth" in prediction
+    assert "completedDepth < requestedDepth" not in prediction
+    assert "asBoolean(analysis?.timed_out)" not in prediction
+    assert "asBoolean(analysis?.work_limit_reached)" not in prediction
+    assert "root_bound_coverage_complete" in prediction
+
+
+def test_cancelled_pre_search_handoff_cannot_dispatch_stale_strength_limits() -> None:
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    engine_turn = app[
+        app.index("async function maybeRunEngineTurn") : app.index(
+            "async function startNewPlayGame"
+        )
+    ]
+
+    entry = engine_turn.index("const entrySequence = state.play.sequence;")
+    limits = engine_turn.index("const search = playSearchLimits();")
+    claim = engine_turn.index("const ponder = await claimMatchingPlayPonder(search);")
+    stale_gate = engine_turn.index("state.play.sequence !== entrySequence")
+    dispatch = engine_turn.index("requestEngineAnalysis(")
+    assert entry < limits < claim < stale_gate < dispatch
 
 
 def test_play_ponder_background_errors_are_silent_and_engine_turn_falls_back() -> None:

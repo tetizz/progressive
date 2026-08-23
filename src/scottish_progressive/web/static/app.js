@@ -60,17 +60,17 @@
     quick: { depth: 4, cap: 48, seconds: 1.25, alternatives: 2, generationPositions: 150_000 },
     strong: { depth: 8, cap: 256, seconds: 5, alternatives: 3, generationPositions: 5_000_000 },
   };
-  // Strong play is governed by its wall-clock deadline. The numeric ceiling
+  // Play searches are governed by their wall-clock deadlines. The numeric ceiling
   // exists only because the native/WASM contracts use a finite integer; it is
   // deliberately far beyond the work reachable during one play search.
-  const STRONG_PLAY_TECHNICAL_WORK_CEILING = 4_000_000_000;
+  const PLAY_TECHNICAL_WORK_CEILING = 4_000_000_000;
   const PLAY_ANALYSIS_RESPONSE_GRACE_MS = 1_500;
   const PLAY_PREFIX_RECEIPT_TIMEOUT_MS = 10_000;
   const PLAY_RESTORE_PER_SERIES_TIMEOUT_MS = 1_500;
   const PLAY_RESTORE_MAX_TIMEOUT_MS = 120_000;
   const PLAY_STRENGTHS = {
-    strong: { label: "Strong", minimumDepth: 5, seconds: 30, generationPositions: STRONG_PLAY_TECHNICAL_WORK_CEILING },
-    faster: { label: "Faster", minimumDepth: 1, seconds: 5, generationPositions: 500_000 },
+    strong: { label: "Strong", minimumDepth: 5, seconds: 30, generationPositions: PLAY_TECHNICAL_WORK_CEILING },
+    faster: { label: "Faster", minimumDepth: 1, seconds: 5, generationPositions: PLAY_TECHNICAL_WORK_CEILING },
   };
   const PIECE_NAMES = {
     p: "pawn", n: "knight", b: "bishop", r: "rook", q: "queen", k: "king",
@@ -224,6 +224,8 @@
   let activePlayPonder = null;
   let claimedPlayPonder = null;
   let playPonderCleanup = Promise.resolve();
+  let activePlayEngineTurn = null;
+  let activeNewPlayGame = null;
 
   function randomStorageId(prefix) {
     const random = globalThis.crypto?.randomUUID?.()
@@ -765,15 +767,16 @@
     return playReviewActive(timeline) ? timeline[playTimelineCursor(timeline)] : null;
   }
 
-  function stepPlayTimeline(delta) {
+  async function stepPlayTimeline(delta) {
+    await waitForActiveNewPlayGame();
     if (state.mode !== "play" || state.play.animating || blockStalePlayMutation()) return;
     const timeline = playTimeline();
     const current = playTimelineCursor(timeline);
     const target = Math.max(0, Math.min(timeline.length - 1, current + delta));
     if (target === current) return;
     if (target < timeline.length - 1) {
-      if (state.play.thinking) cancelEngineTurn();
-      else void cancelPlayPonder("play-history-review");
+      if (state.play.thinking || activePlayEngineTurn) await cancelEngineTurn();
+      else await cancelPlayPonder("play-history-review");
       state.play.timelineIndex = target;
       state.selected = null;
       renderAll();
@@ -1455,8 +1458,7 @@
       maxSeries: Math.max(1, Math.min(state.maximumBranchCap, state.play.recommendedBranchCap)),
       seconds: Math.max(0.1, Math.min(state.maximumAnalysisSeconds, setting.seconds)),
       generationPositions,
-      timeLimitedOnly: strength === "strong"
-        && generationPositions >= STRONG_PLAY_TECHNICAL_WORK_CEILING,
+      timeLimitedOnly: generationPositions >= PLAY_TECHNICAL_WORK_CEILING,
     };
   }
 
@@ -1608,21 +1610,39 @@
     dom.play_search_status.textContent = status.filter(Boolean).join(" · ");
   }
 
-  function selectPlayStrength(strength) {
+  async function selectPlayStrength(strength) {
+    await waitForActiveNewPlayGame();
     if (!PLAY_STRENGTHS[strength] || blockStalePlayMutation()) return;
     if (state.play.strength === strength) {
       if (state.play.error || playSessionSaveBlocked) void retryEngineTurn();
       return;
     }
     state.play.strength = strength;
-    if (state.play.thinking) cancelEngineTurn();
-    else void cancelPlayPonder("play-strength-changed");
+    let restartSequence = state.play.sequence;
+    if (state.play.thinking || activePlayEngineTurn) {
+      const cleanup = cancelEngineTurn();
+      restartSequence = state.play.sequence;
+      await cleanup;
+    } else {
+      await cancelPlayPonder("play-strength-changed");
+    }
+    if (
+      state.play.sequence !== restartSequence
+      || state.play.strength !== strength
+      || state.mode !== "play"
+      || !state.play.active
+      || playSessionExternalUpdate
+      || playSessionSaveBlocked
+      || playReviewActive()
+      || playGameEnded()
+    ) return;
     persistPlaySession();
     renderPlaySurface();
-    void continuePlayFlow();
+    await continuePlayFlow();
   }
 
   async function retryEngineTurn() {
+    await waitForActiveNewPlayGame();
     if (blockStalePlayMutation()) return;
     if (playSessionSaveBlocked) {
       const options = playSessionPendingWriteOptions || {};
@@ -1669,6 +1689,7 @@
     if (state.mode !== "play") return true;
     return Boolean(
       state.play.active
+      && !activeNewPlayGame
       && !playSessionExternalUpdate
       && !playSessionSaveBlocked
       && !playReviewActive()
@@ -1681,14 +1702,19 @@
   }
 
   function cancelEngineTurn() {
+    const activeTurn = activePlayEngineTurn;
     state.play.engineAbort?.abort();
     state.play.engineAbort = null;
-    void cancelPlayPonder("engine-turn-cancelled");
+    const ponderCleanup = cancelPlayPonder("engine-turn-cancelled");
     state.play.sequence += 1;
     state.play.thinking = false;
     state.play.animating = false;
     state.play.activeSearch = null;
     state.play.activeSearchRuntime = null;
+    return Promise.all([
+      Promise.resolve(activeTurn).catch(() => null),
+      Promise.resolve(ponderCleanup).catch(() => null),
+    ]).then(() => undefined);
   }
 
   function blockStalePlayMutation() {
@@ -1703,7 +1729,7 @@
     playSessionSaveBlocked = false;
     playSessionPendingWriteOptions = null;
     playSessionLastWriteDurable = false;
-    cancelEngineTurn();
+    void cancelEngineTurn();
     state.prefixAbort?.abort();
     state.prefixAbort = null;
     state.prefixSequence += 1;
@@ -1931,14 +1957,13 @@
       || analysis?.legal_series_certified !== true
       || analysis?.authoritative_replay_certified !== true
       || analysis?.legal_validation_runtime !== "compiled-wasm"
-      || asBoolean(analysis?.timed_out) !== false
-      || asBoolean(analysis?.work_limit_reached) !== false
       || asBoolean(first(
         analysis?.root_bound_coverage_complete,
         receipt.root_bound_coverage_complete,
       )) !== true
       || requestedDepth !== search.depth
-      || completedDepth < requestedDepth
+      || completedDepth < 1
+      || completedDepth > requestedDepth
       || analysis.engine_profile_id !== identity.profileId
       || analysis.source_fingerprint !== identity.sourceFingerprint
       || analysis.engine_version !== identity.engineVersion
@@ -3706,10 +3731,12 @@
       || state.nextState
       || seriesColor() === state.play.humanColor
     ) return;
+    const entrySequence = state.play.sequence;
     const search = playSearchLimits();
     const ponder = await claimMatchingPlayPonder(search);
     const engineTurnStillCurrent = !(
       state.mode !== "play"
+      || state.play.sequence !== entrySequence
       || playSessionExternalUpdate
       || playSessionSaveBlocked
       || !state.play.active
@@ -3897,14 +3924,29 @@
     }
   }
 
-  async function startNewPlayGame({ announce = true } = {}) {
+  async function startNewPlayGame(options = {}) {
+    if (activeNewPlayGame) return activeNewPlayGame;
+    const transition = performStartNewPlayGame(options);
+    activeNewPlayGame = transition;
+    try {
+      return await transition;
+    } finally {
+      if (activeNewPlayGame === transition) activeNewPlayGame = null;
+    }
+  }
+
+  async function waitForActiveNewPlayGame() {
+    while (activeNewPlayGame) await activeNewPlayGame;
+  }
+
+  async function performStartNewPlayGame({ announce = true } = {}) {
     const replaceExpectedSessionId = state.play.sessionId;
     const replaceExpectedRevision = playSessionRevision;
     playSessionReplayBlocked = false;
     playSessionExternalUpdate = false;
     playSessionSaveBlocked = false;
     playSessionPendingWriteOptions = null;
-    cancelEngineTurn();
+    await cancelEngineTurn();
     await playPonderCleanup.catch(() => null);
     cancelAutoAnalysis(true);
     state.prefixAbort?.abort();
@@ -3974,11 +4016,13 @@
 
   async function selectPlayColor(color) {
     if (!new Set(["white", "black"]).has(color)) return;
+    await waitForActiveNewPlayGame();
     state.play.humanColor = color;
     await startNewPlayGame();
   }
 
   async function resignPlayGame() {
+    await waitForActiveNewPlayGame();
     if (
       state.mode !== "play"
       || !state.play.active
@@ -3986,7 +4030,7 @@
       || playReviewActive()
       || playGameEnded()
     ) return;
-    cancelEngineTurn();
+    await cancelEngineTurn();
     await playPonderCleanup.catch(() => null);
     state.play.resigned = true;
     state.selected = null;
@@ -3997,6 +4041,7 @@
 
   async function switchWorkspaceMode(mode, { importPlayPosition = false } = {}) {
     if (!new Set(["play", "analyze"]).has(mode)) return;
+    await waitForActiveNewPlayGame();
     if (state.mode === "play" && mode !== "play" && blockStalePlayMutation()) return;
     if (state.positionBusy) {
       showToast("Wait for the saved game validation to finish");
@@ -4014,7 +4059,7 @@
         if (!await requireDurablePlaySession()) return;
         if (playSessionExternalUpdate || playSessionSaveBlocked) return;
         const imported = importPlayPosition ? stablePlay : null;
-        cancelEngineTurn();
+        await cancelEngineTurn();
         await playPonderCleanup.catch(() => null);
         if (imported) {
           imported.study = createStudy(imported.boundary);
@@ -5153,11 +5198,18 @@
       || playReviewActive()
       || playGameEnded()
     ) return;
+    if (activePlayEngineTurn) return activePlayEngineTurn;
     if (state.complete && state.nextState) {
       await advanceSeries(true);
       return;
     }
-    await maybeRunEngineTurn();
+    const turn = maybeRunEngineTurn();
+    activePlayEngineTurn = turn;
+    try {
+      await turn;
+    } finally {
+      if (activePlayEngineTurn === turn) activePlayEngineTurn = null;
+    }
   }
 
   async function undoMove() {
@@ -5688,14 +5740,14 @@
     dom.mode_analyze.addEventListener("click", () => { void switchWorkspaceMode("analyze"); });
     dom.play_as_white.addEventListener("click", () => { void selectPlayColor("white"); });
     dom.play_as_black.addEventListener("click", () => { void selectPlayColor("black"); });
-    dom.play_strength_strong.addEventListener("click", () => selectPlayStrength("strong"));
-    dom.play_strength_faster.addEventListener("click", () => selectPlayStrength("faster"));
+    dom.play_strength_strong.addEventListener("click", () => { void selectPlayStrength("strong"); });
+    dom.play_strength_faster.addEventListener("click", () => { void selectPlayStrength("faster"); });
     dom.play_new_game.addEventListener("click", () => { void startNewPlayGame(); });
     dom.play_retry_engine.addEventListener("click", () => { void retryEngineTurn(); });
     dom.play_analyze_position.addEventListener("click", () => { void switchWorkspaceMode("analyze", { importPlayPosition: true }); });
     dom.play_resign.addEventListener("click", () => { void resignPlayGame(); });
-    dom.play_history_previous.addEventListener("click", () => stepPlayTimeline(-1));
-    dom.play_history_next.addEventListener("click", () => stepPlayTimeline(1));
+    dom.play_history_previous.addEventListener("click", () => { void stepPlayTimeline(-1); });
+    dom.play_history_next.addEventListener("click", () => { void stepPlayTimeline(1); });
 
     dom.flip_board.addEventListener("click", () => {
       if (state.mode === "play" && blockStalePlayMutation()) return;
@@ -5771,7 +5823,7 @@
         && (event.key === "ArrowLeft" || event.key === "ArrowRight")
       ) {
         event.preventDefault();
-        stepPlayTimeline(event.key === "ArrowLeft" ? -1 : 1);
+        void stepPlayTimeline(event.key === "ArrowLeft" ? -1 : 1);
         return;
       }
       if (state.mode === "analyze" && event.key.toLowerCase() === "f" && !event.target.matches("input, textarea")) {
