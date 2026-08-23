@@ -38,7 +38,7 @@
     },
     "opening_roots": 20,
     "report": "../reports/neural-ordering-s3-final-fair-seeded20-seed730194821.json",
-    "report_sha256": "4341226931692b07b4ba3cf77fb88b75c862a1d53684f6c389d70b9e3c16c93a",
+    "report_sha256": "2ea160e57ed2f1a39c1756d14039fabdf3559e75999094b8c34a26cc4a4ffeb3",
     "technical_games": 1
   },
   "production_revalidation": {
