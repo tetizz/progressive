@@ -855,6 +855,7 @@ def test_play_ponder_exact_prefix_hit_is_local_and_reuses_authoritative_payloads
         "await requireDurablePlaySession"
     )
     assert "rebindPlayPonderRevision(ponderHit.record)" in submit_move
+    assert "const record = activePlayPonder || claimedPlayPonder;" in app
     assert "cachedPlayPonderPrefix(plan.nextBoundary, [])" in handoff
     assert "applyCachedPlayPonderPrefix(ponderHit.payload, [], [])" in handoff
 
@@ -1006,6 +1007,9 @@ def test_play_ponder_background_errors_are_silent_and_engine_turn_falls_back() -
     assert engine_turn.count("requestEngineAnalysis(") >= 2
     assert "retrySearchDeadlineMs" in engine_turn
     assert "retryReceiptDeadlineMs" in engine_turn
+    assert engine_turn.count(
+        "if (ponder && claimedPlayPonder === ponder) claimedPlayPonder = null;"
+    ) == 2
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js is required for browser asset tests")

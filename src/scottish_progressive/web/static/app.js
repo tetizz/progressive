@@ -1859,7 +1859,7 @@
   }
 
   function cachedPlayPonderPrefix(boundary, prefix) {
-    const record = activePlayPonder;
+    const record = activePlayPonder || claimedPlayPonder;
     if (
       !record
       || !playPonderBaseMatches(record)
@@ -2114,7 +2114,6 @@
       void record.promise.then((settled) => {
         record.settled = settled;
         if (!settled.ok && activePlayPonder === record) activePlayPonder = null;
-        if (claimedPlayPonder === record) claimedPlayPonder = null;
         if (state.mode === "play") renderPlaySearchEvidence();
       });
     } catch {
@@ -3729,6 +3728,7 @@
       if (ponder) {
         ponder.controller.abort();
         await Promise.resolve(ponder.promise).catch(() => null);
+        if (ponder && claimedPlayPonder === ponder) claimedPlayPonder = null;
       }
       return;
     }
@@ -3885,6 +3885,7 @@
         : displayError(error);
       await requireDurablePlaySession();
     } finally {
+      if (ponder && claimedPlayPonder === ponder) claimedPlayPonder = null;
       if (state.play.engineAbort === controller) state.play.engineAbort = null;
       if (sequence === state.play.sequence) {
         state.play.thinking = false;

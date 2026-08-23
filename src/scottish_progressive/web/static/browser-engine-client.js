@@ -18,6 +18,7 @@
   ]);
   const DEFAULT_PROBE_TIMEOUT_MS = 30_000;
   const REQUEST_GRACE_MS = 1_000;
+  const PREFIX_LANE_RETRY_MS = 10;
   const MAX_INITIAL_MEMORY_BYTES = 128 * 1024 * 1024;
   const MAXIMUM_MEMORY_BYTES = 256 * 1024 * 1024;
   const MAX_ESTIMATED_PEAK_MEMORY_BYTES = 192 * 1024 * 1024;
@@ -46,6 +47,27 @@
     const error = new Error(message);
     error.name = "AbortError";
     return error;
+  }
+
+  function waitForPrefixLane(signal) {
+    if (signal?.aborted) return Promise.reject(abortError());
+    return new Promise((resolve, reject) => {
+      let timer = null;
+      const onAbort = () => {
+        if (timer !== null) globalThis.clearTimeout(timer);
+        signal?.removeEventListener?.("abort", onAbort);
+        reject(abortError());
+      };
+      signal?.addEventListener?.("abort", onAbort, { once: true });
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      timer = globalThis.setTimeout(() => {
+        signal?.removeEventListener?.("abort", onAbort);
+        resolve();
+      }, PREFIX_LANE_RETRY_MS);
+    });
   }
 
   function finiteNumber(value) {
@@ -662,15 +684,12 @@
         && isLocalBestMoveRequest(payload, this.identity.analysis_limits);
     }
 
-    canInspectPrefix(payload) {
+    canQueuePrefix(payload) {
       if (
         !PREFIX_API
         || this.identity === null
         || this.disabledReason !== null
         || this.identity.prefix_ready !== true
-        || this.activeAnalysis !== null
-        || this.activePrefix !== null
-        || this.rootRunner?.active === true
       ) return false;
       try {
         PREFIX_API.normalizePrefixRequest(
@@ -681,6 +700,22 @@
         return true;
       } catch {
         return false;
+      }
+    }
+
+    canInspectPrefix(payload) {
+      return !this._prefixLaneBusy() && this.canQueuePrefix(payload);
+    }
+
+    _prefixLaneBusy() {
+      return this.activeAnalysis !== null
+        || this.activePrefix !== null
+        || this.rootRunner?.active === true;
+    }
+
+    async _waitForPrefixLane(signal) {
+      while (this._prefixLaneBusy()) {
+        await waitForPrefixLane(signal);
       }
     }
 
@@ -1200,6 +1235,14 @@
           { fallbackRequired: true },
         );
       }
+      if (!this.canQueuePrefix(payload)) {
+        throw new BrowserEngineError(
+          "The certified browser prefix engine is unavailable for this request.",
+          "browser-prefix-unavailable",
+          { fallbackRequired: true },
+        );
+      }
+      if (this._prefixLaneBusy()) await this._waitForPrefixLane(signal);
       const pooledPrefix = this.rootRunner?.hasLivePool?.() === true;
       if (!pooledPrefix && !this.ready && this.identity) {
         await this.preflight({
@@ -1211,18 +1254,9 @@
           signal,
         });
       }
-      if (
-        this.activeAnalysis !== null
-        || this.activePrefix !== null
-        || this.rootRunner?.active === true
-      ) {
-        throw new BrowserEngineError(
-          "The browser engine is busy with synchronous work.",
-          "browser-engine-busy",
-          { fallbackRequired: true },
-        );
-      }
-      if ((!this.ready && !pooledPrefix) || !this.canInspectPrefix(payload)) {
+      if (this._prefixLaneBusy()) await this._waitForPrefixLane(signal);
+      const availablePooledPrefix = this.rootRunner?.hasLivePool?.() === true;
+      if ((!this.ready && !availablePooledPrefix) || !this.canInspectPrefix(payload)) {
         throw new BrowserEngineError(
           "The certified browser prefix engine is unavailable for this request.",
           "browser-prefix-unavailable",
@@ -1237,7 +1271,7 @@
       );
       this.activePrefix = requestId;
       try {
-        const result = pooledPrefix
+        const result = availablePooledPrefix
           ? await this.rootRunner.inspectPrefix(payload, this.identity, {
             signal,
             timeoutMs: this.probeTimeoutMs,

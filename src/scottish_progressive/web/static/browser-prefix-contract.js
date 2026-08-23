@@ -280,7 +280,7 @@
       return outcome === null
         && completionReason === null
         && endedByCheck === false
-        && result.in_check === false
+        && (request.prefix.length === 0 || result.in_check === false)
         && result.unused_moves === 0
         && result.next_state === null
         && result.legal_next.length > 0;
@@ -375,6 +375,7 @@
       || typeof result.board_fen !== "string"
       || !result.board_fen
       || result.fen !== result.board_fen
+      || (request.prefix.length === 0 && result.board_fen !== request.boundary.fen)
       || typeof result.complete !== "boolean"
       || !Array.isArray(result.legal_next)
       || !Array.isArray(result.legal_moves)
@@ -462,12 +463,15 @@
       ? validateAuthority(localClient.identity, "local")
       : null;
     let canInspect = false;
+    let canQueue = false;
     try {
       canInspect = Boolean(localClient?.canInspectPrefix?.(payload));
+      canQueue = Boolean(localClient?.canQueuePrefix?.(payload));
     } catch {
       canInspect = false;
+      canQueue = false;
     }
-    if (canInspect) {
+    if (canInspect || canQueue) {
       try {
         return await localClient.inspectPrefix(payload, { signal });
       } catch (error) {

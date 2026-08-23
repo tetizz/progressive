@@ -1811,8 +1811,10 @@ const payload = {
   chess960: false,
   prefix: [],
 };
-function resultFor(request) {
-  const legal = [{ uci: "e2e4", san: "e4" }];
+function resultFor(request, { inCheck = false, legal = null } = {}) {
+  const boundary = request.boundary;
+  const legalMoves = legal || [{ uci: "e2e4", san: "e4" }];
+  const sideToMove = boundary.fen.split(" ")[1] === "w" ? "white" : "black";
   return {
     schema: prefixApi.RESULT_SCHEMA,
     abi_version: 1,
@@ -1829,19 +1831,19 @@ function resultFor(request) {
     thread_count: 1,
     memory_bytes: 16777216,
     boundary_state: {
-      fen: start,
-      board_fen: start,
-      series: 1,
-      series_number: 1,
-      side_to_move: "white",
-      quiet_series: 0,
-      ep_targets: [],
-      progressive_ep: [],
-      promoted_hex: "0000000000000000",
+      fen: boundary.fen,
+      board_fen: boundary.fen,
+      series: boundary.series,
+      series_number: boundary.series,
+      side_to_move: sideToMove,
+      quiet_series: boundary.quiet_series,
+      ep_targets: [...boundary.ep_targets],
+      progressive_ep: [...boundary.ep_targets],
+      promoted_hex: boundary.promoted_hex,
       chess960: false,
     },
-    fen: start,
-    board_fen: start,
+    fen: boundary.fen,
+    board_fen: boundary.fen,
     prefix: [],
     current_prefix: [],
     san: [],
@@ -1850,13 +1852,13 @@ function resultFor(request) {
     completion_reason: null,
     check: false,
     ended_by_check: false,
-    in_check: false,
+    in_check: inCheck,
     outcome: null,
-    remaining: 1,
-    moves_remaining: 1,
+    remaining: boundary.series,
+    moves_remaining: boundary.series,
     unused_moves: 0,
-    legal_next: legal,
-    legal_moves: legal,
+    legal_next: legalMoves,
+    legal_moves: legalMoves,
     next_state: null,
   };
 }
@@ -1934,6 +1936,86 @@ class WorkerDouble {
     throw new Error(`replacement prefix worker was not reprobed: ${workers.length}`);
   }
   if (remoteCalls !== 0) throw new Error("successful local replay reached hosted fallback");
+  const checkedPayload = {
+    ...payload,
+    fen: "4k3/q3R3/8/8/8/8/8/4K3 b - - 0 1",
+    series: 2,
+  };
+  const checkedRequest = prefixApi.normalizePrefixRequest(
+    checkedPayload,
+    "checked-boundary",
+    prefixContract,
+  );
+  const checkedResult = resultFor(checkedRequest, {
+    inCheck: true,
+    legal: [{ uci: "e8d7", san: "Kd7" }],
+  });
+  prefixApi.validatePrefixResult(checkedResult, checkedRequest, identity);
+  let emptyBoundaryDriftRejected = false;
+  try {
+    prefixApi.validatePrefixResult({
+      ...checkedResult,
+      fen: start,
+      board_fen: start,
+    }, checkedRequest, identity);
+  } catch (error) {
+    emptyBoundaryDriftRejected = error.code === "browser-prefix-result-invalid";
+  }
+  if (!emptyBoundaryDriftRejected) {
+    throw new Error("empty checked boundary accepted an unrelated result board");
+  }
+  client.activeAnalysis = "handoff-root";
+  setTimeout(() => { client.activeAnalysis = null; }, 10);
+  const queued = await prefixApi.routePrefixRequest({
+    payload,
+    localClient: client,
+    remote,
+  });
+  if (queued.status !== "complete") throw new Error("queued prefix replay did not complete");
+  if (remoteCalls !== 0) throw new Error("busy local prefix lane reached hosted fallback");
+  let pooledCalls = 0;
+  const retainedPool = {
+    active: true,
+    hasLivePool: () => true,
+    inspectPrefix: async (body, workerIdentity, options) => {
+      pooledCalls += 1;
+      const request = prefixApi.normalizePrefixRequest(
+        body,
+        options.requestId,
+        workerIdentity.prefix_contract,
+      );
+      return resultFor(request);
+    },
+    close: () => {},
+  };
+  client.ready = false;
+  client.rootRunner = retainedPool;
+  setTimeout(() => { retainedPool.active = false; }, 10);
+  const retainedPoolReplay = await prefixApi.routePrefixRequest({
+    payload,
+    localClient: client,
+    remote,
+  });
+  if (retainedPoolReplay.status !== "complete" || pooledCalls !== 1) {
+    throw new Error("retained root pool did not service the queued handoff replay");
+  }
+  if (remoteCalls !== 0) throw new Error("retained root pool handoff reached hosted fallback");
+  client.activeAnalysis = "cancelled-handoff-root";
+  const waitingController = new AbortController();
+  const waiting = prefixApi.routePrefixRequest({
+    payload,
+    signal: waitingController.signal,
+    localClient: client,
+    remote,
+  });
+  waitingController.abort();
+  let waitingCancelledName = null;
+  try { await waiting; } catch (error) { waitingCancelledName = error.name; }
+  client.activeAnalysis = null;
+  if (waitingCancelledName !== "AbortError") {
+    throw new Error(`unexpected queued abort ${waitingCancelledName}`);
+  }
+  if (remoteCalls !== 0) throw new Error("cancelled queued prefix reached hosted fallback");
   client.close("browser/server engine identities differ");
   const workerCountAfterClose = workers.length;
   const hosted = await prefixApi.routePrefixRequest({
@@ -1949,6 +2031,10 @@ class WorkerDouble {
   }
   process.stdout.write(JSON.stringify({
     cancelledName,
+    waitingCancelledName,
+    checkedBoundaryAccepted: true,
+    emptyBoundaryDriftRejected,
+    retainedPoolCalls: pooledCalls,
     remoteCalls,
     ready: client.ready,
     workerCountAfterClose,
@@ -1972,11 +2058,15 @@ class WorkerDouble {
 
     assert json.loads(completed.stdout) == {
         "cancelledName": "AbortError",
+        "waitingCancelledName": "AbortError",
+        "checkedBoundaryAccepted": True,
+        "emptyBoundaryDriftRejected": True,
+        "retainedPoolCalls": 1,
         "remoteCalls": 1,
         "ready": False,
         "workerCountAfterClose": 2,
         "hosted": True,
-        "replacementMessages": ["probe", "prefix"],
+        "replacementMessages": ["probe", "prefix", "prefix"],
     }
 
 
