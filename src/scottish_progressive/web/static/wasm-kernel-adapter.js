@@ -1559,6 +1559,7 @@ export async function loadCertifiedBrowserKernel({
     initial_memory_bytes: initialMemoryBytes,
   });
   let rootSessionId = null;
+  let rootSessionBoundary = null;
   let rootCanonicalTacticalProtection = null;
   let rootMemoryPeakBytes = initialMemoryBytes;
   const rootMemoryReceipt = () => {
@@ -1641,6 +1642,10 @@ export async function loadCertifiedBrowserKernel({
         );
       }
       rootSessionId = raw.session_id;
+      rootSessionBoundary = Object.freeze({
+        ...nativeRequest.boundary,
+        ep_targets: Object.freeze([...nativeRequest.boundary.ep_targets]),
+      });
       rootCanonicalTacticalProtection = raw.canonical_root_tactical_protection;
       return {
         ...raw,
@@ -1810,6 +1815,7 @@ export async function loadCertifiedBrowserKernel({
       const sessionId = rootSessionId;
       const status = module._spc_root_session_destroy(sessionId);
       rootSessionId = null;
+      rootSessionBoundary = null;
       rootCanonicalTacticalProtection = null;
       if (status !== 1) {
         throw new KernelAdapterError(
@@ -1958,6 +1964,177 @@ export async function loadCertifiedBrowserKernel({
         runtime_variant: identity.runtime_variant,
         thread_count: identity.thread_count,
         memory_bytes: validateRuntimeMemory(module, identity.memory_limits),
+      };
+    },
+    probeRootTerminalMate(request) {
+      if (!identity.root_iteration_ready) {
+        throw new KernelAdapterError(
+          "The combined artifact has no certified compiled root-mate authority.",
+          "browser-root-mate-unavailable",
+        );
+      }
+      const boundary = request?.boundary;
+      const expectedRootIdentity = rootIdentityEnvelope(identity);
+      if (
+        rootSessionId === null
+        || request?.session_id !== rootSessionId
+        || request?.schema !== "spc-root-terminal-mate-task-v1"
+        || ROOT_SESSION_IDENTITY_KEYS.some((key) => (
+          request?.[key] !== expectedRootIdentity[key]
+        ))
+        || request?.mate_certificate_id !== identity.mate_certificate_id
+        || !Number.isInteger(request.call_work_credit)
+        || request.call_work_credit < 1
+        || request.call_work_credit > 0xffffffff
+        || !Number.isInteger(request.remaining_time_ms)
+        || request.remaining_time_ms < 0
+        || !boundary
+        || !sameJson(boundary, rootSessionBoundary)
+      ) {
+        throw new KernelAdapterError(
+          "The root mate rescue is not bound to the active compiled boundary.",
+          "browser-root-terminal-mate-boundary-invalid",
+        );
+      }
+      const emptyReplayRequest = {
+        contract_version: 1,
+        operation: "prefix-replay",
+        request_id: `${request.iteration_id}:terminal-mate-boundary`,
+        boundary,
+        prefix: [],
+      };
+      validatePrefixKernelRequest(emptyReplayRequest, identity);
+      const remainingMs = clampRootRemainingTime(request).remaining_time_ms;
+      if (remainingMs <= 0) {
+        return {
+          ...request,
+          status: "unknown",
+          work_used: 0,
+          ...rootMemoryReceipt(),
+        };
+      }
+      const allocated = [];
+      let pointer;
+      try {
+        for (const value of [
+          boundary.fen,
+          boundary.ep_targets.join(",") || "-",
+          boundary.promoted_hex,
+        ]) {
+          const allocatedValue = module.stringToNewUTF8(value);
+          if (!allocatedValue) {
+            throw new KernelAdapterError(
+              "The compiled root mate rescue could not allocate its boundary.",
+              "browser-root-terminal-mate-allocation-failed",
+            );
+          }
+          allocated.push(allocatedValue);
+        }
+        pointer = module._spc_series_mate_search_json(
+          allocated[0],
+          boundary.series,
+          allocated[1],
+          allocated[2],
+          0,
+          request.call_work_credit,
+          remainingMs,
+        );
+      } finally {
+        allocated.forEach((value) => module._free(value));
+      }
+      const raw = parseFacadeJson(
+        module,
+        pointer,
+        "The compiled root terminal-mate ABI",
+        "browser-root-terminal-mate-invalid",
+      );
+      const workUsed = Number(raw?.stats?.positions_visited)
+        + Number(raw?.stats?.moves_generated);
+      if (
+        raw.schema !== "spc-series-mate-proof-v1"
+        || raw.abi_version !== MATE_ABI_VERSION
+        || !Number.isSafeInteger(workUsed)
+        || workUsed < 0
+        || workUsed > request.call_work_credit
+        || !Array.isArray(raw.moves)
+      ) {
+        throw new KernelAdapterError(
+          "The compiled root mate rescue returned an invalid work receipt.",
+          "browser-root-terminal-mate-invalid",
+        );
+      }
+      if (raw.kernel_status === "exhausted" && raw.complete === true) {
+        if (raw.moves.length !== 0) {
+          throw new KernelAdapterError(
+            "An exhausted root mate rescue carried a line.",
+            "browser-root-terminal-mate-invalid",
+          );
+        }
+        return {
+          ...request,
+          status: "exhausted",
+          work_used: workUsed,
+          ...rootMemoryReceipt(),
+        };
+      }
+      if (raw.kernel_status !== "found" || raw.complete !== true) {
+        return {
+          ...request,
+          status: "unknown",
+          work_used: workUsed,
+          ...rootMemoryReceipt(),
+        };
+      }
+      if (
+        raw.moves.length < 1
+        || raw.moves.length > boundary.series
+        || raw.moves.some((move) => typeof move !== "string"
+          || !/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(move))
+      ) {
+        throw new KernelAdapterError(
+          "A FOUND root mate rescue carried no valid progressive line.",
+          "browser-root-terminal-mate-invalid",
+        );
+      }
+      const mateReplayRequest = {
+        contract_version: 1,
+        operation: "prefix-replay",
+        request_id: `${request.iteration_id}:terminal-mate-replay`,
+        boundary,
+        prefix: raw.moves.map(String),
+      };
+      const checkedMate = this.inspectPrefix(mateReplayRequest);
+      if (
+        checkedMate.complete !== true
+        || checkedMate.outcome !== "checkmate"
+        || checkedMate.ended_by_check !== true
+        || !sameJson(checkedMate.prefix, raw.moves)
+        || !validExactBoundaryState(checkedMate.next_state)
+      ) {
+        throw new KernelAdapterError(
+          "The rescued root mate failed authoritative compiled replay.",
+          "browser-root-terminal-mate-replay-invalid",
+        );
+      }
+      const rootWhite = boundary.series % 2 === 1;
+      return {
+        ...request,
+        status: "found",
+        work_used: workUsed,
+        score: rootWhite
+          ? identity.root_geometry.session_config.mate_score - 1
+          : -identity.root_geometry.session_config.mate_score + 1,
+        proof_bounds: rootWhite ? [1, 1] : [-1, -1],
+        ...rootMemoryReceipt(),
+        root_series: {
+          moves: [...raw.moves],
+          machine_notation: raw.moves.join("/"),
+          transposition_count: 1,
+          child_boundary: checkedMate.next_state,
+          outcome: "checkmate",
+          ended_by_check: true,
+        },
+        checked_prefix: checkedMate,
       };
     },
     probeRootSafety(request) {

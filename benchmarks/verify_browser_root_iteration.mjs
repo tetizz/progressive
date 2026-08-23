@@ -27,6 +27,17 @@ const WHITE_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const ALT_WHITE_FEN = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1";
 const BLACK_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1";
 const PROMOTION_FEN = "7k/4P3/8/8/8/8/8/K7 w - - 0 1";
+const PROMOTION_MATE_FEN = "bnq1nr2/p1pp1pk1/8/4PP2/1P2P1p1/8/P1P2KP1/BNbBN2r w - - 0 1";
+const PROMOTION_MATE_MOVES = Object.freeze([
+  "e1f3", "f3d4", "e5e6", "e6e7", "e7f8r", "f8h8", "d4e6",
+]);
+const PROMOTION_MATE_CHILD = Object.freeze({
+  ...boundaryPayload(
+    "bnq1n2R/p1pp1pk1/4N3/5P2/1P2P1p1/8/P1P2KP1/BNbB3r b - - 2 1",
+    8,
+  ),
+  promoted_hex: "8000000000000000",
+});
 const SOURCE = "a".repeat(16);
 const WASM = "b".repeat(64);
 const MODULE = "c".repeat(64);
@@ -227,6 +238,12 @@ function candidateMoves(series, index) {
   return longerSeries[index].slice(0, series);
 }
 
+function omittedTerminalMateMoves(series) {
+  if (series === 1) return ["b2b4"];
+  if (series === 2) return ["e7e5", "d7d5"];
+  throw new Error(`no omitted terminal-mate fixture for Series ${series}`);
+}
+
 function manifestFor(boundary, generation, preferredSeries, { terminalFirst = false } = {}) {
   const white = boundary.series % 2 === 1;
   const childFen = white ? BLACK_FEN : WHITE_FEN;
@@ -335,6 +352,9 @@ function setupWork(worker, payload, used) {
 class MockWorld {
   constructor({
     foundFirst = false,
+    foundAll = false,
+    promotionMateDeferral = false,
+    terminalMateStatus = "found",
     terminalFirst = false,
     safetyUnknown = false,
     crashGeneration = null,
@@ -342,6 +362,9 @@ class MockWorld {
     policyDrift = null,
   } = {}) {
     this.foundFirst = foundFirst;
+    this.foundAll = foundAll;
+    this.promotionMateDeferral = promotionMateDeferral;
+    this.terminalMateStatus = terminalMateStatus;
     this.terminalFirst = terminalFirst;
     this.safetyUnknown = safetyUnknown;
     this.crashGeneration = crashGeneration;
@@ -354,6 +377,7 @@ class MockWorld {
     this.searchDispatches = [];
     this.prefixWorkerNames = [];
     this.safetyReceipts = [];
+    this.terminalMateReceipts = [];
     this.crashed = false;
     this.createBoundaries = [];
     this.canonicalProtections = [];
@@ -430,6 +454,46 @@ class MockWorld {
       strictKeys(payload, ENUMERATE_KEYS);
       assert.equal(payload.schema, "spc-root-session-enumerate-v1");
       this.deadlineEpochs.push(payload.deadline_epoch_ms);
+      if (this.promotionMateDeferral) {
+        assert.deepEqual(
+          worker.boundary,
+          rootClientApi.canonicalBoundary(boundaryPayload(PROMOTION_MATE_FEN, 7)),
+          "the native unsupported lane must stay bound to the exact promotion-mate root",
+        );
+        const work = setupWork(worker, payload, 0);
+        return {
+          schema: "spc-root-session-enumeration-result-v1",
+          abi_version: 2,
+          session_id: worker.sessionId,
+          status: "unsupported",
+          status_code: 4,
+          message: "native root promotion-mate lane is not implemented",
+          request_id: payload.request_id,
+          iteration_id: payload.iteration_id,
+          generation: payload.generation,
+          deadline_monotonic_ms: payload.deadline_monotonic_ms,
+          remaining_time_ms: payload.remaining_time_ms,
+          ...ROOT_IDENTITY,
+          configured_max_depth: CONFIG.max_depth,
+          imported: false,
+          enumeration_identity: "",
+          root_white_to_move: true,
+          requested_width: CONFIG.width,
+          retained_count: 0,
+          width_complete: false,
+          preferred_series: [...payload.preferred_series],
+          candidates: [],
+          canonical_root_tactical_policy: "canonical-boundary-policy-v1",
+          canonical_root_tactical_protection: true,
+          selective: false,
+          evaluation_work_limit_reached: false,
+          work,
+          product_publishable: false,
+          safety_certified: false,
+          memory_bytes: MEMORY.initial_bytes,
+          memory_peak_bytes: MEMORY.initial_bytes,
+        };
+      }
       const manifest = manifestFor(
         worker.boundary,
         payload.generation,
@@ -568,7 +632,8 @@ class MockWorld {
         this.safetyReceipts.push(result);
         return result;
       }
-      const found = this.foundFirst && payload.candidate_identity === "c0";
+      const found = this.foundAll
+        || (this.foundFirst && payload.candidate_identity === "c0");
       if (!found) {
         const result = {
           ...payload,
@@ -614,6 +679,61 @@ class MockWorld {
         },
       };
       this.safetyReceipts.push(result);
+      return result;
+    }
+    if (type === "root-terminal-mate") {
+      this.deadlineEpochs.push(payload.deadline_epoch_ms);
+      assert.equal(payload.schema, "spc-root-terminal-mate-task-v1");
+      assert.equal(payload.mate_certificate_id, IDENTITY.mate_certificate_id);
+      assert.deepEqual(payload.boundary, worker.boundary);
+      if (this.terminalMateStatus !== "found") {
+        const result = {
+          ...payload,
+          status: this.terminalMateStatus,
+          work_used: Math.min(11, payload.call_work_credit),
+          memory_bytes: MEMORY.initial_bytes,
+          memory_peak_bytes: MEMORY.initial_bytes,
+        };
+        this.terminalMateReceipts.push(result);
+        return result;
+      }
+      const moves = this.promotionMateDeferral
+        ? [...PROMOTION_MATE_MOVES]
+        : omittedTerminalMateMoves(worker.boundary.series);
+      const child = this.promotionMateDeferral
+        ? exactState(PROMOTION_MATE_CHILD)
+        : exactState(boundaryPayload(
+          flipFen(worker.boundary.fen),
+          worker.boundary.series + 1,
+        ));
+      const replayRequest = prefixApi.normalizePrefixRequest({
+        ...worker.boundary,
+        prefix: moves,
+      }, `${payload.iteration_id}:terminal-mate-replay`, PREFIX_CONTRACT);
+      const checked = prefixResult(replayRequest, IDENTITY, {
+        child,
+        outcome: "checkmate",
+      });
+      const rootWhite = worker.boundary.series % 2 === 1;
+      const result = {
+        ...payload,
+        status: "found",
+        work_used: Math.min(11, payload.call_work_credit),
+        score: rootWhite ? CONFIG.mate_score - 1 : -CONFIG.mate_score + 1,
+        proof_bounds: rootWhite ? [1, 1] : [-1, -1],
+        memory_bytes: MEMORY.initial_bytes,
+        memory_peak_bytes: MEMORY.initial_bytes,
+        root_series: {
+          moves,
+          machine_notation: moves.join("/"),
+          transposition_count: 1,
+          child_boundary: child,
+          outcome: "checkmate",
+          ended_by_check: true,
+        },
+        checked_prefix: checked,
+      };
+      this.terminalMateReceipts.push(result);
       return result;
     }
     throw new Error(`unexpected mock Worker request ${type}`);
@@ -885,6 +1005,119 @@ async function testImmediateMatePublishesWithBoundCoverage() {
   client.close();
 }
 
+async function testAllMatingFrontierRescuesTerminalRootMate() {
+  for (const [boundary, expectedScore, expectedProof] of [
+    [boundaryPayload(WHITE_FEN, 1), CONFIG.mate_score - 1, "white"],
+    [boundaryPayload(BLACK_FEN, 2), -CONFIG.mate_score + 1, "black"],
+  ]) {
+    const world = new MockWorld({ foundAll: true });
+    const client = browserClientApi.createClient({
+      workerUrl: "mock-worker.js",
+      workerFactory: world.factory,
+      navigatorValue: DESKTOP_NAVIGATOR,
+    });
+    await preflight(client);
+    const result = await client.analyzeRoot(payload(boundary, 1), {
+      deadlineMs: performance.now() + 20_000,
+    });
+    assert.equal(result.publishable, true);
+    assert.equal(result.completed_depth, 1);
+    assert.equal(result.score, expectedScore);
+    assert.equal(result.proof, expectedProof);
+    assert.deepEqual(result.proof_bounds, expectedProof === "white" ? [1, 1] : [-1, -1]);
+    assert.equal(result.checked_prefix.outcome, "checkmate");
+    assert.equal(result.stats.terminal_mate_rescues, 1);
+    assert.equal(result.stats.safety_status, "terminal-mate-rescue");
+    assert.equal(result.runtime_receipt.terminal_mate_rescue.status, "found");
+    assert.equal(world.terminalMateReceipts.length, 1);
+    assert(world.safetyReceipts.length >= 8);
+    client.close();
+  }
+}
+
+async function testUnprovenTerminalMateRescueFailsClosed() {
+  for (const terminalMateStatus of ["unknown", "exhausted"]) {
+    const world = new MockWorld({ foundAll: true, terminalMateStatus });
+    const client = browserClientApi.createClient({
+      workerUrl: "mock-worker.js",
+      workerFactory: world.factory,
+      navigatorValue: DESKTOP_NAVIGATOR,
+    });
+    await preflight(client);
+    await assert.rejects(
+      client.analyzeRoot(payload(boundaryPayload(WHITE_FEN, 1), 1), {
+        deadlineMs: performance.now() + 20_000,
+      }),
+      (error) => error?.code === "root-safety-widening-required",
+    );
+    assert.equal(world.terminalMateReceipts.length, 1);
+    assert.equal(client.rootRunner.lastSafe, null);
+    client.close();
+  }
+}
+
+async function testNativePromotionMateDeferralRescuesExactRootMate() {
+  const boundary = boundaryPayload(PROMOTION_MATE_FEN, 7);
+  const world = new MockWorld({ promotionMateDeferral: true });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  const result = await client.analyzeRoot(payload(boundary, 1), {
+    deadlineMs: performance.now() + 20_000,
+  });
+  assert.equal(result.publishable, true);
+  assert.equal(result.completed_depth, 1);
+  assert.equal(result.score, CONFIG.mate_score - 1);
+  assert.equal(result.proof, "white");
+  assert.deepEqual(result.proof_bounds, [1, 1]);
+  assert.deepEqual(result.best_full_series, PROMOTION_MATE_MOVES);
+  assert.deepEqual(result.principal_variation[0].moves, PROMOTION_MATE_MOVES);
+  assert.equal(result.checked_prefix.outcome, "checkmate");
+  assert.equal(result.checked_prefix.ended_by_check, true);
+  assert.deepEqual(result.checked_prefix.next_state, exactState(PROMOTION_MATE_CHILD));
+  assert.equal(result.stats.root_tasks, 0);
+  assert.equal(result.stats.terminal_mate_rescues, 1);
+  assert.equal(
+    result.runtime_receipt.terminal_mate_rescue.trigger,
+    "native-promotion-frontier-deferred",
+  );
+  assert.equal(result.runtime_receipt.terminal_mate_rescue.status, "found");
+  assert.equal(world.searchDispatches.length, 0);
+  assert.equal(world.safetyReceipts.length, 0);
+  assert.equal(world.terminalMateReceipts.length, 1);
+  assert.equal(world.terminalMateReceipts[0].call_work_credit, CONFIG.max_work);
+  assert.equal(result.work, world.terminalMateReceipts[0].work_used);
+  client.close();
+}
+
+async function testUnprovenPromotionMateDeferralFailsClosed() {
+  const world = new MockWorld({
+    promotionMateDeferral: true,
+    terminalMateStatus: "unknown",
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  await assert.rejects(
+    client.analyzeRoot(payload(boundaryPayload(PROMOTION_MATE_FEN, 7), 1), {
+      deadlineMs: performance.now() + 20_000,
+    }),
+    (error) => error?.code === "browser-root-promotion-mate-deferred",
+  );
+  assert.equal(client.rootRunner.lastSafe, null);
+  assert.equal(world.searchDispatches.length, 0);
+  assert.equal(world.safetyReceipts.length, 0);
+  assert.equal(world.terminalMateReceipts.length, 1);
+  assert.equal(world.terminalMateReceipts[0].call_work_credit, CONFIG.max_work);
+  client.close();
+}
+
 async function testMateCacheIdentityAndBoundaryBinding() {
   const child = manifestFor(boundaryPayload(WHITE_FEN, 1), 1, []).candidates[0]
     .root_series.child_boundary;
@@ -1012,6 +1245,10 @@ await testCrashReturnsLastSafeAndReprobes();
 await testMateProofCacheAcrossFiveDepthsAndBoundaries();
 await testUnknownMateProofNeverCaches();
 await testImmediateMatePublishesWithBoundCoverage();
+await testAllMatingFrontierRescuesTerminalRootMate();
+await testUnprovenTerminalMateRescueFailsClosed();
+await testNativePromotionMateDeferralRescuesExactRootMate();
+await testUnprovenPromotionMateDeferralFailsClosed();
 await testMateCacheIdentityAndBoundaryBinding();
 await testCanonicalRootPolicySelection();
 await testCanonicalRootPolicyDriftFailsClosed();
@@ -1028,6 +1265,10 @@ process.stdout.write(JSON.stringify({
   white_black_mate_mapping: true,
   pruned_bounds_publish: true,
   immediate_mate_with_alternatives: true,
+  all_mating_frontier_terminal_mate_rescue: true,
+  unproven_terminal_mate_rescue_fails_closed: true,
+  native_promotion_mate_deferral_terminal_mate_rescue: true,
+  unproven_promotion_mate_deferral_fails_closed: true,
   incomplete_bound_coverage_fails_closed: true,
   complete_mate_proof_cache: true,
   unknown_mate_proof_not_cached: true,

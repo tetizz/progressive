@@ -100,6 +100,13 @@ self.addEventListener("message", async (event) => {
       self.postMessage({ id, ok: true, payload: result });
       return;
     }
+    if (message.type === "root-terminal-mate") {
+      if (!kernelPromise) throw notReadyError();
+      const kernel = await kernelPromise;
+      const result = kernel.probeRootTerminalMate(message.payload);
+      self.postMessage({ id, ok: true, payload: result });
+      return;
+    }
     if (message.type === "root-session-destroy") {
       if (!kernelPromise) throw notReadyError();
       const kernel = await kernelPromise;

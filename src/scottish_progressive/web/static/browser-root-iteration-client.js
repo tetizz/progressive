@@ -907,6 +907,38 @@
         enumerateRequest,
         { signal, deadlineMs: requestBase.deadline_monotonic_ms },
       ), primary, perCallCredit);
+      const certifiedPromotionMateDeferral = (
+        rawEnumeration.schema === "spc-root-session-enumeration-result-v1"
+        && rawEnumeration.abi_version === 2
+        && rawEnumeration.status === "unsupported"
+        && rawEnumeration.status_code === 4
+        && rawEnumeration.message === "native root promotion-mate lane is not implemented"
+        && rawEnumeration.imported === false
+        && rawEnumeration.request_id === enumerateRequest.request_id
+        && rawEnumeration.iteration_id === enumerateRequest.iteration_id
+        && rawEnumeration.generation === enumerateRequest.generation
+        && Object.entries(requestBase).every(([key, value]) => (
+          !ROOT_IDENTITY_KEYS.includes(key) || rawEnumeration[key] === value
+        ))
+        && rawEnumeration.deadline_monotonic_ms === enumerateRequest.deadline_monotonic_ms
+        && exactInteger(rawEnumeration.remaining_time_ms, 0, enumerateRequest.remaining_time_ms)
+        && rawEnumeration.product_publishable === false
+        && rawEnumeration.safety_certified === false
+        && rawEnumeration.canonical_root_tactical_policy === ROOT_TACTICAL_POLICY
+        && rawEnumeration.canonical_root_tactical_protection
+          === primary.canonicalRootTacticalProtection
+        && rawEnumeration.retained_count === 0
+        && rawEnumeration.width_complete === false
+        && sameArray(rawEnumeration.preferred_series, preferredSeries)
+        && Array.isArray(rawEnumeration.candidates)
+        && rawEnumeration.candidates.length === 0
+      );
+      if (certifiedPromotionMateDeferral) {
+        throw new RootIterationClientError(
+          "The native promotion frontier requires the certified root-mate lane.",
+          "browser-root-promotion-mate-deferred",
+        );
+      }
       if (
         rawEnumeration.schema !== "spc-root-session-enumeration-result-v1"
         || rawEnumeration.abi_version !== 2
@@ -1035,6 +1067,252 @@
         return reply;
       }));
       return { manifest, enumeration: rawEnumeration, imports: importResults };
+    }
+
+    async _probeRootTerminalMate({
+      requestBase,
+      originalBoundary,
+      identity,
+      expected,
+      callWorkCredit,
+      deadlineEpochMs,
+      receiptDeadlineMs,
+      signal,
+    }) {
+      if (!exactInteger(callWorkCredit, 1, 0xffffffff)) {
+        throw new RootIterationClientError(
+          "The root terminal-mate rescue has no bounded work credit.",
+          "browser-root-terminal-mate-work-invalid",
+        );
+      }
+      const channel = this.pool[0];
+      const request = {
+        schema: "spc-root-terminal-mate-task-v1",
+        request_id: requestBase.request_id,
+        iteration_id: requestBase.iteration_id,
+        source_fingerprint: expected.source_fingerprint,
+        kernel_sha256: expected.kernel_sha256,
+        module_js_sha256: expected.module_js_sha256,
+        certificate_id: expected.certificate_id,
+        mate_certificate_id: identity.mate_certificate_id,
+        runtime_variant: expected.runtime_variant,
+        thread_count: expected.thread_count,
+        engine_version: expected.engine_version,
+        ruleset_version: expected.ruleset_version,
+        profile_id: expected.profile_id,
+        session_id: channel.sessionId,
+        boundary: originalBoundary,
+        call_work_credit: callWorkCredit,
+        deadline_monotonic_ms: requestBase.deadline_monotonic_ms,
+        deadline_epoch_ms: deadlineEpochMs,
+        remaining_time_ms: Math.max(0, Math.floor(
+          requestBase.deadline_monotonic_ms - monotonicNow(),
+        )),
+      };
+      const reply = await channel.call("root-terminal-mate", request, {
+        signal,
+        deadlineMs: receiptDeadlineMs,
+      });
+      if (
+        !reply
+        || typeof reply !== "object"
+        || Array.isArray(reply)
+        || reply.schema !== request.schema
+        || reply.request_id !== request.request_id
+        || reply.iteration_id !== request.iteration_id
+        || reply.session_id !== request.session_id
+        || reply.mate_certificate_id !== request.mate_certificate_id
+        || Object.keys(expected).some((key) => reply[key] !== expected[key])
+        || !sameBoundary(reply.boundary, originalBoundary)
+        || reply.call_work_credit !== request.call_work_credit
+        || reply.deadline_monotonic_ms !== request.deadline_monotonic_ms
+        || reply.deadline_epoch_ms !== request.deadline_epoch_ms
+        || !exactInteger(reply.remaining_time_ms, 0, request.remaining_time_ms)
+        || !["found", "exhausted", "unknown"].includes(reply.status)
+        || !exactInteger(reply.work_used, 0, callWorkCredit)
+        || !exactInteger(
+          reply.memory_bytes,
+          1,
+          identity.memory_limits.maximum_bytes,
+        )
+        || !exactInteger(
+          reply.memory_peak_bytes,
+          reply.memory_bytes,
+          identity.memory_limits.maximum_bytes,
+        )
+      ) {
+        throw new RootIterationClientError(
+          "The root terminal-mate rescue returned a malformed or stale receipt.",
+          "browser-root-terminal-mate-invalid",
+        );
+      }
+      recordChannelMemory(reply, channel);
+      if (reply.status !== "found") {
+        return Object.freeze({ reply, rootSeries: null, checkedPrefix: null });
+      }
+      const rootSeries = normalizeRootSeries(reply.root_series);
+      const checkedPrefix = reply.checked_prefix;
+      const replayRequest = PREFIX_API.normalizePrefixRequest({
+        ...originalBoundary,
+        prefix: [...rootSeries.moves],
+      }, `${requestBase.iteration_id}:terminal-mate-replay`, identity.prefix_contract);
+      PREFIX_API.validatePrefixResult(checkedPrefix, replayRequest, identity);
+      const rootWhite = originalBoundary.series % 2 === 1;
+      const expectedScore = rootWhite ? MATE_SCORE - 1 : -MATE_SCORE + 1;
+      const expectedProof = rootWhite ? [1, 1] : [-1, -1];
+      if (
+        rootSeries.outcome !== "checkmate"
+        || rootSeries.ended_by_check !== true
+        || checkedPrefix.complete !== true
+        || checkedPrefix.outcome !== "checkmate"
+        || checkedPrefix.ended_by_check !== true
+        || !sameArray(checkedPrefix.prefix, rootSeries.moves)
+        || !sameExactBoundary(checkedPrefix.next_state, rootSeries.child_boundary)
+        || reply.score !== expectedScore
+        || !sameJson(reply.proof_bounds, expectedProof)
+      ) {
+        throw new RootIterationClientError(
+          "The root terminal-mate rescue failed authoritative replay or score mapping.",
+          "browser-root-terminal-mate-invalid",
+        );
+      }
+      return Object.freeze({ reply, rootSeries, checkedPrefix });
+    }
+
+    _terminalMateResult({
+      payload,
+      identity,
+      expected,
+      geometry,
+      originalBoundary,
+      depth,
+      hostStarted,
+      safetyReserve,
+      rootTaskCount,
+      trigger,
+      rescue,
+      safetyWork,
+      mateCacheHits,
+      mateCacheMisses,
+    }) {
+      if (
+        rescue?.reply?.status !== "found"
+        || !exactInteger(safetyReserve, 1)
+        || !exactInteger(rootTaskCount, 0)
+        || typeof trigger !== "string"
+        || !trigger
+      ) {
+        throw new RootIterationClientError(
+          "The terminal-mate result has no certified publication envelope.",
+          "browser-root-terminal-mate-invalid",
+        );
+      }
+      const memoryBytes = Math.max(
+        ...this.pool.map((channel) => channel.memoryPeakBytes),
+      );
+      const aggregateMemory = this.pool.reduce(
+        (sum, channel) => sum + channel.memoryPeakBytes,
+        0,
+      );
+      const totalWork = this.pool.reduce(
+        (sum, channel) => sum + channel.nativeWorkAfter,
+        safetyWork,
+      );
+      if (!exactInteger(totalWork, 0, payload.max_generation_positions)) {
+        throw new RootIterationClientError(
+          "The terminal-mate result exceeded the shared work ledger.",
+          "browser-root-terminal-mate-work-invalid",
+        );
+      }
+      const rootSeries = rescue.rootSeries;
+      const checkedPrefix = rescue.checkedPrefix;
+      const mateCache = Object.freeze({
+        schema: "spc-root-mate-proof-cache-summary-v1",
+        hits: mateCacheHits,
+        misses: mateCacheMisses,
+        entries: this.mateProofCache.size,
+        complete_proofs_only: true,
+      });
+      return Object.freeze({
+        ok: true,
+        status: "complete",
+        publishable: true,
+        safety_certified: true,
+        legal_series_certified: true,
+        authoritative_replay_certified: true,
+        legal_validation_runtime: "compiled-wasm",
+        checked_prefix: checkedPrefix,
+        source_fingerprint: expected.source_fingerprint,
+        wasm_sha256: identity.wasm_sha256,
+        kernel_sha256: expected.kernel_sha256,
+        module_js_sha256: expected.module_js_sha256,
+        certificate_id: expected.certificate_id,
+        mate_certificate_id: identity.mate_certificate_id,
+        prefix_certificate_id: identity.prefix_certificate_id,
+        runtime_variant: "single",
+        thread_count: 1,
+        requested_depth: payload.depth,
+        completed_depth: depth,
+        best_full_series: [...rootSeries.moves],
+        principal_variation: [rootSeries],
+        score: rescue.reply.score,
+        proof_bounds: [...rescue.reply.proof_bounds],
+        proof: originalBoundary.series % 2 === 1 ? "white" : "black",
+        mate_score: MATE_SCORE,
+        root_search_mode: "streaming-root-iteration",
+        root_scores_complete: false,
+        root_bound_coverage_complete: true,
+        exact_width: false,
+        timed_out: false,
+        work_limit_reached: false,
+        work: totalWork,
+        memory_bytes: memoryBytes,
+        aggregate_memory_bytes: aggregateMemory,
+        stats: {
+          generation_positions: totalWork,
+          root_tasks: rootTaskCount,
+          root_workers: this.pool.length,
+          initial_full_wave: geometry.initial_full_wave,
+          coverage_complete: true,
+          safety_status: "terminal-mate-rescue",
+          terminal_mate_rescues: 1,
+          mate_cache_hits: mateCacheHits,
+          mate_cache_misses: mateCacheMisses,
+          mate_cache_entries: this.mateProofCache.size,
+          safety_reserve_positions: safetyReserve,
+        },
+        runtime_receipt: {
+          runtime: "browser-wasm",
+          search_mode: "streaming-root-iteration",
+          requested_depth: payload.depth,
+          completed_depth: depth,
+          wall_time_seconds: Math.max(0, (monotonicNow() - hostStarted) / 1_000),
+          work: totalWork,
+          source_fingerprint: expected.source_fingerprint,
+          artifact_fingerprint: identity.wasm_sha256,
+          kernel_fingerprint: expected.kernel_sha256,
+          module_fingerprint: expected.module_js_sha256,
+          certificate_id: expected.certificate_id,
+          mate_certificate_id: identity.mate_certificate_id,
+          runtime_variant: "single",
+          thread_count: 1,
+          worker_count: this.pool.length,
+          initial_full_wave: geometry.initial_full_wave,
+          certified_memory: { ...identity.memory_limits },
+          aggregate_memory_cap_bytes: geometry.aggregate_maximum_bytes,
+          aggregate_memory_peak_bytes: aggregateMemory,
+          safety_reserve_positions: safetyReserve,
+          canonical_replay_certified: true,
+          mate_safety_certified: true,
+          root_bound_coverage_complete: true,
+          terminal_mate_rescue: {
+            trigger,
+            status: "found",
+            work_used: rescue.reply.work_used,
+          },
+          mate_cache: mateCache,
+        },
+      });
     }
 
     async analyze(payload, identity, {
@@ -1371,14 +1649,70 @@
               }
               return safety;
             };
-            const iteration = await ROOT_API.runRootIteration({
-              request: coordinatorRequest,
-              manifest,
-              workers: adapters,
-              safetyProbe,
-              signal,
-              receiptDeadlineMs: absoluteReceiptDeadline,
-            });
+            let iteration;
+            try {
+              iteration = await ROOT_API.runRootIteration({
+                request: coordinatorRequest,
+                manifest,
+                workers: adapters,
+                safetyProbe,
+                signal,
+                receiptDeadlineMs: absoluteReceiptDeadline,
+              });
+            } catch (error) {
+              if (error?.code !== "root-safety-widening-required") throw error;
+              const failedSafetyWork = error?.work?.safety_committed_work;
+              const nativeWork = this.pool.reduce(
+                (sum, channel) => sum + channel.nativeWorkAfter,
+                0,
+              );
+              const expectedCommittedWork = nativeWork + safetyWork + failedSafetyWork;
+              if (
+                !exactInteger(failedSafetyWork, 0, payload.max_generation_positions)
+                || error?.work?.max_work !== payload.max_generation_positions
+                || error?.work?.committed_work !== expectedCommittedWork
+                || error?.work?.reserved_work !== 0
+                || error?.work?.within_cap !== true
+              ) {
+                throw new RootIterationClientError(
+                  "The all-losing root frontier had no accountable safety receipt.",
+                  "browser-root-terminal-mate-work-invalid",
+                  { cause: error },
+                );
+              }
+              safetyWork += failedSafetyWork;
+              const rescueRemaining = payload.max_generation_positions
+                - nativeWork - safetyWork;
+              if (rescueRemaining <= 0) throw error;
+              const rescue = await this._probeRootTerminalMate({
+                requestBase,
+                originalBoundary,
+                identity,
+                expected,
+                callWorkCredit: Math.min(0xffffffff, rescueRemaining),
+                deadlineEpochMs,
+                receiptDeadlineMs: absoluteReceiptDeadline,
+                signal,
+              });
+              safetyWork += rescue.reply.work_used;
+              if (rescue.reply.status !== "found") throw error;
+              return this._terminalMateResult({
+                payload,
+                identity,
+                expected,
+                geometry,
+                originalBoundary,
+                depth,
+                hostStarted,
+                safetyReserve,
+                rootTaskCount: manifest.candidates.length,
+                trigger: "all-retained-children-proven-mating",
+                rescue,
+                safetyWork,
+                mateCacheHits,
+                mateCacheMisses,
+              });
+            }
             if (
               iteration.status !== "complete"
               || iteration.coverage_complete !== true
@@ -1505,6 +1839,50 @@
             });
           } catch (error) {
             if (error?.name === "AbortError" && signal?.aborted) throw abortError();
+            if (error?.code === "browser-root-promotion-mate-deferred") {
+              const nativeWork = this.pool.reduce(
+                (sum, channel) => sum + channel.nativeWorkAfter,
+                0,
+              );
+              const rescueRemaining = payload.max_generation_positions
+                - nativeWork - safetyWork;
+              const playLimits = normalizedRootPlayLimits(identity);
+              if (rescueRemaining > 0 && playLimits) {
+                const safetyReserve = Math.min(
+                  playLimits.safety_reserve_positions,
+                  rescueRemaining,
+                );
+                const rescue = await this._probeRootTerminalMate({
+                  requestBase,
+                  originalBoundary,
+                  identity,
+                  expected,
+                  callWorkCredit: Math.min(0xffffffff, rescueRemaining),
+                  deadlineEpochMs,
+                  receiptDeadlineMs: absoluteReceiptDeadline,
+                  signal,
+                });
+                safetyWork += rescue.reply.work_used;
+                if (rescue.reply.status === "found") {
+                  return this._terminalMateResult({
+                    payload,
+                    identity,
+                    expected,
+                    geometry,
+                    originalBoundary,
+                    depth,
+                    hostStarted,
+                    safetyReserve,
+                    rootTaskCount: 0,
+                    trigger: "native-promotion-frontier-deferred",
+                    rescue,
+                    safetyWork,
+                    mateCacheHits,
+                    mateCacheMisses,
+                  });
+                }
+              }
+            }
             lastFailure = error;
             break;
           }
