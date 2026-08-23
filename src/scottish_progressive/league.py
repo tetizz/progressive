@@ -47,7 +47,10 @@ PROMOTION_METHOD = "deterministic-fixed-suite-pairs-v1"
 HUMAN_FIRST_GAME_REPLY_VERIFIER_WIDTH = 832
 HUMAN_FIRST_GAME_REPLY_VERIFIER_WORK_LIMIT = 1_600_000
 HUMAN_FIRST_GAME_ROOT_WIDTH = 32
-HUMAN_FIRST_GAME_ROOT_WORK_LIMIT = 250_000
+# A complete collect-all depth-2 search of this fixed S4 fixture currently
+# consumes 2,139,260 generated positions. Keep a measured safety margin so the
+# gate fails on chess evidence instead of its obsolete pre-screening budget.
+HUMAN_FIRST_GAME_ROOT_WORK_LIMIT = 3_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -1134,6 +1137,7 @@ def _evaluate_human_first_game_refutation(
             ),
             "proof": root_result.proof,
             "exact_width": root_result.exact_width,
+            "root_work_limit": HUMAN_FIRST_GAME_ROOT_WORK_LIMIT,
             "work_positions": root_result.stats.work_positions,
         },
     }
