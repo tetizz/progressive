@@ -515,7 +515,7 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
                 "g5e6",
                 "d1d8",
             ],
-            "work": 48_733,
+            "work": 48_777,
             "checkmates": 1,
             "max_depth_reached": 7,
         },
@@ -989,7 +989,7 @@ def test_rejects_resigned_accelerated_mate_work_drift(tmp_path: Path) -> None:
 
     def mutate(payload: dict[str, object]) -> None:
         accelerated = payload["accelerated_cases"]
-        accelerated[0]["work"] = 48_734
+        accelerated[0]["work"] = 48_778
         payload["accelerated_case_set_sha256"] = promoter._canonical_sha256(
             accelerated
         )

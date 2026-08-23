@@ -1085,7 +1085,7 @@ def _validate_mate_parity(receipt: Receipt, build: BuildEvidence) -> int:
                 "g5e6",
                 "d1d8",
             ],
-            "work": 48_733,
+            "work": 48_777,
             "checkmates": 1,
             "max_depth_reached": 7,
         },

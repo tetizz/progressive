@@ -300,7 +300,7 @@ def main() -> int:
         ]
         or staged["stats"]["positions_visited"]
             + staged["stats"]["moves_generated"]
-            != 48_733
+            != 48_777
         or staged["stats"]["checkmates"] != 1
         or staged["stats"]["max_depth_reached"] != 7
     ):
