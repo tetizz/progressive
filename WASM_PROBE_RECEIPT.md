@@ -1,7 +1,15 @@
-# Progressive browser-WASM lab receipt
+# Progressive browser-WASM historical lab receipt
 
 This is an isolated lab receipt, not a release claim. No release repository was
 edited, committed, pushed, or deployed from this lane.
+
+> Archive notice (2026-08-23): the body below is source-bound to detached base
+> `5b926d689ae82cd5f0bc998d8ba78d7b2edb0755` and its work counts are not the
+> current engine's deterministic receipts. The guarded current solver at source
+> fingerprint `34a3104a3dddf4c4` proves the same live S5 mate in 207 visited
+> positions and 8,471 generated moves, with 48 transposition merges, 315
+> checking series, peak frontier 311, and depth 5. Current release authority is
+> the identity-bound browser engine manifest and its promotion certificates.
 
 ## Source and toolchain
 
@@ -55,7 +63,7 @@ Work/deadline/unsupported requests fail closed as `unknown` and
 `complete:false`.
 
 - S5 live boundary: found
-  `c3d5/d3e4/e4h7/d5f4/h7g6`, with the exact stats in the receipt.
+  `c3d5/d3e4/e4h7/d5f4/h7g6`, with the exact historical stats in the receipt.
 - S17 boundary: found `h8b2/f8a3`.
 - Bare-kings S3 boundary: exhausted.
 - S5 with `max_positions=1`: unknown/work-limit.
@@ -66,7 +74,7 @@ The independent prefix/rules ABI replayed the S5 result as
 `outcome:"checkmate"`.
 
 Opera GX then loaded both ABI modules in a real module Worker. The smoke
-receipt was `proof_status:"found"` with the same S5 line/stats, plus the SAN
+receipt was `proof_status:"found"` with the same historical S5 line/stats, plus the SAN
 edge replay `g4 / c4 / Bf4+`, `outcome:null`, and retained EP target `g3`.
 Module load was 13.7 ms and the whole smoke was 35.5 ms; these timings are only
 load/smoke evidence, not a search-performance benchmark. The browser reported

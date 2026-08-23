@@ -61,6 +61,10 @@ LIVE_S5_HISTORY = (
     ("d2d4", "b1c3", "f1d3"),
     ("d7d5", "c8g4", "d5e4", "g4d1"),
 )
+S9_LEGACY_ORDERING_STATE = ProgressiveState.from_fen(
+    "rn1q1bnr/ppp1pkpp/5p2/8/3Pp3/2NB4/PPP2PPP/R1BbK1NR w KQ - 0 7",
+    9,
+)
 S7_STATE = ProgressiveState.from_fen(
     "rnk3nr/pp3ppp/8/8/8/1Pp1P3/P1PP1PPP/R1b1K1NR w K - 0 13",
     7,
@@ -218,6 +222,22 @@ assert 'scottish_progressive._native_mate' not in sys.modules
                 "c3d2",
             ),
             (13_260, 401_050, 35_552, 35_535, 1, 13_091, 8),
+        ),
+        (
+            "series-nine-legacy-ordering-boundary",
+            S9_LEGACY_ORDERING_STATE,
+            (
+                "c3d5",
+                "c1h6",
+                "d3e4",
+                "e4f5",
+                "h6g7",
+                "d5f6",
+                "g1f3",
+                "g7h8",
+                "f3e5",
+            ),
+            (566, 24_473, 367, 1_263, 1, 891, 9),
         ),
         (
             "nonpromotion-s17",
