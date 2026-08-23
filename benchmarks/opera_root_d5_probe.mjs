@@ -486,8 +486,10 @@ async function main() {
         `D${depth} enumeration canonical root policy drifted`,
       );
       invariant(
-        enumeration.enumeration_identity.includes("|root-policycanonical-boundary-v1|root-tactical0"),
-        `D${depth} enumeration identity lacks canonical root policy=false`,
+        enumeration.enumeration_identity.includes(
+          "|root-policycanonical-boundary-v1|root-order-hand-v1|root-tactical0",
+        ),
+        `D${depth} enumeration identity lacks canonical hand-order/root-policy=false`,
       );
       const manifest = manifestOf(enumeration);
       invariant(manifest.requested_width === args.width, "enumerated width drifted");
