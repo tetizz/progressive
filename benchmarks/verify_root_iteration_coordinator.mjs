@@ -64,7 +64,10 @@ function request(workerCount, overrides = {}) {
 }
 
 
-function manifest(definitions, { white = true, width = 32, complete = false } = {}) {
+function manifest(
+  definitions,
+  { white = true, width = 32, complete = false, preferredSeries = [] } = {},
+) {
   const series = white ? 1 : 2;
   const moves = white ? ["e2e4"] : ["e7e5", "g8f6"];
   const childFen = white ? BLACK_FEN : WHITE_FEN;
@@ -74,7 +77,7 @@ function manifest(definitions, { white = true, width = 32, complete = false } = 
     requested_width: width,
     retained_count: definitions.length,
     width_complete: complete,
-    preferred_series: [],
+    preferred_series: [...preferredSeries],
     candidates: definitions.map((item, orderIndex) => ({
       candidate_identity: item.id,
       order_index: orderIndex,
@@ -168,7 +171,7 @@ class SyntheticWorker {
     if (this.throwWhen(task)) throw new Error(`synthetic loss ${this.id}`);
     const score = this.oracle.get(task.candidate_identity);
     if (!Number.isSafeInteger(score)) throw new Error("missing synthetic oracle score");
-    const bound = task.purpose === "scout"
+    const bound = task.purpose === "scout" || task.purpose === "aspiration"
       ? score <= task.alpha ? "upper" : score >= task.beta ? "lower" : "exact"
       : "exact";
     const actualWork = this.work(task);
@@ -576,6 +579,147 @@ async function testResponseOrderPermutations() {
   }
   assert.equal(permutations.length, 8);
   assert(signatures.every(([id, score]) => id === "l" && score === 50));
+}
+
+
+async function testAspirationWideningAndFallback() {
+  const definitions = [
+    { id: "a", key: "a", score: 3_000 },
+    { id: "b", key: "b", score: -3_000 },
+    { id: "c", key: "c", score: 100 },
+    { id: "d", key: "d", score: 100_000 },
+  ];
+  const pool = workers(4, definitions);
+  const result = await api.runRootIteration({
+    request: request(4, {
+      aspiration: { center_score: 0, initial_delta: 2_048 },
+    }),
+    manifest: manifest(definitions, { preferredSeries: ["e2e4"] }),
+    workers: pool,
+    safetyProbe: exhaustedSafety(),
+  });
+  assert(pool.every((worker) => worker.calls[0]?.purpose === "aspiration"));
+  assert.deepEqual(
+    pool[0].calls.slice(0, 2).map((task) => [task.alpha, task.beta]),
+    [[-2_048, 2_048], [-4_096, 4_096]],
+  );
+  assert.deepEqual(
+    pool[1].calls.slice(0, 2).map((task) => [task.alpha, task.beta]),
+    [[-2_048, 2_048], [-4_096, 4_096]],
+  );
+  assert.deepEqual(pool[2].calls.map((task) => task.purpose), ["aspiration"]);
+  assert.deepEqual(pool[3].calls.map((task) => task.purpose), [
+    "aspiration",
+    "aspiration",
+    "aspiration",
+    "aspiration",
+    "full",
+    "selected-certification",
+  ]);
+  assert.deepEqual(
+    pool[3].calls.slice(0, 4).map((task) => [task.alpha, task.beta]),
+    [
+      [-2_048, 2_048],
+      [-4_096, 4_096],
+      [-8_192, 8_192],
+      [-16_384, 16_384],
+    ],
+  );
+  assert.deepEqual(result.aspiration, {
+    enabled: true,
+    center_score: 0,
+    initial_delta: 2_048,
+    maximum_attempts: 4,
+    candidate_count: 4,
+    attempts: 9,
+    fail_highs: 5,
+    fail_lows: 1,
+    exact_hits: 3,
+    full_window_fallbacks: 1,
+  });
+  assert(result.tasks.some((task) => (
+    task.event === "dispatch"
+    && task.purpose === "full"
+    && task.aspiration_fallback === true
+  )));
+
+  await expectCode(
+    () => api.normalizeRequest(request(1, {
+      aspiration: { center_score: 0, initial_delta: 2_047 },
+    })),
+    "root-request-invalid",
+  );
+
+  const blackDefinitions = definitions.map((item) => ({
+    ...item,
+    score: -item.score,
+  }));
+  const blackPool = workers(4, blackDefinitions);
+  const blackResult = await api.runRootIteration({
+    request: request(4, {
+      series: 2,
+      aspiration: { center_score: 0, initial_delta: 2_048 },
+    }),
+    manifest: manifest(blackDefinitions, {
+      white: false,
+      preferredSeries: ["e7e5", "g8f6"],
+    }),
+    workers: blackPool,
+    safetyProbe: exhaustedSafety(),
+  });
+  const blackOracle = referenceWinner(blackDefinitions, false);
+  assert.equal(blackResult.mover, "black");
+  assert.equal(blackResult.selected.candidate_identity, blackOracle.id);
+  assert.equal(blackResult.selected.score, blackOracle.score);
+  assert.equal(blackResult.root_scores_complete, true);
+  assert.deepEqual(
+    blackResult.root_bounds.map((item) => ({
+      candidate_identity: item.candidate_identity,
+      bound: item.bound,
+      score: item.score,
+    })),
+    result.root_bounds.map((item) => ({
+      candidate_identity: item.candidate_identity,
+      bound: item.bound,
+      score: -item.score,
+    })),
+  );
+  assert.deepEqual(blackResult.aspiration, {
+    ...result.aspiration,
+    fail_highs: result.aspiration.fail_lows,
+    fail_lows: result.aspiration.fail_highs,
+  });
+  for (const definition of blackDefinitions) {
+    const owners = blackPool.filter((worker) => worker.calls.some(
+      (task) => task.candidate_identity === definition.id,
+    ));
+    assert.equal(
+      owners.length,
+      1,
+      `${definition.id} aspiration retries left their owning Worker`,
+    );
+    assert.equal(
+      owners[0].calls.find((task) => task.candidate_identity === definition.id)?.purpose,
+      "aspiration",
+    );
+  }
+  assert.deepEqual(
+    blackPool[3].calls.map((task) => task.purpose),
+    [
+      "aspiration",
+      "aspiration",
+      "aspiration",
+      "aspiration",
+      "full",
+      "selected-certification",
+    ],
+  );
+  assert(blackResult.tasks.some((task) => (
+    task.event === "dispatch"
+    && task.purpose === "full"
+    && task.aspiration_fallback === true
+    && task.worker_id === "worker-3"
+  )));
 }
 
 
@@ -992,6 +1136,7 @@ await testBlackMirror();
 await testTerminalProductionOrder();
 await testSafetyRevisionAndBoundInvalidation();
 await testResponseOrderPermutations();
+await testAspirationWideningAndFallback();
 await testProtocolFaults();
 await testCapsCrashAndMemory();
 await testCancellationAndDeadline();
@@ -999,7 +1144,7 @@ await testUnsupportedEnvelope();
 
 process.stdout.write(`${JSON.stringify({
   schema: "spc-root-iteration-coordinator-verifier-v1",
-  scenarios: 14,
+  scenarios: 17,
   response_order_permutations: 8,
   response_order_worker_count: 8,
   streaming_first_wave: true,
@@ -1009,6 +1154,10 @@ process.stdout.write(`${JSON.stringify({
   canonical_ties: true,
   terminal_production_order: true,
   safety_revision_bound_invalidation: true,
+  exact_aspiration_widening: true,
+  aspiration_full_window_fallback: true,
+  black_aspiration_mirror: true,
+  same_worker_aspiration_retries: true,
   same_worker_threat_research: true,
   selected_owner_certification: true,
   malformed_missing_duplicate_unknown_fail_closed: true,

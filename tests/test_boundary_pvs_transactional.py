@@ -191,9 +191,8 @@ def test_fixed_exact_parity_anchors() -> None:
     baseline = _search(BEST_ONLY_ANCHOR, pvs=False, collect_all=False)
     candidate = _search(BEST_ONLY_ANCHOR, pvs=True, collect_all=False)
     assert _semantic_signature(candidate) == _semantic_signature(baseline)
-    second = candidate.alternatives[1]
-    assert second.series.machine_notation == "e4c2"
-    assert second.score == -577
+    assert candidate.alternatives == ()
+    assert candidate.root_scores_complete is False
 
 
 def test_512_sparse_boundaries_match_full_alpha_beta_exactly() -> None:

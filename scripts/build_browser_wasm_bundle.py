@@ -487,8 +487,8 @@ def _validate_root_geometry(
     wave = geometry.get("desktop_initial_full_wave")
     aggregate = geometry.get("aggregate_maximum_bytes")
     maximum = int(memory["maximum_bytes"])
-    if workers != 8 or wave != 4 or aggregate != workers * maximum:
-        raise ValueError("desktop root geometry must certify workers=8 and wave=4")
+    if workers != 8 or wave != 8 or aggregate != workers * maximum:
+        raise ValueError("desktop root geometry must certify workers=8 and wave=8")
     lower = geometry.get("supported_lower_geometries")
     if not isinstance(lower, list):
         raise ValueError("supported lower root geometries must be an array")
@@ -639,11 +639,21 @@ def validate_root_session_certificate(
             "hard_memory_limit",
             "tt_scout_rollback",
             "persistent_depth_reuse",
+            "aspiration_windows",
             "selected_owner_certification",
             "canonical_root_tactical_policy",
         )
     ):
         raise ValueError("root-session contract lacks coordinator capabilities")
+    hard_limits = _require_mapping(
+        contract.get("hard_limits"),
+        "root-session contract hard limits",
+    )
+    if (
+        hard_limits.get("minimum_aspiration_initial_delta") != 2_048
+        or hard_limits.get("maximum_aspiration_attempts") != 4
+    ):
+        raise ValueError("root-session contract lacks certified aspiration limits")
     evidence = _require_mapping(certificate.get("evidence"), "root-session evidence")
     required_true = (
         "deterministic_node_smoke",
@@ -651,6 +661,8 @@ def validate_root_session_certificate(
         "enumerate_import_search",
         "exact_manifest_import",
         "persistent_d1_d2_session",
+        "aspiration_fail_soft_window",
+        "aspiration_fail_high_low_white_black",
         "cumulative_work_and_cache_receipts",
         "configured_max_depth_rejected",
         "per_call_work_credit",

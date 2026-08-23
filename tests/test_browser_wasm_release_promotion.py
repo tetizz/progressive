@@ -237,6 +237,7 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
             "hard_memory_limit": True,
             "tt_scout_rollback": True,
             "persistent_depth_reuse": True,
+            "aspiration_windows": True,
             "selected_owner_certification": True,
             "canonical_root_tactical_policy": True,
         },
@@ -249,6 +250,8 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
             "maximum_max_work": 9_007_199_254_740_991,
             "minimum_mate_score": 1,
             "maximum_mate_score": 1_000_000_000,
+            "minimum_aspiration_initial_delta": 2_048,
+            "maximum_aspiration_attempts": 4,
             "minimum_series_cache_capacity": 1,
             "maximum_series_cache_capacity": 1_048_576,
             "minimum_external_cache_weight": 0,
@@ -316,6 +319,8 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
             "combined_exports": True,
             "root_contract_reply_mate_safety_false": True,
             "persistent_d1_d2_session": True,
+            "aspiration_fail_soft_window": True,
+            "aspiration_fail_high_low_white_black": True,
             "selected_owner_warm_exact_certification": True,
             "cumulative_work_and_cache_receipts": True,
             "exact_manifest_import": True,
@@ -589,6 +594,7 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
     iterations = []
     for depth in range(1, 6):
         committed = depth * 10_000_000
+        aspiration_enabled = depth > 1
         iterations.append(
             {
                 "depth": depth,
@@ -611,6 +617,25 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
                 "safety_revision": 1,
                 "owner_worker_id": "root-0",
                 "owner_certification_count": 1,
+                "aspiration": {
+                    "enabled": aspiration_enabled,
+                    "center_score": selected["score"] if aspiration_enabled else None,
+                    "initial_delta": 2_048 if aspiration_enabled else None,
+                    "maximum_attempts": 4,
+                    "candidate_count": 8 if aspiration_enabled else 0,
+                    "attempts": 8 if aspiration_enabled else 0,
+                    "fail_highs": 0,
+                    "fail_lows": 0,
+                    "exact_hits": 8 if aspiration_enabled else 0,
+                    "full_window_fallbacks": 0,
+                    "owner_worker_id": "root-0" if aspiration_enabled else None,
+                    "owner_worker_ids": [f"root-{index}" for index in range(8)]
+                    if aspiration_enabled
+                    else [],
+                    "owner_worker_count": 8 if aspiration_enabled else 0,
+                    "warm_owner_reused": aspiration_enabled,
+                    "warm_owner_reused_count": 8 if aspiration_enabled else 0,
+                },
                 "coverage_complete": True,
                 "root_bounds": copy.deepcopy(bounds),
                 "retained_manifest_sha256": retained_manifest_sha256,
@@ -675,7 +700,42 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
     ]
     selected_signature = promoter._canonical_sha256(selected)
 
-    def run_binding(elapsed_ms: float) -> dict[str, object]:
+    warm_aspiration = [
+        {
+            "depth": iteration["depth"],
+            "selected_score": iteration["score"],
+            "selected_owner_worker_id": iteration["owner_worker_id"],
+            **copy.deepcopy(iteration["aspiration"]),
+        }
+        for iteration in iterations
+    ]
+    cold_aspiration = [
+        {
+            "depth": 5,
+            "selected_score": selected["score"],
+            "selected_owner_worker_id": "root-0",
+            "enabled": False,
+            "center_score": None,
+            "initial_delta": None,
+            "maximum_attempts": 4,
+            "candidate_count": 0,
+            "attempts": 0,
+            "fail_highs": 0,
+            "fail_lows": 0,
+            "exact_hits": 0,
+            "full_window_fallbacks": 0,
+            "owner_worker_id": None,
+            "owner_worker_ids": [],
+            "owner_worker_count": 0,
+            "warm_owner_reused": False,
+            "warm_owner_reused_count": 0,
+        }
+    ]
+
+    def run_binding(
+        elapsed_ms: float,
+        aspiration_iterations: list[dict[str, object]],
+    ) -> dict[str, object]:
         run_bounds = copy.deepcopy(bounds)
         semantic = {
             "selected": selected,
@@ -693,22 +753,39 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
             "retained_manifest_sha256": retained_manifest_sha256,
             "rival_bounds": run_bounds,
             "root_coverage_sha256": promoter._canonical_sha256(run_bounds),
+            "aspiration_iterations": copy.deepcopy(aspiration_iterations),
+            "aspiration_sha256": promoter._canonical_sha256(aspiration_iterations),
         }
 
-    cold_binding = run_binding(40_000.0)
-    warm_binding = run_binding(49_000.0)
+    cold_binding = run_binding(40_000.0, cold_aspiration)
+    warm_binding = run_binding(49_000.0, warm_aspiration)
 
     def schedule_binding(
         wave: int,
         order_shape_sha256: str,
         elapsed_ms: float,
     ) -> dict[str, object]:
-        binding = run_binding(elapsed_ms)
+        schedule_aspiration = copy.deepcopy(warm_aspiration)
+        for aspiration in schedule_aspiration:
+            if aspiration["enabled"] is not True:
+                continue
+            aspiration.update(
+                {
+                    "candidate_count": wave,
+                    "attempts": wave,
+                    "exact_hits": wave,
+                    "owner_worker_ids": [f"root-{index}" for index in range(wave)],
+                    "owner_worker_count": wave,
+                    "warm_owner_reused_count": wave,
+                }
+            )
+        binding = run_binding(elapsed_ms, schedule_aspiration)
         semantic = {
             "run_signature_sha256": binding["run_signature_sha256"],
             "workers": 8,
             "initial_full_wave": wave,
             "order_shape_sha256": order_shape_sha256,
+            "aspiration_sha256": binding["aspiration_sha256"],
         }
         return {
             "workers": 8,
@@ -718,8 +795,8 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
             "trial_signature_sha256": promoter._canonical_sha256(semantic),
         }
 
-    wave_four_binding = schedule_binding(4, "8" * 64, 49_000.0)
-    wave_two_binding = schedule_binding(2, "9" * 64, 51_000.0)
+    wave_eight_binding = schedule_binding(8, "8" * 64, 49_000.0)
+    wave_four_binding = schedule_binding(4, "9" * 64, 51_000.0)
     opera_worker = {
         "schema": promoter.OPERA_WORKER_SCHEMA,
         "status": "passed-not-certified",
@@ -728,12 +805,14 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
         "artifact": oracle_artifact,
         "geometry": {
             "workers": 8,
-            "initial_full_wave": 4,
+            "initial_full_wave": 8,
             "depth": 5,
             "width": 32,
             "max_work": config["max_work"],
             "safety_reserve_work": safety_reserve,
             "config": config,
+            "mode": "warm",
+            "aspiration_enabled": True,
         },
         "timings_ms": {
             "pool_ready": 500.0,
@@ -753,8 +832,8 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
             "warm_d1_through_d5": warm_binding,
         },
         "schedule_trials": [
+            wave_eight_binding,
             wave_four_binding,
-            wave_two_binding,
         ],
         "memory": {
             "per_worker_hard_maximum_bytes": full_memory["maximum_bytes"],
@@ -794,6 +873,7 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
             "alternate_schedule_selected_matches_oracle": True,
             "multiple_seed_wave_order_shapes": True,
             "no_unknown_or_limit_results": True,
+            "aspiration_iteration_lifecycle": True,
             "release_certificate_present": False,
         },
     }
@@ -818,7 +898,7 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
                 "?module=/artifact/spc-root-session.mjs"
                 "&wasm=/artifact/spc-root-session.wasm"
                 "&receipt=/artifact/root-session-build-receipt.json"
-                "&depth=5&width=32&workers=8&wave=4"
+                "&depth=5&width=32&workers=8&wave=8"
                 "&max_work=100000000&safety_work=1000000&timeout_ms=300000"
             ),
         },
@@ -973,6 +1053,20 @@ def test_rejects_legacy_opera_worker_receipt(tmp_path: Path) -> None:
         _validate(fixture)
 
 
+def test_rejects_missing_two_color_aspiration_parity_gate(tmp_path: Path) -> None:
+    fixture = _valid_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        payload["gates"].pop("aspiration_fail_high_low_white_black")
+
+    _rewrite(fixture, "root_smoke", mutate)
+    with pytest.raises(
+        promoter.ReleaseGateError,
+        match="aspiration_fail_high_low_white_black",
+    ):
+        _validate(fixture)
+
+
 def test_rejects_missing_accelerated_mate_evidence(tmp_path: Path) -> None:
     fixture = _valid_fixture(tmp_path)
 
@@ -1018,6 +1112,160 @@ def test_rejects_sixty_second_or_slower_opera_run(tmp_path: Path) -> None:
 
     _rewrite(fixture, "opera", mutate)
     with pytest.raises(promoter.ReleaseGateError, match="under 60 seconds"):
+        _validate(fixture)
+
+
+def test_receipt_builder_requires_d1_off_and_d2_through_d5_on(
+    tmp_path: Path,
+) -> None:
+    fixture = _valid_fixture(tmp_path)
+    iterations = fixture["payloads"]["opera"]["worker_receipt"]["iterations"]
+
+    normalized = opera_receipt_builder._aspiration_iterations(
+        iterations,
+        label="warm fixture",
+        expected_depths=[1, 2, 3, 4, 5],
+        expected_mode="warm",
+        expected_candidate_count=8,
+    )
+
+    assert [item["enabled"] for item in normalized] == [False, True, True, True, True]
+    assert all(item["warm_owner_reused"] is True for item in normalized[1:])
+
+
+def test_receipt_builder_rejects_cold_d5_aspiration(tmp_path: Path) -> None:
+    fixture = _valid_fixture(tmp_path)
+    cold = copy.deepcopy(
+        fixture["payloads"]["opera"]["worker_receipt"]["iterations"][-1]
+    )
+
+    with pytest.raises(ValueError, match="D5 aspiration must be disabled"):
+        opera_receipt_builder._aspiration_iterations(
+            [cold],
+            label="cold fixture",
+            expected_depths=[5],
+            expected_mode="cold",
+            expected_candidate_count=0,
+        )
+
+
+def test_rejects_enabled_d1_aspiration(tmp_path: Path) -> None:
+    fixture = _valid_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        aspiration = payload["worker_receipt"]["iterations"][0]["aspiration"]
+        aspiration.update(
+            {
+                "enabled": True,
+                "center_score": 0,
+                "initial_delta": 2_048,
+                "attempts": 1,
+                "exact_hits": 1,
+                "owner_worker_id": "root-0",
+                "warm_owner_reused": True,
+            }
+        )
+
+    _rewrite(fixture, "opera", mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="D1 aspiration must be disabled"):
+        _validate(fixture)
+
+
+def test_rejects_disabled_d2_aspiration(tmp_path: Path) -> None:
+    fixture = _valid_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        aspiration = payload["worker_receipt"]["iterations"][1]["aspiration"]
+        aspiration.update(
+            {
+                "enabled": False,
+                "center_score": None,
+                "initial_delta": None,
+                "attempts": 0,
+                "exact_hits": 0,
+                "owner_worker_id": None,
+                "warm_owner_reused": False,
+            }
+        )
+
+    _rewrite(fixture, "opera", mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="D2 aspiration must be enabled"):
+        _validate(fixture)
+
+
+def test_rejects_aspiration_warm_owner_drift(tmp_path: Path) -> None:
+    fixture = _valid_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        payload["worker_receipt"]["iterations"][1]["aspiration"][
+            "owner_worker_id"
+        ] = "root-7"
+
+    _rewrite(fixture, "opera", mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="did not reuse its warm owner"):
+        _validate(fixture)
+
+
+def test_rejects_aspiration_exact_fallback_contradiction(tmp_path: Path) -> None:
+    fixture = _valid_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        payload["worker_receipt"]["iterations"][1]["aspiration"][
+            "full_window_fallbacks"
+        ] = 1
+
+    _rewrite(fixture, "opera", mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="accounting contradicts itself"):
+        _validate(fixture)
+
+
+def test_rejects_enabled_cold_d5_aspiration_binding(tmp_path: Path) -> None:
+    fixture = _valid_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        aspiration = payload["worker_receipt"]["oracle"]["cold_d5"][
+            "aspiration_iterations"
+        ][0]
+        aspiration.update(
+            {
+                "enabled": True,
+                "center_score": 617,
+                "initial_delta": 2_048,
+                "attempts": 1,
+                "exact_hits": 1,
+                "owner_worker_id": "root-0",
+                "warm_owner_reused": True,
+            }
+        )
+
+    _rewrite(fixture, "opera", mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="D5 aspiration must be disabled"):
+        _validate(fixture)
+
+
+def test_rejects_alternate_schedule_aspiration_owner_claim(tmp_path: Path) -> None:
+    fixture = _valid_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        payload["worker_receipt"]["schedule_trials"][1]["aspiration_iterations"][1][
+            "warm_owner_reused"
+        ] = False
+
+    _rewrite(fixture, "opera", mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="did not reuse its warm owner"):
+        _validate(fixture)
+
+
+def test_rejects_tampered_aspiration_digest(tmp_path: Path) -> None:
+    fixture = _valid_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        payload["worker_receipt"]["oracle"]["warm_d1_through_d5"][
+            "aspiration_sha256"
+        ] = "f" * 64
+
+    _rewrite(fixture, "opera", mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="invalid aspiration digest"):
         _validate(fixture)
 
 
@@ -1126,7 +1374,7 @@ def test_rejects_tampered_alternate_coverage_digest(tmp_path: Path) -> None:
         _validate(fixture)
 
 
-def test_rejects_re_signed_wave_four_order_shape_drift(tmp_path: Path) -> None:
+def test_rejects_re_signed_wave_eight_order_shape_drift(tmp_path: Path) -> None:
     fixture = _valid_fixture(tmp_path)
 
     def mutate(payload: dict[str, object]) -> None:
@@ -1138,6 +1386,7 @@ def test_rejects_re_signed_wave_four_order_shape_drift(tmp_path: Path) -> None:
                 "workers": trial["workers"],
                 "initial_full_wave": trial["initial_full_wave"],
                 "order_shape_sha256": trial["order_shape_sha256"],
+                "aspiration_sha256": trial["aspiration_sha256"],
             }
         )
 

@@ -8,6 +8,8 @@
   const UCI_MOVE = /^[a-h][1-8][a-h][1-8][qrbn]?$/;
   const MATE_SCORE = 1_000_000;
   const MAX_LOCAL_DEPTH = 5;
+  const ASPIRATION_INITIAL_DELTA = 2_048;
+  const MAX_ASPIRATION_ATTEMPTS = 4;
   const ROOT_TACTICAL_POLICY = "canonical-boundary-policy-v1";
   const ROOT_IDENTITY_KEYS = Object.freeze([
     "source_fingerprint", "kernel_sha256", "module_js_sha256", "certificate_id",
@@ -53,6 +55,203 @@
 
   function exactInteger(value, minimum, maximum = Number.MAX_SAFE_INTEGER) {
     return Number.isSafeInteger(value) && value >= minimum && value <= maximum;
+  }
+
+  function normalizeAspirationReceipt(
+    value,
+    expected,
+    expectedCandidateCount,
+    { allowUnsearched = false } = {},
+  ) {
+    const enabled = expected !== null;
+    const expectedKeys = [
+      "attempts", "candidate_count", "center_score", "enabled", "exact_hits",
+      "fail_highs", "fail_lows", "full_window_fallbacks", "initial_delta",
+      "maximum_attempts",
+    ];
+    if (
+      !value
+      || typeof value !== "object"
+      || Array.isArray(value)
+      || !sameJson(Object.keys(value).sort(), expectedKeys)
+      || value.enabled !== enabled
+      || value.center_score !== (expected?.center_score ?? null)
+      || value.initial_delta !== (expected?.initial_delta ?? null)
+      || value.maximum_attempts !== MAX_ASPIRATION_ATTEMPTS
+      || !exactInteger(expectedCandidateCount, 0)
+      || value.candidate_count !== expectedCandidateCount
+      || !exactInteger(
+        value.attempts,
+        0,
+        expectedCandidateCount * MAX_ASPIRATION_ATTEMPTS,
+      )
+      || !exactInteger(value.fail_highs, 0, value.attempts)
+      || !exactInteger(value.fail_lows, 0, value.attempts)
+      || !exactInteger(value.exact_hits, 0, expectedCandidateCount)
+      || !exactInteger(value.full_window_fallbacks, 0, expectedCandidateCount)
+      || value.fail_highs + value.fail_lows + value.exact_hits !== value.attempts
+      || value.exact_hits + value.full_window_fallbacks > expectedCandidateCount
+      || (
+        enabled
+        && !allowUnsearched
+        && value.exact_hits + value.full_window_fallbacks !== expectedCandidateCount
+      )
+      || (!enabled && (
+        value.candidate_count !== 0
+        || value.attempts !== 0
+        || value.exact_hits !== 0
+        || value.full_window_fallbacks !== 0
+      ))
+    ) return null;
+    return Object.freeze({ ...value });
+  }
+
+  const EXACT_OWNER_PURPOSES = Object.freeze(new Set([
+    "aspiration", "full", "selected-certification", "threat-research",
+  ]));
+
+  function exactCandidateOwnerMap(taskLog) {
+    if (!Array.isArray(taskLog)) {
+      throw new RootIterationClientError(
+        "The root coordinator omitted its exact-owner task log.",
+        "browser-root-aspiration-owner-map-invalid",
+      );
+    }
+    const dispatched = new Map();
+    const owners = new Map();
+    for (const item of taskLog) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        throw new RootIterationClientError(
+          "The root coordinator returned a malformed owner task log.",
+          "browser-root-aspiration-owner-map-invalid",
+        );
+      }
+      if (item.event === "safety") continue;
+      if (
+        !["dispatch", "complete"].includes(item.event)
+        || typeof item.task_id !== "string"
+        || !item.task_id
+        || typeof item.candidate_identity !== "string"
+        || !item.candidate_identity
+        || typeof item.worker_id !== "string"
+        || !item.worker_id
+        || typeof item.purpose !== "string"
+        || !item.purpose
+      ) {
+        throw new RootIterationClientError(
+          "The root coordinator returned a malformed owner task log.",
+          "browser-root-aspiration-owner-map-invalid",
+        );
+      }
+      if (item.event === "dispatch") {
+        if (dispatched.has(item.task_id)) {
+          throw new RootIterationClientError(
+            "The root coordinator duplicated an owner task identity.",
+            "browser-root-aspiration-owner-map-invalid",
+          );
+        }
+        dispatched.set(item.task_id, item);
+        continue;
+      }
+      const start = dispatched.get(item.task_id);
+      if (
+        !start
+        || start.candidate_identity !== item.candidate_identity
+        || start.worker_id !== item.worker_id
+        || start.purpose !== item.purpose
+      ) {
+        throw new RootIterationClientError(
+          "The root coordinator completed an unbound owner task.",
+          "browser-root-aspiration-owner-map-invalid",
+        );
+      }
+      if (item.bound !== "exact" || !EXACT_OWNER_PURPOSES.has(item.purpose)) continue;
+      const prior = owners.get(item.candidate_identity);
+      if (prior !== undefined && prior !== item.worker_id) {
+        throw new RootIterationClientError(
+          "A root candidate claimed multiple exact owning Workers.",
+          "browser-root-aspiration-owner-map-invalid",
+        );
+      }
+      owners.set(item.candidate_identity, item.worker_id);
+    }
+    return owners;
+  }
+
+  function scheduleAspirationAffinity({
+    adapters,
+    manifest,
+    initialFullWave,
+    aspiration,
+    previousOwners,
+  }) {
+    const candidateIds = aspiration === null
+      ? []
+      : manifest.candidates
+        .filter((candidate) => candidate.terminal_score === null)
+        .slice(0, initialFullWave)
+        .map((candidate) => candidate.candidate_identity);
+    const ownerIds = candidateIds.map((candidateId) => (
+      previousOwners.get(candidateId) ?? null
+    ));
+    const completeAndUnique = candidateIds.length > 0
+      && ownerIds.every((ownerId) => ownerId !== null)
+      && new Set(ownerIds).size === ownerIds.length;
+    if (!completeAndUnique) {
+      return Object.freeze({
+        adapters,
+        candidateIds: Object.freeze([...candidateIds]),
+        ownerIds: Object.freeze([]),
+        warmOwnerReused: false,
+      });
+    }
+    const adaptersById = new Map(adapters.map((adapter) => [adapter.id, adapter]));
+    const warmAdapters = ownerIds.map((ownerId) => adaptersById.get(ownerId));
+    if (warmAdapters.some((adapter) => adapter === undefined)) {
+      throw new RootIterationClientError(
+        "A claimed prior exact-owner Worker is unavailable for warm aspiration.",
+        "browser-root-aspiration-owner-unavailable",
+      );
+    }
+    const warmOwnerSet = new Set(ownerIds);
+    return Object.freeze({
+      adapters: Object.freeze([
+        ...warmAdapters,
+        ...adapters.filter((adapter) => !warmOwnerSet.has(adapter.id)),
+      ]),
+      candidateIds: Object.freeze([...candidateIds]),
+      ownerIds: Object.freeze([...ownerIds]),
+      warmOwnerReused: true,
+    });
+  }
+
+  function validateAspirationAffinity(taskLog, affinity) {
+    if (!affinity.warmOwnerReused) return;
+    const expected = new Map(affinity.candidateIds.map((candidateId, index) => (
+      [candidateId, affinity.ownerIds[index]]
+    )));
+    const firstDispatch = new Map();
+    for (const task of taskLog) {
+      if (task?.event !== "dispatch" || task.purpose !== "aspiration") continue;
+      if (!firstDispatch.has(task.candidate_identity)) {
+        firstDispatch.set(task.candidate_identity, task.worker_id);
+      }
+      const expectedOwner = expected.get(task.candidate_identity);
+      if (expectedOwner !== undefined && task.worker_id !== expectedOwner) {
+        throw new RootIterationClientError(
+          "An aspiration retry left its prior exact-owner Worker.",
+          "browser-root-aspiration-owner-mismatch",
+        );
+      }
+    }
+    if ([...expected].some(([candidateId, ownerId]) => (
+      firstDispatch.get(candidateId) !== ownerId
+    ))) {
+      throw new RootIterationClientError(
+        "The initial aspiration wave did not reuse every claimed exact owner.",
+        "browser-root-aspiration-owner-mismatch",
+      );
+    }
   }
 
   function sameArray(left, right) {
@@ -212,6 +411,11 @@
       && payload.max_generation_positions <= sessionConfig.max_work
       && sessionConfig.mate_score === MATE_SCORE
       && sessionConfig.worker_threads === 1
+      && identity?.root_session_contract?.capabilities?.aspiration_windows === true
+      && identity?.root_session_contract?.hard_limits?.minimum_aspiration_initial_delta
+        === ASPIRATION_INITIAL_DELTA
+      && identity?.root_session_contract?.hard_limits?.maximum_aspiration_attempts
+        === MAX_ASPIRATION_ATTEMPTS
     );
   }
 
@@ -822,6 +1026,7 @@
           || !sameJson(response.config, sessionConfig)
           || response.configured_max_depth !== sessionConfig.max_depth
           || response.native_work_after !== 0
+          || response.capabilities?.aspiration_windows !== true
           || response.capabilities?.selected_owner_certification !== true
           || response.capabilities?.canonical_root_tactical_policy !== true
           || response.capabilities?.reply_mate_safety !== false
@@ -1354,6 +1559,8 @@
       let mateCacheHits = 0;
       let mateCacheMisses = 0;
       let preferredSeries = [];
+      let previousScore = null;
+      let previousOwners = new Map();
       let lastFailure = null;
       try {
         const { expected, geometry } = await this._ensurePool(
@@ -1389,6 +1596,10 @@
             required_prefix: [],
             depth,
             mate_score: MATE_SCORE,
+            aspiration: previousScore === null ? null : {
+              center_score: previousScore,
+              initial_delta: ASPIRATION_INITIAL_DELTA,
+            },
             deadline_monotonic_ms: absoluteDeadline,
             max_work: payload.max_generation_positions,
           };
@@ -1486,6 +1697,14 @@
               },
               cancel: () => {},
             }));
+            const aspirationAffinity = scheduleAspirationAffinity({
+              adapters,
+              manifest,
+              initialFullWave: geometry.initial_full_wave,
+              aspiration: requestBase.aspiration,
+              previousOwners,
+            });
+            const scheduledAdapters = aspirationAffinity.adapters;
             const safetyProbe = async (task, { signal: taskSignal } = {}) => {
               const ownerId = task.candidate?.owner_worker_id;
               const channel = this.pool.find((item) => item.id === ownerId) || this.pool[0];
@@ -1654,7 +1873,7 @@
               iteration = await ROOT_API.runRootIteration({
                 request: coordinatorRequest,
                 manifest,
-                workers: adapters,
+                workers: scheduledAdapters,
                 safetyProbe,
                 signal,
                 receiptDeadlineMs: absoluteReceiptDeadline,
@@ -1724,6 +1943,26 @@
                 "browser-root-iteration-uncertified",
               );
             }
+            const aspiration = normalizeAspirationReceipt(
+              iteration.aspiration,
+              requestBase.aspiration,
+              aspirationAffinity.candidateIds.length,
+              { allowUnsearched: iteration.tasks.length === 0 },
+            );
+            if (aspiration === null) {
+              throw new RootIterationClientError(
+                "The root coordinator returned invalid aspiration telemetry.",
+                "browser-root-aspiration-receipt-invalid",
+              );
+            }
+            const usedAspirationAffinity = iteration.tasks.length === 0
+              ? Object.freeze({
+                ...aspirationAffinity,
+                ownerIds: Object.freeze([]),
+                warmOwnerReused: false,
+              })
+              : aspirationAffinity;
+            validateAspirationAffinity(iteration.tasks, usedAspirationAffinity);
             const rootSeries = normalizeRootSeries(iteration.selected?.root_series);
             const prefixRequest = PREFIX_API.normalizePrefixRequest({
               ...requestBase.boundary,
@@ -1755,6 +1994,13 @@
             }
             safetyWork += iteration.work.safety_committed_work;
             preferredSeries = [...rootSeries.moves];
+            previousScore = iteration.selected.score;
+            previousOwners = exactCandidateOwnerMap(iteration.tasks);
+            const aspirationOwnerIds = Object.freeze([
+              ...usedAspirationAffinity.ownerIds,
+            ]);
+            const aspirationOwnerId = aspirationOwnerIds[0] ?? null;
+            const aspirationOwnerCount = aspirationOwnerIds.length;
             this.lastSafe = Object.freeze({
               ok: true,
               status: "complete",
@@ -1803,6 +2049,17 @@
                 mate_cache_misses: mateCacheMisses,
                 mate_cache_entries: this.mateProofCache.size,
                 safety_reserve_positions: safetyReserve,
+                aspiration_attempts: aspiration.attempts,
+                aspiration_fail_highs: aspiration.fail_highs,
+                aspiration_fail_lows: aspiration.fail_lows,
+                aspiration_exact_hits: aspiration.exact_hits,
+                aspiration_full_window_fallbacks: aspiration.full_window_fallbacks,
+                aspiration_candidate_count: aspiration.candidate_count,
+                aspiration_owner_worker_id: aspirationOwnerId,
+                aspiration_owner_worker_ids: aspirationOwnerIds,
+                aspiration_owner_worker_count: aspirationOwnerCount,
+                aspiration_owner_reused: usedAspirationAffinity.warmOwnerReused,
+                aspiration_warm_owner_reused_count: aspirationOwnerCount,
               },
               runtime_receipt: {
                 runtime: "browser-wasm",
@@ -1828,6 +2085,14 @@
                 canonical_replay_certified: true,
                 mate_safety_certified: true,
                 root_bound_coverage_complete: true,
+                aspiration: {
+                  ...aspiration,
+                  owner_worker_id: aspirationOwnerId,
+                  owner_worker_ids: aspirationOwnerIds,
+                  owner_worker_count: aspirationOwnerCount,
+                  warm_owner_reused: usedAspirationAffinity.warmOwnerReused,
+                  warm_owner_reused_count: aspirationOwnerCount,
+                },
                 mate_cache: {
                   schema: "spc-root-mate-proof-cache-summary-v1",
                   hits: mateCacheHits,
@@ -1941,12 +2206,16 @@
     RootWorkerChannel,
     canRunRequest,
     canonicalBoundary,
+    exactCandidateOwnerMap,
     normalizeRootSeries,
+    normalizeAspirationReceipt,
     mateProofCacheKey,
     normalizedRootPlayLimits,
     rootIdentity,
     sameBoundary,
+    scheduleAspirationAffinity,
     selectCertifiedGeometry,
+    validateAspirationAffinity,
   });
   globalThis.ScottishProgressiveBrowserRootIteration = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

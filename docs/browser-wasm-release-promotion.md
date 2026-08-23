@@ -87,7 +87,7 @@ schedule repetitions under `schedule_trials`. Every trial contains eight
 Workers, the initial full wave, an order-shape digest, the oracle result
 signature, completion status, zero Unknown/limit results, one selected-owner
 certification, and elapsed milliseconds. At least two distinct order digests
-are required and one trial must use wave 4.
+are required and the signed primary trial must use wave 8.
 
 ## Release commands
 

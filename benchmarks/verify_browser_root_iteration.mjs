@@ -85,7 +85,7 @@ const PREFIX_CONTRACT = Object.freeze({
 });
 const GEOMETRY = Object.freeze({
   desktop_workers: 8,
-  desktop_initial_full_wave: 4,
+  desktop_initial_full_wave: 8,
   aggregate_maximum_bytes: 8 * MEMORY.maximum_bytes,
   supported_lower_geometries: Object.freeze([
     Object.freeze({ workers: 4, initial_full_wave: 2, aggregate_maximum_bytes: 4 * MEMORY.maximum_bytes }),
@@ -135,7 +135,15 @@ const IDENTITY = Object.freeze({
   ruleset_version: ROOT_IDENTITY.ruleset_version,
   analysis_limits: null,
   prefix_contract: PREFIX_CONTRACT,
-  root_session_contract: Object.freeze({ schema: "spc-root-session-contract-v1", abi_version: 2 }),
+  root_session_contract: Object.freeze({
+    schema: "spc-root-session-contract-v1",
+    abi_version: 2,
+    capabilities: Object.freeze({ aspiration_windows: true }),
+    hard_limits: Object.freeze({
+      minimum_aspiration_initial_delta: 2_048,
+      maximum_aspiration_attempts: 4,
+    }),
+  }),
   root_geometry: GEOMETRY,
   memory_limits: MEMORY,
 });
@@ -218,11 +226,15 @@ function canonicalTacticalProtection(boundary) {
 
 function candidateMoves(series, index) {
   if (series === 1) {
-    return [["e2e4"], ["d2d4"], ["g1f3"], ["c2c4"], ["b1c3"], ["a2a3"], ["h2h3"], ["g2g3"]][index];
+    return [
+      ["e2e4"], ["d2d4"], ["g1f3"], ["c2c4"], ["b1c3"], ["a2a3"],
+      ["h2h3"], ["g2g3"], ["f2f4"], ["b2b3"], ["b2b4"], ["h2h4"],
+    ][index];
   }
   const twoMoveSeries = [
     ["a7a6", "h7h6"], ["b7b6", "g7g6"], ["c7c6", "f7f6"], ["d7d6", "e7e6"],
     ["g8f6", "b8c6"], ["a7a5", "h7h5"], ["b7b5", "g7g5"], ["c7c5", "f7f5"],
+    ["e7e6", "d7d5"], ["f7f6", "e7e5"], ["g7g6", "f8g7"], ["b8c6", "g8f6"],
   ][index];
   if (series === 2) return twoMoveSeries;
   const longerSeries = [
@@ -234,6 +246,10 @@ function candidateMoves(series, index) {
     ["f2f3", "f3f4", "g2g3", "g3g4", "h2h3"],
     ["g2g3", "g3g4", "h2h3", "h3h4", "a2a3"],
     ["h2h3", "h3h4", "a2a3", "a3a4", "b2b3"],
+    ["a2a4", "b2b4", "c2c4", "d2d4", "e2e4"],
+    ["b2b4", "c2c4", "d2d4", "e2e4", "f2f4"],
+    ["c2c4", "d2d4", "e2e4", "f2f4", "g2g4"],
+    ["d2d4", "e2e4", "f2f4", "g2g4", "h2h4"],
   ];
   return longerSeries[index].slice(0, series);
 }
@@ -247,7 +263,7 @@ function omittedTerminalMateMoves(series) {
 function manifestFor(boundary, generation, preferredSeries, { terminalFirst = false } = {}) {
   const white = boundary.series % 2 === 1;
   const childFen = white ? BLACK_FEN : WHITE_FEN;
-  const candidates = Array.from({ length: 8 }, (_, index) => {
+  const candidates = Array.from({ length: 12 }, (_, index) => {
     const moves = candidateMoves(boundary.series, index);
     const childFields = childFen.split(" ");
     childFields[4] = String(index);
@@ -427,6 +443,7 @@ class MockWorld {
           ? !canonicalProtection
           : canonicalProtection,
         capabilities: {
+          aspiration_windows: true,
           selected_owner_certification: true,
           canonical_root_tactical_policy: true,
           reply_mate_safety: false,
@@ -576,7 +593,7 @@ class MockWorld {
       const index = Number(payload.candidate_identity.slice(1));
       const white = worker.boundary.series % 2 === 1;
       const score = white ? 100 - index * 10 : -100 + index * 10;
-      const bound = payload.purpose === "scout"
+      const bound = payload.purpose === "scout" || payload.purpose === "aspiration"
         ? score <= payload.alpha ? "upper" : score >= payload.beta ? "lower" : "exact"
         : "exact";
       const work = setupWork(worker, payload, 1);
@@ -816,6 +833,120 @@ async function preflight(client) {
   return result;
 }
 
+function testAspirationAggregateAndAffinityContract() {
+  const receipt = {
+    enabled: true,
+    center_score: 50,
+    initial_delta: 2_048,
+    maximum_attempts: 4,
+    candidate_count: 3,
+    attempts: 7,
+    fail_highs: 2,
+    fail_lows: 2,
+    exact_hits: 3,
+    full_window_fallbacks: 0,
+  };
+  assert(rootClientApi.normalizeAspirationReceipt(
+    receipt,
+    { center_score: 50, initial_delta: 2_048 },
+    3,
+  ));
+  assert.equal(rootClientApi.normalizeAspirationReceipt(
+    { ...receipt, attempts: 13, fail_highs: 6 },
+    { center_score: 50, initial_delta: 2_048 },
+    3,
+  ), null, "aggregate attempts above four per candidate must fail closed");
+  assert.equal(rootClientApi.normalizeAspirationReceipt(
+    { ...receipt, attempts: 6, exact_hits: 2 },
+    { center_score: 50, initial_delta: 2_048 },
+    3,
+  ), null, "a completed aggregate must resolve every aspiration candidate");
+
+  const taskLog = [
+    {
+      event: "dispatch", task_id: "t0", candidate_identity: "c0",
+      worker_id: "root-2", purpose: "full",
+    },
+    {
+      event: "complete", task_id: "t0", candidate_identity: "c0",
+      worker_id: "root-2", purpose: "full", bound: "exact",
+    },
+    {
+      event: "dispatch", task_id: "t1", candidate_identity: "c1",
+      worker_id: "root-0", purpose: "threat-research",
+    },
+    {
+      event: "complete", task_id: "t1", candidate_identity: "c1",
+      worker_id: "root-0", purpose: "threat-research", bound: "exact",
+    },
+    {
+      event: "dispatch", task_id: "t2", candidate_identity: "c2",
+      worker_id: "root-1", purpose: "scout",
+    },
+    {
+      event: "complete", task_id: "t2", candidate_identity: "c2",
+      worker_id: "root-1", purpose: "scout", bound: "exact",
+    },
+  ];
+  const owners = rootClientApi.exactCandidateOwnerMap(taskLog);
+  assert.deepEqual([...owners], [["c0", "root-2"], ["c1", "root-0"]]);
+  const adapters = ["root-0", "root-1", "root-2"].map((id) => ({ id }));
+  const affinityManifest = {
+    candidates: ["c0", "c1", "c2"].map((candidate_identity) => ({
+      candidate_identity,
+      terminal_score: null,
+    })),
+  };
+  const complete = rootClientApi.scheduleAspirationAffinity({
+    adapters,
+    manifest: affinityManifest,
+    initialFullWave: 2,
+    aspiration: { center_score: 50, initial_delta: 2_048 },
+    previousOwners: owners,
+  });
+  assert.deepEqual(complete.adapters.map((adapter) => adapter.id), [
+    "root-2", "root-0", "root-1",
+  ]);
+  assert.deepEqual(complete.candidateIds, ["c0", "c1"]);
+  assert.deepEqual(complete.ownerIds, ["root-2", "root-0"]);
+  assert.equal(complete.warmOwnerReused, true);
+
+  const incomplete = rootClientApi.scheduleAspirationAffinity({
+    adapters,
+    manifest: affinityManifest,
+    initialFullWave: 3,
+    aspiration: { center_score: 50, initial_delta: 2_048 },
+    previousOwners: owners,
+  });
+  assert.deepEqual(incomplete.adapters, adapters);
+  assert.deepEqual(incomplete.ownerIds, []);
+  assert.equal(incomplete.warmOwnerReused, false);
+
+  const duplicateOwners = new Map([
+    ["c0", "root-0"], ["c1", "root-0"],
+  ]);
+  const nonUnique = rootClientApi.scheduleAspirationAffinity({
+    adapters,
+    manifest: affinityManifest,
+    initialFullWave: 2,
+    aspiration: { center_score: 50, initial_delta: 2_048 },
+    previousOwners: duplicateOwners,
+  });
+  assert.deepEqual(nonUnique.ownerIds, []);
+  assert.equal(nonUnique.warmOwnerReused, false);
+
+  assert.throws(
+    () => rootClientApi.scheduleAspirationAffinity({
+      adapters,
+      manifest: affinityManifest,
+      initialFullWave: 2,
+      aspiration: { center_score: 50, initial_delta: 2_048 },
+      previousOwners: new Map([["c0", "root-2"], ["c1", "root-missing"]]),
+    }),
+    (error) => error?.code === "browser-root-aspiration-owner-unavailable",
+  );
+}
+
 async function testPersistentPoolTwoTurns() {
   const world = new MockWorld();
   const client = browserClientApi.createClient({
@@ -838,10 +969,59 @@ async function testPersistentPoolTwoTurns() {
   assert.equal(client.rootRunner.pool.length, 8);
   const rootWorkers = [...client.rootRunner.pool].map((channel) => channel.worker);
   assert(rootWorkers.every((worker) => worker.createCount === 1 && worker.destroyCount === 0));
-  const firstWave = world.searchDispatches.filter((entry) => entry.task.generation === 1).slice(0, 4);
-  assert.equal(firstWave.length, 4);
+  const firstWave = world.searchDispatches.filter((entry) => entry.task.generation === 1).slice(0, 8);
+  assert.equal(firstWave.length, 8);
   assert(firstWave.every((entry) => entry.task.purpose === "full"));
-  assert.equal(new Set(firstWave.map((entry) => entry.worker)).size, 4);
+  assert.equal(new Set(firstWave.map((entry) => entry.worker)).size, 8);
+  const d1OwnerByCandidate = new Map(firstWave.map((entry) => (
+    [entry.task.candidate_identity, entry.worker]
+  )));
+  const d2FirstAspirationByCandidate = new Map();
+  for (const entry of world.searchDispatches.filter((item) => (
+    item.task.child_depth === 1 && item.task.purpose === "aspiration"
+  ))) {
+    if (!d2FirstAspirationByCandidate.has(entry.task.candidate_identity)) {
+      d2FirstAspirationByCandidate.set(entry.task.candidate_identity, entry);
+    }
+  }
+  assert.equal(d2FirstAspirationByCandidate.size, 8);
+  for (const [candidateId, priorOwner] of d1OwnerByCandidate) {
+    assert.equal(
+      d2FirstAspirationByCandidate.get(candidateId)?.worker,
+      priorOwner,
+      `${candidateId} must reuse its exact D1 owner for D2 aspiration`,
+    );
+  }
+  assert.deepEqual(first.runtime_receipt.aspiration, {
+    enabled: true,
+    center_score: 100,
+    initial_delta: 2_048,
+    maximum_attempts: 4,
+    candidate_count: 8,
+    attempts: 8,
+    fail_highs: 0,
+    fail_lows: 0,
+    exact_hits: 8,
+    full_window_fallbacks: 0,
+    owner_worker_id: "root-0",
+    owner_worker_ids: [
+      "root-0", "root-1", "root-2", "root-3",
+      "root-4", "root-5", "root-6", "root-7",
+    ],
+    owner_worker_count: 8,
+    warm_owner_reused: true,
+    warm_owner_reused_count: 8,
+  });
+  assert.equal(first.stats.aspiration_candidate_count, 8);
+  assert.deepEqual(
+    first.stats.aspiration_owner_worker_ids,
+    [
+      "root-0", "root-1", "root-2", "root-3",
+      "root-4", "root-5", "root-6", "root-7",
+    ],
+  );
+  assert.equal(first.stats.aspiration_owner_worker_count, 8);
+  assert.equal(first.stats.aspiration_warm_owner_reused_count, 8);
   assert(world.searchDispatches.some((entry) => entry.task.purpose === "scout"));
   assert.equal(world.safetyReceipts.length, 1, "D1 and D2 must share one complete mate proof");
   assert.equal(world.safetyReceipts[0].call_work_credit, 1_000_000);
@@ -1239,6 +1419,7 @@ function testGeometry() {
   }).workers, 4, "the largest fitting certified lower pool must win");
 }
 
+testAspirationAggregateAndAffinityContract();
 await testPersistentPoolTwoTurns();
 await testWhiteAndBlackMateMapping();
 await testCrashReturnsLastSafeAndReprobes();
@@ -1257,7 +1438,11 @@ testGeometry();
 
 process.stdout.write(JSON.stringify({
   schema: "spc-browser-root-iteration-mock-receipt-v1",
-  desktop_initial_full_wave: "4-of-8",
+  desktop_initial_full_wave: "8-of-8",
+  all_initial_wave_aspiration: true,
+  aggregate_aspiration_accounting: true,
+  exact_owner_affinity: true,
+  unavailable_claimed_owner_fails_closed: true,
   persistent_worker_pool: true,
   fresh_sessions_per_turn: true,
   pooled_native_prefix: true,

@@ -93,6 +93,7 @@ function create(overrides = {}) {
   assert.equal(reply.product_publishable, false);
   assert.equal(reply.safety_certified, false);
   assert.equal(reply.capabilities.reply_mate_safety, false);
+  assert.equal(reply.capabilities.aspiration_windows, true);
   assert.equal(reply.capabilities.selected_owner_certification, true);
   assert.deepEqual(reply.config, overrides.config ?? config);
   return reply;
@@ -164,6 +165,9 @@ function searchTask({
   deadline,
   credit = 500_000,
   purpose = "full",
+  alpha = -2 * config.mate_score,
+  beta = 2 * config.mate_score,
+  ttPersistence = purpose === "scout" ? "rollback" : "commit",
   iteration = `depth-${childDepth + 1}`,
   task = `task-${childDepth + 1}`,
 }) {
@@ -187,10 +191,10 @@ function searchTask({
     purpose,
     mate_score: config.mate_score,
     child_depth: childDepth,
-    alpha: -2 * config.mate_score,
-    beta: 2 * config.mate_score,
-    tt_persistence: purpose === "scout" ? "rollback" : "commit",
-    mover: "white",
+    alpha,
+    beta,
+    tt_persistence: ttPersistence,
+    mover: manifest.root_white_to_move ? "white" : "black",
   };
 }
 
@@ -199,6 +203,10 @@ assert.equal(contract.abi_version, 2);
 assert.equal(contract.product_publishable, false);
 assert.equal(contract.reply_mate_safety, false);
 assert.equal(contract.response_lifetime, "until-next-root-session-abi-call-on-this-worker");
+assert.equal(contract.capabilities.aspiration_windows, true);
+assert.equal(contract.hard_limits.minimum_aspiration_initial_delta, 2_048);
+assert.equal(contract.hard_limits.maximum_aspiration_attempts, 4);
+const aspirationInitialDelta = contract.hard_limits.minimum_aspiration_initial_delta;
 
 // One session retains caches and work counters across D1 then D2 candidate calls.
 const coordinator = create();
@@ -249,8 +257,283 @@ assert.equal(
   depthTwo.work.total_accounted_work,
   depthTwo.work.external_work + depthTwo.work.native_work_after,
 );
+const aspiration = call(
+  wasm._spc_root_session_search_json,
+  [coordinator.session_id],
+  searchTask({
+    candidate,
+    manifest,
+    nativeBefore: depthTwo.work.native_work_after,
+    childDepth: 1,
+    deadline: commonDeadline,
+    purpose: "aspiration",
+    alpha: depthTwo.score - aspirationInitialDelta,
+    beta: depthTwo.score + aspirationInitialDelta,
+    iteration: "depth-2-aspiration",
+    task: "task-depth-2-aspiration",
+  }),
+);
+assert.equal(aspiration.status, "complete", JSON.stringify(aspiration));
+assert.equal(aspiration.purpose, "aspiration");
+assert.equal(aspiration.tt_persistence, "commit");
+assert.equal(aspiration.bound, "exact");
+
+const scout = call(
+  wasm._spc_root_session_search_json,
+  [coordinator.session_id],
+  searchTask({
+    candidate,
+    manifest,
+    nativeBefore: aspiration.work.native_work_after,
+    childDepth: 1,
+    deadline: commonDeadline,
+    purpose: "scout",
+    alpha: depthTwo.score - 1,
+    beta: depthTwo.score,
+    iteration: "depth-2-scout",
+    task: "task-depth-2-scout",
+  }),
+);
+assert.equal(scout.status, "complete", JSON.stringify(scout));
+assert.equal(scout.purpose, "scout");
+assert.equal(scout.tt_persistence, "rollback");
+assert.equal(scout.beta, scout.alpha + 1);
+
+const aspirationFullWindowRejected = call(
+  wasm._spc_root_session_search_json,
+  [coordinator.session_id],
+  searchTask({
+    candidate,
+    manifest,
+    nativeBefore: scout.work.native_work_after,
+    childDepth: 1,
+    deadline: commonDeadline,
+    purpose: "aspiration",
+    iteration: "depth-2-aspiration-full-rejected",
+    task: "task-depth-2-aspiration-full-rejected",
+  }),
+);
+assert.equal(aspirationFullWindowRejected.status, "unsupported");
+assert.equal(aspirationFullWindowRejected.error_code, "candidate-task-invalid");
+
+const narrowFullRejected = call(
+  wasm._spc_root_session_search_json,
+  [coordinator.session_id],
+  searchTask({
+    candidate,
+    manifest,
+    nativeBefore: scout.work.native_work_after,
+    childDepth: 1,
+    deadline: commonDeadline,
+    alpha: depthTwo.score - aspirationInitialDelta,
+    beta: depthTwo.score + aspirationInitialDelta,
+    iteration: "depth-2-narrow-full-rejected",
+    task: "task-depth-2-narrow-full-rejected",
+  }),
+);
+assert.equal(narrowFullRejected.status, "unsupported");
+assert.equal(narrowFullRejected.error_code, "candidate-task-invalid");
+
+const aspirationRollbackRejected = call(
+  wasm._spc_root_session_search_json,
+  [coordinator.session_id],
+  searchTask({
+    candidate,
+    manifest,
+    nativeBefore: scout.work.native_work_after,
+    childDepth: 1,
+    deadline: commonDeadline,
+    purpose: "aspiration",
+    alpha: depthTwo.score - aspirationInitialDelta,
+    beta: depthTwo.score + aspirationInitialDelta,
+    ttPersistence: "rollback",
+    iteration: "depth-2-aspiration-rollback-rejected",
+    task: "task-depth-2-aspiration-rollback-rejected",
+  }),
+);
+assert.equal(aspirationRollbackRejected.status, "unsupported");
+assert.equal(aspirationRollbackRejected.error_code, "candidate-task-invalid");
 assert.equal(wasm._spc_root_session_destroy(coordinator.session_id), 1);
 assert.equal(wasm._spc_root_session_destroy(coordinator.session_id), 0);
+
+function aspirationSemantic(result) {
+  return {
+    score: result.score,
+    proof_bounds: result.proof_bounds,
+    root_series: result.root_series,
+    child_pv: result.child_pv,
+  };
+}
+
+function assertAspirationWorkReceipt(result, expectedBefore) {
+  const work = result.work;
+  assert.equal(work.native_work_before, expectedBefore);
+  assert.equal(work.call_work_credit, 500_000);
+  assert.equal(work.call_native_work, work.native_work_after - work.native_work_before);
+  assert.ok(work.call_native_work >= 0 && work.call_native_work <= 500_000);
+  assert.equal(work.total_accounted_work, work.external_work + work.native_work_after);
+  for (const key of [
+    "tt_entries", "tt_entries_peak", "tt_capacity",
+    "eval_entries", "eval_entries_peak", "eval_capacity",
+  ]) {
+    assert.ok(Number.isSafeInteger(work[key]) && work[key] >= 0, `invalid ${key}`);
+  }
+}
+
+function assertAspirationCumulative(previous, current) {
+  assert.ok(current.native_work_after >= previous.native_work_after);
+  assert.ok(current.tt_entries_peak >= previous.tt_entries_peak);
+  assert.ok(current.eval_entries_peak >= previous.eval_entries_peak);
+  assert.ok(current.series_cache_weight_peak >= previous.series_cache_weight_peak);
+  assert.ok(current.series_cache_entries_peak >= previous.series_cache_entries_peak);
+}
+
+function prepareAspirationSession(label, laneBoundary) {
+  const created = create({ boundary: laneBoundary });
+  const deadline = Math.floor(performance.now() + 60_000);
+  const root = enumerate(
+    created.session_id,
+    0,
+    deadline,
+    [],
+    500_000,
+    `${label}-enumerate`,
+  );
+  assert.equal(root.status, "complete", JSON.stringify(root));
+  assert.ok(root.candidates.length > 0, `${label} retained no root candidate`);
+  const laneManifest = manifestOf(root);
+  const laneCandidate = laneManifest.candidates[0];
+  assert.equal(laneCandidate.terminal_score, null, `${label} candidate is terminal`);
+  return {
+    created,
+    deadline,
+    root,
+    manifest: laneManifest,
+    candidate: laneCandidate,
+  };
+}
+
+function runAspirationSearch(prepared, {
+  label,
+  purpose,
+  alpha,
+  beta,
+  nativeBefore,
+}) {
+  return call(
+    wasm._spc_root_session_search_json,
+    [prepared.created.session_id],
+    searchTask({
+      candidate: prepared.candidate,
+      manifest: prepared.manifest,
+      nativeBefore,
+      childDepth: 1,
+      deadline: prepared.deadline,
+      purpose,
+      alpha,
+      beta,
+      iteration: label,
+      task: `${label}-task`,
+    }),
+  );
+}
+
+function certifyFailSoftAspiration(label, laneBoundary) {
+  const initialDelta = aspirationInitialDelta;
+  const oraclePrepared = prepareAspirationSession(`${label}-oracle`, laneBoundary);
+  const oracle = runAspirationSearch(oraclePrepared, {
+    label: `${label}-oracle-full`,
+    purpose: "full",
+    alpha: -2 * config.mate_score,
+    beta: 2 * config.mate_score,
+    nativeBefore: oraclePrepared.root.work.native_work_after,
+  });
+  assert.equal(oracle.status, "complete", JSON.stringify(oracle));
+  assert.equal(oracle.bound, "exact");
+  assert.equal(oracle.tt_persistence, "commit");
+  assert.equal(oracle.mover, laneBoundary.series % 2 === 1 ? "white" : "black");
+  assertAspirationWorkReceipt(
+    oracle,
+    oraclePrepared.root.work.native_work_after,
+  );
+  assertAspirationCumulative(oraclePrepared.root.work, oracle.work);
+  assert.ok(oracle.work.call_native_work > 0, `${label} oracle did no native work`);
+  assert.equal(wasm._spc_root_session_destroy(oraclePrepared.created.session_id), 1);
+
+  const directions = {};
+  for (const spec of [
+    { name: "fail-high", bound: "lower", center: oracle.score - (3 * initialDelta) / 2 },
+    { name: "fail-low", bound: "upper", center: oracle.score + (3 * initialDelta) / 2 },
+  ]) {
+    assert.ok(Number.isSafeInteger(spec.center));
+    const prepared = prepareAspirationSession(`${label}-${spec.name}`, laneBoundary);
+    const initialAlpha = spec.center - initialDelta;
+    const initialBeta = spec.center + initialDelta;
+    const failure = runAspirationSearch(prepared, {
+      label: `${label}-${spec.name}-initial`,
+      purpose: "aspiration",
+      alpha: initialAlpha,
+      beta: initialBeta,
+      nativeBefore: prepared.root.work.native_work_after,
+    });
+    assert.equal(failure.status, "complete", JSON.stringify(failure));
+    assert.equal(failure.bound, spec.bound);
+    assert.equal(failure.tt_persistence, "commit");
+    assert.equal(failure.tt_writes_rolled_back, 0);
+    assertAspirationWorkReceipt(failure, prepared.root.work.native_work_after);
+    assertAspirationCumulative(prepared.root.work, failure.work);
+    assert.ok(failure.work.call_native_work > 0, `${label} ${spec.name} did no work`);
+    assert.ok(
+      failure.work.tt_entries > prepared.root.work.tt_entries,
+      `${label} ${spec.name} did not commit a TT bound`,
+    );
+
+    const widened = runAspirationSearch(prepared, {
+      label: `${label}-${spec.name}-widened`,
+      purpose: "aspiration",
+      alpha: spec.center - 2 * initialDelta,
+      beta: spec.center + 2 * initialDelta,
+      nativeBefore: failure.work.native_work_after,
+    });
+    assert.equal(widened.status, "complete", JSON.stringify(widened));
+    assert.equal(widened.bound, "exact");
+    assert.equal(widened.tt_persistence, "commit");
+    assert.equal(widened.tt_writes_rolled_back, 0);
+    assert.deepEqual(aspirationSemantic(widened), aspirationSemantic(oracle));
+    assertAspirationWorkReceipt(widened, failure.work.native_work_after);
+    assertAspirationCumulative(failure.work, widened.work);
+    assert.ok(widened.work.tt_entries >= failure.work.tt_entries);
+    assert.ok(widened.work.tt_entries_peak >= failure.work.tt_entries_peak);
+    assert.ok(widened.work.call_stats.tt_hits > 0, `${label} widened search missed TT`);
+    assert.equal(wasm._spc_root_session_destroy(prepared.created.session_id), 1);
+
+    directions[spec.name.replace("-", "_")] = {
+      initial_bound: failure.bound,
+      initial_score: failure.score,
+      initial_work: failure.work.call_native_work,
+      initial_tt_entries: failure.work.tt_entries,
+      widened_bound: widened.bound,
+      widened_score: widened.score,
+      widened_work: widened.work.call_native_work,
+      widened_tt_hits: widened.work.call_stats.tt_hits,
+      widened_tt_entries: widened.work.tt_entries,
+    };
+  }
+  return {
+    mover: oracle.mover,
+    oracle: aspirationSemantic(oracle),
+    ...directions,
+  };
+}
+
+const aspirationFailSoft = {
+  white: certifyFailSoftAspiration("white", boundary),
+  black: certifyFailSoftAspiration("black", {
+    ...boundary,
+    fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1",
+    series: 2,
+  }),
+};
 
 const rootEnumerationWork = enumeration.work.call_native_work;
 assert.ok(rootEnumerationWork > 0);
@@ -722,5 +1005,18 @@ process.stdout.write(`${JSON.stringify({
     child_pv: depthTwo.child_pv,
     work: depthTwo.work,
   },
+  aspiration_window: {
+    accepted: true,
+    bound: aspiration.bound,
+    score: aspiration.score,
+    alpha: aspiration.alpha,
+    beta: aspiration.beta,
+    narrow_full_rejected: narrowFullRejected.error_code === "candidate-task-invalid",
+    full_window_rejected: aspirationFullWindowRejected.error_code === "candidate-task-invalid",
+    rollback_rejected: aspirationRollbackRejected.error_code === "candidate-task-invalid",
+    scout_rollback_preserved: scout.status === "complete"
+      && scout.tt_persistence === "rollback",
+  },
+  aspiration_fail_soft: aspirationFailSoft,
   manifest,
 })}\n`);

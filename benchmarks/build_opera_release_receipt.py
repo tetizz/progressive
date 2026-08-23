@@ -10,6 +10,15 @@ from typing import Any, Mapping
 
 
 HEX_64 = re.compile(r"[0-9a-f]{64}")
+ASPIRATION_INITIAL_DELTA = 2_048
+MAX_ASPIRATION_ATTEMPTS = 4
+ASPIRATION_COUNTER_FIELDS = (
+    "attempts",
+    "fail_highs",
+    "fail_lows",
+    "exact_hits",
+    "full_window_fallbacks",
+)
 FINAL_RESULT_FIELDS = (
     "candidate_identity",
     "move",
@@ -69,6 +78,148 @@ def _selected(result: Mapping[str, Any]) -> dict[str, Any]:
         selected["principal_variation"]
     )
     return selected
+
+
+def _aspiration_iterations(
+    iterations: object,
+    *,
+    label: str,
+    expected_depths: list[int],
+    expected_mode: str,
+    expected_candidate_count: int,
+) -> list[dict[str, Any]]:
+    if not isinstance(iterations, list) or len(iterations) != len(expected_depths):
+        raise ValueError(f"{label} lacks its exact aspiration depth schedule")
+    normalized: list[dict[str, Any]] = []
+    previous_score: int | None = None
+    previous_owner: str | None = None
+    for expected_depth, raw_iteration in zip(expected_depths, iterations, strict=True):
+        if not isinstance(raw_iteration, dict) or raw_iteration.get("depth") != expected_depth:
+            raise ValueError(f"{label} has a malformed D{expected_depth} aspiration iteration")
+        score = raw_iteration.get("score")
+        selected_owner = raw_iteration.get("owner_worker_id")
+        if (
+            isinstance(score, bool)
+            or not isinstance(score, int)
+            or not isinstance(selected_owner, str)
+            or not selected_owner
+        ):
+            raise ValueError(f"{label} D{expected_depth} lacks an exact selected owner")
+        raw_aspiration = raw_iteration.get("aspiration")
+        if not isinstance(raw_aspiration, dict):
+            raise ValueError(f"{label} D{expected_depth} lacks aspiration telemetry")
+        expected_enabled = expected_mode == "warm" and previous_score is not None
+        if raw_aspiration.get("enabled") is not expected_enabled:
+            state = "enabled" if expected_enabled else "disabled"
+            raise ValueError(f"{label} D{expected_depth} aspiration must be {state}")
+        if raw_aspiration.get("maximum_attempts") != MAX_ASPIRATION_ATTEMPTS:
+            raise ValueError(f"{label} D{expected_depth} aspiration attempt limit drifted")
+        candidate_count = raw_aspiration.get("candidate_count")
+        if (
+            isinstance(candidate_count, bool)
+            or not isinstance(candidate_count, int)
+            or candidate_count < 0
+            or candidate_count > 8
+        ):
+            raise ValueError(f"{label} D{expected_depth} aspiration candidate count is invalid")
+        counters: dict[str, int] = {}
+        for field in ASPIRATION_COUNTER_FIELDS:
+            value = raw_aspiration.get(field)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(
+                    f"{label} D{expected_depth} aspiration counter {field!r} is invalid"
+                )
+            counters[field] = value
+        if (
+            counters["attempts"] > candidate_count * MAX_ASPIRATION_ATTEMPTS
+            or counters["exact_hits"] > candidate_count
+            or counters["full_window_fallbacks"] > candidate_count
+            or counters["fail_highs"] + counters["fail_lows"]
+            + counters["exact_hits"] != counters["attempts"]
+            or counters["exact_hits"] + counters["full_window_fallbacks"]
+            > candidate_count
+        ):
+            raise ValueError(f"{label} D{expected_depth} aspiration accounting contradicts itself")
+
+        aspiration_owner = raw_aspiration.get("owner_worker_id")
+        owner_worker_ids = raw_aspiration.get("owner_worker_ids")
+        owner_worker_count = raw_aspiration.get("owner_worker_count")
+        warm_owner_reused = raw_aspiration.get("warm_owner_reused")
+        warm_owner_reused_count = raw_aspiration.get("warm_owner_reused_count")
+        if expected_enabled:
+            if (
+                candidate_count != expected_candidate_count
+                or raw_aspiration.get("center_score") != previous_score
+                or raw_aspiration.get("initial_delta") != ASPIRATION_INITIAL_DELTA
+            ):
+                raise ValueError(f"{label} D{expected_depth} aspiration window drifted")
+            if (
+                not isinstance(aspiration_owner, str)
+                or not aspiration_owner
+                or aspiration_owner != previous_owner
+                or warm_owner_reused is not True
+                or not isinstance(owner_worker_ids, list)
+                or len(owner_worker_ids) != candidate_count
+                or any(not isinstance(owner, str) or not owner for owner in owner_worker_ids)
+                or len(set(owner_worker_ids)) != candidate_count
+                or owner_worker_ids[0] != aspiration_owner
+                or owner_worker_count != candidate_count
+                or warm_owner_reused_count != candidate_count
+            ):
+                raise ValueError(f"{label} D{expected_depth} did not reuse its warm owner")
+            if candidate_count < 1 or counters["attempts"] < candidate_count or (
+                counters["exact_hits"] + counters["full_window_fallbacks"]
+                != candidate_count
+            ):
+                raise ValueError(
+                    f"{label} D{expected_depth} aspiration has no exact result or fallback"
+                )
+            failure_count = counters["fail_highs"] + counters["fail_lows"]
+            if counters["full_window_fallbacks"] > 0 and (
+                failure_count
+                < counters["full_window_fallbacks"] * MAX_ASPIRATION_ATTEMPTS
+                or failure_count > (
+                    counters["full_window_fallbacks"] * MAX_ASPIRATION_ATTEMPTS
+                    + counters["exact_hits"] * (MAX_ASPIRATION_ATTEMPTS - 1)
+                )
+            ):
+                raise ValueError(
+                    f"{label} D{expected_depth} aspiration fallback accounting is invalid"
+                )
+        elif (
+            raw_aspiration.get("center_score") is not None
+            or raw_aspiration.get("initial_delta") is not None
+            or candidate_count != 0
+            or aspiration_owner is not None
+            or owner_worker_ids != []
+            or owner_worker_count != 0
+            or warm_owner_reused is not False
+            or warm_owner_reused_count != 0
+            or any(counters.values())
+        ):
+            raise ValueError(f"{label} D{expected_depth} disabled aspiration did work")
+
+        normalized.append(
+            {
+                "depth": expected_depth,
+                "selected_score": score,
+                "selected_owner_worker_id": selected_owner,
+                "enabled": expected_enabled,
+                "center_score": raw_aspiration.get("center_score"),
+                "initial_delta": raw_aspiration.get("initial_delta"),
+                "maximum_attempts": MAX_ASPIRATION_ATTEMPTS,
+                "candidate_count": candidate_count,
+                **counters,
+                "owner_worker_id": aspiration_owner,
+                "owner_worker_ids": list(owner_worker_ids),
+                "owner_worker_count": owner_worker_count,
+                "warm_owner_reused": warm_owner_reused,
+                "warm_owner_reused_count": warm_owner_reused_count,
+            }
+        )
+        previous_score = score
+        previous_owner = selected_owner
+    return normalized
 
 
 def _normalize_bounds(
@@ -149,7 +300,12 @@ def _assert_run(
     expected_mode: str,
     oracle: Mapping[str, Any],
     require_oracle_coverage: bool,
-) -> tuple[Mapping[str, Any], Mapping[str, Any], list[dict[str, Any]]]:
+) -> tuple[
+    Mapping[str, Any],
+    Mapping[str, Any],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
     geometry = worker.get("geometry")
     result = worker.get("result")
     iterations = worker.get("iterations")
@@ -157,6 +313,15 @@ def _assert_run(
         raise ValueError(f"{label} lacks geometry, result, or iterations")
     if geometry.get("mode") != expected_mode or [item.get("depth") for item in iterations] != expected_depths:
         raise ValueError(f"{label} did not use the expected {expected_mode} depth schedule")
+    if geometry.get("aspiration_enabled") is not True:
+        raise ValueError(f"{label} did not enable the aspiration-capable harness")
+    aspiration = _aspiration_iterations(
+        iterations,
+        label=label,
+        expected_depths=expected_depths,
+        expected_mode=expected_mode,
+        expected_candidate_count=int(geometry.get("initial_full_wave", 0)),
+    )
     if (
         result.get("completed_depth") != 5
         or result.get("coverage_complete") is not True
@@ -194,7 +359,7 @@ def _assert_run(
     order_shape = result.get("order_shape_sha256")
     if not isinstance(order_shape, str) or not HEX_64.fullmatch(order_shape):
         raise ValueError(f"{label} lacks a real task-order digest")
-    return geometry, result, bounds
+    return geometry, result, bounds, aspiration
 
 
 def _elapsed(worker: Mapping[str, Any], label: str) -> float:
@@ -222,6 +387,7 @@ def _oracle_run(
     worker: Mapping[str, Any],
     result: Mapping[str, Any],
     bounds: list[dict[str, Any]],
+    aspiration: list[dict[str, Any]],
     label: str,
 ) -> dict[str, Any]:
     selected = _selected(result)
@@ -242,6 +408,8 @@ def _oracle_run(
         "retained_manifest_sha256": retained_manifest,
         "rival_bounds": bounds,
         "root_coverage_sha256": _canonical_sha256(bounds),
+        "aspiration_iterations": copy.deepcopy(aspiration),
+        "aspiration_sha256": _canonical_sha256(aspiration),
     }
 
 
@@ -250,14 +418,16 @@ def _schedule_trial(
     geometry: Mapping[str, Any],
     result: Mapping[str, Any],
     bounds: list[dict[str, Any]],
+    aspiration: list[dict[str, Any]],
     label: str,
 ) -> dict[str, Any]:
-    binding = _oracle_run(worker, result, bounds, label)
+    binding = _oracle_run(worker, result, bounds, aspiration, label)
     trial_semantic = {
         "run_signature_sha256": binding["run_signature_sha256"],
         "workers": geometry["workers"],
         "initial_full_wave": geometry["initial_full_wave"],
         "order_shape_sha256": result["order_shape_sha256"],
+        "aspiration_sha256": binding["aspiration_sha256"],
     }
     return {
         "workers": geometry["workers"],
@@ -270,14 +440,14 @@ def _schedule_trial(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Bind real Opera runs to the D5 release oracle")
-    parser.add_argument("--warm-wave4", type=Path, required=True)
+    parser.add_argument("--warm-primary", type=Path, required=True)
     parser.add_argument("--warm-other", type=Path, required=True)
     parser.add_argument("--cold", type=Path, required=True)
     parser.add_argument("--root-oracle", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
-    warm4_cdp = _load(args.warm_wave4)
+    warm_cdp = _load(args.warm_primary)
     other_cdp = _load(args.warm_other)
     cold_cdp = _load(args.cold)
     oracle = _load(args.root_oracle)
@@ -287,18 +457,18 @@ def main() -> int:
     if not isinstance(oracle_signature, str) or not HEX_64.fullmatch(oracle_signature):
         raise ValueError("root D5 oracle signature is invalid")
 
-    warm4 = _worker(warm4_cdp, "warm wave-4 run")
+    warm = _worker(warm_cdp, "warm wave-8 run")
     other = _worker(other_cdp, "alternate warm run")
     cold = _worker(cold_cdp, "fresh D5 run")
-    warm4_geometry, warm4_result, warm4_bounds = _assert_run(
-        warm4,
-        label="warm wave-4 run",
+    warm_geometry, warm_result, warm_bounds, warm_aspiration = _assert_run(
+        warm,
+        label="warm wave-8 run",
         expected_depths=[1, 2, 3, 4, 5],
         expected_mode="warm",
         oracle=oracle,
         require_oracle_coverage=True,
     )
-    other_geometry, other_result, other_bounds = _assert_run(
+    other_geometry, other_result, other_bounds, other_aspiration = _assert_run(
         other,
         label="alternate warm run",
         expected_depths=[1, 2, 3, 4, 5],
@@ -306,7 +476,7 @@ def main() -> int:
         oracle=oracle,
         require_oracle_coverage=False,
     )
-    cold_geometry, cold_result, cold_bounds = _assert_run(
+    cold_geometry, cold_result, cold_bounds, cold_aspiration = _assert_run(
         cold,
         label="fresh D5 run",
         expected_depths=[5],
@@ -315,39 +485,41 @@ def main() -> int:
         require_oracle_coverage=False,
     )
     if (
-        warm4_geometry.get("workers") != 8
-        or warm4_geometry.get("initial_full_wave") != 4
-        or warm4_geometry.get("config") != oracle.get("session_config")
+        warm_geometry.get("workers") != 8
+        or warm_geometry.get("initial_full_wave") != 8
+        or warm_geometry.get("config") != oracle.get("session_config")
         or other_geometry.get("workers") != 8
-        or other_geometry.get("initial_full_wave") == 4
+        or other_geometry.get("initial_full_wave") == 8
         or other_geometry.get("config") != oracle.get("session_config")
         or cold_geometry.get("workers") != 8
         or cold_geometry.get("config") != oracle.get("session_config")
     ):
         raise ValueError("Opera release runs used the wrong Worker, wave, or config geometry")
-    if warm4.get("artifact") != other.get("artifact") or warm4.get("artifact") != cold.get("artifact"):
+    if warm.get("artifact") != other.get("artifact") or warm.get("artifact") != cold.get("artifact"):
         raise ValueError("Opera release runs did not execute the same exact artifact")
 
     schedule_trials = [
         _schedule_trial(
-            warm4,
-            warm4_geometry,
-            warm4_result,
-            warm4_bounds,
-            "warm wave-4 run",
+            warm,
+            warm_geometry,
+            warm_result,
+            warm_bounds,
+            warm_aspiration,
+            "warm wave-8 run",
         ),
         _schedule_trial(
             other,
             other_geometry,
             other_result,
             other_bounds,
+            other_aspiration,
             "alternate warm run",
         ),
     ]
     if schedule_trials[0]["order_shape_sha256"] == schedule_trials[1]["order_shape_sha256"]:
         raise ValueError("alternate Opera schedules produced the same task-order shape")
 
-    output = copy.deepcopy(warm4_cdp)
+    output = copy.deepcopy(warm_cdp)
     output_worker = output["worker_receipt"]
     output_worker["schema"] = "spc-opera-root-d5-benchmark-v2"
     output_worker["oracle"] = {
@@ -356,12 +528,19 @@ def main() -> int:
         "selected_signature_sha256": _canonical_sha256(oracle["selected"]),
         "cold_selected_matches_oracle": True,
         "warm_full_matches_oracle": True,
-        "cold_d5": _oracle_run(cold, cold_result, cold_bounds, "fresh D5 run"),
+        "cold_d5": _oracle_run(
+            cold,
+            cold_result,
+            cold_bounds,
+            cold_aspiration,
+            "fresh D5 run",
+        ),
         "warm_d1_through_d5": _oracle_run(
-            warm4,
-            warm4_result,
-            warm4_bounds,
-            "warm wave-4 run",
+            warm,
+            warm_result,
+            warm_bounds,
+            warm_aspiration,
+            "warm wave-8 run",
         ),
     }
     output_worker["schedule_trials"] = schedule_trials
@@ -372,6 +551,7 @@ def main() -> int:
             "alternate_schedule_selected_matches_oracle": True,
             "multiple_seed_wave_order_shapes": True,
             "no_unknown_or_limit_results": True,
+            "aspiration_iteration_lifecycle": True,
         }
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -1984,6 +1984,7 @@ void write_config(std::ostringstream& stream, const ParsedConfig& parsed) {
            << ",\"search\":true,\"call_work_credit\":true"
            << ",\"hard_memory_limit\":true,\"tt_scout_rollback\":true"
            << ",\"persistent_depth_reuse\":true"
+           << ",\"aspiration_windows\":true"
            << ",\"selected_owner_certification\":true"
            << ",\"canonical_root_tactical_policy\":true"
            << ",\"reply_mate_safety\":false}"
@@ -2210,8 +2211,10 @@ struct SearchEcho {
     result.mover = string_field(request, "mover");
     const bool purpose_ok = result.purpose == "full"
         || result.purpose == "scout"
+        || result.purpose == "aspiration"
         || result.purpose == "threat-research"
         || result.purpose == "selected-certification";
+    const bool aspiration = result.purpose == "aspiration";
     const bool rollback = result.tt_persistence == "rollback";
     const auto& retained = retained_candidate(session, result.candidate_identity);
     if (
@@ -2236,7 +2239,13 @@ struct SearchEcho {
             && result.beta != result.alpha + 1
         )
         || (
+            aspiration
+            && result.alpha == -2 * result.mate_score
+            && result.beta == 2 * result.mate_score
+        )
+        || (
             result.purpose != "scout"
+            && !aspiration
             && (
                 result.alpha != -2 * result.mate_score
                 || result.beta != 2 * result.mate_score
@@ -2387,7 +2396,7 @@ void write_search_echo(
 }  // namespace
 
 extern "C" const char* spc_root_session_contract_json() {
-    root_last_result = R"json({"schema":"spc-root-session-contract-v1","abi_version":2,"request_encoding":"caller-owned-utf8-pointer-length","response_ownership":"facade-owned","response_lifetime":"until-next-root-session-abi-call-on-this-worker","one_active_session_per_worker":true,"worker_threads":1,"pthreads_required":false,"product_publishable":false,"reply_mate_safety":false,"capabilities":{"enumerate":true,"import":true,"search":true,"call_work_credit":true,"hard_memory_limit":true,"tt_scout_rollback":true,"persistent_depth_reuse":true,"selected_owner_certification":true,"canonical_root_tactical_policy":true},"request_schemas":{"create":"spc-root-session-create-v1","enumerate":"spc-root-session-enumerate-v1","import":"spc-root-session-import-v1","search":"spc-root-candidate-task-v1"},"result_schemas":{"create":"spc-root-session-create-result-v1","enumerate":"spc-root-session-enumeration-result-v1","import":"spc-root-session-import-result-v1","search":"spc-root-candidate-result-v1"},"hard_limits":{"maximum_request_utf8_bytes":16777216,"maximum_json_depth":24,"maximum_json_nodes":250000,"maximum_fen_utf8_bytes":512,"promoted_hex_exact_bytes":16,"maximum_ep_targets":8,"chess960":false,"minimum_depth":1,"maximum_depth":8,"minimum_width":1,"maximum_width":512,"minimum_max_work":1,"maximum_max_work":9007199254740991,"minimum_mate_score":1,"maximum_mate_score":1000000000,"minimum_series_cache_capacity":1,"maximum_series_cache_capacity":1048576,"minimum_external_cache_weight":0,"external_cache_weight_lte_series_cache_capacity":true,"worker_threads":1,"root_tactical_protection_values":[false],"root_tactical_policy":"canonical-boundary-policy-v1","minimum_tt_capacity":1,"maximum_tt_capacity":1048576,"minimum_eval_capacity":1,"maximum_eval_capacity":1048576,"minimum_weight":25,"maximum_weight":300,"weight_fields":["material","king_space","series_reach","promotion_corridors","immediate_vulnerability","useful_mobility","boundary_check"],"maximum_series_number":256,"maximum_quiet_series":1000000,"maximum_wasm_memory_bytes":268435456},"manifest":{"preferred_series_required":true,"candidate_root_series_fields":["moves","machine_notation","transposition_count","child_boundary","outcome","ended_by_check"],"child_boundary_exact":true,"root_tactical_policy":"canonical-boundary-policy-v1"},"deadline":{"transport":"remaining_time_ms","coordinator_echo":"deadline_monotonic_ms","zero_means_immediate_timeout":true,"extension_rejected":true}})json";
+    root_last_result = R"json({"schema":"spc-root-session-contract-v1","abi_version":2,"request_encoding":"caller-owned-utf8-pointer-length","response_ownership":"facade-owned","response_lifetime":"until-next-root-session-abi-call-on-this-worker","one_active_session_per_worker":true,"worker_threads":1,"pthreads_required":false,"product_publishable":false,"reply_mate_safety":false,"capabilities":{"enumerate":true,"import":true,"search":true,"call_work_credit":true,"hard_memory_limit":true,"tt_scout_rollback":true,"persistent_depth_reuse":true,"aspiration_windows":true,"selected_owner_certification":true,"canonical_root_tactical_policy":true},"request_schemas":{"create":"spc-root-session-create-v1","enumerate":"spc-root-session-enumerate-v1","import":"spc-root-session-import-v1","search":"spc-root-candidate-task-v1"},"result_schemas":{"create":"spc-root-session-create-result-v1","enumerate":"spc-root-session-enumeration-result-v1","import":"spc-root-session-import-result-v1","search":"spc-root-candidate-result-v1"},"hard_limits":{"maximum_request_utf8_bytes":16777216,"maximum_json_depth":24,"maximum_json_nodes":250000,"maximum_fen_utf8_bytes":512,"promoted_hex_exact_bytes":16,"maximum_ep_targets":8,"chess960":false,"minimum_depth":1,"maximum_depth":8,"minimum_width":1,"maximum_width":512,"minimum_max_work":1,"maximum_max_work":9007199254740991,"minimum_mate_score":1,"maximum_mate_score":1000000000,"minimum_aspiration_initial_delta":2048,"maximum_aspiration_attempts":4,"minimum_series_cache_capacity":1,"maximum_series_cache_capacity":1048576,"minimum_external_cache_weight":0,"external_cache_weight_lte_series_cache_capacity":true,"worker_threads":1,"root_tactical_protection_values":[false],"root_tactical_policy":"canonical-boundary-policy-v1","minimum_tt_capacity":1,"maximum_tt_capacity":1048576,"minimum_eval_capacity":1,"maximum_eval_capacity":1048576,"minimum_weight":25,"maximum_weight":300,"weight_fields":["material","king_space","series_reach","promotion_corridors","immediate_vulnerability","useful_mobility","boundary_check"],"maximum_series_number":256,"maximum_quiet_series":1000000,"maximum_wasm_memory_bytes":268435456},"manifest":{"preferred_series_required":true,"candidate_root_series_fields":["moves","machine_notation","transposition_count","child_boundary","outcome","ended_by_check"],"child_boundary_exact":true,"root_tactical_policy":"canonical-boundary-policy-v1"},"deadline":{"transport":"remaining_time_ms","coordinator_echo":"deadline_monotonic_ms","zero_means_immediate_timeout":true,"extension_rejected":true}})json";
     return root_last_result.c_str();
 }
 

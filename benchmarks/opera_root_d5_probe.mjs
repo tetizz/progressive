@@ -1,6 +1,8 @@
 const START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const ZERO_PROMOTED = "0000000000000000";
 const MATE_SCORE = 1_000_000;
+const ASPIRATION_INITIAL_DELTA = 2_048;
+const MAX_ASPIRATION_ATTEMPTS = 4;
 const ROOT_API = globalThis.ScottishProgressiveRootCoordinator;
 const PREFIX_API = globalThis.ScottishProgressiveBrowserPrefix;
 const diagnostics = [];
@@ -19,6 +21,71 @@ function exactInteger(value, minimum = 0, maximum = Number.MAX_SAFE_INTEGER) {
 
 function sameJson(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+
+function validateAspirationReceipt(value, previousScore, expectedCandidateCount) {
+  const enabled = previousScore !== null;
+  invariant(value && typeof value === "object", "aspiration receipt is missing");
+  invariant(value.enabled === enabled, "aspiration enabled state drifted");
+  invariant(
+    value.center_score === (enabled ? previousScore : null),
+    "aspiration center score drifted",
+  );
+  invariant(
+    value.initial_delta === (enabled ? ASPIRATION_INITIAL_DELTA : null),
+    "aspiration initial delta drifted",
+  );
+  invariant(
+    value.maximum_attempts === MAX_ASPIRATION_ATTEMPTS,
+    "aspiration attempt limit drifted",
+  );
+  invariant(
+    exactInteger(expectedCandidateCount, 0, 8)
+      && value.candidate_count === expectedCandidateCount,
+    "aspiration candidate count drifted",
+  );
+  for (const name of [
+    "attempts", "fail_highs", "fail_lows", "exact_hits", "full_window_fallbacks",
+  ]) {
+    invariant(exactInteger(value[name]), `aspiration ${name} is invalid`);
+  }
+  invariant(
+    value.attempts <= expectedCandidateCount * MAX_ASPIRATION_ATTEMPTS,
+    "too many aspiration attempts",
+  );
+  invariant(value.exact_hits <= expectedCandidateCount, "too many aspiration exact hits");
+  invariant(
+    value.full_window_fallbacks <= expectedCandidateCount,
+    "too many aspiration fallbacks",
+  );
+  invariant(
+    value.fail_highs + value.fail_lows + value.exact_hits === value.attempts,
+    "aspiration attempt accounting drifted",
+  );
+  invariant(
+    value.exact_hits + value.full_window_fallbacks <= expectedCandidateCount,
+    "aspiration completion accounting drifted",
+  );
+  if (enabled) {
+    invariant(value.attempts >= expectedCandidateCount, "aspiration skipped a candidate");
+    invariant(
+      value.exact_hits + value.full_window_fallbacks === expectedCandidateCount,
+      "aspiration did not finish every candidate",
+    );
+  }
+  if (!enabled) {
+    invariant(
+      value.candidate_count === 0
+        && value.attempts === 0
+        && value.fail_highs === 0
+        && value.fail_lows === 0
+        && value.exact_hits === 0
+        && value.full_window_fallbacks === 0,
+      "disabled aspiration performed work",
+    );
+  }
+  return { ...value };
 }
 
 
@@ -160,8 +227,9 @@ function parseParameters() {
     depth: integer("depth", 5),
     width: integer("width", 32),
     workers: integer("workers", 8),
-    initialFullWave: integer("wave", 4),
+    initialFullWave: integer("wave", 8),
     mode: values.get("mode") === "cold" ? "cold" : "warm",
+    aspirationEnabled: values.get("aspiration") !== "off",
     maxWork: integer("max_work", 100_000_000),
     safetyReserveWork: integer("safety_work", 1_000_000),
     timeoutMs: integer("timeout_ms", 300_000),
@@ -291,6 +359,8 @@ async function main() {
   const absoluteDeadline = totalStarted + args.timeoutMs;
   let safetyWork = 0;
   let preferredSeries = [];
+  let previousScore = null;
+  let previousOwnersByCandidate = new Map();
   const iterations = [];
   let prefixIdentity = null;
   try {
@@ -356,6 +426,10 @@ async function main() {
         required_prefix: [],
         depth,
         mate_score: MATE_SCORE,
+        aspiration: !args.aspirationEnabled || previousScore === null ? null : {
+          center_score: previousScore,
+          initial_delta: ASPIRATION_INITIAL_DELTA,
+        },
         deadline_monotonic_ms: absoluteDeadline,
       };
       const nativeBeforeSetup = channels.reduce((sum, channel) => sum + channel.nativeWorkAfter, 0);
@@ -496,6 +570,32 @@ async function main() {
         },
         cancel: () => {},
       }));
+      const aspirationCandidateIds = manifest.candidates
+        .filter((candidate) => candidate.terminal_score === null)
+        .slice(0, args.initialFullWave)
+        .map((candidate) => candidate.candidate_identity);
+      const warmOwnerIds = requestBase.aspiration === null
+        ? []
+        : aspirationCandidateIds.map((candidateId) => (
+          previousOwnersByCandidate.get(candidateId) ?? null
+        ));
+      const warmOwnersComplete = warmOwnerIds.length > 0
+        && warmOwnerIds.every((ownerId) => ownerId !== null)
+        && new Set(warmOwnerIds).size === warmOwnerIds.length;
+      const adaptersById = new Map(adapters.map((adapter) => [adapter.id, adapter]));
+      const warmAdapters = warmOwnersComplete
+        ? warmOwnerIds.map((ownerId) => adaptersById.get(ownerId))
+        : [];
+      invariant(
+        warmAdapters.every((adapter) => adapter !== undefined),
+        "a claimed prior aspiration owner is unavailable",
+      );
+      const scheduledAdapters = warmOwnersComplete
+        ? [
+          ...warmAdapters,
+          ...adapters.filter((adapter) => !warmOwnerIds.includes(adapter.id)),
+        ]
+        : adapters;
       const safetyProbe = async (task) => {
         const candidate = candidateById.get(task.candidate_identity);
         invariant(candidate, "safety candidate is absent from the manifest");
@@ -536,10 +636,41 @@ async function main() {
       const result = await ROOT_API.runRootIteration({
         request: coordinatorRequest,
         manifest,
-        workers: adapters,
+        workers: scheduledAdapters,
         safetyProbe,
       });
       invariant(result.status === "complete", `D${depth} coordinator incomplete`);
+      const aspiration = validateAspirationReceipt(
+        result.aspiration,
+        requestBase.aspiration === null ? null : previousScore,
+        requestBase.aspiration === null ? 0 : aspirationCandidateIds.length,
+      );
+      if (aspiration.enabled) {
+        invariant(
+          warmOwnersComplete
+            && warmOwnerIds.length === aspiration.candidate_count,
+          `D${depth} lacks complete unique warm-owner affinity`,
+        );
+        const aspirationDispatches = result.tasks.filter(
+          (task) => task.event === "dispatch" && task.purpose === "aspiration",
+        );
+        const firstDispatchByCandidate = new Map();
+        for (const dispatch of aspirationDispatches) {
+          if (!firstDispatchByCandidate.has(dispatch.candidate_identity)) {
+            firstDispatchByCandidate.set(dispatch.candidate_identity, dispatch.worker_id);
+          }
+        }
+        invariant(
+          firstDispatchByCandidate.size === aspiration.candidate_count,
+          `D${depth} did not dispatch every aspiration candidate`,
+        );
+        for (let index = 0; index < aspirationCandidateIds.length; index += 1) {
+          invariant(
+            firstDispatchByCandidate.get(aspirationCandidateIds[index]) === warmOwnerIds[index],
+            `D${depth} aspiration missed a warm prior owner`,
+          );
+        }
+      }
       invariant(result.coverage_complete === true, `D${depth} bound coverage incomplete`);
       invariant(result.safety_certified === true, `D${depth} mate safety incomplete`);
       invariant(["exhausted", "terminal"].includes(result.safety_status), `D${depth} safety unknown`);
@@ -555,6 +686,16 @@ async function main() {
       invariant(sameBoundary(finalReplay.next_state, selectedSeries.child_boundary), "final replay drifted");
       safetyWork += result.work.safety_committed_work;
       preferredSeries = [...selectedSeries.moves];
+      previousScore = result.selected.score;
+      previousOwnersByCandidate = new Map(
+        result.tasks
+          .filter((task) => (
+            task.event === "complete"
+            && task.bound === "exact"
+            && task.purpose !== "scout"
+          ))
+          .map((task) => [task.candidate_identity, task.worker_id]),
+      );
       const retainedManifestSha256 = await canonicalSha256(manifest);
       const orderShapeSha256 = await canonicalSha256({
         initial_full_wave: args.initialFullWave,
@@ -584,6 +725,14 @@ async function main() {
         owner_certification_count: result.tasks.filter(
           (task) => task.event === "complete" && task.purpose === "selected-certification",
         ).length,
+        aspiration: {
+          ...aspiration,
+          owner_worker_id: aspiration.enabled ? warmOwnerIds[0] : null,
+          owner_worker_ids: aspiration.enabled ? [...warmOwnerIds] : [],
+          owner_worker_count: aspiration.enabled ? warmOwnerIds.length : 0,
+          warm_owner_reused: aspiration.enabled ? warmOwnersComplete : false,
+          warm_owner_reused_count: aspiration.enabled ? warmOwnerIds.length : 0,
+        },
         root_bounds: result.root_bounds,
         retained_manifest_sha256: retainedManifestSha256,
         order_shape_sha256: orderShapeSha256,
@@ -642,6 +791,7 @@ async function main() {
         safety_reserve_work: args.safetyReserveWork,
         config,
         mode: args.mode,
+        aspiration_enabled: args.aspirationEnabled,
       },
       timings_ms: {
         pool_ready: poolReadyMs,

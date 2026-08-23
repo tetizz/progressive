@@ -16,6 +16,8 @@
   const UNKNOWN = "unknown";
   const WHITE = "white";
   const BLACK = "black";
+  const MIN_ASPIRATION_INITIAL_DELTA = 2_048;
+  const MAX_ASPIRATION_ATTEMPTS = 4;
 
   class RootCoordinatorError extends Error {
     constructor(message, code, { cause, details, work } = {}) {
@@ -126,6 +128,28 @@
       );
     }
     const caps = value.caps;
+    const rawAspiration = value.aspiration ?? null;
+    const aspiration = rawAspiration === null
+      ? null
+      : (
+        rawAspiration
+        && typeof rawAspiration === "object"
+        && !Array.isArray(rawAspiration)
+        && JSON.stringify(Object.keys(rawAspiration).sort())
+          === JSON.stringify(["center_score", "initial_delta"])
+        && Number.isSafeInteger(rawAspiration.center_score)
+        && Math.abs(rawAspiration.center_score) < 2 * value.mate_score
+        && exactInteger(
+          rawAspiration.initial_delta,
+          MIN_ASPIRATION_INITIAL_DELTA,
+          value.mate_score,
+        )
+          ? Object.freeze({
+            center_score: rawAspiration.center_score,
+            initial_delta: rawAspiration.initial_delta,
+          })
+          : undefined
+      );
     const identityOkay = value.schema === REQUEST_SCHEMA
       && typeof value.request_id === "string"
       && value.request_id.length > 0
@@ -150,6 +174,7 @@
       || !exactInteger(value.depth, 1, 8)
       || !exactInteger(value.width, 1, 16_384)
       || !exactInteger(value.mate_score, 1)
+      || aspiration === undefined
       || !Number.isFinite(value.deadline_monotonic_ms)
       || value.deadline_monotonic_ms < 0
       || !exactInteger(value.worker_count, 1, 64)
@@ -193,6 +218,7 @@
       depth: value.depth,
       width: value.width,
       mate_score: value.mate_score,
+      aspiration,
       deadline_monotonic_ms: value.deadline_monotonic_ms,
       worker_count: value.worker_count,
       initial_full_wave: value.initial_full_wave,
@@ -386,11 +412,24 @@
         ),
       });
     });
+    if (
+      request.aspiration !== null
+      && (
+        value.preferred_series.length === 0
+        || !sameArray(value.preferred_series, candidates[0].root_series.moves)
+      )
+    ) {
+      throw new RootCoordinatorError(
+        "An aspiration iteration requires the prior principal variation first.",
+        "root-aspiration-preferred-series-invalid",
+      );
+    }
     return Object.freeze({
       enumeration_identity: value.enumeration_identity,
       root_white_to_move: value.root_white_to_move,
       requested_width: value.requested_width,
       width_complete: value.width_complete,
+      preferred_series: Object.freeze([...value.preferred_series]),
       candidates: Object.freeze(candidates),
     });
   }
@@ -659,15 +698,16 @@
       );
     }
     const expectedBound = classifyBound(reply.score, task.alpha, task.beta);
-    if (task.purpose !== "scout" && reply.bound !== EXACT) {
+    const windowed = task.purpose === "scout" || task.purpose === "aspiration";
+    if (!windowed && reply.bound !== EXACT) {
       throw new RootCoordinatorError(
         "A full-window root task did not return an exact score.",
         "root-worker-bound-invalid",
       );
     }
-    if (task.purpose === "scout" && reply.bound !== expectedBound) {
+    if (windowed && reply.bound !== expectedBound) {
       throw new RootCoordinatorError(
-        "A root scout returned a bound inconsistent with its window.",
+        "A windowed root task returned a bound inconsistent with its window.",
         "root-worker-bound-invalid",
       );
     }
@@ -742,6 +782,14 @@
     const workers = workerContract.states;
     const ledger = new ReservationLedger(request.caps);
     const whiteToMove = manifest.root_white_to_move;
+    const aspirationCandidateIds = new Set(
+      request.aspiration === null
+        ? []
+        : manifest.candidates
+          .filter((candidate) => candidate.terminal_score === null)
+          .slice(0, request.initial_full_wave)
+          .map((candidate) => candidate.candidate_identity),
+    );
     const records = new Map(manifest.candidates.map((candidate) => [
       candidate.candidate_identity,
       {
@@ -755,6 +803,10 @@
         bound: null,
         override: false,
         safetyStatus: candidate.terminal_score !== null ? "terminal" : null,
+        aspirationEnabled: aspirationCandidateIds.has(candidate.candidate_identity),
+        aspirationCenter: request.aspiration?.center_score ?? null,
+        aspirationDelta: request.aspiration?.initial_delta ?? null,
+        aspirationAttempts: 0,
       },
     ]));
     const taskLog = [];
@@ -769,6 +821,27 @@
     let incumbentSignature = null;
     let invalidated = false;
     let peakObservedMemory = 0;
+    const aspirationCounters = {
+      attempts: 0,
+      failHighs: 0,
+      failLows: 0,
+      exactHits: 0,
+      fullWindowFallbacks: 0,
+    };
+    const aspirationCandidateCount = aspirationCandidateIds.size;
+
+    const aspirationReceipt = () => Object.freeze({
+      enabled: request.aspiration !== null,
+      center_score: request.aspiration?.center_score ?? null,
+      initial_delta: request.aspiration?.initial_delta ?? null,
+      maximum_attempts: MAX_ASPIRATION_ATTEMPTS,
+      candidate_count: aspirationCandidateCount,
+      attempts: aspirationCounters.attempts,
+      fail_highs: aspirationCounters.failHighs,
+      fail_lows: aspirationCounters.failLows,
+      exact_hits: aspirationCounters.exactHits,
+      full_window_fallbacks: aspirationCounters.fullWindowFallbacks,
+    });
 
     const invalidationError = () => new RootCoordinatorError(
       internalAbort.signal.reason === "deadline"
@@ -900,6 +973,7 @@
           dynamic_work_pool_certified: true,
           product_publishable: false,
           certification_scope: "root-coordinator-only",
+          aspiration: aspirationReceipt(),
           work: ledger.snapshot(),
           memory: Object.freeze({
             admitted_bytes: workerContract.admitted,
@@ -915,7 +989,12 @@
         .filter((candidate) => candidate.terminal_score === null)
         .map((candidate) => candidate.candidate_identity);
 
-      const dispatch = (worker, record, purpose) => {
+      const dispatch = (
+        worker,
+        record,
+        purpose,
+        { aspirationFallback = false } = {},
+      ) => {
         if (now() >= request.deadline_monotonic_ms) {
           throw new RootCoordinatorError(
             "The common root search deadline expired before dispatch.",
@@ -936,19 +1015,53 @@
             "root-worker-state-invalid",
           );
         }
-        const full = purpose !== "scout";
-        if (!full && incumbent === null) {
+        const full = purpose !== "scout" && purpose !== "aspiration";
+        if (purpose === "scout" && incumbent === null) {
           throw new RootCoordinatorError(
             "A root scout cannot run before an exact incumbent exists.",
             "root-incumbent-missing",
           );
         }
-        const alpha = full
-          ? -2 * request.mate_score
-          : whiteToMove ? incumbent.score : incumbent.score - 1;
-        const beta = full
-          ? 2 * request.mate_score
-          : whiteToMove ? incumbent.score + 1 : incumbent.score;
+        if (
+          purpose === "aspiration"
+          && (
+            !record.aspirationEnabled
+            || !exactInteger(record.aspirationDelta, MIN_ASPIRATION_INITIAL_DELTA)
+            || record.aspirationAttempts >= MAX_ASPIRATION_ATTEMPTS
+          )
+        ) {
+          throw new RootCoordinatorError(
+            "The root scheduler attempted an uncertified aspiration search.",
+            "root-aspiration-state-invalid",
+          );
+        }
+        let alpha;
+        let beta;
+        if (full) {
+          alpha = -2 * request.mate_score;
+          beta = 2 * request.mate_score;
+        } else if (purpose === "aspiration") {
+          alpha = Math.max(
+            -2 * request.mate_score,
+            record.aspirationCenter - record.aspirationDelta,
+          );
+          beta = Math.min(
+            2 * request.mate_score,
+            record.aspirationCenter + record.aspirationDelta,
+          );
+          if (alpha === -2 * request.mate_score && beta === 2 * request.mate_score) {
+            throw new RootCoordinatorError(
+              "A full window must use the certified full-search purpose.",
+              "root-aspiration-window-invalid",
+            );
+          }
+          record.aspirationAttempts += 1;
+          aspirationCounters.attempts += 1;
+        } else {
+          alpha = whiteToMove ? incumbent.score : incumbent.score - 1;
+          beta = whiteToMove ? incumbent.score + 1 : incumbent.score;
+        }
+        if (aspirationFallback) aspirationCounters.fullWindowFallbacks += 1;
         const reservation = ledger.reserve({
           phase: "search",
           desired: request.caps.search_call_work_credit,
@@ -1002,10 +1115,18 @@
         const promise = Promise.resolve()
           .then(() => worker.adapter.search(task, { signal: internalAbort.signal }))
           .then(
-            (reply) => ({ kind: "reply", worker, record, purpose, task, reservation, reply }),
-            (error) => ({ kind: "error", worker, record, purpose, task, reservation, error }),
+            (reply) => ({
+              kind: "reply", worker, record, purpose, aspirationFallback,
+              task, reservation, reply,
+            }),
+            (error) => ({
+              kind: "error", worker, record, purpose, aspirationFallback,
+              task, reservation, error,
+            }),
           );
-        const item = { promise, worker, record, purpose, task, reservation };
+        const item = {
+          promise, worker, record, purpose, aspirationFallback, task, reservation,
+        };
         active.set(worker.id, item);
         taskLog.push(Object.freeze({
           event: "dispatch",
@@ -1013,6 +1134,7 @@
           task_id: task.task_id,
           candidate_identity: task.candidate_identity,
           purpose,
+          aspiration_fallback: aspirationFallback,
           incumbent_epoch: incumbentEpoch,
           safety_revision: safetyRevision,
           alpha,
@@ -1094,6 +1216,55 @@
 
       const handleSearchOutcome = (outcome) => {
         const { record, reply, worker, purpose } = outcome;
+        if (purpose === "aspiration") {
+          if (reply.bound === EXACT) {
+            aspirationCounters.exactHits += 1;
+            makeExact(record, reply, worker.id);
+            recomputeIncumbent();
+            return null;
+          }
+          if (reply.bound === LOWER) aspirationCounters.failHighs += 1;
+          if (reply.bound === UPPER) aspirationCounters.failLows += 1;
+          record.bound = Object.freeze({
+            kind: reply.bound,
+            score: reply.score,
+            alpha: outcome.task.alpha,
+            beta: outcome.task.beta,
+            incumbentEpoch: outcome.task.incumbent_epoch,
+            safetyRevision: outcome.task.safety_revision,
+          });
+          record.proofBounds = Object.freeze([...reply.proof_bounds]);
+          const nextDelta = Math.min(
+            2 * request.mate_score,
+            record.aspirationDelta * 2,
+          );
+          const nextAlpha = Math.max(
+            -2 * request.mate_score,
+            record.aspirationCenter - nextDelta,
+          );
+          const nextBeta = Math.min(
+            2 * request.mate_score,
+            record.aspirationCenter + nextDelta,
+          );
+          if (
+            record.aspirationAttempts >= MAX_ASPIRATION_ATTEMPTS
+            || nextDelta <= record.aspirationDelta
+            || (
+              nextAlpha === -2 * request.mate_score
+              && nextBeta === 2 * request.mate_score
+            )
+          ) {
+            record.aspirationEnabled = false;
+            return {
+              worker,
+              record,
+              purpose: "full",
+              aspirationFallback: true,
+            };
+          }
+          record.aspirationDelta = nextDelta;
+          return { worker, record, purpose: "aspiration" };
+        }
         if (purpose !== "scout") {
           makeExact(record, reply, worker.id);
           recomputeIncumbent();
@@ -1127,7 +1298,8 @@
         }
       };
 
-      // Start only the certified number of full-window seeds. Workers outside
+      // Start only the certified seed wave. On deepened iterations every
+      // non-terminal seed uses its exact aspiration contract. Workers outside
       // that wave stay idle until the first exact completes; fillIdle then
       // streams scouts onto every free Worker without a first-wave barrier.
       let initialFullDispatched = 0;
@@ -1137,7 +1309,8 @@
           || pending.length === 0
         ) break;
         const candidateId = pending.shift();
-        dispatch(worker, records.get(candidateId), "full");
+        const record = records.get(candidateId);
+        dispatch(worker, record, record.aspirationEnabled ? "aspiration" : "full");
         initialFullDispatched += 1;
       }
       while (active.size > 0 || pending.length > 0) {
@@ -1145,7 +1318,9 @@
         const outcome = await consumeOne();
         const followup = handleSearchOutcome(outcome);
         if (followup) {
-          dispatch(followup.worker, followup.record, followup.purpose);
+          dispatch(followup.worker, followup.record, followup.purpose, {
+            aspirationFallback: followup.aspirationFallback === true,
+          });
         } else if (pending.length > 0) {
           fillIdle(pending);
         }
@@ -1169,7 +1344,11 @@
             if (active.size === 0) fillIdle(uncovered);
             const outcome = await consumeOne();
             const followup = handleSearchOutcome(outcome);
-            if (followup) dispatch(followup.worker, followup.record, followup.purpose);
+            if (followup) {
+              dispatch(followup.worker, followup.record, followup.purpose, {
+                aspirationFallback: followup.aspirationFallback === true,
+              });
+            }
             else fillIdle(uncovered);
           }
         }
@@ -1390,6 +1569,7 @@
         dynamic_work_pool_certified: true,
         product_publishable: false,
         certification_scope: "root-coordinator-only",
+        aspiration: aspirationReceipt(),
         work: ledger.snapshot(),
         memory: Object.freeze({
           admitted_bytes: workerContract.admitted,

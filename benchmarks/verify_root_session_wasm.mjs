@@ -251,10 +251,14 @@ async function main() {
   assert.equal(contract.reply_mate_safety, false);
   assert.equal(contract.capabilities.call_work_credit, true);
   assert.equal(contract.capabilities.persistent_depth_reuse, true);
+  assert.equal(contract.capabilities.aspiration_windows, true);
   assert.equal(contract.capabilities.selected_owner_certification, true);
   assert.equal(contract.capabilities.canonical_root_tactical_policy, true);
   assert.equal(contract.hard_limits.root_tactical_policy, "canonical-boundary-policy-v1");
   assert.deepEqual(contract.hard_limits.root_tactical_protection_values, [false]);
+  assert.equal(contract.hard_limits.minimum_aspiration_initial_delta, 2_048);
+  assert.equal(contract.hard_limits.maximum_aspiration_attempts, 4);
+  const aspirationInitialDelta = contract.hard_limits.minimum_aspiration_initial_delta;
   const prefixContract = JSON.parse(
     Module.UTF8ToString(Module._spc_boundary_prefix_contract_json()),
   );
@@ -334,6 +338,11 @@ async function main() {
     candidate,
     childDepth,
     purpose = "full",
+    {
+      alpha = -2 * MATE_SCORE,
+      beta = 2 * MATE_SCORE,
+      ttPersistence = purpose === "scout" ? "rollback" : "commit",
+    } = {},
   ) => ({
     ...route(
       "spc-root-candidate-task-v1",
@@ -354,11 +363,210 @@ async function main() {
     purpose,
     mate_score: MATE_SCORE,
     child_depth: childDepth,
-    alpha: -2 * MATE_SCORE,
-    beta: 2 * MATE_SCORE,
-    tt_persistence: "commit",
+    alpha,
+    beta,
+    tt_persistence: ttPersistence,
     mover: enumeration.root_white_to_move ? "white" : "black",
   });
+
+  const aspirationSemantic = (result) => ({
+    score: result.score,
+    proof_bounds: result.proof_bounds,
+    root_series: result.root_series,
+    child_pv: result.child_pv,
+  });
+  const aspirationWorkReceipt = (result) => ({
+    native_work_before: result.work.native_work_before,
+    native_work_after: result.work.native_work_after,
+    call_native_work: result.work.call_native_work,
+    tt_entries: result.work.tt_entries,
+    tt_entries_peak: result.work.tt_entries_peak,
+    tt_hits: result.work.call_stats.tt_hits,
+  });
+
+  const prepareAspirationSession = (label, laneBoundary) => {
+    const laneCreated = bridge.rootJson(
+      "_spc_root_session_create_json",
+      null,
+      {
+        ...createRequest(`${label}-create`, label, 1),
+        boundary: laneBoundary,
+      },
+    );
+    assert.equal(laneCreated.status, "ready", JSON.stringify(laneCreated));
+    const laneDeadline = Math.ceil(performance.now() + args.timeoutMs);
+    const laneEnumeration = bridge.rootJson(
+      "_spc_root_session_enumerate_json",
+      laneCreated.session_id,
+      {
+        ...route(
+          "spc-root-session-enumerate-v1",
+          `${label}-enumerate`,
+          label,
+          1,
+          0,
+          args.maxWork,
+          laneDeadline,
+        ),
+        preferred_series: [],
+      },
+    );
+    assert.equal(laneEnumeration.status, "complete", JSON.stringify(laneEnumeration));
+    assertWorkReceipt(laneEnumeration, 0, args.maxWork);
+    assert.ok(laneEnumeration.candidates.length > 0, `${label} retained no candidate`);
+    const laneCandidate = laneEnumeration.candidates[0];
+    assert.equal(laneCandidate.terminal_score, null, `${label} candidate is terminal`);
+    return {
+      label,
+      sessionId: laneCreated.session_id,
+      deadline: laneDeadline,
+      enumeration: laneEnumeration,
+      candidate: laneCandidate,
+    };
+  };
+
+  const runAspirationCandidate = (
+    prepared,
+    { requestId, purpose, alpha, beta, nativeWork },
+  ) => bridge.rootJson(
+    "_spc_root_session_search_json",
+    prepared.sessionId,
+    searchRequest(
+      requestId,
+      prepared.label,
+      2,
+      nativeWork,
+      args.maxWork,
+      prepared.deadline,
+      prepared.enumeration,
+      prepared.candidate,
+      1,
+      purpose,
+      { alpha, beta },
+    ),
+  );
+
+  const certifyFailSoftAspiration = (label, laneBoundary) => {
+    const oraclePrepared = prepareAspirationSession(`${label}-oracle`, laneBoundary);
+    const oracle = runAspirationCandidate(oraclePrepared, {
+      requestId: `${label}-oracle-full`,
+      purpose: "full",
+      alpha: -2 * MATE_SCORE,
+      beta: 2 * MATE_SCORE,
+      nativeWork: oraclePrepared.enumeration.work.native_work_after,
+    });
+    assert.equal(oracle.status, "complete", JSON.stringify(oracle));
+    assert.equal(oracle.bound, "exact");
+    assert.equal(oracle.tt_persistence, "commit");
+    assert.equal(oracle.mover, laneBoundary.series % 2 === 1 ? "white" : "black");
+    assertWorkReceipt(
+      oracle,
+      oraclePrepared.enumeration.work.native_work_after,
+      args.maxWork,
+    );
+    assertCumulative(oraclePrepared.enumeration.work, oracle.work);
+    assert.ok(oracle.work.call_native_work > 0, `${label} oracle did no native work`);
+    assert.equal(Module._spc_root_session_destroy(oraclePrepared.sessionId), 1);
+
+    let peakMemory = oracle.memory_peak_bytes;
+    const directions = {};
+    const initialDelta = aspirationInitialDelta;
+    for (const spec of [
+      {
+        name: "fail_high",
+        bound: "lower",
+        center: oracle.score - (3 * initialDelta) / 2,
+      },
+      {
+        name: "fail_low",
+        bound: "upper",
+        center: oracle.score + (3 * initialDelta) / 2,
+      },
+    ]) {
+      assert.ok(Number.isSafeInteger(spec.center));
+      const prepared = prepareAspirationSession(`${label}-${spec.name}`, laneBoundary);
+      const failure = runAspirationCandidate(prepared, {
+        requestId: `${label}-${spec.name}-initial`,
+        purpose: "aspiration",
+        alpha: spec.center - initialDelta,
+        beta: spec.center + initialDelta,
+        nativeWork: prepared.enumeration.work.native_work_after,
+      });
+      assert.equal(failure.status, "complete", JSON.stringify(failure));
+      assert.equal(failure.bound, spec.bound);
+      assert.equal(failure.tt_persistence, "commit");
+      assert.equal(failure.tt_writes_rolled_back, 0);
+      assertWorkReceipt(
+        failure,
+        prepared.enumeration.work.native_work_after,
+        args.maxWork,
+      );
+      assertCumulative(prepared.enumeration.work, failure.work);
+      assert.ok(failure.work.call_native_work > 0, `${label} ${spec.name} did no work`);
+      assert.ok(
+        failure.work.tt_entries > prepared.enumeration.work.tt_entries,
+        `${label} ${spec.name} did not commit its TT bound`,
+      );
+
+      const widened = runAspirationCandidate(prepared, {
+        requestId: `${label}-${spec.name}-widened`,
+        purpose: "aspiration",
+        alpha: spec.center - 2 * initialDelta,
+        beta: spec.center + 2 * initialDelta,
+        nativeWork: failure.work.native_work_after,
+      });
+      assert.equal(widened.status, "complete", JSON.stringify(widened));
+      assert.equal(widened.bound, "exact");
+      assert.equal(widened.tt_persistence, "commit");
+      assert.equal(widened.tt_writes_rolled_back, 0);
+      assert.deepEqual(aspirationSemantic(widened), aspirationSemantic(oracle));
+      assertWorkReceipt(widened, failure.work.native_work_after, args.maxWork);
+      assertCumulative(failure.work, widened.work);
+      assert.ok(widened.work.tt_entries >= failure.work.tt_entries);
+      assert.ok(widened.work.call_stats.tt_hits > 0, `${label} widened search missed TT`);
+      assert.equal(Module._spc_root_session_destroy(prepared.sessionId), 1);
+      peakMemory = Math.max(
+        peakMemory,
+        failure.memory_peak_bytes,
+        widened.memory_peak_bytes,
+      );
+
+      directions[spec.name] = {
+        initial: {
+          bound: failure.bound,
+          score: failure.score,
+          tt_persistence: failure.tt_persistence,
+          tt_writes_rolled_back: failure.tt_writes_rolled_back,
+          work: aspirationWorkReceipt(failure),
+        },
+        widened: {
+          ...aspirationSemantic(widened),
+          bound: widened.bound,
+          tt_persistence: widened.tt_persistence,
+          tt_writes_rolled_back: widened.tt_writes_rolled_back,
+          work: aspirationWorkReceipt(widened),
+        },
+      };
+    }
+    return {
+      mover: oracle.mover,
+      oracle: {
+        ...aspirationSemantic(oracle),
+        work: aspirationWorkReceipt(oracle),
+      },
+      ...directions,
+      memory_peak_bytes: peakMemory,
+    };
+  };
+
+  const aspirationFailSoft = {
+    white: certifyFailSoftAspiration("aspiration-white", boundary),
+    black: certifyFailSoftAspiration("aspiration-black", {
+      ...boundary,
+      fen: START_BLACK_FEN,
+      series: 2,
+    }),
+  };
 
   const timings = {};
   const created = elapsedCall(() => bridge.rootJson(
@@ -372,6 +580,7 @@ async function main() {
   assert.deepEqual(created.value.config, config);
   assert.equal(created.value.canonical_root_tactical_policy, "canonical-boundary-policy-v1");
   assert.equal(created.value.canonical_root_tactical_protection, false);
+  assert.equal(created.value.capabilities.aspiration_windows, true);
   assert.equal(created.value.capabilities.canonical_root_tactical_policy, true);
   const primarySession = created.value.session_id;
   const deadline = Math.ceil(performance.now() + args.timeoutMs);
@@ -444,6 +653,76 @@ async function main() {
   nativeWork = assertWorkReceipt(depthTwo.value, nativeWork, credit);
   assertCumulative(depthOne.value.work, depthTwo.value.work);
 
+  const aspiration = elapsedCall(() => bridge.rootJson(
+    "_spc_root_session_search_json",
+    primarySession,
+    searchRequest(
+      "search-d2-aspiration",
+      "persistent-d1-d2",
+      2,
+      nativeWork,
+      credit,
+      deadline,
+      enumerated.value,
+      candidate,
+      1,
+      "aspiration",
+      {
+        alpha: depthTwo.value.score - aspirationInitialDelta,
+        beta: depthTwo.value.score + aspirationInitialDelta,
+      },
+    ),
+  ));
+  timings.aspirationMs = aspiration.elapsedMs;
+  assert.equal(aspiration.value.status, "complete");
+  assert.equal(aspiration.value.bound, "exact");
+  assert.equal(aspiration.value.tt_persistence, "commit");
+  nativeWork = assertWorkReceipt(aspiration.value, nativeWork, credit);
+  assertCumulative(depthTwo.value.work, aspiration.value.work);
+
+  const aspirationFullWindow = bridge.rootJson(
+    "_spc_root_session_search_json",
+    primarySession,
+    searchRequest(
+      "search-d2-aspiration-full-window",
+      "persistent-d1-d2",
+      2,
+      nativeWork,
+      credit,
+      deadline,
+      enumerated.value,
+      candidate,
+      1,
+      "aspiration",
+    ),
+  );
+  assert.equal(aspirationFullWindow.status, "unsupported");
+  assert.equal(aspirationFullWindow.error_code, "candidate-task-invalid");
+
+  const aspirationRollback = bridge.rootJson(
+    "_spc_root_session_search_json",
+    primarySession,
+    searchRequest(
+      "search-d2-aspiration-rollback",
+      "persistent-d1-d2",
+      2,
+      nativeWork,
+      credit,
+      deadline,
+      enumerated.value,
+      candidate,
+      1,
+      "aspiration",
+      {
+        alpha: depthTwo.value.score - aspirationInitialDelta,
+        beta: depthTwo.value.score + aspirationInitialDelta,
+        ttPersistence: "rollback",
+      },
+    ),
+  );
+  assert.equal(aspirationRollback.status, "unsupported");
+  assert.equal(aspirationRollback.error_code, "candidate-task-invalid");
+
   const selectedCertification = elapsedCall(() => bridge.rootJson(
     "_spc_root_session_search_json",
     primarySession,
@@ -468,7 +747,7 @@ async function main() {
     exactCandidateResult(depthTwo.value),
   );
   nativeWork = assertWorkReceipt(selectedCertification.value, nativeWork, credit);
-  assertCumulative(depthTwo.value.work, selectedCertification.value.work);
+  assertCumulative(aspiration.value.work, selectedCertification.value.work);
 
   const overDepth = bridge.rootJson(
     "_spc_root_session_search_json",
@@ -717,6 +996,9 @@ async function main() {
       observed_bytes: Module.HEAPU8.buffer.byteLength,
       native_peak_bytes: Math.max(
         depthTwo.value.memory_peak_bytes,
+        aspiration.value.memory_peak_bytes,
+        aspirationFailSoft.white.memory_peak_bytes,
+        aspirationFailSoft.black.memory_peak_bytes,
         importedDepthTwo.value.memory_peak_bytes,
         timedOut.memory_peak_bytes,
       ),
@@ -727,6 +1009,8 @@ async function main() {
       combined_exports: true,
       root_contract_reply_mate_safety_false: true,
       persistent_d1_d2_session: true,
+      aspiration_fail_soft_window: true,
+      aspiration_fail_high_low_white_black: true,
       selected_owner_warm_exact_certification: true,
       cumulative_work_and_cache_receipts: true,
       exact_manifest_import: true,
@@ -746,6 +1030,8 @@ async function main() {
     persistent_results: {
       d1: exactCandidateResult(depthOne.value),
       d2: exactCandidateResult(depthTwo.value),
+      aspiration: exactCandidateResult(aspiration.value),
+      aspiration_fail_soft: aspirationFailSoft,
       selected_certification: exactCandidateResult(selectedCertification.value),
       imported_d2: exactCandidateResult(importedDepthTwo.value),
       native_work_after: nativeWork,

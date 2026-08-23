@@ -26,7 +26,11 @@ def test_browser_root_worker_pool_contract() -> None:
 
     assert receipt == {
         "schema": "spc-browser-root-iteration-mock-receipt-v1",
-        "desktop_initial_full_wave": "4-of-8",
+        "desktop_initial_full_wave": "8-of-8",
+        "all_initial_wave_aspiration": True,
+        "aggregate_aspiration_accounting": True,
+        "exact_owner_affinity": True,
+        "unavailable_claimed_owner_fails_closed": True,
         "persistent_worker_pool": True,
         "fresh_sessions_per_turn": True,
         "pooled_native_prefix": True,

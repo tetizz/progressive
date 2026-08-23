@@ -7,6 +7,8 @@ const MATE_CERTIFICATE_SCHEMA = "spc-series-mate-certificate-v1";
 const ROOT_SESSION_ABI_VERSION = 2;
 const MATE_ABI_VERSION = 1;
 const ROOT_TACTICAL_POLICY = "canonical-boundary-policy-v1";
+const MIN_ASPIRATION_INITIAL_DELTA = 2_048;
+const MAX_ASPIRATION_ATTEMPTS = 4;
 const COMBINED_EXPORTS = Object.freeze([
   "_spc_start_kernel_search_json",
   "_spc_boundary_kernel_search_json",
@@ -533,7 +535,7 @@ function validateRootGeometry(value, memory, contract) {
     !Number.isInteger(value.desktop_workers)
     || value.desktop_workers !== 8
     || !Number.isInteger(value.desktop_initial_full_wave)
-    || value.desktop_initial_full_wave !== 4
+    || value.desktop_initial_full_wave !== 8
     || value.aggregate_maximum_bytes !== value.desktop_workers * memory.maximum_bytes
     || !Array.isArray(value.supported_lower_geometries)
     || !config
@@ -583,6 +585,8 @@ function validateRootSessionCertificate(certificate, value, context) {
   const requiredEvidence = [
     "deterministic_node_smoke", "combined_artifact", "enumerate_import_search",
     "exact_manifest_import", "persistent_d1_d2_session",
+    "aspiration_fail_soft_window",
+    "aspiration_fail_high_low_white_black",
     "cumulative_work_and_cache_receipts", "configured_max_depth_rejected",
     "per_call_work_credit", "deadline_fail_closed", "work_limit_fail_closed",
     "browser_worker_smoke", "opera_worker_smoke",
@@ -606,8 +610,13 @@ function validateRootSessionCertificate(certificate, value, context) {
     || contract.abi_version !== ROOT_SESSION_ABI_VERSION
     || contract.reply_mate_safety !== false
     || contract.product_publishable !== false
+    || contract.capabilities?.aspiration_windows !== true
     || contract.capabilities?.selected_owner_certification !== true
     || contract.capabilities?.canonical_root_tactical_policy !== true
+    || contract.hard_limits?.minimum_aspiration_initial_delta
+      !== MIN_ASPIRATION_INITIAL_DELTA
+    || contract.hard_limits?.maximum_aspiration_attempts
+      !== MAX_ASPIRATION_ATTEMPTS
     || !geometry
     || !evidence
     || evidence.failures !== 0
@@ -1630,6 +1639,7 @@ export async function loadCertifiedBrowserKernel({
         || !sameJson(raw.config, identity.root_geometry.session_config)
         || raw.configured_max_depth !== identity.root_geometry.session_config.max_depth
         || raw.native_work_after !== 0
+        || raw.capabilities?.aspiration_windows !== true
         || raw.capabilities?.selected_owner_certification !== true
         || raw.capabilities?.canonical_root_tactical_policy !== true
         || raw.capabilities?.reply_mate_safety !== false

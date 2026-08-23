@@ -38,6 +38,15 @@ OPERA_CDP_SCHEMA = "spc-opera-root-session-cdp-receipt-v1"
 OPERA_WORKER_SCHEMA = "spc-opera-root-d5-benchmark-v2"
 HEX_64 = re.compile(r"[0-9a-f]{64}")
 GIT_REVISION = re.compile(r"[0-9a-f]{40,64}")
+ASPIRATION_INITIAL_DELTA = 2_048
+MAX_ASPIRATION_ATTEMPTS = 4
+ASPIRATION_COUNTER_FIELDS = (
+    "attempts",
+    "fail_highs",
+    "fail_lows",
+    "exact_hits",
+    "full_window_fallbacks",
+)
 ARTIFACT_IDENTITY_FIELDS = (
     "source_revision",
     "source_fingerprint",
@@ -699,6 +708,8 @@ def _validate_root_smoke(receipt: Receipt, build: BuildEvidence) -> tuple[dict[s
         "combined_exports",
         "root_contract_reply_mate_safety_false",
         "persistent_d1_d2_session",
+        "aspiration_fail_soft_window",
+        "aspiration_fail_high_low_white_black",
         "selected_owner_warm_exact_certification",
         "cumulative_work_and_cache_receipts",
         "exact_manifest_import",
@@ -715,13 +726,18 @@ def _validate_root_smoke(receipt: Receipt, build: BuildEvidence) -> tuple[dict[s
     contract = dict(_mapping(payload.get("root_session_contract"), "root session contract"))
     capabilities = _mapping(contract.get("capabilities"), "root session capabilities")
     hard_limits = _mapping(contract.get("hard_limits"), "root session hard limits")
-    if capabilities.get("canonical_root_tactical_policy") is not True:
-        raise ReleaseGateError("root session contract lacks canonical tactical policy")
+    if (
+        capabilities.get("canonical_root_tactical_policy") is not True
+        or capabilities.get("aspiration_windows") is not True
+    ):
+        raise ReleaseGateError("root session contract lacks coordinator search capabilities")
     if (
         hard_limits.get("root_tactical_policy") != "canonical-boundary-policy-v1"
         or hard_limits.get("root_tactical_protection_values") != [False]
+        or hard_limits.get("minimum_aspiration_initial_delta") != 2_048
+        or hard_limits.get("maximum_aspiration_attempts") != 4
     ):
-        raise ReleaseGateError("root session contract permits the legacy tactical policy")
+        raise ReleaseGateError("root session contract hard limits are not release-certified")
     manifest_contract = _mapping(contract.get("manifest"), "root session manifest contract")
     if manifest_contract.get("root_tactical_policy") != "canonical-boundary-policy-v1":
         raise ReleaseGateError("root session manifest omits the canonical tactical policy")
@@ -1245,13 +1261,174 @@ def _normalize_opera_bounds(
     return bounds
 
 
+def _validate_opera_aspiration_iterations(
+    value: object,
+    *,
+    label: str,
+    expected_depths: Sequence[int],
+    expected_mode: str,
+    expected_candidate_count: int,
+) -> list[dict[str, Any]]:
+    iterations = _list(value, f"{label} aspiration iterations")
+    if len(iterations) != len(expected_depths):
+        raise ReleaseGateError(f"{label} lacks its exact aspiration depth schedule")
+    normalized: list[dict[str, Any]] = []
+    previous_score: int | None = None
+    previous_owner: str | None = None
+    for expected_depth, raw_iteration in zip(expected_depths, iterations, strict=True):
+        iteration = _mapping(raw_iteration, f"{label} D{expected_depth} aspiration iteration")
+        if iteration.get("depth") != expected_depth:
+            raise ReleaseGateError(f"{label} has a malformed D{expected_depth} aspiration iteration")
+        if "aspiration" in iteration:
+            aspiration = _mapping(
+                iteration.get("aspiration"),
+                f"{label} D{expected_depth} aspiration telemetry",
+            )
+            score = _integer(
+                iteration.get("score"),
+                f"{label} D{expected_depth} score",
+                -2_000_000_000,
+            )
+            selected_owner = _text(
+                iteration.get("owner_worker_id"),
+                f"{label} D{expected_depth} selected owner",
+            )
+        else:
+            aspiration = iteration
+            score = _integer(
+                iteration.get("selected_score"),
+                f"{label} D{expected_depth} selected score",
+                -2_000_000_000,
+            )
+            selected_owner = _text(
+                iteration.get("selected_owner_worker_id"),
+                f"{label} D{expected_depth} selected owner",
+            )
+        expected_enabled = expected_mode == "warm" and previous_score is not None
+        if aspiration.get("enabled") is not expected_enabled:
+            state = "enabled" if expected_enabled else "disabled"
+            raise ReleaseGateError(f"{label} D{expected_depth} aspiration must be {state}")
+        if aspiration.get("maximum_attempts") != MAX_ASPIRATION_ATTEMPTS:
+            raise ReleaseGateError(f"{label} D{expected_depth} aspiration attempt limit drifted")
+        candidate_count = _integer(
+            aspiration.get("candidate_count"),
+            f"{label} D{expected_depth} aspiration candidate count",
+        )
+        if candidate_count > 8:
+            raise ReleaseGateError(
+                f"{label} D{expected_depth} aspiration candidate count is invalid"
+            )
+        counters = {
+            field: _integer(
+                aspiration.get(field),
+                f"{label} D{expected_depth} aspiration {field}",
+            )
+            for field in ASPIRATION_COUNTER_FIELDS
+        }
+        if (
+            counters["attempts"] > candidate_count * MAX_ASPIRATION_ATTEMPTS
+            or counters["exact_hits"] > candidate_count
+            or counters["full_window_fallbacks"] > candidate_count
+            or counters["fail_highs"] + counters["fail_lows"]
+            + counters["exact_hits"] != counters["attempts"]
+            or counters["exact_hits"] + counters["full_window_fallbacks"]
+            > candidate_count
+        ):
+            raise ReleaseGateError(
+                f"{label} D{expected_depth} aspiration accounting contradicts itself"
+            )
+
+        aspiration_owner = aspiration.get("owner_worker_id")
+        owner_worker_ids = aspiration.get("owner_worker_ids")
+        owner_worker_count = aspiration.get("owner_worker_count")
+        warm_owner_reused = aspiration.get("warm_owner_reused")
+        warm_owner_reused_count = aspiration.get("warm_owner_reused_count")
+        if expected_enabled:
+            if (
+                candidate_count != expected_candidate_count
+                or aspiration.get("center_score") != previous_score
+                or aspiration.get("initial_delta") != ASPIRATION_INITIAL_DELTA
+            ):
+                raise ReleaseGateError(f"{label} D{expected_depth} aspiration window drifted")
+            if (
+                not isinstance(aspiration_owner, str)
+                or not aspiration_owner
+                or aspiration_owner != previous_owner
+                or warm_owner_reused is not True
+                or not isinstance(owner_worker_ids, list)
+                or len(owner_worker_ids) != candidate_count
+                or any(not isinstance(owner, str) or not owner for owner in owner_worker_ids)
+                or len(set(owner_worker_ids)) != candidate_count
+                or owner_worker_ids[0] != aspiration_owner
+                or owner_worker_count != candidate_count
+                or warm_owner_reused_count != candidate_count
+            ):
+                raise ReleaseGateError(f"{label} D{expected_depth} did not reuse its warm owner")
+            if candidate_count < 1 or counters["attempts"] < candidate_count or (
+                counters["exact_hits"] + counters["full_window_fallbacks"]
+                != candidate_count
+            ):
+                raise ReleaseGateError(
+                    f"{label} D{expected_depth} aspiration has no exact result or fallback"
+                )
+            failure_count = counters["fail_highs"] + counters["fail_lows"]
+            if counters["full_window_fallbacks"] > 0 and (
+                failure_count
+                < counters["full_window_fallbacks"] * MAX_ASPIRATION_ATTEMPTS
+                or failure_count > (
+                    counters["full_window_fallbacks"] * MAX_ASPIRATION_ATTEMPTS
+                    + counters["exact_hits"] * (MAX_ASPIRATION_ATTEMPTS - 1)
+                )
+            ):
+                raise ReleaseGateError(
+                    f"{label} D{expected_depth} aspiration fallback accounting is invalid"
+                )
+        elif (
+            aspiration.get("center_score") is not None
+            or aspiration.get("initial_delta") is not None
+            or candidate_count != 0
+            or aspiration_owner is not None
+            or owner_worker_ids != []
+            or owner_worker_count != 0
+            or warm_owner_reused is not False
+            or warm_owner_reused_count != 0
+            or any(counters.values())
+        ):
+            raise ReleaseGateError(f"{label} D{expected_depth} disabled aspiration did work")
+
+        normalized.append(
+            {
+                "depth": expected_depth,
+                "selected_score": score,
+                "selected_owner_worker_id": selected_owner,
+                "enabled": expected_enabled,
+                "center_score": aspiration.get("center_score"),
+                "initial_delta": aspiration.get("initial_delta"),
+                "maximum_attempts": MAX_ASPIRATION_ATTEMPTS,
+                "candidate_count": candidate_count,
+                **counters,
+                "owner_worker_id": aspiration_owner,
+                "owner_worker_ids": list(owner_worker_ids),
+                "owner_worker_count": owner_worker_count,
+                "warm_owner_reused": warm_owner_reused,
+                "warm_owner_reused_count": warm_owner_reused_count,
+            }
+        )
+        previous_score = score
+        previous_owner = selected_owner
+    return normalized
+
+
 def _validate_opera_run_binding(
     value: object,
     *,
     label: str,
     selected: Mapping[str, Any],
     expected_candidate_ids: set[str],
-) -> tuple[list[dict[str, Any]], str, str]:
+    expected_depths: Sequence[int],
+    expected_mode: str,
+    expected_candidate_count: int,
+) -> tuple[list[dict[str, Any]], str, str, list[dict[str, Any]]]:
     run = _mapping(value, label)
     selected_signature = _canonical_sha256(selected)
     if (
@@ -1283,7 +1460,16 @@ def _validate_opera_run_binding(
     run_signature = _canonical_sha256(semantic)
     if run.get("run_signature_sha256") != run_signature:
         raise ReleaseGateError(f"{label} has an invalid actual-run signature")
-    return bounds, retained_manifest, run_signature
+    aspiration = _validate_opera_aspiration_iterations(
+        run.get("aspiration_iterations"),
+        label=label,
+        expected_depths=expected_depths,
+        expected_mode=expected_mode,
+        expected_candidate_count=expected_candidate_count,
+    )
+    if run.get("aspiration_sha256") != _canonical_sha256(aspiration):
+        raise ReleaseGateError(f"{label} has an invalid aspiration digest")
+    return bounds, retained_manifest, run_signature, aspiration
 
 
 def _validate_opera(
@@ -1330,11 +1516,15 @@ def _validate_opera(
     geometry = dict(_mapping(worker.get("geometry"), "Opera geometry"))
     if (
         geometry.get("workers") != 8
-        or geometry.get("initial_full_wave") != 4
+        or geometry.get("initial_full_wave") != 8
         or geometry.get("depth") != 5
         or geometry.get("width") != 32
+        or geometry.get("mode") != "warm"
+        or geometry.get("aspiration_enabled") is not True
     ):
-        raise ReleaseGateError("Opera release geometry must be exactly 8 Workers, wave 4, W32 D5")
+        raise ReleaseGateError(
+            "Opera release geometry must be warm aspiration-capable 8 Workers, wave 8, W32 D5"
+        )
     max_work = _integer(geometry.get("max_work"), "Opera maximum work", 1_000)
     safety_reserve = _integer(
         geometry.get("safety_reserve_work"),
@@ -1347,7 +1537,7 @@ def _validate_opera(
         "depth": "5",
         "width": "32",
         "workers": "8",
-        "wave": "4",
+        "wave": "8",
         "max_work": str(max_work),
         "safety_work": str(safety_reserve),
     }
@@ -1418,6 +1608,13 @@ def _validate_opera(
     iterations = _list(worker.get("iterations"), "Opera iterations")
     if [item.get("depth") if isinstance(item, Mapping) else None for item in iterations] != [1, 2, 3, 4, 5]:
         raise ReleaseGateError("Opera receipt must contain exact persistent D1-D5 iterations")
+    warm_aspiration = _validate_opera_aspiration_iterations(
+        iterations,
+        label="Opera warm D1-D5",
+        expected_depths=(1, 2, 3, 4, 5),
+        expected_mode="warm",
+        expected_candidate_count=8,
+    )
     for index, raw_iteration in enumerate(iterations, start=1):
         iteration = _mapping(raw_iteration, f"Opera D{index} iteration")
         _number(iteration.get("elapsed_ms"), f"Opera D{index} elapsed", 0.000001)
@@ -1521,26 +1718,38 @@ def _validate_opera(
         or oracle.get("warm_full_matches_oracle") is not True
     ):
         raise ReleaseGateError("Opera receipt is not bound to the signed root D5 oracle")
-    _validate_opera_run_binding(
+    _, _, _, cold_aspiration = _validate_opera_run_binding(
         oracle.get("cold_d5"),
         label="Opera cold D5 oracle run",
         selected=oracle_selected,
         expected_candidate_ids=expected_candidate_ids,
+        expected_depths=(5,),
+        expected_mode="cold",
+        expected_candidate_count=0,
     )
-    warm_bounds, warm_manifest, warm_run_signature = _validate_opera_run_binding(
-        oracle.get("warm_d1_through_d5"),
-        label="Opera warm D1-D5 oracle run",
-        selected=oracle_selected,
-        expected_candidate_ids=expected_candidate_ids,
+    warm_bounds, warm_manifest, warm_run_signature, warm_binding_aspiration = (
+        _validate_opera_run_binding(
+            oracle.get("warm_d1_through_d5"),
+            label="Opera warm D1-D5 oracle run",
+            selected=oracle_selected,
+            expected_candidate_ids=expected_candidate_ids,
+            expected_depths=(1, 2, 3, 4, 5),
+            expected_mode="warm",
+            expected_candidate_count=8,
+        )
     )
     if warm_bounds != oracle_rival_bounds or warm_manifest != oracle_retained_manifest_sha256:
         raise ReleaseGateError("Opera warm oracle run does not carry the signed full coverage")
+    if warm_binding_aspiration != warm_aspiration:
+        raise ReleaseGateError("Opera warm oracle aspiration receipt differs from its iterations")
+    if cold_aspiration[0]["enabled"] is not False:
+        raise ReleaseGateError("Opera cold D5 aspiration must be disabled")
     schedule_trials = _list(worker.get("schedule_trials"), "Opera schedule trials")
     if len(schedule_trials) < 2:
         raise ReleaseGateError("Opera receipt needs at least two real schedule shapes")
     schedule_shapes: set[tuple[int, str]] = set()
     order_shapes: set[str] = set()
-    saw_wave_four = False
+    saw_wave_eight = False
     for raw_trial in schedule_trials:
         trial = _mapping(raw_trial, "Opera schedule trial")
         workers = _integer(trial.get("workers"), "Opera schedule trial workers", 1)
@@ -1550,31 +1759,38 @@ def _validate_opera(
             raise ReleaseGateError("Opera schedule trial used the wrong Worker geometry")
         if not isinstance(order_shape, str) or not HEX_64.fullmatch(order_shape):
             raise ReleaseGateError("Opera schedule trial has an invalid order-shape digest")
-        trial_bounds, trial_manifest, trial_signature = _validate_opera_run_binding(
-            trial,
-            label=f"Opera wave-{wave} schedule trial",
-            selected=oracle_selected,
-            expected_candidate_ids=expected_candidate_ids,
+        trial_bounds, trial_manifest, trial_signature, trial_aspiration = (
+            _validate_opera_run_binding(
+                trial,
+                label=f"Opera wave-{wave} schedule trial",
+                selected=oracle_selected,
+                expected_candidate_ids=expected_candidate_ids,
+                expected_depths=(1, 2, 3, 4, 5),
+                expected_mode="warm",
+                expected_candidate_count=wave,
+            )
         )
         trial_semantic = {
             "run_signature_sha256": trial_signature,
             "workers": workers,
             "initial_full_wave": wave,
             "order_shape_sha256": order_shape,
+            "aspiration_sha256": trial.get("aspiration_sha256"),
         }
         if trial.get("trial_signature_sha256") != _canonical_sha256(trial_semantic):
             raise ReleaseGateError("Opera schedule trial has an invalid schedule signature")
-        if wave == 4 and (
+        if wave == 8 and (
             trial_bounds != oracle_rival_bounds
             or trial_manifest != oracle_retained_manifest_sha256
             or trial_signature != warm_run_signature
             or order_shape != warm_result_order_shape
+            or trial_aspiration != warm_aspiration
         ):
-            raise ReleaseGateError("Opera wave-4 schedule trial differs from the signed warm run")
+            raise ReleaseGateError("Opera wave-8 schedule trial differs from the signed warm run")
         schedule_shapes.add((wave, order_shape))
         order_shapes.add(order_shape)
-        saw_wave_four = saw_wave_four or wave == 4
-    if len(schedule_shapes) < 2 or len(order_shapes) < 2 or not saw_wave_four:
+        saw_wave_eight = saw_wave_eight or wave == 8
+    if len(schedule_shapes) < 2 or len(order_shapes) < 2 or not saw_wave_eight:
         raise ReleaseGateError("Opera schedule trials do not prove two distinct real order shapes")
 
     memory = dict(_mapping(worker.get("memory"), "Opera memory"))
@@ -1687,6 +1903,7 @@ def _validate_opera(
         "alternate_schedule_selected_matches_oracle",
         "multiple_seed_wave_order_shapes",
         "no_unknown_or_limit_results",
+        "aspiration_iteration_lifecycle",
     ):
         _true(gates, key, "Opera")
     if gates.get("release_certificate_present") is not False:
@@ -1832,7 +2049,7 @@ def build_certificates(
         "root_session_contract": dict(evidence.root_contract),
         "geometry": {
             "desktop_workers": 8,
-            "desktop_initial_full_wave": 4,
+            "desktop_initial_full_wave": 8,
             "aggregate_maximum_bytes": 8 * int(build.memory["maximum_bytes"]),
             "supported_lower_geometries": [],
             "session_config": dict(evidence.root_config),
@@ -1851,6 +2068,8 @@ def build_certificates(
             "enumerate_import_search": True,
             "exact_manifest_import": True,
             "persistent_d1_d2_session": True,
+            "aspiration_fail_soft_window": True,
+            "aspiration_fail_high_low_white_black": True,
             "cumulative_work_and_cache_receipts": True,
             "configured_max_depth_rejected": True,
             "per_call_work_credit": True,
@@ -2065,7 +2284,7 @@ def promote_release(
                 "completed_depth": 5,
                 "width": 32,
                 "workers": 8,
-                "initial_full_wave": 4,
+                "initial_full_wave": 8,
                 "result": evidence.opera_result,
                 "memory": evidence.opera_memory,
             },
