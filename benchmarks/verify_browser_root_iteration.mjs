@@ -872,12 +872,28 @@ function testAspirationAggregateAndAffinityContract() {
       worker_id: "root-2", purpose: "full", bound: "exact",
     },
     {
+      event: "dispatch", task_id: "t0-cert", candidate_identity: "c0",
+      worker_id: "root-1", purpose: "selected-certification",
+    },
+    {
+      event: "complete", task_id: "t0-cert", candidate_identity: "c0",
+      worker_id: "root-1", purpose: "selected-certification", bound: "exact",
+    },
+    {
       event: "dispatch", task_id: "t1", candidate_identity: "c1",
       worker_id: "root-0", purpose: "threat-research",
     },
     {
       event: "complete", task_id: "t1", candidate_identity: "c1",
       worker_id: "root-0", purpose: "threat-research", bound: "exact",
+    },
+    {
+      event: "dispatch", task_id: "t1-cert", candidate_identity: "c1",
+      worker_id: "root-2", purpose: "selected-certification",
+    },
+    {
+      event: "complete", task_id: "t1-cert", candidate_identity: "c1",
+      worker_id: "root-2", purpose: "selected-certification", bound: "exact",
     },
     {
       event: "dispatch", task_id: "t2", candidate_identity: "c2",
@@ -1442,6 +1458,7 @@ process.stdout.write(JSON.stringify({
   all_initial_wave_aspiration: true,
   aggregate_aspiration_accounting: true,
   exact_owner_affinity: true,
+  exact_owner_priority_stable: true,
   unavailable_claimed_owner_fails_closed: true,
   persistent_worker_pool: true,
   fresh_sessions_per_turn: true,

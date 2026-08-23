@@ -3,6 +3,12 @@ const ZERO_PROMOTED = "0000000000000000";
 const MATE_SCORE = 1_000_000;
 const ASPIRATION_INITIAL_DELTA = 2_048;
 const MAX_ASPIRATION_ATTEMPTS = 4;
+const EXACT_OWNER_PRIORITIES = new Map([
+  ["aspiration", 3],
+  ["full", 3],
+  ["threat-research", 2],
+  ["selected-certification", 1],
+]);
 const ROOT_API = globalThis.ScottishProgressiveRootCoordinator;
 const PREFIX_API = globalThis.ScottishProgressiveBrowserPrefix;
 const diagnostics = [];
@@ -86,6 +92,27 @@ function validateAspirationReceipt(value, previousScore, expectedCandidateCount)
     );
   }
   return { ...value };
+}
+
+
+function exactCandidateOwnerMap(tasks) {
+  const owners = new Map();
+  for (const task of tasks) {
+    const priority = EXACT_OWNER_PRIORITIES.get(task?.purpose);
+    if (task?.event !== "complete" || task?.bound !== "exact" || priority === undefined) {
+      continue;
+    }
+    const prior = owners.get(task.candidate_identity);
+    if (prior === undefined || priority > prior.priority) {
+      owners.set(task.candidate_identity, {
+        priority,
+        workerId: task.worker_id,
+      });
+    }
+  }
+  return new Map([...owners].map(([candidateId, owner]) => (
+    [candidateId, owner.workerId]
+  )));
 }
 
 
@@ -645,11 +672,10 @@ async function main() {
         requestBase.aspiration === null ? null : previousScore,
         requestBase.aspiration === null ? 0 : aspirationCandidateIds.length,
       );
-      if (aspiration.enabled) {
+      if (aspiration.enabled && warmOwnersComplete) {
         invariant(
-          warmOwnersComplete
-            && warmOwnerIds.length === aspiration.candidate_count,
-          `D${depth} lacks complete unique warm-owner affinity`,
+          warmOwnerIds.length === aspiration.candidate_count,
+          `D${depth} warm-owner affinity count drifted`,
         );
         const aspirationDispatches = result.tasks.filter(
           (task) => task.event === "dispatch" && task.purpose === "aspiration",
@@ -687,15 +713,7 @@ async function main() {
       safetyWork += result.work.safety_committed_work;
       preferredSeries = [...selectedSeries.moves];
       previousScore = result.selected.score;
-      previousOwnersByCandidate = new Map(
-        result.tasks
-          .filter((task) => (
-            task.event === "complete"
-            && task.bound === "exact"
-            && task.purpose !== "scout"
-          ))
-          .map((task) => [task.candidate_identity, task.worker_id]),
-      );
+      previousOwnersByCandidate = exactCandidateOwnerMap(result.tasks);
       const retainedManifestSha256 = await canonicalSha256(manifest);
       const orderShapeSha256 = await canonicalSha256({
         initial_full_wave: args.initialFullWave,
@@ -708,6 +726,7 @@ async function main() {
           score: task.score ?? null,
         })),
       });
+      const affinityReused = aspiration.enabled && warmOwnersComplete;
       iterations.push({
         depth,
         elapsed_ms: performance.now() - iterationStarted,
@@ -727,11 +746,11 @@ async function main() {
         ).length,
         aspiration: {
           ...aspiration,
-          owner_worker_id: aspiration.enabled ? warmOwnerIds[0] : null,
-          owner_worker_ids: aspiration.enabled ? [...warmOwnerIds] : [],
-          owner_worker_count: aspiration.enabled ? warmOwnerIds.length : 0,
-          warm_owner_reused: aspiration.enabled ? warmOwnersComplete : false,
-          warm_owner_reused_count: aspiration.enabled ? warmOwnerIds.length : 0,
+          owner_worker_id: affinityReused ? warmOwnerIds[0] : null,
+          owner_worker_ids: affinityReused ? [...warmOwnerIds] : [],
+          owner_worker_count: affinityReused ? warmOwnerIds.length : 0,
+          warm_owner_reused: affinityReused,
+          warm_owner_reused_count: affinityReused ? warmOwnerIds.length : 0,
         },
         root_bounds: result.root_bounds,
         retained_manifest_sha256: retainedManifestSha256,

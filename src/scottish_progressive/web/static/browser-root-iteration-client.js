@@ -106,8 +106,11 @@
     return Object.freeze({ ...value });
   }
 
-  const EXACT_OWNER_PURPOSES = Object.freeze(new Set([
-    "aspiration", "full", "selected-certification", "threat-research",
+  const EXACT_OWNER_PRIORITIES = Object.freeze(new Map([
+    ["aspiration", 3],
+    ["full", 3],
+    ["threat-research", 2],
+    ["selected-certification", 1],
   ]));
 
   function exactCandidateOwnerMap(taskLog) {
@@ -165,17 +168,19 @@
           "browser-root-aspiration-owner-map-invalid",
         );
       }
-      if (item.bound !== "exact" || !EXACT_OWNER_PURPOSES.has(item.purpose)) continue;
+      const priority = EXACT_OWNER_PRIORITIES.get(item.purpose);
+      if (item.bound !== "exact" || priority === undefined) continue;
       const prior = owners.get(item.candidate_identity);
-      if (prior !== undefined && prior !== item.worker_id) {
-        throw new RootIterationClientError(
-          "A root candidate claimed multiple exact owning Workers.",
-          "browser-root-aspiration-owner-map-invalid",
-        );
+      if (prior === undefined || priority > prior.priority) {
+        owners.set(item.candidate_identity, {
+          priority,
+          workerId: item.worker_id,
+        });
       }
-      owners.set(item.candidate_identity, item.worker_id);
     }
-    return owners;
+    return new Map([...owners].map(([candidateId, owner]) => (
+      [candidateId, owner.workerId]
+    )));
   }
 
   function scheduleAspirationAffinity({

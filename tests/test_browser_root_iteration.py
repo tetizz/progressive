@@ -30,6 +30,7 @@ def test_browser_root_worker_pool_contract() -> None:
         "all_initial_wave_aspiration": True,
         "aggregate_aspiration_accounting": True,
         "exact_owner_affinity": True,
+        "exact_owner_priority_stable": True,
         "unavailable_claimed_owner_fails_closed": True,
         "persistent_worker_pool": True,
         "fresh_sessions_per_turn": True,
