@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import scottish_progressive.fast_training as fast_training_module
 from scottish_progressive.evaluation import evaluate
 from scottish_progressive.fast_training import (
     PROXY_DISCLAIMER,
@@ -299,6 +300,98 @@ def test_all_corpus_roots_are_cached_before_derived_rollouts() -> None:
     assert len({position.position_hash for position in cache.positions}) == len(
         cache.positions
     )
+
+
+def test_incomplete_supplied_root_label_remains_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def incomplete_label(*_args, **_kwargs):
+        raise fast_training_module._IncompleteLabelSearch("root is incomplete")
+
+    monkeypatch.setattr(
+        fast_training_module,
+        "_build_cached_position",
+        incomplete_label,
+    )
+    config = FastTrainingConfig(
+        position_limit=1,
+        rollout_steps=2,
+        label_depth_series=1,
+        label_branch_cap=4,
+        label_max_work_positions=50_000,
+        finalist_count=1,
+        smoke=True,
+    )
+
+    with pytest.raises(
+        fast_training_module._IncompleteLabelSearch,
+        match="root is incomplete",
+    ):
+        build_training_cache(
+            baseline_profile(),
+            config=config,
+            positions=(
+                TrainingPosition.from_state(
+                    "mandatory-root",
+                    ProgressiveState.initial(),
+                ),
+            ),
+        )
+
+
+def test_incomplete_derived_label_ends_only_that_trace_without_partial_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = fast_training_module._build_cached_position
+
+    def stop_derived(*args, trace_step: int, **kwargs):
+        if trace_step > 0:
+            raise fast_training_module._IncompleteLabelSearch(
+                "derived label is incomplete"
+            )
+        return original(*args, trace_step=trace_step, **kwargs)
+
+    monkeypatch.setattr(
+        fast_training_module,
+        "_build_cached_position",
+        stop_derived,
+    )
+    positions = (
+        TrainingPosition.from_state(
+            "required-root-a",
+            ProgressiveState.initial(),
+        ),
+        TrainingPosition.from_state(
+            "required-root-b",
+            ProgressiveState.from_fen(
+                "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+                2,
+            ),
+        ),
+    )
+    config = FastTrainingConfig(
+        position_limit=2,
+        rollout_steps=2,
+        label_depth_series=1,
+        label_branch_cap=4,
+        label_max_work_positions=50_000,
+        finalist_count=1,
+        smoke=True,
+    )
+
+    cache = build_training_cache(
+        baseline_profile(),
+        config=config,
+        positions=positions,
+    )
+
+    assert len(cache.positions) == len(positions) == 2
+    assert all(position.trace_step == 0 for position in cache.positions)
+    assert {position.case_id for position in cache.positions} == {
+        "required-root-a",
+        "required-root-b",
+    }
+    assert len({position.position_hash for position in cache.positions}) == 2
 
 
 def test_duplicate_corpus_roots_are_rejected() -> None:

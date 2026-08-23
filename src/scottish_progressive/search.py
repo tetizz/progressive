@@ -537,14 +537,24 @@ class SeriesSearcher:
         ] = set()
         self._root_widened_terminal_series: SeriesResult | None = None
         configured_work = self.limits.max_generation_positions
-        self._root_child_mate_screen_budget = (
-            ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT
-            if configured_work is None
-            else min(
+        if configured_work is None:
+            self._root_child_mate_screen_budget = (
+                ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT
+            )
+        elif self.limits.collect_all_root_scores:
+            # Full-window root scoring already obeys the caller's shared work
+            # ceiling. Dividing that same small envelope again can make exact
+            # reply safety fail before a low-budget label search scores depth
+            # one. Retain the independent 3M safety guard for larger callers.
+            self._root_child_mate_screen_budget = min(
+                ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT,
+                configured_work,
+            )
+        else:
+            self._root_child_mate_screen_budget = min(
                 ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT,
                 configured_work // 3,
             )
-        )
         self._root_child_mate_screen_work = 0
         self._native_subtree_session: NativeSubtreeSession | None = None
         self._native_subtree_stats_applied = (0,) * len(SUBTREE_STAT_FIELDS)

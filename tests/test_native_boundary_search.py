@@ -664,7 +664,8 @@ def test_timed_native_search_matches_untimed_result_and_all_work_fields(
     base = dict(
         depth_series=3,
         max_series_per_node=32,
-        max_generation_positions=250_000,
+        max_generation_positions=500_000,
+        collect_all_root_scores=True,
     )
     monkeypatch.setattr(evaluation, "_native_eval", native)
     untimed = analyze(state, SearchLimits(**base), baseline_profile())
@@ -765,7 +766,10 @@ def test_user_refutation_boundaries_complete_d2_with_timed_native(
                 depth_series=3,
                 max_series_per_node=32,
                 time_limit_seconds=5.0,
-                max_generation_positions=250_000,
+                max_generation_positions=(
+                    250_000 if state.series_number == 2 else 500_000
+                ),
+                collect_all_root_scores=True,
             ),
             baseline_profile(),
         )
@@ -777,6 +781,32 @@ def test_user_refutation_boundaries_complete_d2_with_timed_native(
             != repeated_losing_series[state.series_number]
         )
         assert result.elapsed_seconds < 5.0
+
+
+def test_collect_all_s4_at_250k_fails_closed_without_partial_scores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native = _require_n2_native()
+    monkeypatch.setattr(evaluation, "_native_eval", native)
+
+    result = analyze(
+        _user_refutation_states()[1],
+        SearchLimits(
+            depth_series=3,
+            max_series_per_node=32,
+            max_generation_positions=250_000,
+            collect_all_root_scores=True,
+        ),
+        baseline_profile(),
+    )
+
+    assert result.completed_depth == 0
+    assert result.work_limit_reached
+    assert result.alternatives == ()
+    assert result.proof is None
+    assert not result.root_scores_complete
+    assert result.stats.root_safety_proven_mate_children > 0
+    assert result.stats.native_series_mate_work_limit_hits == 1
 
 
 def test_timed_native_search_keeps_last_completed_iteration_on_deadline(
