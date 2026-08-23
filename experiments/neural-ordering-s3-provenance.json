@@ -43,8 +43,46 @@
   },
   "production_revalidation": {
     "historical_gate_production_eligible": false,
-    "status": "pending-final-integrated-native-wasm-and-browser-receipts",
-    "transfer_basis": "The frozen model is transferred only by exact all-20 root-manifest parity; final release identities and gate receipts must be recorded before deployment."
+    "status": "complete",
+    "source_revision": "816a2a623ed794914a6dd8399c4e4eff353590f4",
+    "source_fingerprint": "e41dc0e25186d438",
+    "native_source_identity": "7a72e47c1feb6abb588ea53f5cad3ba2e8f3be0e282e7db2f69f84f5a6ae58ef",
+    "native_mate_source_identity": "bf169d425248885c78fd41e5a1bf71b2a269ebc26521aa6eb882b95ae0a2e9ad",
+    "compiled_artifact": {
+      "artifact_set_sha256": "3b5d67690f7812c3967df80ac699c3b1addebc561c5051b56a5eee90ec37978f",
+      "kernel_sha256": "eaf15e2b0e98028d68e64036c28394c5735342c35b4781c48d2d60f35dcc1cb2",
+      "module_js_sha256": "3cb0cfcfc047c40cd1c72d44e519122bb46c7d4dd38a647d5297302fb8181d8e",
+      "wasm_sha256": "d131a0c99dc31221bc878790ce16ed8485ce10475e8c84b4c8c190d5258c2f72"
+    },
+    "promoted_release": {
+      "release_id": "spc-browser-wasm-release-75c74c54e9bb67d8",
+      "release_receipt_sha256": "d1f042ef28aa61e2ca6114d1700e2a1811fa6b71e16c9a0408d5703178e3365d",
+      "browser_manifest_sha256": "293f58ad03ce77b0f87e9e480b2611866e8c2335128af8a97c53816683820f92",
+      "browser_bundle_artifact_set_sha256": "8b45427793291d20b775d01dbc063f1c5f7495532a5a51dbaaac77753a3d5627",
+      "certificate_set_sha256": "1e7167d9e66cfbf2404fa64b1cb0e8c667d88e5a234fcf6fa04e481c9743b6b5",
+      "root_session_certificate_id": "spc-root-session-b0274ffdca39cda8",
+      "prefix_certificate_id": "spc-prefix-4e42ad403306b9f5",
+      "mate_certificate_id": "spc-mate-37226f3611e2196e",
+      "product_publishable": true
+    },
+    "validation": {
+      "full_suite": "752 passed, 4 skipped",
+      "opt_in_hard_gates": "4/4 passed",
+      "native_all_20_s2_root_contracts_match_frozen_model": true,
+      "python_wasm_neural_s2_e4_width_32_manifest_parity": true,
+      "python_wasm_neural_parity_receipt_sha256": "8296bea4650ed6ee6ba8a073ab2c4fe19b00aa735a9369f962e8eab6ad5e7c42",
+      "opera_gx": {
+        "user_agent_product": "OPR/134.0.0.0",
+        "hardware_concurrency": 16,
+        "warm_wave_8_d1_through_d5_seconds": 20.428,
+        "warm_wave_4_d1_through_d5_seconds": 27.522,
+        "cold_wave_8_d1_through_d5_seconds": 19.1812,
+        "completed_depth": 5,
+        "width": 32
+      }
+    },
+    "strength_gate_replayed_on_exact_release": false,
+    "transfer_basis": "The final native build matches every frozen model parameter and all 20 legal Series-1 roots use the accepted neural ordering; the final WASM exactly matches Python for the full width-32 Black Series-2 manifest after e4. The historical 40-game strength gate used an older compiled identity, so this records exact model and implementation transfer plus release safety, not a new strength estimate for the final binary."
   },
   "schema": "spc-neural-ordering-provenance-v2",
   "source_gate_commit": "6b1483c62b159f19b8304a6746dc22db90663726"
