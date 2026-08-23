@@ -1,8 +1,8 @@
 # Selective opening deepening
 
-Generated: `2026-08-22T21:02:03+00:00`<br>
+Generated: `2026-08-23T03:32:06+00:00`<br>
 Engine: `spc-0.9.0`<br>
-Source fingerprint: `218625767141aef7`<br>
+Source fingerprint: `438b1701acc6239b`<br>
 Rules: `scottish-modern-common-v1`<br>
 Total series horizon: `3`<br>
 Maximum retained series per node: `16`

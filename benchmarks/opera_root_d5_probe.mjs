@@ -131,6 +131,28 @@ function parseParameters() {
     invariant(exactInteger(value, minimum), `${name} is invalid`);
     return value;
   };
+  const fen = values.get("fen") || START_FEN;
+  const fields = fen.split(" ");
+  invariant(fields.length === 6, "fen is invalid");
+  const series = integer("series", 1);
+  invariant(
+    (series % 2 === 1) === (fields[1] === "w"),
+    "series and FEN side to move disagree",
+  );
+  const epTargets = (values.get("ep_targets") || "")
+    .split(",")
+    .filter(Boolean);
+  invariant(
+    epTargets.length <= 8
+      && epTargets.every((square) => /^[a-h][1-8]$/.test(square))
+      && new Set(epTargets).size === epTargets.length,
+    "ep_targets is invalid",
+  );
+  const promotedHex = (values.get("promoted_hex") || ZERO_PROMOTED)
+    .toLowerCase()
+    .replace(/^0x/, "")
+    .padStart(16, "0");
+  invariant(/^[0-9a-f]{16}$/.test(promotedHex), "promoted_hex is invalid");
   return {
     moduleUrl: new URL(values.get("module"), location.href).href,
     wasmUrl: new URL(values.get("wasm"), location.href).href,
@@ -143,6 +165,14 @@ function parseParameters() {
     maxWork: integer("max_work", 100_000_000),
     safetyReserveWork: integer("safety_work", 1_000_000),
     timeoutMs: integer("timeout_ms", 300_000),
+    boundary: Object.freeze({
+      fen,
+      series,
+      quiet_series: integer("quiet_series", 0, 0),
+      ep_targets: Object.freeze(epTargets),
+      promoted_hex: promotedHex,
+      chess960: false,
+    }),
   };
 }
 
@@ -232,14 +262,7 @@ async function main() {
     ruleset_version: receipt.ruleset_version,
     profile_id: receipt.profile_id,
   });
-  const boundary = Object.freeze({
-    fen: START_FEN,
-    series: 1,
-    quiet_series: 0,
-    ep_targets: Object.freeze([]),
-    promoted_hex: ZERO_PROMOTED,
-    chess960: false,
-  });
+  const boundary = args.boundary;
   const config = Object.freeze({
     max_depth: args.depth,
     width: args.width,
@@ -581,7 +604,15 @@ async function main() {
     const totalMs = performance.now() - totalStarted;
     const final = iterations.at(-1);
     invariant(final.depth === args.depth, "requested depth did not complete");
-    if (args.depth === 5 && args.width === 32) {
+    if (
+      args.depth === 5
+      && args.width === 32
+      && boundary.fen === START_FEN
+      && boundary.series === 1
+      && boundary.quiet_series === 0
+      && boundary.ep_targets.length === 0
+      && boundary.promoted_hex === ZERO_PROMOTED
+    ) {
       invariant(final.move === "b2b3", `D5 move anchor drifted: ${final.move}`);
       invariant(final.score === 951, `D5 score anchor drifted: ${final.score}`);
     }

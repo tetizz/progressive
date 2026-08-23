@@ -220,6 +220,10 @@
   let playSessionRevision = 0;
   let playSessionWriteQueue = Promise.resolve();
   let playSessionWriteSequence = 0;
+  let playPonderGeneration = 0;
+  let activePlayPonder = null;
+  let claimedPlayPonder = null;
+  let playPonderCleanup = Promise.resolve();
 
   function randomStorageId(prefix) {
     const random = globalThis.crypto?.randomUUID?.()
@@ -769,6 +773,7 @@
     if (target === current) return;
     if (target < timeline.length - 1) {
       if (state.play.thinking) cancelEngineTurn();
+      else void cancelPlayPonder("play-history-review");
       state.play.timelineIndex = target;
       state.selected = null;
       renderAll();
@@ -777,6 +782,7 @@
     }
     state.play.timelineIndex = null;
     state.selected = null;
+    void cancelPlayPonder("play-history-return");
     renderAll();
     persistPlaySession();
     void continuePlayFlow();
@@ -1266,6 +1272,8 @@
     const saved = readPersistedPlaySession();
     if (!saved) return false;
 
+    await cancelPlayPonder("play-session-restore");
+
     playSessionReplayBlocked = true;
     state.prefixAbort?.abort();
     cancelAutoAnalysis(true);
@@ -1548,6 +1556,23 @@
         : `Best-move alpha-beta across up to ${active.maxSeries} retained series per node · up to ${active.seconds.toLocaleString()}s · ${compactNumber(active.generationPositions)} position work cap`;
       return;
     }
+    const ponder = activePlayPonder;
+    if (
+      ponder
+      && playPonderBaseMatches(ponder)
+      && playPonderPositionMatches(ponder)
+      && boundaryKey(state.boundary) === ponder.humanBoundaryKey
+    ) {
+      dom.play_search_depth.textContent = ponder.settled?.ok
+        ? "Reply prepared locally · WASM"
+        : ponder.analysisStarted
+          ? "Thinking ahead locally · WASM"
+          : "Preparing a local prediction · WASM";
+      dom.play_search_status.textContent = ponder.settled?.ok
+        ? "The reply is ready for the predicted series; any different move safely discards it."
+        : "Following one certified principal variation while you decide; any different move cancels it.";
+      return;
+    }
     const evidence = state.play.lastSearch;
     if (!evidence) {
       dom.play_search_depth.textContent = "No engine move yet";
@@ -1591,6 +1616,7 @@
     }
     state.play.strength = strength;
     if (state.play.thinking) cancelEngineTurn();
+    else void cancelPlayPonder("play-strength-changed");
     persistPlaySession();
     renderPlaySurface();
     void continuePlayFlow();
@@ -1657,6 +1683,7 @@
   function cancelEngineTurn() {
     state.play.engineAbort?.abort();
     state.play.engineAbort = null;
+    void cancelPlayPonder("engine-turn-cancelled");
     state.play.sequence += 1;
     state.play.thinking = false;
     state.play.animating = false;
@@ -1716,6 +1743,407 @@
       safe.promoted_hex || "unknown-promoted-provenance",
       safe.chess960 ? "chess960" : "orthodox",
     ].join("|");
+  }
+
+  function sameMoveList(left, right) {
+    return Array.isArray(left)
+      && Array.isArray(right)
+      && left.length === right.length
+      && left.every((move, index) => move === right[index]);
+  }
+
+  function playPonderPrefixKey(boundary, prefix) {
+    return `${boundaryKey(boundary)}|${JSON.stringify(prefix)}`;
+  }
+
+  function playPonderLimitsKey(search) {
+    return JSON.stringify({
+      strength: search.strength,
+      depth: search.depth,
+      maxSeries: search.maxSeries,
+      seconds: search.seconds,
+      generationPositions: search.generationPositions,
+    });
+  }
+
+  function currentPlayPonderIdentity() {
+    const identity = {
+      profileId: state.play.engineProfileId,
+      sourceFingerprint: state.play.engineFingerprint,
+      engineVersion: state.play.engineVersion,
+      artifactFingerprint: state.play.browserWasmArtifact,
+      rulesetVersion: state.play.rulesetVersion,
+    };
+    return Object.values(identity).every((value) => (
+      typeof value === "string" && value.length > 0
+    )) ? identity : null;
+  }
+
+  function playPonderIdentityMatches(record) {
+    const identity = currentPlayPonderIdentity();
+    return Boolean(identity)
+      && record.profileId === identity.profileId
+      && record.sourceFingerprint === identity.sourceFingerprint
+      && record.engineVersion === identity.engineVersion
+      && record.artifactFingerprint === identity.artifactFingerprint
+      && record.rulesetVersion === identity.rulesetVersion;
+  }
+
+  function playPonderBaseMatches(record, { requireRevision = true } = {}) {
+    return Boolean(record)
+      && record.generation === playPonderGeneration
+      && record.sessionId === state.play.sessionId
+      && (!requireRevision || record.sessionRevision === playSessionRevision)
+      && record.strength === state.play.strength
+      && record.limitsKey === playPonderLimitsKey(playSearchLimits())
+      && playPonderIdentityMatches(record)
+      && state.mode === "play"
+      && state.play.active
+      && !playSessionExternalUpdate
+      && !playSessionSaveBlocked
+      && !playReviewActive()
+      && !playGameEnded();
+  }
+
+  function playPonderPositionMatches(record) {
+    const currentBoundaryKey = boundaryKey(state.boundary);
+    if (
+      currentBoundaryKey === record.humanBoundaryKey
+      && state.history.length === record.humanHistoryLength
+      && state.prefix.length <= record.predictedHumanSeries.length
+      && sameMoveList(
+        state.prefix,
+        record.predictedHumanSeries.slice(0, state.prefix.length),
+      )
+    ) return true;
+    return currentBoundaryKey === record.childBoundaryKey
+      && sameMoveList(state.prefix, [])
+      && playPositionKey() === record.claimPlayKey;
+  }
+
+  function cancelPlayPonder(reason = "ponder-cancelled") {
+    playPonderGeneration += 1;
+    const records = [...new Set([
+      activePlayPonder,
+      claimedPlayPonder,
+    ].filter(Boolean))];
+    activePlayPonder = null;
+    claimedPlayPonder = null;
+    if (!records.length) return playPonderCleanup;
+    if (state.mode === "play") renderPlaySearchEvidence();
+    records.forEach((record) => {
+      record.cancelReason = reason;
+      record.controller.abort();
+    });
+    const drained = Promise.all(
+      records.map((record) => Promise.resolve(record.promise).catch(() => null)),
+    );
+    playPonderCleanup = Promise.all([
+      playPonderCleanup.catch(() => null),
+      drained,
+    ]).then(() => undefined);
+    return playPonderCleanup;
+  }
+
+  function rebindPlayPonderRevision(record = activePlayPonder) {
+    if (
+      record
+      && activePlayPonder === record
+      && playPonderBaseMatches(record, { requireRevision: false })
+      && playPonderPositionMatches(record)
+    ) {
+      record.sessionRevision = playSessionRevision;
+      return true;
+    }
+    return false;
+  }
+
+  function cachedPlayPonderPrefix(boundary, prefix) {
+    const record = activePlayPonder;
+    if (
+      !record
+      || !playPonderBaseMatches(record)
+      || !playPonderPositionMatches(record)
+    ) return null;
+    const requestedBoundaryKey = boundaryKey(boundary);
+    const humanPrefix = requestedBoundaryKey === record.humanBoundaryKey
+      && prefix.length > 0
+      && prefix.length <= record.predictedHumanSeries.length
+      && sameMoveList(prefix, record.predictedHumanSeries.slice(0, prefix.length));
+    const childPrefix = requestedBoundaryKey === record.childBoundaryKey
+      && sameMoveList(prefix, []);
+    if (!humanPrefix && !childPrefix) return null;
+    const payload = record.prefixPayloads.get(playPonderPrefixKey(boundary, prefix));
+    const canonical = Array.isArray(payload?.prefix) ? payload.prefix.map(String) : [];
+    if (
+      !payload
+      || !authoritativeBoundaryEchoMatches(payload, boundary)
+      || !sameMoveList(canonical, prefix)
+    ) return null;
+    return { record, payload };
+  }
+
+  function applyCachedPlayPonderPrefix(payload, requestedPrefix, requestedSan) {
+    state.prefixAbort?.abort();
+    state.prefixAbort = null;
+    state.prefixSequence += 1;
+    state.positionReady = false;
+    cancelAutoAnalysis(true);
+    state.pvAbort?.abort();
+    applyPrefixPayload(payload, requestedPrefix, requestedSan);
+    setBoardBusy(false);
+  }
+
+  function exactPonderPvSeries(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const rawMoves = value.moves;
+    if (
+      !Array.isArray(rawMoves)
+      || !rawMoves.length
+      || rawMoves.some((move) => !/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(String(move)))
+    ) return null;
+    const childBoundary = safeBoundary(value.child_boundary);
+    if (!childBoundary) return null;
+    return {
+      moves: rawMoves.map(String),
+      childBoundary,
+      outcome: value.outcome ?? null,
+    };
+  }
+
+  function certifiedLocalPonderPrediction(analysis, checked, canonical, search) {
+    const receipt = analysis?.runtime_receipt || {};
+    const identity = currentPlayPonderIdentity();
+    const requestedDepth = Math.max(1, Math.floor(asNumber(
+      first(analysis?.requested_depth, receipt.requested_depth),
+      0,
+    )));
+    const completedDepth = Math.max(0, Math.floor(asNumber(
+      first(analysis?.completed_depth, receipt.completed_depth),
+      0,
+    )));
+    if (
+      !identity
+      || !browserEngineClient
+      || receipt.runtime !== "browser-wasm"
+      || analysis?.publishable !== true
+      || analysis?.safety_certified !== true
+      || analysis?.legal_series_certified !== true
+      || analysis?.authoritative_replay_certified !== true
+      || analysis?.legal_validation_runtime !== "compiled-wasm"
+      || asBoolean(analysis?.timed_out) !== false
+      || asBoolean(analysis?.work_limit_reached) !== false
+      || asBoolean(first(
+        analysis?.root_bound_coverage_complete,
+        receipt.root_bound_coverage_complete,
+      )) !== true
+      || requestedDepth !== search.depth
+      || completedDepth < requestedDepth
+      || analysis.engine_profile_id !== identity.profileId
+      || analysis.source_fingerprint !== identity.sourceFingerprint
+      || analysis.engine_version !== identity.engineVersion
+      || analysis.ruleset_version !== identity.rulesetVersion
+      || first(analysis.wasm_sha256, receipt.artifact_fingerprint) !== identity.artifactFingerprint
+      || checked?.complete !== true
+      || checked?.outcome
+      || !checked?.next_state
+    ) return null;
+    const humanBoundary = safeBoundary(checked.next_state);
+    const pv = Array.isArray(analysis.principal_variation)
+      ? analysis.principal_variation
+      : [];
+    const root = exactPonderPvSeries(pv[0]);
+    const predicted = exactPonderPvSeries(pv[1]);
+    if (
+      !humanBoundary
+      || !root
+      || !predicted
+      || root.outcome
+      || predicted.outcome
+      || !sameMoveList(root.moves, canonical)
+      || boundaryKey(root.childBoundary) !== boundaryKey(humanBoundary)
+      || predicted.moves.length > humanBoundary.series
+      || predicted.childBoundary.series !== humanBoundary.series + 1
+      || seriesColor(humanBoundary.series) !== state.play.humanColor
+    ) return null;
+    return {
+      identity,
+      humanBoundary,
+      predictedHumanSeries: predicted.moves,
+      childBoundary: predicted.childBoundary,
+    };
+  }
+
+  function assertLivePlayPonder(record) {
+    if (
+      activePlayPonder !== record
+      || record.controller.signal.aborted
+      || !playPonderBaseMatches(record, { requireRevision: false })
+      || !playPonderPositionMatches(record)
+    ) throw new DOMException("Ponder cancelled", "AbortError");
+  }
+
+  async function runPlayPonder(record) {
+    for (let index = 1; index <= record.predictedHumanSeries.length; index += 1) {
+      assertLivePlayPonder(record);
+      const prefix = record.predictedHumanSeries.slice(0, index);
+      const payload = await browserEngineClient.inspectPrefix({
+        ...record.humanBoundary,
+        progressive_ep: [...record.humanBoundary.ep_targets],
+        prefix,
+      }, { signal: record.controller.signal });
+      assertLivePlayPonder(record);
+      const canonical = Array.isArray(payload?.prefix) ? payload.prefix.map(String) : [];
+      const final = index === record.predictedHumanSeries.length;
+      const nextBoundary = final ? normalizeNextState(payload.next_state) : null;
+      if (
+        !authoritativeBoundaryEchoMatches(payload, record.humanBoundary)
+        || !sameMoveList(canonical, prefix)
+        || (!final && (payload.complete || payload.outcome))
+        || (final && (
+          payload.complete !== true
+          || payload.outcome
+          || !nextBoundary
+          || boundaryKey(nextBoundary) !== record.childBoundaryKey
+        ))
+      ) throw new Error("The predicted human series failed compiled replay.");
+      record.prefixPayloads.set(
+        playPonderPrefixKey(record.humanBoundary, prefix),
+        payload,
+      );
+    }
+
+    assertLivePlayPonder(record);
+    const childPayload = await browserEngineClient.inspectPrefix({
+      ...record.childBoundary,
+      progressive_ep: [...record.childBoundary.ep_targets],
+      prefix: [],
+    }, { signal: record.controller.signal });
+    assertLivePlayPonder(record);
+    const childPrefix = Array.isArray(childPayload?.prefix)
+      ? childPayload.prefix.map(String)
+      : [];
+    if (
+      !authoritativeBoundaryEchoMatches(childPayload, record.childBoundary)
+      || !sameMoveList(childPrefix, [])
+      || childPayload.complete
+      || childPayload.outcome
+    ) throw new Error("The predicted reply boundary failed compiled replay.");
+    record.prefixPayloads.set(
+      playPonderPrefixKey(record.childBoundary, []),
+      childPayload,
+    );
+
+    const search = record.search;
+    const analysisBody = {
+      ...record.childBoundary,
+      progressive_ep: [...record.childBoundary.ep_targets],
+      prefix: [],
+      depth: search.depth,
+      max_series: search.maxSeries,
+      time_limit: search.seconds,
+      max_generation_positions: search.generationPositions,
+      alternatives: 0,
+      best_move_only: true,
+      rate_move: false,
+      save: false,
+    };
+    if (!browserEngineClient.canAnalyzeRoot(analysisBody)) {
+      throw new Error("The certified local root lane is unavailable for pondering.");
+    }
+    record.analysisBody = analysisBody;
+    record.analysisStarted = true;
+    if (state.mode === "play") renderPlaySearchEvidence();
+    const searchDeadlineMs = monotonicNow() + search.seconds * 1000;
+    return browserEngineClient.analyzeRoot(analysisBody, {
+      signal: record.controller.signal,
+      searchDeadlineMs,
+      receiptDeadlineMs: searchDeadlineMs + PLAY_ANALYSIS_RESPONSE_GRACE_MS,
+    });
+  }
+
+  async function startPlayPonder(analysis, checked, canonical, search) {
+    await cancelPlayPonder("ponder-replaced");
+    try {
+      const prediction = certifiedLocalPonderPrediction(
+        analysis,
+        checked,
+        canonical,
+        search,
+      );
+      if (
+        !prediction
+        || state.complete
+        || state.nextState
+        || !state.positionReady
+        || boundaryKey(state.boundary) !== boundaryKey(prediction.humanBoundary)
+        || !sameMoveList(state.prefix, [])
+      ) return;
+      const sessionId = state.play.sessionId;
+      const record = {
+        generation: playPonderGeneration,
+        controller: new AbortController(),
+        sessionId,
+        sessionRevision: playSessionRevision,
+        strength: search.strength,
+        search: { ...search },
+        limitsKey: playPonderLimitsKey(search),
+        profileId: prediction.identity.profileId,
+        sourceFingerprint: prediction.identity.sourceFingerprint,
+        engineVersion: prediction.identity.engineVersion,
+        artifactFingerprint: prediction.identity.artifactFingerprint,
+        rulesetVersion: prediction.identity.rulesetVersion,
+        humanBoundary: cloneBoundary(prediction.humanBoundary),
+        humanBoundaryKey: boundaryKey(prediction.humanBoundary),
+        humanHistoryLength: state.history.length,
+        predictedHumanSeries: [...prediction.predictedHumanSeries],
+        childBoundary: cloneBoundary(prediction.childBoundary),
+        childBoundaryKey: boundaryKey(prediction.childBoundary),
+        claimPlayKey: `${boundaryKey(prediction.childBoundary)}||${state.history.length + 1}`,
+        prefixPayloads: new Map(),
+        analysisBody: null,
+        analysisStarted: false,
+        promise: null,
+      };
+      activePlayPonder = record;
+      renderPlaySearchEvidence();
+      record.promise = runPlayPonder(record).then(
+        (result) => ({ ok: true, result }),
+        (error) => ({ ok: false, error }),
+      );
+      void record.promise.then((settled) => {
+        record.settled = settled;
+        if (!settled.ok && activePlayPonder === record) activePlayPonder = null;
+        if (claimedPlayPonder === record) claimedPlayPonder = null;
+        if (state.mode === "play") renderPlaySearchEvidence();
+      });
+    } catch {
+      // Pondering is an optional local optimization and never interrupts play.
+    }
+  }
+
+  async function claimMatchingPlayPonder(search) {
+    const record = activePlayPonder;
+    if (!record) {
+      await playPonderCleanup.catch(() => null);
+      return null;
+    }
+    const matches = playPonderBaseMatches(record)
+      && playPonderPositionMatches(record)
+      && boundaryKey(state.boundary) === record.childBoundaryKey
+      && playPositionKey() === record.claimPlayKey
+      && record.analysisStarted
+      && record.analysisBody
+      && record.limitsKey === playPonderLimitsKey(search);
+    if (!matches) {
+      await cancelPlayPonder("ponder-claim-mismatch");
+      return null;
+    }
+    activePlayPonder = null;
+    claimedPlayPonder = record;
+    record.claimed = true;
+    renderPlaySearchEvidence();
+    return record;
   }
 
   function safeMovePrefix(value, boundary) {
@@ -3279,18 +3707,43 @@
       || state.nextState
       || seriesColor() === state.play.humanColor
     ) return;
+    const search = playSearchLimits();
+    const ponder = await claimMatchingPlayPonder(search);
+    const engineTurnStillCurrent = !(
+      state.mode !== "play"
+      || playSessionExternalUpdate
+      || playSessionSaveBlocked
+      || !state.play.active
+      || state.play.thinking
+      || state.play.animating
+      || playReviewActive()
+      || PLAY_HANDOFF.isActive()
+      || state.positionBusy
+      || !state.positionReady
+      || playGameEnded()
+      || state.complete
+      || state.nextState
+      || seriesColor() === state.play.humanColor
+    );
+    if (!engineTurnStillCurrent) {
+      if (ponder) {
+        ponder.controller.abort();
+        await Promise.resolve(ponder.promise).catch(() => null);
+      }
+      return;
+    }
     cancelAutoAnalysis(true);
     state.play.engineAbort?.abort();
-    const controller = new AbortController();
+    let controller = ponder?.controller || new AbortController();
     state.play.engineAbort = controller;
     const sequence = ++state.play.sequence;
     const key = playPositionKey();
-    const search = playSearchLimits();
     // Native work stops at the advertised search boundary. A separate receipt
     // deadline lets an already-completed result cross transport and replay
     // validation without silently granting the engine more thinking time.
     const searchDeadlineMs = monotonicNow() + search.seconds * 1000;
     const receiptDeadlineMs = searchDeadlineMs + PLAY_ANALYSIS_RESPONSE_GRACE_MS;
+    let analysisReceiptDeadlineMs = receiptDeadlineMs;
     const analysisBody = {
       ...boundaryPayload(),
       prefix: [],
@@ -3305,22 +3758,60 @@
     };
     state.play.thinking = true;
     state.play.activeSearch = search;
-    state.play.activeSearchRuntime = (
-      browserEngineClient?.canAnalyzeRoot(analysisBody)
-      || browserEngineClient?.canAnalyze(analysisBody)
-    )
+    state.play.activeSearchRuntime = ponder
       ? "browser-wasm"
-      : "render-server";
+      : (
+        browserEngineClient?.canAnalyzeRoot(analysisBody)
+        || browserEngineClient?.canAnalyze(analysisBody)
+      )
+        ? "browser-wasm"
+        : "render-server";
     state.play.error = null;
     renderAll();
     try {
-      const analysis = await requestEngineAnalysis(
-        analysisBody,
-        controller,
-        sequence,
-        searchDeadlineMs,
-        receiptDeadlineMs,
-      );
+      let analysis;
+      if (ponder) {
+        const settled = await ponder.promise;
+        if (
+          sequence !== state.play.sequence
+          || key !== playPositionKey()
+          || state.mode !== "play"
+          || ponder.generation !== playPonderGeneration
+        ) return;
+        if (settled?.ok) {
+          analysis = settled.result;
+        } else {
+          const retryController = new AbortController();
+          controller = retryController;
+          state.play.engineAbort = retryController;
+          const retrySearchDeadlineMs = monotonicNow() + search.seconds * 1000;
+          const retryReceiptDeadlineMs = retrySearchDeadlineMs
+            + PLAY_ANALYSIS_RESPONSE_GRACE_MS;
+          analysisReceiptDeadlineMs = retryReceiptDeadlineMs;
+          state.play.activeSearchRuntime = (
+            browserEngineClient?.canAnalyzeRoot(analysisBody)
+            || browserEngineClient?.canAnalyze(analysisBody)
+          )
+            ? "browser-wasm"
+            : "render-server";
+          renderPlaySearchEvidence();
+          analysis = await requestEngineAnalysis(
+            analysisBody,
+            retryController,
+            sequence,
+            retrySearchDeadlineMs,
+            retryReceiptDeadlineMs,
+          );
+        }
+      } else {
+        analysis = await requestEngineAnalysis(
+          analysisBody,
+          controller,
+          sequence,
+          searchDeadlineMs,
+          receiptDeadlineMs,
+        );
+      }
       if (sequence !== state.play.sequence || key !== playPositionKey() || state.mode !== "play") return;
       state.play.lastSearch = playSearchEvidence(analysis, search);
       state.play.activeSearch = null;
@@ -3330,6 +3821,12 @@
       if (state.play.engineFingerprint && analysis.source_fingerprint !== state.play.engineFingerprint) {
         throw new Error("The reply engine fingerprint changed during the game.");
       }
+      if (state.play.engineVersion && analysis.engine_version !== state.play.engineVersion) {
+        throw new Error("The reply engine version changed during the game.");
+      }
+      if (state.play.rulesetVersion && analysis.ruleset_version !== state.play.rulesetVersion) {
+        throw new Error("The reply ruleset changed during the game.");
+      }
       const moves = engineSeriesFromAnalysis(analysis);
       if (!moves.length) throw new Error("The engine returned no legal series for this non-terminal position.");
       const localReplay = analysis.runtime_receipt?.runtime === "browser-wasm";
@@ -3337,6 +3834,10 @@
         analysis.legal_series_certified !== true
         || analysis.authoritative_replay_certified !== true
         || analysis.legal_validation_runtime !== "compiled-wasm"
+        || first(
+          analysis.wasm_sha256,
+          analysis.runtime_receipt?.artifact_fingerprint,
+        ) !== state.play.browserWasmArtifact
       )) {
         throw new Error("The local engine did not certify its legal series replay.");
       }
@@ -3344,10 +3845,10 @@
         ? analysis.checked_prefix
         : await requestPlayPrefixJson(
           { ...boundaryPayload(), prefix: moves },
-          {
-            signal: controller.signal,
-            deadlineMs: receiptDeadlineMs,
-            analysisReceipt: true,
+            {
+              signal: controller.signal,
+              deadlineMs: analysisReceiptDeadlineMs,
+              analysisReceipt: true,
           },
         );
       if (sequence !== state.play.sequence || key !== playPositionKey() || state.mode !== "play") return;
@@ -3371,9 +3872,12 @@
       state.play.animating = false;
       if (!await requireDurablePlaySession({}, { capture: true })) return;
       if (playSessionExternalUpdate) return;
-      if (checked.complete && checked.next_state && !checked.outcome) await advanceSeries(true);
+      const advanced = checked.complete && checked.next_state && !checked.outcome
+        ? await advanceSeries(true)
+        : false;
       if (playSessionExternalUpdate || playSessionSaveBlocked) return;
       if (!await requireDurablePlaySession({}, { capture: true })) return;
+      if (advanced) void startPlayPonder(analysis, checked, canonical, search);
     } catch (error) {
       if (error.name === "AbortError" || sequence !== state.play.sequence) return;
       state.play.error = error?.code === "analysis-deadline"
@@ -3400,6 +3904,7 @@
     playSessionSaveBlocked = false;
     playSessionPendingWriteOptions = null;
     cancelEngineTurn();
+    await playPonderCleanup.catch(() => null);
     cancelAutoAnalysis(true);
     state.prefixAbort?.abort();
     state.prefixAbort = null;
@@ -3481,6 +3986,7 @@
       || playGameEnded()
     ) return;
     cancelEngineTurn();
+    await playPonderCleanup.catch(() => null);
     state.play.resigned = true;
     state.selected = null;
     if (!await requireDurablePlaySession()) return;
@@ -3508,6 +4014,7 @@
         if (playSessionExternalUpdate || playSessionSaveBlocked) return;
         const imported = importPlayPosition ? stablePlay : null;
         cancelEngineTurn();
+        await playPonderCleanup.catch(() => null);
         if (imported) {
           imported.study = createStudy(imported.boundary);
           imported.currentTreeNodeId = null;
@@ -3609,6 +4116,7 @@
       || state.complete
       || state.previewIndex !== null
     ) return;
+    const modeAtMove = state.mode;
     const boundaryAtMove = cloneBoundary(state.boundary);
     const parentId = state.currentTreeNodeId;
     const seriesParentId = state.seriesParentNodeId;
@@ -3618,7 +4126,26 @@
     state.selected = null;
     state.viewingHistorical = false;
     state.handoffNotice = null;
-    const payload = await refreshPrefix(nextPrefix, nextSan);
+    const ponderAtMove = state.mode === "play" ? activePlayPonder : null;
+    const ponderHit = state.mode === "play"
+      ? cachedPlayPonderPrefix(boundaryAtMove, nextPrefix)
+      : null;
+    let payload;
+    if (ponderHit) {
+      applyCachedPlayPonderPrefix(ponderHit.payload, nextPrefix, nextSan);
+      payload = ponderHit.payload;
+    } else {
+      if (ponderAtMove) await cancelPlayPonder("human-series-deviation");
+      if (
+        state.mode !== modeAtMove
+        || (state.mode === "play" && (
+          playSessionExternalUpdate
+          || boundaryKey(state.boundary) !== boundaryKey(boundaryAtMove)
+          || !sameMoveList(state.prefix, nextPrefix.slice(0, -1))
+        ))
+      ) return;
+      payload = await refreshPrefix(nextPrefix, nextSan);
+    }
     if (!payload) return;
     if (state.mode === "play" && playSessionExternalUpdate) return;
     if (state.mode === "analyze") {
@@ -3627,11 +4154,13 @@
     if (state.mode === "play") {
       if (!await requireDurablePlaySession({}, { capture: true })) return;
       if (playSessionExternalUpdate) return;
+      if (ponderHit) rebindPlayPonderRevision(ponderHit.record);
     }
     if (payload.complete && payload.next_state && !payload.outcome) await advanceSeries(true);
     if (state.mode === "play") {
       if (playSessionExternalUpdate || playSessionSaveBlocked) return;
       if (!await requireDurablePlaySession({}, { capture: true })) return;
+      if (ponderHit) rebindPlayPonderRevision(ponderHit.record);
       renderPlaySurface();
     }
   }
@@ -4511,12 +5040,24 @@
         || playSessionSaveBlocked
         || state.play.sequence !== playSequence
       ) return false;
+      rebindPlayPonderRevision();
     }
     renderAll();
 
     const expectedBoundaryKey = boundaryKey(plan.nextBoundary);
     const firstAttemptSequence = state.prefixSequence + 1;
-    let payload = await refreshPrefix([], []);
+    const ponderAtHandoff = state.mode === "play" ? activePlayPonder : null;
+    const ponderHit = state.mode === "play"
+      ? cachedPlayPonderPrefix(plan.nextBoundary, [])
+      : null;
+    let payload;
+    if (ponderHit) {
+      applyCachedPlayPonderPrefix(ponderHit.payload, [], []);
+      payload = ponderHit.payload;
+    } else {
+      if (ponderAtHandoff) await cancelPlayPonder("series-handoff-mismatch");
+      payload = await refreshPrefix([], []);
+    }
     if (
       state.mode === "play"
       && (
@@ -4552,6 +5093,7 @@
       state.play.error = null;
       if (!await requireDurablePlaySession({}, { capture: true })) return false;
       if (playSessionExternalUpdate || state.play.sequence !== playSequence) return false;
+      if (ponderHit) rebindPlayPonderRevision(ponderHit.record);
     }
     showToast(completedByCheck && unusedMoves > 0
       ? `Check ended Series ${completedSeries} early · ${unusedMoves} unused move${unusedMoves === 1 ? "" : "s"}`

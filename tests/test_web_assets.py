@@ -811,7 +811,7 @@ def test_play_mode_uses_compiled_replay_locally_and_server_replay_as_fallback() 
     assert engine_turn.index("requestPlayPrefixJson(") < engine_turn.index(
         "applyPrefixPayload(checked"
     )
-    assert "deadlineMs: receiptDeadlineMs" in engine_turn
+    assert "deadlineMs: analysisReceiptDeadlineMs" in engine_turn
     assert "analysisReceipt: true" in engine_turn
     assert "? analysis.checked_prefix" in engine_turn
     assert 'analysis.legal_validation_runtime !== "compiled-wasm"' in engine_turn
@@ -821,6 +821,191 @@ def test_play_mode_uses_compiled_replay_locally_and_server_replay_as_fallback() 
     assert 'seriesColor() === state.play.humanColor' in app
     assert "@media (max-width: 560px)" in styles
     assert "@media (max-width: 370px)" in styles
+
+
+def test_play_ponder_exact_prefix_hit_is_local_and_reuses_authoritative_payloads() -> None:
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    ponder_run = app[
+        app.index("async function runPlayPonder") : app.index(
+            "async function startPlayPonder"
+        )
+    ]
+    submit_move = app[
+        app.index("async function submitMove") : app.index("function endDrag")
+    ]
+    handoff = app[
+        app.index("async function performSeriesHandoff") : app.index(
+            "function advanceSeries"
+        )
+    ]
+
+    assert "record.predictedHumanSeries.slice(0, index)" in ponder_run
+    assert "browserEngineClient.inspectPrefix" in ponder_run
+    assert "playPonderPrefixKey(record.humanBoundary, prefix)" in ponder_run
+    assert "playPonderPrefixKey(record.childBoundary, [])" in ponder_run
+    assert ponder_run.index("playPonderPrefixKey(record.childBoundary, [])") < ponder_run.index(
+        "browserEngineClient.analyzeRoot"
+    )
+    assert "requestJson(" not in ponder_run
+    assert "requestRemoteJson(" not in ponder_run
+
+    assert "cachedPlayPonderPrefix(boundaryAtMove, nextPrefix)" in submit_move
+    assert "applyCachedPlayPonderPrefix(ponderHit.payload, nextPrefix, nextSan)" in submit_move
+    assert submit_move.index("applyCachedPlayPonderPrefix") < submit_move.index(
+        "await requireDurablePlaySession"
+    )
+    assert "rebindPlayPonderRevision(ponderHit.record)" in submit_move
+    assert "cachedPlayPonderPrefix(plan.nextBoundary, [])" in handoff
+    assert "applyCachedPlayPonderPrefix(ponderHit.payload, [], [])" in handoff
+
+
+def test_play_ponder_deviation_aborts_and_drains_before_normal_prefix_refresh() -> None:
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    submit_move = app[
+        app.index("async function submitMove") : app.index("function endDrag")
+    ]
+    handoff = app[
+        app.index("async function performSeriesHandoff") : app.index(
+            "function advanceSeries"
+        )
+    ]
+    cancel = app[
+        app.index("function cancelPlayPonder") : app.index(
+            "function rebindPlayPonderRevision"
+        )
+    ]
+
+    assert 'await cancelPlayPonder("human-series-deviation")' in submit_move
+    assert submit_move.index('await cancelPlayPonder("human-series-deviation")') < submit_move.index(
+        "payload = await refreshPrefix(nextPrefix, nextSan)"
+    )
+    assert 'await cancelPlayPonder("series-handoff-mismatch")' in handoff
+    assert handoff.index('await cancelPlayPonder("series-handoff-mismatch")') < handoff.index(
+        "payload = await refreshPrefix([], [])"
+    )
+    assert "record.controller.abort()" in cancel
+    assert "claimedPlayPonder" in cancel
+    assert "records.map((record) => Promise.resolve(record.promise).catch(() => null))" in cancel
+    assert "playPonderCleanup = Promise.all" in cancel
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is required for ponder cleanup tests")
+def test_claimed_play_ponder_is_aborted_and_drained_before_cleanup_resolves() -> None:
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    cancel = app[
+        app.index("function cancelPlayPonder") : app.index(
+            "function rebindPlayPonderRevision"
+        )
+    ]
+    script = r"""
+let playPonderGeneration = 4;
+let activePlayPonder = null;
+let claimedPlayPonder = null;
+let playPonderCleanup = Promise.resolve();
+const state = { mode: "analyze" };
+function renderPlaySearchEvidence() { throw new Error("unexpected render"); }
+eval(process.argv[1]);
+
+let release;
+const controller = new AbortController();
+const record = {
+  controller,
+  promise: new Promise((resolve) => { release = resolve; }),
+};
+claimedPlayPonder = record;
+
+(async () => {
+  let cleanupResolved = false;
+  const cleanup = cancelPlayPonder("new-game").then(() => {
+    cleanupResolved = true;
+  });
+  if (!controller.signal.aborted) throw new Error("claimed ponder was not aborted");
+  if (claimedPlayPonder !== null) throw new Error("claimed ponder stayed claimable");
+  if (playPonderGeneration !== 5) throw new Error("generation was not invalidated");
+  await Promise.resolve();
+  await Promise.resolve();
+  if (cleanupResolved) throw new Error("cleanup resolved before root search drained");
+  release({ ok: false });
+  await cleanup;
+  if (!cleanupResolved) throw new Error("cleanup did not resolve after root search drained");
+  process.stdout.write("ok");
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+    completed = subprocess.run(
+        [str(NODE), "-e", script, cancel],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.stdout == "ok"
+
+
+def test_play_ponder_claim_is_exact_stale_safe_and_visible() -> None:
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    base_match = app[
+        app.index("function playPonderBaseMatches") : app.index(
+            "function playPonderPositionMatches"
+        )
+    ]
+    claim = app[
+        app.index("async function claimMatchingPlayPonder") : app.index(
+            "function safeMovePrefix"
+        )
+    ]
+    evidence = app[
+        app.index("function renderPlaySearchEvidence") : app.index(
+            "function selectPlayStrength"
+        )
+    ]
+
+    for exact_binding in (
+        "record.generation === playPonderGeneration",
+        "record.sessionId === state.play.sessionId",
+        "record.sessionRevision === playSessionRevision",
+        "record.strength === state.play.strength",
+        "record.limitsKey === playPonderLimitsKey(playSearchLimits())",
+        "playPonderIdentityMatches(record)",
+    ):
+        assert exact_binding in base_match
+    assert "boundaryKey(state.boundary) === record.childBoundaryKey" in claim
+    assert "playPositionKey() === record.claimPlayKey" in claim
+    assert "record.analysisStarted" in claim
+    assert 'await cancelPlayPonder("ponder-claim-mismatch")' in claim
+    assert "Thinking ahead locally · WASM" in evidence
+    assert "Reply prepared locally · WASM" in evidence
+    assert "any different move safely discards it" in evidence
+
+    for invalidation in (
+        'cancelPlayPonder("play-session-restore")',
+        'cancelPlayPonder("play-history-review")',
+        'cancelPlayPonder("play-strength-changed")',
+        'cancelPlayPonder("engine-turn-cancelled")',
+    ):
+        assert invalidation in app
+    assert app.count("await playPonderCleanup.catch(() => null)") >= 3
+
+
+def test_play_ponder_background_errors_are_silent_and_engine_turn_falls_back() -> None:
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    start = app[
+        app.index("async function startPlayPonder") : app.index(
+            "async function claimMatchingPlayPonder"
+        )
+    ]
+    engine_turn = app[
+        app.index("async function maybeRunEngineTurn") : app.index(
+            "async function startNewPlayGame"
+        )
+    ]
+
+    assert "(error) => ({ ok: false, error })" in start
+    assert "if (!settled.ok && activePlayPonder === record) activePlayPonder = null" in start
+    assert "Pondering is an optional local optimization and never interrupts play" in start
+    assert "state.play.error" not in start
+    assert "if (settled?.ok)" in engine_turn
+    assert engine_turn.count("requestEngineAnalysis(") >= 2
+    assert "retrySearchDeadlineMs" in engine_turn
+    assert "retryReceiptDeadlineMs" in engine_turn
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js is required for browser asset tests")

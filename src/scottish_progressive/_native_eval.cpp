@@ -2804,6 +2804,150 @@ constexpr std::size_t TACTICAL_FRONTIER_RESERVE_MAX = 64;
 // search.py. Delivered terminal mates are seeded before this quota.
 constexpr std::size_t FINAL_ORDINARY_QUOTA_DENOMINATOR = 2;
 
+bool bound_ordinary_frontier(
+    NativeGenerationContext& context,
+    std::vector<NativeFrontierState>& frontier,
+    std::size_t cap
+) {
+    struct RankedIndex {
+        std::size_t index;
+        std::int64_t score;
+    };
+    std::vector<RankedIndex> ranked;
+    ranked.reserve(frontier.size());
+    for (std::size_t index = 0; index < frontier.size(); ++index) {
+        if (context.deadline_reached()) {
+            return false;
+        }
+        std::int64_t score = 0;
+        if (!frontier_score(context, frontier[index], score)) {
+            return false;
+        }
+        ranked.push_back(RankedIndex{index, score});
+    }
+
+    const bool mover = context.request.board.white_to_move;
+    const auto ranked_before =
+        [&frontier, mover](const RankedIndex& left, const RankedIndex& right) {
+            if (left.score != right.score) {
+                return mover == WHITE
+                    ? left.score > right.score
+                    : left.score < right.score;
+            }
+            return frontier[left.index].moves < frontier[right.index].moves;
+        };
+    struct Group {
+        PackedUciMove move;
+        std::vector<RankedIndex> states;
+    };
+    std::vector<Group> groups;
+    std::unordered_map<PackedUciMove, std::size_t> group_indices;
+    const std::size_t prefix_length = context.request.required_prefix.size();
+    for (const auto& item : ranked) {
+        if (context.deadline_reached()) {
+            return false;
+        }
+        const auto& state = frontier[item.index];
+        const std::size_t group_index = std::min(
+            prefix_length,
+            state.moves.size() - 1
+        );
+        const PackedUciMove group_move = state.moves[group_index];
+        const auto [found, inserted] = group_indices.emplace(
+            group_move,
+            groups.size()
+        );
+        if (inserted) {
+            groups.push_back(Group{group_move, {}});
+        }
+        groups[found->second].states.push_back(item);
+    }
+
+    const std::size_t quota = std::max<std::size_t>(1, cap / groups.size());
+    std::vector<RankedIndex> chosen;
+    chosen.reserve(cap);
+    for (auto& group : groups) {
+        const std::size_t retained = std::min(quota, group.states.size());
+        std::partial_sort(
+            group.states.begin(),
+            group.states.begin() + retained,
+            group.states.end(),
+            ranked_before
+        );
+        chosen.insert(
+            chosen.end(),
+            group.states.begin(),
+            group.states.begin() + retained
+        );
+    }
+    std::sort(chosen.begin(), chosen.end(), ranked_before);
+    if (chosen.size() > cap) {
+        chosen.resize(cap);
+    }
+
+    std::vector<bool> selected_indices(frontier.size(), false);
+    for (const auto& item : chosen) {
+        selected_indices[item.index] = true;
+    }
+    if (chosen.size() < cap) {
+        std::vector<RankedIndex> remaining;
+        remaining.reserve(ranked.size() - chosen.size());
+        for (const auto& item : ranked) {
+            if (!selected_indices[item.index]) {
+                remaining.push_back(item);
+            }
+        }
+        const std::size_t fill_count = std::min(
+            cap - chosen.size(),
+            remaining.size()
+        );
+        std::partial_sort(
+            remaining.begin(),
+            remaining.begin() + fill_count,
+            remaining.end(),
+            ranked_before
+        );
+        for (std::size_t index = 0; index < fill_count; ++index) {
+            selected_indices[remaining[index].index] = true;
+            chosen.push_back(remaining[index]);
+        }
+        std::sort(chosen.begin(), chosen.end(), ranked_before);
+    }
+
+    std::vector<NativeFrontierState> selected;
+    selected.reserve(chosen.size());
+    std::set<CompactMovePath> selected_moves;
+    for (const auto& item : chosen) {
+        selected.push_back(frontier[item.index]);
+        selected_moves.insert(frontier[item.index].moves);
+    }
+    const std::uint64_t discarded_count = static_cast<std::uint64_t>(
+        frontier.size() - selected.size()
+    );
+    std::uint64_t discarded_paths = 0;
+    for (const auto& item : frontier) {
+        if (context.deadline_reached()) {
+            return false;
+        }
+        if (
+            !selected_moves.contains(item.moves)
+            && !context.add_path_count(discarded_paths, item.path_count)
+        ) {
+            return false;
+        }
+    }
+    auto& stats = context.response.stats;
+    if (
+        !context.add(stats.frontier_prunes, 1)
+        || !context.add(stats.frontier_states_pruned, discarded_count)
+        || !context.add_path_count(stats.frontier_paths_pruned, discarded_paths)
+    ) {
+        return false;
+    }
+    frontier = std::move(selected);
+    return true;
+}
+
 bool bound_frontier(
     NativeGenerationContext& context,
     std::vector<NativeFrontierState>& frontier
@@ -2816,14 +2960,20 @@ bool bound_frontier(
     if (!context.request.max_frontier_states.has_value()) {
         return true;
     }
-    if (!order_frontier(context, frontier)) {
-        return false;
-    }
     const std::size_t cap = static_cast<std::size_t>(
         *context.request.max_frontier_states
     );
     if (frontier.size() <= cap) {
-        return true;
+        return order_frontier(context, frontier);
+    }
+    if (
+        !context.request.tactical_protection
+        && context.request.worker_threads <= 1
+    ) {
+        return bound_ordinary_frontier(context, frontier, cap);
+    }
+    if (!order_frontier(context, frontier)) {
+        return false;
     }
     struct Group {
         PackedUciMove move;
@@ -3238,9 +3388,7 @@ bool merge_complete_series(NativeGenerationContext& context) {
             }
         }
         const bool mover = context.request.board.white_to_move;
-        std::sort(
-            ranked.begin(),
-            ranked.end(),
+        const auto ranked_before =
             [mover](const RankedSeries& left, const RankedSeries& right) {
                 if (left.score != right.score) {
                     return mover == WHITE
@@ -3249,11 +3397,29 @@ bool merge_complete_series(NativeGenerationContext& context) {
                 }
                 return left.series.representative.moves
                     < right.series.representative.moves;
-            }
-        );
+            };
         const std::size_t final_cap = static_cast<std::size_t>(
             context.request.final_series_score->max_returned_series
         );
+        if (
+            !context.request.tactical_protection
+            && ranked.size() > final_cap
+        ) {
+            // The ordinary browser root contract only consumes the best
+            // `final_cap` series. Keep those entries in the exact same total
+            // order without fully sorting every discarded series.
+            std::partial_sort(
+                ranked.begin(),
+                ranked.begin() + final_cap,
+                ranked.end(),
+                ranked_before
+            );
+            ranked.resize(final_cap);
+        } else {
+            // Tactical reserve selection below addresses candidates by their
+            // full rank, so that path still requires a complete ordering.
+            std::sort(ranked.begin(), ranked.end(), ranked_before);
+        }
         if (
             ranked.size() > final_cap
             && context.request.tactical_protection
