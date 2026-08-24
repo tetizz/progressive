@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import replace
 import hashlib
 import json
+from threading import Barrier
 
 import chess
 import pytest
@@ -29,6 +31,8 @@ from scottish_progressive.native_teacher import (
     _resolve_receipt_cache_contract,
     _validate_replacement_cache_source,
     _run_bucket,
+    _run_buckets_parallel,
+    _single_candidate_job,
     merge_native_teacher_tiers,
 )
 from scottish_progressive.profiles import baseline_profile, create_population
@@ -248,6 +252,144 @@ def test_forbidden_train_option_final_state_uses_next_cached_candidate(
             "forbidden_state_keys": ["a" * 64],
         }
     ]
+
+
+def _scheduler_candidate(index: int) -> _Candidate:
+    return replace(
+        _candidate(),
+        state_key_sha256=hashlib.sha256(f"scheduler-{index}".encode()).hexdigest(),
+        attempt_index=index,
+    )
+
+
+def _scheduler_result(job: _BucketJob, status: str) -> dict[str, object]:
+    candidate = job.candidates[0]
+    row = {"state_key_sha256": candidate.state_key_sha256}
+    return {
+        "split": job.split,
+        "source_profile_id": job.source_profile_id,
+        "series_number": job.series_number,
+        "quota": 1,
+        "candidate_count": 1,
+        "accepted": [row] if status == "accepted" else [],
+        "failures": [row] if status == "failure" else [],
+        "excluded": [row] if status == "excluded" else [],
+        "elapsed_seconds": 0.0,
+    }
+
+
+def test_parallel_bucket_scheduler_commits_the_exact_ordered_quota_prefix(
+    monkeypatch, tmp_path
+) -> None:
+    candidates = tuple(_scheduler_candidate(index) for index in range(5))
+    statuses = {
+        candidates[0].state_key_sha256: "failure",
+        candidates[1].state_key_sha256: "accepted",
+        candidates[2].state_key_sha256: "excluded",
+        candidates[3].state_key_sha256: "accepted",
+        candidates[4].state_key_sha256: "accepted",
+    }
+    visited: list[str] = []
+
+    def fake_run(job: _BucketJob) -> dict[str, object]:
+        candidate = job.candidates[0]
+        visited.append(candidate.state_key_sha256)
+        return _scheduler_result(job, statuses[candidate.state_key_sha256])
+
+    monkeypatch.setattr(
+        "scottish_progressive.native_teacher._run_bucket", fake_run
+    )
+    job = replace(
+        _job(candidates[0], str(tmp_path)),
+        quota=2,
+        candidates=candidates,
+    )
+
+    result = _run_buckets_parallel(
+        (job,), workers=3, executor_factory=ThreadPoolExecutor
+    )[0]
+
+    assert [row["state_key_sha256"] for row in result["accepted"]] == [
+        candidates[1].state_key_sha256,
+        candidates[3].state_key_sha256,
+    ]
+    assert [row["state_key_sha256"] for row in result["failures"]] == [
+        candidates[0].state_key_sha256
+    ]
+    assert [row["state_key_sha256"] for row in result["excluded"]] == [
+        candidates[2].state_key_sha256
+    ]
+    assert set(visited) == {
+        candidate.state_key_sha256 for candidate in candidates[:4]
+    }
+    assert candidates[4].state_key_sha256 not in visited
+
+
+def test_parallel_bucket_scheduler_exposes_one_quota_wave_concurrently(
+    monkeypatch, tmp_path
+) -> None:
+    candidates = tuple(_scheduler_candidate(index) for index in range(4))
+    rendezvous = Barrier(4, timeout=2.0)
+
+    def fake_run(job: _BucketJob) -> dict[str, object]:
+        rendezvous.wait()
+        return _scheduler_result(job, "accepted")
+
+    monkeypatch.setattr(
+        "scottish_progressive.native_teacher._run_bucket", fake_run
+    )
+    job = replace(
+        _job(candidates[0], str(tmp_path)),
+        quota=4,
+        candidates=candidates,
+    )
+
+    result = _run_buckets_parallel(
+        (job,), workers=4, executor_factory=ThreadPoolExecutor
+    )[0]
+
+    assert [row["state_key_sha256"] for row in result["accepted"]] == [
+        candidate.state_key_sha256 for candidate in candidates
+    ]
+
+
+def test_parallel_bucket_scheduler_rejects_worker_binding_drift(
+    monkeypatch, tmp_path
+) -> None:
+    candidate = _scheduler_candidate(0)
+
+    def fake_run(job: _BucketJob) -> dict[str, object]:
+        result = _scheduler_result(job, "accepted")
+        result["candidate_count"] = 2
+        return result
+
+    monkeypatch.setattr(
+        "scottish_progressive.native_teacher._run_bucket", fake_run
+    )
+    with pytest.raises(ValueError, match="binding drifted"):
+        _run_buckets_parallel(
+            (_job(candidate, str(tmp_path)),),
+            workers=2,
+            executor_factory=ThreadPoolExecutor,
+        )
+
+
+def test_single_candidate_scheduler_job_preserves_receipt_identity(tmp_path) -> None:
+    candidates = (_scheduler_candidate(0), _scheduler_candidate(1))
+    job = replace(
+        _job(candidates[0], str(tmp_path)),
+        quota=2,
+        candidates=candidates,
+        forbidden_state_keys=frozenset({"a" * 64}),
+    )
+
+    single = _single_candidate_job(job, candidates[1])
+
+    assert single.quota == 1
+    assert single.candidates == (candidates[1],)
+    assert single.cache_contract_id == job.cache_contract_id
+    assert single.receipt_root == job.receipt_root
+    assert single.forbidden_state_keys == job.forbidden_state_keys
 
 
 def test_prior_receipt_cache_contract_is_fail_closed(tmp_path) -> None:

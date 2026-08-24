@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import asdict, dataclass
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    Executor,
+    ProcessPoolExecutor,
+    wait,
+)
+from dataclasses import asdict, dataclass, field, replace
 import hashlib
 import json
 import math
@@ -10,7 +15,7 @@ import os
 from pathlib import Path
 import tempfile
 import time
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import chess
 
@@ -876,6 +881,164 @@ def _run_bucket(job: _BucketJob) -> dict[str, Any]:
     }
 
 
+def _single_candidate_job(job: _BucketJob, candidate: _Candidate) -> _BucketJob:
+    """Keep one candidate's receipt bindings while exposing root-level parallelism."""
+
+    return replace(job, quota=1, candidates=(candidate,))
+
+
+def _validated_single_candidate_result(
+    job: _BucketJob,
+    candidate: _Candidate,
+    result: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    expected = {
+        "split": job.split,
+        "source_profile_id": job.source_profile_id,
+        "series_number": job.series_number,
+        "quota": 1,
+        "candidate_count": 1,
+    }
+    if any(result.get(key) != value for key, value in expected.items()):
+        raise ValueError(
+            "single-candidate teacher result binding drifted for "
+            f"{candidate.state_key_sha256}"
+        )
+    outcomes: list[list[dict[str, Any]]] = []
+    for key in ("accepted", "failures", "excluded"):
+        rows = result.get(key)
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise ValueError(
+                f"single-candidate teacher result {key} is malformed for "
+                f"{candidate.state_key_sha256}"
+            )
+        outcomes.append(rows)
+    accepted, failures, excluded = outcomes
+    if len(accepted) + len(failures) + len(excluded) != 1:
+        raise ValueError(
+            "single-candidate teacher result must contain exactly one outcome for "
+            f"{candidate.state_key_sha256}"
+        )
+    row = (accepted or failures or excluded)[0]
+    if row.get("state_key_sha256") != candidate.state_key_sha256:
+        raise ValueError(
+            "single-candidate teacher result state key drifted for "
+            f"{candidate.state_key_sha256}"
+        )
+    return accepted, failures, excluded
+
+
+@dataclass(slots=True)
+class _BucketProgress:
+    job: _BucketJob
+    started: float
+    next_candidate_index: int = 0
+    accepted: list[dict[str, Any]] = field(default_factory=list)
+    failures: list[dict[str, Any]] = field(default_factory=list)
+    excluded: list[dict[str, Any]] = field(default_factory=list)
+    pending_indices: set[int] = field(default_factory=set)
+    pending_results: dict[int, Mapping[str, Any]] = field(default_factory=dict)
+    finished: float | None = None
+
+
+def _run_buckets_parallel(
+    jobs: Sequence[_BucketJob],
+    *,
+    workers: int,
+    executor_factory: Callable[..., Executor] = ProcessPoolExecutor,
+) -> list[dict[str, Any]]:
+    """Run deterministic quota-sized candidate waves over one shared pool.
+
+    A bucket's next wave is exactly its remaining quota.  Therefore every
+    speculative root belongs to the same candidate prefix that the sequential
+    scheduler would have consumed: a final wave cannot overshoot the quota,
+    and failures only open an equally sized replacement wave.  Worker finish
+    order may vary, but results are committed strictly by candidate index.
+    """
+
+    if workers < 1:
+        raise ValueError("teacher scheduler workers must be positive")
+    progress = [_BucketProgress(job=job, started=time.perf_counter()) for job in jobs]
+    future_bindings: dict[Any, tuple[int, int, _Candidate]] = {}
+
+    def submit_wave(pool: Executor, bucket_index: int) -> None:
+        bucket = progress[bucket_index]
+        if bucket.pending_indices:
+            raise AssertionError("teacher bucket already has an active candidate wave")
+        remaining = bucket.job.quota - len(bucket.accepted)
+        if remaining <= 0 or bucket.next_candidate_index >= len(bucket.job.candidates):
+            bucket.finished = time.perf_counter()
+            return
+        stop = min(
+            len(bucket.job.candidates), bucket.next_candidate_index + remaining
+        )
+        indices = tuple(range(bucket.next_candidate_index, stop))
+        bucket.next_candidate_index = stop
+        bucket.pending_indices.update(indices)
+        for candidate_index in indices:
+            candidate = bucket.job.candidates[candidate_index]
+            future = pool.submit(
+                _run_bucket, _single_candidate_job(bucket.job, candidate)
+            )
+            future_bindings[future] = (bucket_index, candidate_index, candidate)
+
+    with executor_factory(max_workers=workers) as pool:
+        for bucket_index in range(len(progress)):
+            submit_wave(pool, bucket_index)
+        while future_bindings:
+            completed, _pending = wait(
+                tuple(future_bindings), return_when=FIRST_COMPLETED
+            )
+            ready_buckets: set[int] = set()
+            for future in completed:
+                bucket_index, candidate_index, candidate = future_bindings.pop(future)
+                bucket = progress[bucket_index]
+                try:
+                    bucket.pending_results[candidate_index] = future.result()
+                except BaseException as error:
+                    raise RuntimeError(
+                        "teacher root worker failed for "
+                        f"{candidate.state_key_sha256}"
+                    ) from error
+                bucket.pending_indices.remove(candidate_index)
+                if not bucket.pending_indices:
+                    ready_buckets.add(bucket_index)
+            for bucket_index in sorted(ready_buckets):
+                bucket = progress[bucket_index]
+                for candidate_index in sorted(bucket.pending_results):
+                    candidate = bucket.job.candidates[candidate_index]
+                    accepted, failures, excluded = _validated_single_candidate_result(
+                        bucket.job,
+                        candidate,
+                        bucket.pending_results[candidate_index],
+                    )
+                    bucket.accepted.extend(accepted)
+                    bucket.failures.extend(failures)
+                    bucket.excluded.extend(excluded)
+                bucket.pending_results.clear()
+                submit_wave(pool, bucket_index)
+
+    results: list[dict[str, Any]] = []
+    for bucket in progress:
+        if bucket.pending_indices or bucket.pending_results:
+            raise AssertionError("teacher bucket scheduler ended with pending results")
+        finished = bucket.finished or time.perf_counter()
+        results.append(
+            {
+                "split": bucket.job.split,
+                "source_profile_id": bucket.job.source_profile_id,
+                "series_number": bucket.job.series_number,
+                "quota": bucket.job.quota,
+                "candidate_count": len(bucket.job.candidates),
+                "accepted": bucket.accepted,
+                "failures": bucket.failures,
+                "excluded": bucket.excluded,
+                "elapsed_seconds": finished - bucket.started,
+            }
+        )
+    return results
+
+
 def _same_nonseed_contract(
     train: NativeCorpusConfig, holdout: NativeCorpusConfig
 ) -> bool:
@@ -1099,10 +1262,7 @@ def build_native_teacher_corpus(
     if config.workers == 1:
         bucket_results = [_run_bucket(job) for job in jobs]
     else:
-        with ProcessPoolExecutor(max_workers=config.workers) as pool:
-            futures = {pool.submit(_run_bucket, job): job for job in jobs}
-            for future in as_completed(futures):
-                bucket_results.append(future.result())
+        bucket_results = _run_buckets_parallel(jobs, workers=config.workers)
     bucket_results.sort(
         key=lambda item: (
             str(item["split"]),
