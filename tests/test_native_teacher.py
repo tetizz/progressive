@@ -179,6 +179,27 @@ def test_balanced_quotas_support_cycle4_floor_ceil_cells_deterministically() -> 
     ]
     assert set(cell_totals) == {42, 43}
     assert max(cell_totals) - min(cell_totals) == 1
+    for profile_id in profiles:
+        assert sum(
+            quotas[(split, profile_id, series)]
+            for split in ("train", "holdout")
+            for series in range(4, 10)
+        ) == 256
+        assert sum(
+            quotas[("train", profile_id, series)] for series in range(4, 10)
+        ) == 192
+    for series in range(4, 10):
+        series_total = sum(
+            quotas[(split, profile_id, series)]
+            for split in ("train", "holdout")
+            for profile_id in profiles
+        )
+        assert series_total in {170, 171}
+    assert {
+        quotas[("train", profile_id, series)]
+        for profile_id in profiles
+        for series in range(4, 10)
+    } == {32}
     changed_seed = replace(config, seed=config.seed + 1)
     assert quotas != _balanced_quotas(profiles, changed_seed)
 
@@ -590,6 +611,15 @@ def _mixed_tier_payload(
         "holdout_roots": target_roots - train_roots,
         "label_search_failures": 3,
         "teacher_source_agreement_rate": 0.5,
+        "tactical_gate": (
+            {"passed": None, "checks": [], "skipped": True}
+            if selection_mode == "quiet-nonterminal"
+            else {
+                "passed": True,
+                "checks": [{"name": "synthetic", "passed": True}],
+            }
+        ),
+        "tactical_failures": [],
     }
     return {
         "schema": "spc-native-deep-teacher-corpus-v1",
@@ -719,6 +749,41 @@ def test_cycle4_merge_accepts_exact_frozen_scale_and_rejects_quota_tampering() -
         merge_native_teacher_tiers(
             quiet,
             tampered,
+            quiet_config=quiet_config,
+            tactical_config=tactical_config,
+        )
+
+    tampered_label = deepcopy(tactical)
+    tampered_label["labels"][0]["series_number"] = (
+        5 if tampered_label["labels"][0]["series_number"] == 4 else 4
+    )
+    with pytest.raises(ValueError, match="actual label balance drifted"):
+        merge_native_teacher_tiers(
+            quiet,
+            tampered_label,
+            quiet_config=quiet_config,
+            tactical_config=tactical_config,
+        )
+
+    stale_attempts_quiet = deepcopy(quiet)
+    stale_attempts_tactical = deepcopy(tactical)
+    for artifact in (stale_attempts_quiet, stale_attempts_tactical):
+        artifact["generation"]["train_attempts"] = 8_192
+        artifact["generation"]["holdout_attempts"] = 4_096
+    with pytest.raises(ValueError, match="generation attempt counts drifted"):
+        merge_native_teacher_tiers(
+            stale_attempts_quiet,
+            stale_attempts_tactical,
+            quiet_config=quiet_config,
+            tactical_config=tactical_config,
+        )
+
+    failed_gate = deepcopy(tactical)
+    failed_gate["quality"]["tactical_gate"]["passed"] = False
+    with pytest.raises(ValueError, match="tactical gate did not pass exactly"):
+        merge_native_teacher_tiers(
+            quiet,
+            failed_gate,
             quiet_config=quiet_config,
             tactical_config=tactical_config,
         )

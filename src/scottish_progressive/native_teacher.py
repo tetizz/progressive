@@ -1596,6 +1596,13 @@ def _validated_mixed_tier(
         or len(set(profile_ids)) != len(profile_ids)
     ):
         raise ValueError(f"{tier_name} ordered profile IDs are malformed")
+    if (
+        generation.get("train_attempts")
+        != expected_config.expected_train_attempts
+        or generation.get("holdout_attempts")
+        != expected_config.expected_holdout_attempts
+    ):
+        raise ValueError(f"{tier_name} generation attempt counts drifted")
     expected_quotas = _balanced_quotas(profile_ids, expected_config)
     quotas = selection.get("quota_by_cell")
     if not isinstance(quotas, list) or len(quotas) != len(expected_quotas):
@@ -1629,9 +1636,17 @@ def _validated_mixed_tier(
     if len(labels) != target_roots:
         raise ValueError(f"{tier_name} label count drifted")
     labeled: list[dict[str, Any]] = []
+    actual_quotas: Counter[tuple[str, str, int]] = Counter()
     for label in labels:
         if not isinstance(label, Mapping):
             raise ValueError(f"{tier_name} contains a malformed label")
+        actual_quotas[
+            (
+                str(label.get("split")),
+                str(label.get("source_profile_id")),
+                int(label.get("series_number", -1)),
+            )
+        ] += 1
         search = label.get("search")
         options = label.get("options")
         if not isinstance(search, Mapping) or not isinstance(options, list) or not options:
@@ -1667,6 +1682,28 @@ def _validated_mixed_tier(
                 "teacher_depth_series": depth_series,
             }
         )
+    if dict(actual_quotas) != {
+        key: quota for key, quota in expected_quotas.items() if quota
+    }:
+        raise ValueError(f"{tier_name} actual label balance drifted")
+
+    tactical_gate = quality.get("tactical_gate")
+    tactical_failures = quality.get("tactical_failures")
+    if expected_config.selection_mode == "quiet-nonterminal":
+        if tactical_gate != {"passed": None, "checks": [], "skipped": True}:
+            raise ValueError(f"{tier_name} tactical gate was not exactly skipped")
+    elif (
+        not isinstance(tactical_gate, Mapping)
+        or tactical_gate.get("passed") is not True
+        or tactical_failures != []
+        or not isinstance(tactical_gate.get("checks"), list)
+        or not tactical_gate["checks"]
+        or any(
+            not isinstance(check, Mapping) or check.get("passed") is not True
+            for check in tactical_gate["checks"]
+        )
+    ):
+        raise ValueError(f"{tier_name} tactical gate did not pass exactly")
     return labeled
 
 
