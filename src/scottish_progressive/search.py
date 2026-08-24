@@ -149,8 +149,51 @@ class EvaluationOverlay(Protocol):
     base_profile_id: str
     variant_id: str
     name: str
+    requires_exact_work_receipt: bool
 
     def score(self, state: ProgressiveState, hand_score: int) -> int: ...
+
+    def score_with_work(
+        self,
+        state: ProgressiveState,
+        hand_score: int,
+        max_work_positions: int | None,
+    ) -> EvaluationOverlayScore: ...
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationOverlayScore:
+    """One overlay leaf value and every additional logical position it used."""
+
+    score: int
+    reach_positions: int = 0
+    direct_move_variants: int = 0
+    two_move_variants: int = 0
+    complete: bool = True
+
+    def __post_init__(self) -> None:
+        if type(self.score) is not int:
+            raise TypeError("evaluation overlay score must be an exact integer")
+        for name in (
+            "reach_positions",
+            "direct_move_variants",
+            "two_move_variants",
+        ):
+            value = getattr(self, name)
+            if type(value) is not int or value < 0:
+                raise TypeError(
+                    f"evaluation overlay {name} must be a nonnegative integer"
+                )
+        if type(self.complete) is not bool:
+            raise TypeError("evaluation overlay complete must be an exact bool")
+
+    @property
+    def work_positions(self) -> int:
+        return (
+            self.reach_positions
+            + self.direct_move_variants
+            + self.two_move_variants
+        )
 
 
 def _proof_from_bounds(bounds: tuple[int, int]) -> str | None:
@@ -251,6 +294,10 @@ class SearchStats:
     static_evaluation_positions: int = 0
     evaluation_reach_positions: int = 0
     incomplete_reach_evaluations: int = 0
+    overlay_evaluations: int = 0
+    overlay_reach_positions: int = 0
+    overlay_direct_move_variants: int = 0
+    overlay_two_move_variants: int = 0
     generation_positions: int = 0
     frontier_prunes: int = 0
     frontier_states_pruned: int = 0
@@ -871,9 +918,72 @@ class SeriesSearcher:
                     self._evaluation_work_limit_reached = True
                     self._selective = True
             if self.evaluation_overlay is not None:
-                blended_total = self.evaluation_overlay.score(state, cached.total)
-                if type(blended_total) is not int:
-                    raise TypeError("evaluation overlay score must be an exact integer")
+                exact_work_method = getattr(
+                    self.evaluation_overlay,
+                    "score_with_work",
+                    None,
+                )
+                if callable(exact_work_method):
+                    overlay_remaining = (
+                        None
+                        if self.limits.max_generation_positions is None
+                        else max(
+                            0,
+                            self.limits.max_generation_positions
+                            - self.stats.generation_positions,
+                        )
+                    )
+                    overlay_score = exact_work_method(
+                        state,
+                        cached.total,
+                        overlay_remaining,
+                    )
+                    if type(overlay_score) is not EvaluationOverlayScore:
+                        raise TypeError(
+                            "evaluation overlay exact-work result has the wrong type"
+                        )
+                    self.stats.overlay_evaluations += 1
+                    self.stats.overlay_reach_positions += (
+                        overlay_score.reach_positions
+                    )
+                    self.stats.overlay_direct_move_variants += (
+                        overlay_score.direct_move_variants
+                    )
+                    self.stats.overlay_two_move_variants += (
+                        overlay_score.two_move_variants
+                    )
+                    self.stats.evaluation_reach_positions += (
+                        overlay_score.reach_positions
+                    )
+                    self.stats.generation_positions += overlay_score.work_positions
+                    if (
+                        not overlay_score.complete
+                        or overlay_remaining is not None
+                        and overlay_score.work_positions > overlay_remaining
+                    ):
+                        if not self._evaluation_work_limit_reached:
+                            self.stats.generation_work_limit_hits += 1
+                        self._evaluation_work_limit_reached = True
+                        self._selective = True
+                        raise _WorkLimit
+                    blended_total = overlay_score.score
+                else:
+                    if getattr(
+                        self.evaluation_overlay,
+                        "requires_exact_work_receipt",
+                        False,
+                    ):
+                        raise RuntimeError(
+                            "evaluation overlay requires an exact work receipt"
+                        )
+                    blended_total = self.evaluation_overlay.score(
+                        state,
+                        cached.total,
+                    )
+                    if type(blended_total) is not int:
+                        raise TypeError(
+                            "evaluation overlay score must be an exact integer"
+                        )
                 blended_total = max(
                     -MAX_EVALUATION_OVERLAY_SCORE,
                     min(MAX_EVALUATION_OVERLAY_SCORE, blended_total),

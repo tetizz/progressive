@@ -33,6 +33,28 @@ safe detected cap is clamped. The JSON report records both the detected cap and
 the actual worker count. The RAM calculation is a planning estimate, not an
 operating-system memory limit.
 
+## Deep-teacher evaluator candidate
+
+The optional deep-teacher path is match-only. To compare the evaluator against
+the unchanged deployed baseline while holding every ordinary profile weight
+constant, use the baseline profile for both roles and attach the model only to
+the candidate:
+
+```powershell
+spc strength-match baseline baseline `
+  --candidate-value-model build\deep-teacher\candidate-model.json `
+  --pairs 10 --seed 20260820 --workers 2 `
+  --output reports\deep-teacher-vs-baseline.json
+```
+
+The strict loader and each process-pool worker independently verify the model,
+corpus, native-source, score-policy, work-policy, and base-profile identities.
+The overlay follows the candidate through both color swaps; the reference seat
+never receives it. Native evaluator reach and legal-variant work is charged to
+the same deterministic search budget, and exhaustion is an incomplete `*`.
+Omitting `--candidate-value-model` preserves the original job and report
+contract.
+
 The report contains:
 
 - candidate game W/D/L and color-swapped pair W/D/L;

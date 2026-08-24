@@ -38,6 +38,10 @@ from .search import (
     SearchLimits,
     analyze,
 )
+from .deep_teacher_overlay import (
+    DeepTeacherOverlayPayload,
+    build_deep_teacher_overlay,
+)
 
 
 LEAGUE_SCHEMA_VERSION = 3
@@ -417,6 +421,8 @@ class GameJob:
     max_game_work_positions: int | None
     emergency_max_series: int | None
     opening_suite_version: str = OPENING_SUITE_VERSION
+    white_evaluation_overlay: DeepTeacherOverlayPayload | None = None
+    black_evaluation_overlay: DeepTeacherOverlayPayload | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,6 +446,7 @@ class GameRecord:
     series_played: int
     trace: tuple[dict[str, Any], ...]
     error: str | None = None
+    engine_failure_engine_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -538,6 +545,7 @@ def _technical_failure(
     reason: str,
     *,
     error: str | None = None,
+    failing_engine_id: str | None = None,
 ) -> GameRecord:
     return GameRecord(
         job.job_key,
@@ -559,6 +567,7 @@ def _technical_failure(
         sum(bool(item.get("played", True)) for item in trace),
         tuple(trace),
         error,
+        failing_engine_id,
     )
 
 
@@ -567,6 +576,43 @@ def _play_game(job: GameJob) -> GameRecord:
     start_pfen = state.pfen
     trace: list[dict[str, Any]] = []
     game_work_positions = 0
+
+    try:
+        white_overlay = (
+            None
+            if job.white_evaluation_overlay is None
+            else build_deep_teacher_overlay(
+                job.white_evaluation_overlay,
+                job.white_profile,
+            )
+        )
+        black_overlay = (
+            None
+            if job.black_evaluation_overlay is None
+            else build_deep_teacher_overlay(
+                job.black_evaluation_overlay,
+                job.black_profile,
+            )
+        )
+    except BaseException as error:
+        failing_profile = (
+            job.white_profile
+            if job.white_evaluation_overlay is not None
+            else job.black_profile
+        )
+        return _technical_failure(
+            job,
+            state,
+            trace,
+            failing_profile.profile_id,
+            "engine-overlay-invalid",
+            error=f"{type(error).__name__}: {error}",
+            failing_engine_id=(
+                job.white_evaluation_overlay.variant_id
+                if job.white_evaluation_overlay is not None
+                else job.black_evaluation_overlay.variant_id
+            ),
+        )
 
     def technical_incomplete(reason: str) -> GameRecord:
         return GameRecord(
@@ -596,6 +642,7 @@ def _play_game(job: GameJob) -> GameRecord:
     ):
         mover = state.board.turn
         profile = job.white_profile if mover == chess.WHITE else job.black_profile
+        evaluation_overlay = white_overlay if mover == chess.WHITE else black_overlay
         remaining_game_work = (
             None
             if job.max_game_work_positions is None
@@ -623,6 +670,7 @@ def _play_game(job: GameJob) -> GameRecord:
                     collect_all_root_scores=False,
                 ),
                 profile=profile,
+                evaluation_overlay=evaluation_overlay,
             )
         except BaseException as error:
             return _technical_failure(
@@ -632,6 +680,33 @@ def _play_game(job: GameJob) -> GameRecord:
                 profile.profile_id,
                 "engine-exception",
                 error=f"{type(error).__name__}: {error}",
+                failing_engine_id=(
+                    profile.profile_id
+                    if evaluation_overlay is None
+                    else evaluation_overlay.variant_id
+                ),
+            )
+
+        expected_engine_profile_id = (
+            profile.profile_id
+            if evaluation_overlay is None
+            else evaluation_overlay.variant_id
+        )
+        if (
+            evaluation_overlay is not None
+            and result.engine_profile_id != expected_engine_profile_id
+        ):
+            return _technical_failure(
+                job,
+                state,
+                trace,
+                profile.profile_id,
+                "engine-identity-mismatch",
+                error=(
+                    f"expected {expected_engine_profile_id}, "
+                    f"received {result.engine_profile_id}"
+                ),
+                failing_engine_id=expected_engine_profile_id,
             )
 
         stats = getattr(result, "stats", None)
@@ -693,6 +768,53 @@ def _play_game(job: GameJob) -> GameRecord:
             ),
             "played": False,
         }
+        if evaluation_overlay is not None:
+            attempted_trace.update(
+                {
+                    "engine_variant_id": evaluation_overlay.variant_id,
+                    "deep_teacher_model_id": evaluation_overlay.payload.model_id,
+                    "deep_teacher_model_sha256": (
+                        evaluation_overlay.payload.model_sha256
+                    ),
+                    "deep_teacher_corpus_semantic_sha256": (
+                        evaluation_overlay.payload.teacher_corpus_semantic_sha256
+                    ),
+                    "deep_teacher_corpus_raw_artifact_sha256": (
+                        evaluation_overlay.payload.teacher_corpus_raw_artifact_sha256
+                    ),
+                    "deep_teacher_native_source_identity": (
+                        evaluation_overlay.payload.native_source_identity
+                    ),
+                    "deep_teacher_score_policy": (
+                        evaluation_overlay.payload.score_policy
+                    ),
+                    "deep_teacher_work_policy": (
+                        evaluation_overlay.payload.work_policy
+                    ),
+                    "overlay_evaluations": int(
+                        getattr(stats, "overlay_evaluations", 0)
+                    ),
+                    "overlay_reach_positions": int(
+                        getattr(stats, "overlay_reach_positions", 0)
+                    ),
+                    "overlay_direct_move_variants": int(
+                        getattr(stats, "overlay_direct_move_variants", 0)
+                    ),
+                    "overlay_two_move_variants": int(
+                        getattr(stats, "overlay_two_move_variants", 0)
+                    ),
+                }
+            )
+        if evaluation_overlay is not None and result.work_limit_reached:
+            trace.append(attempted_trace)
+            return _technical_failure(
+                job,
+                state,
+                trace,
+                profile.profile_id,
+                "engine-work-limit",
+                failing_engine_id=evaluation_overlay.variant_id,
+            )
         if result.adjudication_status == "manual-proof-required":
             # A legal move-only fallback keeps interactive engine play live,
             # but it is not a scored minimax choice. A self-play game that
@@ -717,7 +839,12 @@ def _play_game(job: GameJob) -> GameRecord:
                     else "engine-no-move"
                 )
                 return _technical_failure(
-                    job, state, trace, profile.profile_id, reason
+                    job,
+                    state,
+                    trace,
+                    profile.profile_id,
+                    reason,
+                    failing_engine_id=expected_engine_profile_id,
                 )
             return GameRecord(
                 job.job_key, job.run_id, job.generation, job.stage,

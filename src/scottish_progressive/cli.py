@@ -518,6 +518,7 @@ def _train_selfplay(args: argparse.Namespace) -> int:
 
 
 def _strength_match(args: argparse.Namespace) -> int:
+    from .deep_teacher_overlay import load_deep_teacher_overlay_payload
     from .strength import (
         StrengthMatchConfig,
         build_seeded_opening_suite,
@@ -528,6 +529,14 @@ def _strength_match(args: argparse.Namespace) -> int:
 
     candidate = resolve_match_profile(args.candidate)
     reference = resolve_match_profile(args.reference)
+    candidate_value_model = (
+        None
+        if args.candidate_value_model is None
+        else load_deep_teacher_overlay_payload(
+            args.candidate_value_model,
+            candidate,
+        )
+    )
     seeded_suite = None
     opening_case_ids = None
     opening_suite_version = None
@@ -565,6 +574,8 @@ def _strength_match(args: argparse.Namespace) -> int:
     match_options: dict[str, object] = {}
     if seeded_suite is not None:
         match_options["opening_cases"] = seeded_suite
+    if candidate_value_model is not None:
+        match_options["candidate_value_model"] = candidate_value_model
     report = run_strength_match(
         candidate,
         reference,
@@ -590,6 +601,12 @@ def _strength_match(args: argparse.Namespace) -> int:
             else estimate["status"]
         )
         print(f"Candidate: {candidate.name} ({candidate.profile_id})")
+        if candidate_value_model is not None:
+            print(
+                "Candidate value model: "
+                f"{candidate_value_model.model_id} "
+                f"({candidate_value_model.variant_id})"
+            )
         print(f"Reference: {reference.name} ({reference.profile_id})")
         print(
             "Games W/D/L: "
@@ -956,6 +973,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     strength.add_argument(
         "reference", help="reference EngineProfile JSON/envelope, or 'baseline'"
+    )
+    strength.add_argument(
+        "--candidate-value-model",
+        help=(
+            "opt-in frozen deep-teacher model JSON for the candidate only; "
+            "the reference and deployed baseline remain unchanged"
+        ),
     )
     strength.add_argument("--pairs", type=int, default=10)
     strength.add_argument("--seed", type=int, default=20260820)

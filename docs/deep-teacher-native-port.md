@@ -1,8 +1,9 @@
 # Deep teacher native/WASM port gate
 
 This lane ports the frozen `spc-teacher-value-features-v3` contract into the
-shared C++20 core. It does not inspect a holdout corpus and does not activate a
-new live evaluator.
+shared C++20 core and exposes it through an explicit strength-match-only
+candidate path. It does not inspect a holdout corpus or change the deployed
+baseline.
 
 ## Implemented contract
 
@@ -26,6 +27,13 @@ new live evaluator.
 - Browser null-window coverage is proof-aware too. A non-adverse scout cannot
   be dismissed against a proven-loss incumbent; it receives the exact
   threat-research pass needed to become selectable.
+- The CPython extraction surface returns an exact receipt for reach positions,
+  direct legal variants, and two-move legal variants. Search charges every
+  receipt count to the existing deterministic work limit.
+- A strict model loader accepts only the frozen final JSON schema. It verifies
+  the model ID, feature prefix and order, exact integer coefficients, scale,
+  adverse-pair weight, semantic corpus identity, raw artifact provenance, and
+  the source-matched native evaluator before a worker can search.
 
 ## Promotion sequence
 
@@ -35,67 +43,57 @@ new live evaluator.
 2. Run exact Python/native feature and fixed-point score parity on development
    positions, promoted provenance, multiple Progressive en-passant targets,
    direct mates, pins, and color-swapped states.
-3. Add the model identity and coefficients to root-session enumeration and
-   search identities. A model mismatch must invalidate imported manifests and
-   transposition/evaluation caches.
-4. Charge reach probes, direct variants, and (for all47 only) second-move
-   variants against deterministic search work receipts. The shared extractor
-   already stops at the selected prefix; the search receipt must consume the
-   counts it returns.
-5. Keep terminal checkmate/draw adjudication authoritative. To preserve the
-   frozen model's exact ordering in alpha-beta, use fixed-point leaf scores and
-   a correspondingly scaled mate domain; do not divide by the model scale.
-6. Integrate the separately reviewed Python root-selector change with this
+3. Keep the separately reviewed Python root-selector change integrated with this
    native/browser comparator. Training metrics, Python search, C++, and WASM
    must all be present in the candidate integration commit before activation.
    Raw unfiltered adverse choices remain diagnostic evidence and must not be
    mistaken for production selector behavior.
-7. Rebuild the WASM artifact from the same sources and prove CPython/WASM
+4. Rebuild the WASM artifact from the same sources and prove CPython/WASM
    parity before any browser manifest points at it.
-8. Only then run the unopened one-shot holdout gate and independent match gate.
+5. Run a paired evaluator-only strength match through the opt-in transport
+   below. A work interruption is incomplete and never counts as a played
+   result.
+6. Only then run the unopened one-shot holdout gate and independent match gate.
    A failure leaves the deployed seven-term evaluator unchanged.
 
-## Opt-in strength-match seam
+## Opt-in strength-match transport
 
-The candidate must not be added to `baseline_profile()` or silently embedded in
-ordinary `SearchLimits`. The existing safe seam is `EvaluationOverlay`, passed
-explicitly to `analyze()` and identity-bound to one ordinary `EngineProfile`.
-The bounded match-only integration should be:
+The candidate is not added to `baseline_profile()` or silently embedded in
+ordinary `SearchLimits`. Supply one frozen model only to the candidate role:
 
-1. Add a strict loader for one `spc-deep-teacher-linear-value-v1` JSON path. It
-   must recompute `model_id`, require the exact feature schema/order/group and
-   scale, require exact signed integers, and retain the model file SHA-256.
-2. Materialize an immutable overlay with `base_profile_id` equal to the chosen
-   candidate profile and `variant_id` derived from the base profile ID, model
-   ID, model SHA-256, evaluator source identity, score-domain policy, and work
-   policy. The reference profile receives no overlay.
-3. Add an explicit strength command option such as
-   `--candidate-value-model <frozen-model.json>`. Serialize the validated model
-   payload and identities onto each `GameJob`; reconstruct the immutable
-   overlay inside each process-pool worker and pass it as
-   `evaluation_overlay=` to `analyze()`. This is necessary because the current
-   strength harness transports only `EngineProfile` objects.
-4. Keep the ordinary deterministic `SearchLimits` identical for both players,
-   but charge the candidate extractor's reach/direct/two-move receipt against
-   its existing logical-work budget. A limit interruption remains incomplete,
-   never a result.
-5. Convert the exact fixed-point dot product to the activated search score
-   domain once, with a declared deterministic rounding rule, then clamp quiet
-   leaves below the proof/mate band. Replayed terminal outcomes remain
-   authoritative.
-6. Record the variant/model/hash/work/score-domain identities in every game and
-   in the match report. Reject resume or aggregation when any identity differs.
+```powershell
+spc strength-match baseline baseline `
+  --candidate-value-model build\deep-teacher\candidate-model.json `
+  --pairs 10 --workers 2 `
+  --output build\deep-teacher\candidate-vs-baseline.json
+```
 
-That CLI/GameJob worker transport is intentionally not part of this core port.
-Until it is implemented and tested, the compiled evaluator is parity-capable
-but cannot alter a strength-match player or the deployed baseline.
+Using `baseline baseline` is deliberate: both seats retain the exact deployed
+base profile, and only the candidate seat receives the evaluator overlay. The
+candidate role is tracked explicitly through both color swaps rather than
+inferred from the shared profile ID. An identical-profile match without the
+model option remains invalid.
+
+The validated immutable payload is serialized on `GameJob`, reconstructed in
+each process-pool worker, and checked again against the seat's base profile,
+model hash, semantic and raw corpus provenance, native source identity, score
+policy, and work policy. Those identities are included in run/job IDs, modeled
+game records, traces, and the report. A mismatch fails closed as a technical
+incomplete.
+
+The native fixed-point dot product is converted once with symmetric
+half-away-from-zero division by 1,000,000,000, then the existing search clamp
+keeps quiet values below the mate/proof band. Terminal checkmate and draw replay
+remain authoritative. Every native reach/direct/two-move receipt is charged;
+an incomplete or over-budget receipt raises the ordinary search work limit and
+cannot become match evidence.
+
+Without `--candidate-value-model`, job identities and the strength report keep
+their pre-overlay shape and behavior.
 
 ## Deliberate non-activation
 
-The train-selected model and its sealed evaluation result do not exist in this
-branch. Wiring placeholder coefficients into live search would make evaluator
-identity ambiguous and could break mate-score dominance. This port therefore
-supplies the exact shared implementation, proof-aware native/browser selector,
-and parity surface. Activation remains gated on the reviewed Python selector,
-a frozen model artifact, opt-in match transport, complete work/cache/score
-accounting, rebuilt WASM artifacts, holdout evidence, and match evidence.
+No placeholder coefficient set is embedded and no browser or production
+manifest selects this evaluator. Activation remains gated on a reviewed frozen
+model, rebuilt WASM parity artifacts, unopened holdout evidence, and the paired
+strength-match result. A failed gate leaves the deployed evaluator unchanged.

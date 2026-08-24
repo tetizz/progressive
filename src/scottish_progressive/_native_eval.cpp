@@ -6813,7 +6813,10 @@ PyObject* optional_distance_object(
     return PyLong_FromLongLong(*distance);
 }
 
-PyObject* py_teacher_value_features_v3(PyObject*, PyObject* arguments) {
+PyObject* py_teacher_value_features_v3_impl(
+    PyObject* arguments,
+    const bool include_receipt
+) {
     constexpr Py_ssize_t MIN_ARGUMENT_COUNT = 14;
     constexpr Py_ssize_t MAX_ARGUMENT_COUNT = 15;
     const Py_ssize_t argument_count = PyTuple_GET_SIZE(arguments);
@@ -6823,7 +6826,10 @@ PyObject* py_teacher_value_features_v3(PyObject*, PyObject* arguments) {
     ) {
         PyErr_Format(
             PyExc_TypeError,
-            "teacher_value_features_v3() takes 14 or 15 arguments (%zd given)",
+            "%s() takes 14 or 15 arguments (%zd given)",
+            include_receipt
+                ? "teacher_value_features_v3_with_receipt"
+                : "teacher_value_features_v3",
             argument_count
         );
         return nullptr;
@@ -6951,7 +6957,43 @@ PyObject* py_teacher_value_features_v3(PyObject*, PyObject* arguments) {
         }
         PyTuple_SET_ITEM(result, static_cast<Py_ssize_t>(index), value);
     }
-    return result;
+    if (!include_receipt) {
+        return result;
+    }
+    PyObject* receipt = Py_BuildValue(
+        "{sKsKsKsKsOsO}",
+        "white_reach_positions",
+        static_cast<unsigned long long>(evaluated->white_reach.nodes),
+        "black_reach_positions",
+        static_cast<unsigned long long>(evaluated->black_reach.nodes),
+        "direct_move_variants",
+        static_cast<unsigned long long>(evaluated->direct_move_variants),
+        "two_move_variants",
+        static_cast<unsigned long long>(evaluated->two_move_variants),
+        "white_reach_complete",
+        evaluated->white_reach.complete ? Py_True : Py_False,
+        "black_reach_complete",
+        evaluated->black_reach.complete ? Py_True : Py_False
+    );
+    if (receipt == nullptr) {
+        Py_DECREF(result);
+        return nullptr;
+    }
+    PyObject* packaged = PyTuple_Pack(2, result, receipt);
+    Py_DECREF(result);
+    Py_DECREF(receipt);
+    return packaged;
+}
+
+PyObject* py_teacher_value_features_v3(PyObject*, PyObject* arguments) {
+    return py_teacher_value_features_v3_impl(arguments, false);
+}
+
+PyObject* py_teacher_value_features_v3_with_receipt(
+    PyObject*,
+    PyObject* arguments
+) {
+    return py_teacher_value_features_v3_impl(arguments, true);
 }
 
 PyObject* py_deep_teacher_score_v1(PyObject*, PyObject* arguments) {
@@ -9167,6 +9209,12 @@ PyMethodDef METHODS[] = {
         py_teacher_value_features_v3,
         METH_VARARGS,
         PyDoc_STR("Exact compiled frozen teacher feature-prefix contract.")
+    },
+    {
+        "teacher_value_features_v3_with_receipt",
+        py_teacher_value_features_v3_with_receipt,
+        METH_VARARGS,
+        PyDoc_STR("Exact compiled teacher features plus deterministic work receipt.")
     },
     {
         "deep_teacher_score_v1",

@@ -15,6 +15,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 import chess
 
+from .deep_teacher_overlay import DeepTeacherOverlayPayload
 from .league import (
     OPENING_SUITE,
     OPENING_SUITE_VERSION,
@@ -450,22 +451,34 @@ def _build_jobs(
     reference: EngineProfile,
     config: StrengthMatchConfig,
     opening_cases: SeededOpeningSuite | Sequence[OpeningCase] | None = None,
+    *,
+    candidate_value_model: DeepTeacherOverlayPayload | None = None,
 ) -> tuple[GameJob, ...]:
-    if candidate.profile_id == reference.profile_id:
+    if (
+        candidate.profile_id == reference.profile_id
+        and candidate_value_model is None
+    ):
         raise ValueError("strength match requires two different engine profiles")
+    if candidate_value_model is not None:
+        if type(candidate_value_model) is not DeepTeacherOverlayPayload:
+            raise TypeError("candidate_value_model has the wrong payload type")
+        candidate_value_model.validate(candidate)
     openings = _ordered_openings(config, opening_cases)
     opening_identity = json.dumps(
         [opening.as_dict() for opening in openings],
         sort_keys=True,
         separators=(",", ":"),
     )
-    run_id = "strength-" + _stable_id(
+    run_identity: list[object] = [
         STRENGTH_REPORT_FORMAT,
         candidate.profile_id,
         reference.profile_id,
         json.dumps(config.as_dict(), sort_keys=True, separators=(",", ":")),
         opening_identity,
-    )[:20]
+    ]
+    if candidate_value_model is not None:
+        run_identity.append(candidate_value_model.variant_id)
+    run_id = "strength-" + _stable_id(*run_identity)[:20]
     jobs: list[GameJob] = []
     for pair_index, opening in enumerate(openings):
         pair_seed = _stable_seed(
@@ -481,17 +494,29 @@ def _build_jobs(
             opening_payload = json.dumps(
                 opening.as_dict(), sort_keys=True, separators=(",", ":")
             )
+            # Candidate/reference are roles, not profile IDs. An evaluator-only
+            # match deliberately uses the same base profile on both sides.
+            white_overlay = candidate_value_model if swap == 0 else None
+            black_overlay = candidate_value_model if swap == 1 else None
+            job_identity: list[object] = [
+                run_id,
+                opening_index,
+                opening.case_id,
+                opening_payload,
+                pair_seed,
+                white.profile_id,
+                black.profile_id,
+            ]
+            if candidate_value_model is not None:
+                job_identity.extend(
+                    (
+                        None if white_overlay is None else white_overlay.variant_id,
+                        None if black_overlay is None else black_overlay.variant_id,
+                    )
+                )
             jobs.append(
                 GameJob(
-                    job_key=_stable_id(
-                        run_id,
-                        opening_index,
-                        opening.case_id,
-                        opening_payload,
-                        pair_seed,
-                        white.profile_id,
-                        black.profile_id,
-                    ),
+                    job_key=_stable_id(*job_identity),
                     run_id=run_id,
                     generation=0,
                     stage="strength-fixed-suite",
@@ -506,25 +531,74 @@ def _build_jobs(
                     max_game_work_positions=config.max_game_work_positions,
                     emergency_max_series=config.emergency_max_series,
                     opening_suite_version=config.opening_suite_version,
+                    white_evaluation_overlay=white_overlay,
+                    black_evaluation_overlay=black_overlay,
                 )
             )
     return tuple(jobs)
 
 
-def _profile_points(record: GameRecord, profile_id: str) -> float | None:
+def _profile_points(
+    record: GameRecord,
+    profile_id: str,
+    candidate_value_model: DeepTeacherOverlayPayload | None = None,
+    *,
+    candidate_is_white: bool | None = None,
+) -> float | None:
     if record.result == "1/2-1/2":
         return 0.5
     if record.result == "1-0":
+        if (
+            candidate_value_model is not None
+            and record.white_profile_id == record.black_profile_id == profile_id
+        ):
+            if candidate_is_white is None:
+                raise ValueError(
+                    "same-profile evaluator matches require an explicit candidate color"
+                )
+            return 1.0 if candidate_is_white else 0.0
         return 1.0 if record.white_profile_id == profile_id else 0.0
     if record.result == "0-1":
+        if (
+            candidate_value_model is not None
+            and record.white_profile_id == record.black_profile_id == profile_id
+        ):
+            if candidate_is_white is None:
+                raise ValueError(
+                    "same-profile evaluator matches require an explicit candidate color"
+                )
+            return 0.0 if candidate_is_white else 1.0
         return 1.0 if record.black_profile_id == profile_id else 0.0
     return None
 
 
-def _game_payload(record: GameRecord, opening: OpeningCase) -> dict[str, Any]:
+def _game_payload(
+    record: GameRecord,
+    opening: OpeningCase,
+    job: GameJob | None = None,
+) -> dict[str, Any]:
     payload = asdict(record)
     payload["trace"] = [dict(item) for item in record.trace]
     payload["opening"] = opening.as_dict()
+    modeled = job is not None and (
+        job.white_evaluation_overlay is not None
+        or job.black_evaluation_overlay is not None
+    )
+    if modeled:
+        payload["white_engine_id"] = (
+            job.white_profile.profile_id
+            if job.white_evaluation_overlay is None
+            else job.white_evaluation_overlay.variant_id
+        )
+        payload["black_engine_id"] = (
+            job.black_profile.profile_id
+            if job.black_evaluation_overlay is None
+            else job.black_evaluation_overlay.variant_id
+        )
+    else:
+        # Keep the no-option strength report byte-for-byte compatible with the
+        # pre-overlay GameRecord schema.
+        payload.pop("engine_failure_engine_id", None)
     return payload
 
 
@@ -612,18 +686,50 @@ def _summarize(
     records: Sequence[GameRecord],
     candidate: EngineProfile,
     reference: EngineProfile,
+    candidate_value_model: DeepTeacherOverlayPayload | None = None,
+    candidate_colors: Mapping[str, bool] | None = None,
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
+    if candidate_value_model is not None:
+        expected_job_keys = {record.job_key for record in records}
+        if (
+            candidate_colors is None
+            or len(expected_job_keys) != len(records)
+            or set(candidate_colors) != expected_job_keys
+            or any(type(value) is not bool for value in candidate_colors.values())
+        ):
+            raise ValueError(
+                "modeled match records require an exact candidate-color identity map"
+            )
+    elif candidate_colors is not None:
+        raise ValueError("candidate colors are only valid for a modeled match")
+
     game_wins = game_draws = game_losses = incomplete_games = 0
     game_points = 0.0
     completed_games = 0
     failure_reasons: dict[str, int] = {}
-    profile_failures = {candidate.profile_id: 0, reference.profile_id: 0}
+    candidate_engine_id = (
+        candidate.profile_id
+        if candidate_value_model is None
+        else candidate_value_model.variant_id
+    )
+    reference_engine_id = reference.profile_id
+    profile_failures = {candidate_engine_id: 0, reference_engine_id: 0}
     worker_failures = 0
     shared_limit_failures = 0
     pairs: list[dict[str, Any]] = []
 
     for record in records:
-        points = _profile_points(record, candidate.profile_id)
+        candidate_is_white = (
+            None
+            if candidate_colors is None
+            else candidate_colors.get(record.job_key)
+        )
+        points = _profile_points(
+            record,
+            candidate.profile_id,
+            candidate_value_model,
+            candidate_is_white=candidate_is_white,
+        )
         if points is None:
             incomplete_games += 1
         else:
@@ -636,8 +742,12 @@ def _summarize(
             else:
                 game_losses += 1
         if record.engine_failure_profile_id is not None:
-            profile_failures[record.engine_failure_profile_id] = (
-                profile_failures.get(record.engine_failure_profile_id, 0) + 1
+            failure_identity = (
+                record.engine_failure_engine_id
+                or record.engine_failure_profile_id
+            )
+            profile_failures[failure_identity] = (
+                profile_failures.get(failure_identity, 0) + 1
             )
             failure_reasons[record.terminal_reason] = (
                 failure_reasons.get(record.terminal_reason, 0) + 1
@@ -660,7 +770,19 @@ def _summarize(
     for pair_index in range(0, len(records), 2):
         paired = records[pair_index : pair_index + 2]
         case_id = paired[0].opening_case_id
-        points = [_profile_points(record, candidate.profile_id) for record in paired]
+        points = [
+            _profile_points(
+                record,
+                candidate.profile_id,
+                candidate_value_model,
+                candidate_is_white=(
+                    None
+                    if candidate_colors is None
+                    else candidate_colors.get(record.job_key)
+                ),
+            )
+            for record in paired
+        ]
         if len(paired) != 2 or any(value is None for value in points):
             pair_result = "incomplete"
             total_points: float | None = None
@@ -676,24 +798,32 @@ def _summarize(
             else:
                 pair_result = "loss"
                 pair_losses += 1
-        pairs.append(
-            {
-                "pair_index": pair_index // 2,
-                "opening_case_id": case_id,
-                "candidate_points": total_points,
-                "result": pair_result,
-                "game_job_keys": [record.job_key for record in paired],
-                "technical_failures": [
-                    {
-                        "profile_id": record.engine_failure_profile_id,
-                        "reason": record.terminal_reason,
-                    }
-                    for record in paired
-                    if record.engine_failure_profile_id is not None
-                    or record.terminal_reason == "worker-exception"
-                ],
+        technical_failures: list[dict[str, Any]] = []
+        for record in paired:
+            if (
+                record.engine_failure_profile_id is None
+                and record.terminal_reason != "worker-exception"
+            ):
+                continue
+            failure = {
+                "profile_id": record.engine_failure_profile_id,
+                "reason": record.terminal_reason,
             }
-        )
+            if candidate_value_model is not None:
+                failure["engine_id"] = (
+                    record.engine_failure_engine_id
+                    or record.engine_failure_profile_id
+                )
+            technical_failures.append(failure)
+        pair_payload = {
+            "pair_index": pair_index // 2,
+            "opening_case_id": case_id,
+            "candidate_points": total_points,
+            "result": pair_result,
+            "game_job_keys": [record.job_key for record in paired],
+            "technical_failures": technical_failures,
+        }
+        pairs.append(pair_payload)
 
     score_rate = game_points / completed_games if completed_games else None
     completed_pairs = pair_wins + pair_draws + pair_losses
@@ -724,8 +854,8 @@ def _summarize(
         "candidate_pair_score_rate": pair_score_rate,
         "technical_failures": {
             "total_profile_failures": sum(profile_failures.values()),
-            "candidate": profile_failures.get(candidate.profile_id, 0),
-            "reference": profile_failures.get(reference.profile_id, 0),
+            "candidate": profile_failures.get(candidate_engine_id, 0),
+            "reference": profile_failures.get(reference_engine_id, 0),
             "unattributed_worker_failures": worker_failures,
             "unattributed_match_limit_failures": shared_limit_failures,
             "by_reason": dict(sorted(failure_reasons.items())),
@@ -745,6 +875,7 @@ def run_strength_match(
     memory_per_worker_mb: int = 512,
     reserve_memory_mb: int = 512,
     progress: Callable[[str], None] | None = None,
+    candidate_value_model: DeepTeacherOverlayPayload | None = None,
 ) -> dict[str, Any]:
     """Runs an isolated fixed-suite match and returns a JSON-safe report.
 
@@ -756,7 +887,13 @@ def run_strength_match(
     """
 
     config = config or StrengthMatchConfig()
-    jobs = _build_jobs(candidate, reference, config, opening_cases)
+    jobs = _build_jobs(
+        candidate,
+        reference,
+        config,
+        opening_cases,
+        candidate_value_model=candidate_value_model,
+    )
     detected_resources = detect_resource_budget(
         requested_workers,
         memory_per_worker_mb=memory_per_worker_mb,
@@ -769,11 +906,26 @@ def run_strength_match(
     records = _execute_jobs(jobs, resources, progress)
     elapsed_seconds = time.perf_counter() - started
 
-    summary, pair_payload = _summarize(records, candidate, reference)
+    candidate_colors = (
+        None
+        if candidate_value_model is None
+        else {
+            job.job_key: job.white_evaluation_overlay is not None
+            for job in jobs
+        }
+    )
+    summary, pair_payload = _summarize(
+        records,
+        candidate,
+        reference,
+        candidate_value_model,
+        candidate_colors,
+    )
     opening_by_id = {job.opening.case_id: job.opening for job in jobs}
     selected_case_ids = tuple(job.opening.case_id for job in jobs[::2])
     report_id = jobs[0].run_id
-    return {
+    job_by_key = {job.job_key: job for job in jobs}
+    report = {
         "format": STRENGTH_REPORT_FORMAT,
         "report_id": report_id,
         "created_at": _now(),
@@ -809,7 +961,11 @@ def run_strength_match(
         "summary": summary,
         "pairs": list(pair_payload),
         "games": [
-            _game_payload(record, opening_by_id[record.opening_case_id])
+            _game_payload(
+                record,
+                opening_by_id[record.opening_case_id],
+                job_by_key[record.job_key],
+            )
             for record in records
         ],
         "claim_scope": {
@@ -826,6 +982,9 @@ def run_strength_match(
             ),
         },
     }
+    if candidate_value_model is not None:
+        report["candidate_value_model"] = candidate_value_model.as_dict()
+    return report
 
 
 def write_strength_report(

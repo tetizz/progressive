@@ -14,6 +14,7 @@ def _require_native() -> object:
     if (
         native is None
         or not hasattr(native, "teacher_value_features_v3")
+        or not hasattr(native, "teacher_value_features_v3_with_receipt")
         or not hasattr(native, "deep_teacher_score_v1")
         or not hasattr(native, "proof_aware_root_precedes_v1")
     ):
@@ -143,6 +144,56 @@ def test_native_teacher_value_prefix_rejects_unknown_group() -> None:
 
     with pytest.raises(ValueError, match="frozen prefix group"):
         _native_features(native, ProgressiveState.initial(), 8)
+
+
+def test_native_teacher_value_work_receipt_matches_feature_call() -> None:
+    native = _require_native()
+    state = ProgressiveState.from_fen(
+        "7k/8/8/8/8/8/4Q3/7K w - - 0 1",
+        3,
+    )
+    board = state.board
+
+    features, receipt = native.teacher_value_features_v3_with_receipt(
+        board.pawns,
+        board.knights,
+        board.bishops,
+        board.rooks,
+        board.queens,
+        board.kings,
+        board.occupied_co[chess.WHITE],
+        board.occupied_co[chess.BLACK],
+        board.promoted,
+        board.clean_castling_rights(),
+        board.turn,
+        state.series_number,
+        state.ep_targets,
+        256,
+        47,
+    )
+
+    assert tuple(features) == _native_features(native, state)
+    assert set(receipt) == {
+        "white_reach_positions",
+        "black_reach_positions",
+        "direct_move_variants",
+        "two_move_variants",
+        "white_reach_complete",
+        "black_reach_complete",
+    }
+    assert all(
+        type(receipt[name]) is int and receipt[name] >= 0
+        for name in (
+            "white_reach_positions",
+            "black_reach_positions",
+            "direct_move_variants",
+            "two_move_variants",
+        )
+    )
+    assert receipt["direct_move_variants"] > 0
+    assert receipt["two_move_variants"] > 0
+    assert type(receipt["white_reach_complete"]) is bool
+    assert type(receipt["black_reach_complete"]) is bool
 
 
 @pytest.mark.parametrize("feature_count", [7, 14, 19, 38, 44, 47])
