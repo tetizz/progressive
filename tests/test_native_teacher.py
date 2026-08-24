@@ -583,6 +583,7 @@ def _mixed_tier_payload(
             "profile_schedule": "ordered-pair-round-robin",
             "train_attempts": 8_192,
             "holdout_attempts": 4_096,
+            "prior_receipt_cache_reuse": False,
         },
         "selection": {"quota_by_cell": quota_rows},
         "labels": labels,

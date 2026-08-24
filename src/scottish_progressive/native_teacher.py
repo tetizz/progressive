@@ -1364,6 +1364,7 @@ def build_native_teacher_corpus(
             "profile_schedule": "ordered-pair-round-robin",
             "train_attempts": train_manifest["attempt_count"],
             "holdout_attempts": holdout_manifest["attempt_count"],
+            "prior_receipt_cache_reuse": prior_receipt_cache_contract is not None,
             "root_receipt_cache_contract": {
                 **cache_contract_payload,
                 "cache_contract_id": cache_contract_id,
@@ -1642,6 +1643,7 @@ def merge_native_teacher_tiers(
         "profile_schedule",
         "train_attempts",
         "holdout_attempts",
+        "prior_receipt_cache_reuse",
     )
     for field in generation_fields:
         if quiet_generation.get(field) != tactical_generation.get(field):
