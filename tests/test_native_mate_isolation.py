@@ -21,15 +21,16 @@ from scottish_progressive.series_mate import (
 
 
 NATIVE_SOURCE_HASHES = {
-    "_native_eval.cpp": "7d464b0f1c30adb98ab69ac581fd4a49fabf6aedeb1565f5151ae821e80b98ef",
-    "native_eval.hpp": "f88e5f3bab2608e7592cdb5faee3ec441466628044382889d2424ebd02e99772",
+    "_native_eval.cpp": "a1bac43711f12d2d93c9fcc0a5a44d37031c7e304fa8975ce8c402144f04e359",
+    "native_eval.hpp": "238b37ecf5288c9816ffb96088ca7546d45ca825e4f7bf833a7573641fdf8fc0",
 }
 NATIVE_IDENTITY = (
-    "eb854063a3f4417267fd51dead4bd25a4055922ff1647b5dbace8a9d7367de70"
+    "212796783667b362104274a86427542ddcc4e0bd4ce7a94dd9bee86a3f6c8f1b"
 )
 NATIVE_SURFACE = {
     "SOURCE_IDENTITY",
     "complete_series_candidate",
+    "deep_teacher_score_v1",
     "expand_legal_move_variants",
     "fast_evaluate",
     "full_evaluate",
@@ -44,6 +45,7 @@ NATIVE_SURFACE = {
     "prepare_complete_series",
     "prepare_complete_series_timed",
     "prepare_complete_series_timed_parallel",
+    "proof_aware_root_precedes_v1",
     "create_subtree_search",
     "subtree_begin_transaction",
     "subtree_enumerate_root",
@@ -54,6 +56,7 @@ NATIVE_SURFACE = {
     "subtree_search",
     "subtree_search_root_candidate",
     "subtree_touch_external_cache",
+    "teacher_value_features_v3",
 }
 LIVE_S5_HISTORY = (
     ("e2e4",),
