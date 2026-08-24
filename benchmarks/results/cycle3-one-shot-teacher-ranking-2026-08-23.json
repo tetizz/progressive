@@ -1,0 +1,135 @@
+{
+  "schema": "spc-cycle3-one-shot-result-v1",
+  "protocol": {
+    "path": "benchmarks/protocols/cycle3-one-shot-2026-08-24-v1.json",
+    "commit": "3ee92192fad6ba2d0aeeb7e75fe5126e01ff7e5d",
+    "engine_source_fingerprint": "01dc8e6ef2389359"
+  },
+  "claim_scope": "One-shot teacher-ranking evidence only; no paired playing-strength claim.",
+  "corpora": {
+    "train_trajectory_sha256": "17095e0261f05ede9f48c5c72297bda02850390f0c39bc86afcd561c750cecad",
+    "sealed_holdout_trajectory_sha256": "4e648ec0415b97a42d99688ff221998ced92853e3041ddfe0cc5460738bb4112",
+    "mixed_teacher_sha256": "56d263edcb4117ba32af334eb2cbf5c2275bdfbc7704f7fe6218037c9a5d8c93",
+    "train_labels": 128,
+    "holdout_labels": 64,
+    "semantic_overlap_counts": {
+      "root_key_overlap": 0,
+      "option_final_key_overlap": 0,
+      "train_option_final_to_holdout_root_overlap": 0,
+      "holdout_option_final_to_train_root_overlap": 0
+    },
+    "promotion_eligible_data_contract": true
+  },
+  "teacher_artifacts": {
+    "quiet_depth2_raw_sha256": "c4a040c9908b1ba5b72f308c2fb501f797b44ca4cc2e4beff29c03f8394fb7d9",
+    "quiet_depth2_semantic_sha256": "5908c1e795255f344e5cb60844e4ec56c95c34d0e18b942a27d99582e300d5eb",
+    "tactical_depth3_raw_sha256": "0f5a7c0b226a4da829ead3f75971f1d5de5ed192c9a44ff88a9fb7b28414f40e",
+    "tactical_depth3_semantic_sha256": "4d1e2f5d89e5a2f65ee1f42f6e8bcfded06c1dcb98d361ede27723e308363b56"
+  },
+  "frozen_candidates": {
+    "primary_nonroute": {
+      "model_id": "spc-dtv-500c71621045e5861b8a",
+      "sha256": "c50ec642f7ad38de1184a8e2bd45481d858e9750beb5eaa55f3f1d4a145ceb86"
+    },
+    "route_ablation": {
+      "model_id": "spc-dtv-50c6fc6cc7157fda913e",
+      "sha256": "aec8ff8933f7988e290e70e86ef3182cc06d15317979a422b40fc058817ed32f"
+    },
+    "distilled_seven_weight": {
+      "profile_id": "spc-5b39d6f589c7d452",
+      "sha256": "06ddd3ff64f381bda34d780689cf8e7a8cabce1555e27afa3c75d11fdfa8942f",
+      "weights": {
+        "material": 153,
+        "king_space": 296,
+        "series_reach": 156,
+        "promotion_corridors": 25,
+        "immediate_vulnerability": 96,
+        "useful_mobility": 274,
+        "boundary_check": 147
+      }
+    }
+  },
+  "train_metrics": {
+    "baseline": {
+      "normalized_regret": 0.084246875,
+      "gap_weighted_pairwise_accuracy": 0.7332302744566941,
+      "chosen_proven_adverse": 11
+    },
+    "rejected_development_leader": {
+      "normalized_regret": 0.062075,
+      "gap_weighted_pairwise_accuracy": 0.7283563483179177,
+      "chosen_proven_adverse": 8
+    },
+    "primary_nonroute": {
+      "normalized_regret": 0.064375,
+      "gap_weighted_pairwise_accuracy": 0.8144349312730544,
+      "chosen_proven_adverse": 8
+    },
+    "route_ablation": {
+      "normalized_regret": 0.039278125,
+      "gap_weighted_pairwise_accuracy": 0.8109904523201037,
+      "chosen_proven_adverse": 5
+    },
+    "distilled_seven_weight": {
+      "normalized_regret": 0.0562796875,
+      "gap_weighted_pairwise_accuracy": 0.7695931032301517,
+      "chosen_proven_adverse": 7
+    }
+  },
+  "one_shot_holdout_metrics": {
+    "baseline": {
+      "normalized_regret": 0.08,
+      "gap_weighted_pairwise_accuracy": 0.7581809659822332,
+      "chosen_proven_adverse": 5
+    },
+    "rejected_development_leader": {
+      "normalized_regret": 0.071484375,
+      "gap_weighted_pairwise_accuracy": 0.7372815713440088,
+      "chosen_proven_adverse": 4
+    },
+    "primary_nonroute": {
+      "normalized_regret": 0.043153125,
+      "gap_weighted_pairwise_accuracy": 0.7902831843217683,
+      "chosen_proven_adverse": 2
+    },
+    "route_ablation": {
+      "normalized_regret": 0.057703125,
+      "gap_weighted_pairwise_accuracy": 0.7928839934312617,
+      "chosen_proven_adverse": 3
+    },
+    "distilled_seven_weight": {
+      "normalized_regret": 0.037484375,
+      "gap_weighted_pairwise_accuracy": 0.7725377616771182,
+      "chosen_proven_adverse": 2
+    }
+  },
+  "gates": {
+    "primary_nonroute": {
+      "ranking_and_stratum_gates_passed": true,
+      "zero_proven_adverse_gate_passed": false,
+      "passed": false
+    },
+    "route_ablation": {
+      "pairwise_improved_over_nonroute": true,
+      "regret_improved_over_nonroute": false,
+      "zero_proven_adverse_gate_passed": false,
+      "passed": false
+    },
+    "distilled_seven_weight": {
+      "ranking_and_stratum_gates_passed": true,
+      "zero_proven_adverse_gate_passed": false,
+      "passed": false
+    }
+  },
+  "receipts": {
+    "fit_sha256": "a1ece1c07f2de356e89c4cfbf6dcd74d4c223375742986f2c7d0537b8c8306c4",
+    "holdout_claim_sha256": "c63ea9ade76238fc88ef925147f1533552f8ebc11ee7b5e6320f57c2e3eb9b66",
+    "holdout_evaluation_sha256": "473b9954656bb1cc6eedee0073b85a065ac3eea50454fc72de062d43e90dfc39"
+  },
+  "verdict": {
+    "promotion_recommended": false,
+    "deployed": false,
+    "reason": "Every candidate retained at least two proven-adverse holdout selections. The zero-adverse safety gate is mandatory even though ranking regret and pairwise accuracy improved.",
+    "next_cycle": "Use proof-aware training/model selection with a newly pre-registered independent holdout; do not reuse this consumed holdout for a strength claim."
+  }
+}
