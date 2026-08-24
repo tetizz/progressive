@@ -1,0 +1,50 @@
+{
+  "schema": "spc-cycle4-teacher-runtime-pilot-v1",
+  "claim": "Current-source throughput evidence only; not a strength or promotion claim.",
+  "source": {
+    "commit": "26c6c4b433ccccae0bd2f3bf028c2d5cd7d52c8c",
+    "engine_version": "spc-0.9.0",
+    "engine_source_fingerprint": "f2b74bd90825acfd"
+  },
+  "trajectory_pilot": {
+    "train": {
+      "seed": 909021,
+      "attempts": 2048,
+      "elapsed_seconds": 8.9473928999505,
+      "corpus_sha256": "e217d06503fbb02f01ea46bb8fcf9e165dec39f67d984d1f146b7a6551bbd033",
+      "receipt_sha256": "ac4a355e02861ff39002223ec39305318d1f424b8893845aeb9460c22eafe613"
+    },
+    "holdout": {
+      "seed": 909022,
+      "attempts": 1024,
+      "elapsed_seconds": 8.27400969999144,
+      "corpus_sha256": "975716704c68c0a1f4b03aeea82ff93434a4a49e583b77bbe504fc6b9695c54d",
+      "receipt_sha256": "35a9dd20e272d21696e7c1ef04eca8156ee92ccc1a90cd4c3e4e522bbb5b6f33"
+    }
+  },
+  "quiet_depth2_teacher_pilot": {
+    "seed": 909023,
+    "workers": 8,
+    "target_roots": 24,
+    "train_roots": 18,
+    "holdout_roots": 6,
+    "label_search_failures": 46,
+    "total_label_work_positions": 14925670,
+    "elapsed_seconds": 188.81284749996848,
+    "labels_per_second": 0.12710999277857193,
+    "corpus_id": "spc-native-teacher-56fddb638d0cd162c08d",
+    "artifact_sha256": "a9715535eddee29d7cd302d42ba35e52a161c4e4009d5cd7a0cc9a4b69ae8ef4"
+  },
+  "cycle4_projection": {
+    "quiet_depth2_target_roots": 3072,
+    "linear_quiet_depth2_hours": 6.713345688887768,
+    "planning_quiet_depth2_hours": "6-8",
+    "planning_all_pre_match_hours": "8-9",
+    "projection_is_not_a_deadline": true
+  },
+  "safety": {
+    "uses_separate_non_cycle4_seeds": true,
+    "cycle4_holdout_was_not_generated_or_opened": true,
+    "promotion_eligible": false
+  }
+}
