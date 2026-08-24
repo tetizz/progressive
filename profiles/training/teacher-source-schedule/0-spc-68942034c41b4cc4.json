@@ -1,0 +1,20 @@
+{
+  "generation": 0,
+  "mutation_seed": null,
+  "name": "Scottish Progressive baseline",
+  "notes": "Hand-authored reference profile; no match-strength claim.",
+  "parent_profile_ids": [],
+  "profile_id": "spc-68942034c41b4cc4",
+  "recommended_branch_cap": 32,
+  "recommended_depth": 2,
+  "schema_version": 1,
+  "weights": {
+    "boundary_check": 100,
+    "immediate_vulnerability": 100,
+    "king_space": 100,
+    "material": 100,
+    "promotion_corridors": 100,
+    "series_reach": 100,
+    "useful_mobility": 100
+  }
+}

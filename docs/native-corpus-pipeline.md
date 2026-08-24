@@ -114,6 +114,9 @@ The checked-in development leader is
 [`native-corpus-development-leader.json`](../profiles/training/native-corpus-development-leader.json).
 Its provenance travels with the repository so fit receipts never depend on an
 ignored absolute path. It is a comparison input, not a promoted-strength claim.
+The four-profile ordered-pair source schedule used by deep-teacher generation is
+tracked beside it in
+[`teacher-source-schedule`](../profiles/training/teacher-source-schedule/).
 
 Training requires two roots generated with different seeds and otherwise
 identical generation contracts:

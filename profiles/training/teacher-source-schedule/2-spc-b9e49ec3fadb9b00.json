@@ -1,0 +1,22 @@
+{
+  "generation": 1,
+  "mutation_seed": 2028082309,
+  "name": "generation 1 candidate 2",
+  "notes": "Deterministic league mutation; strength is unverified until gated match promotion.",
+  "parent_profile_ids": [
+    "spc-68942034c41b4cc4"
+  ],
+  "profile_id": "spc-b9e49ec3fadb9b00",
+  "recommended_branch_cap": 32,
+  "recommended_depth": 2,
+  "schema_version": 1,
+  "weights": {
+    "boundary_check": 90,
+    "immediate_vulnerability": 80,
+    "king_space": 80,
+    "material": 80,
+    "promotion_corridors": 100,
+    "series_reach": 100,
+    "useful_mobility": 100
+  }
+}
