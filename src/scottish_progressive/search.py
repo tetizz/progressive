@@ -51,6 +51,11 @@ if TYPE_CHECKING:
 
 MATE_SCORE = 1_000_000
 UNKNOWN_PROOF_BOUNDS = (-1, 1)
+# Leaf evaluators must stay outside the reserved mate/proof band used by
+# ``SearchResult.forced`` and the public analysis notation. An experimental
+# overlay is allowed to reorder ordinary positions, but never to numerically
+# outrank a sound terminal proof or manufacture a mate-looking heuristic.
+MAX_EVALUATION_OVERLAY_SCORE = MATE_SCORE - 10_000 - 1
 # The ten-quiet-series mate exception is a proof search inside the ordinary
 # series search.  It must have a search-wide ceiling of its own: otherwise a
 # wide node can start one 100k-node probe per child without any of that work
@@ -295,6 +300,49 @@ class ScoredSeries:
     @property
     def proof(self) -> str | None:
         return _proof_from_bounds(self.proof_bounds)
+
+
+def _root_candidate_is_proven_adverse(
+    mover: chess.Color,
+    candidate: ScoredSeries,
+) -> bool:
+    """Returns whether sound exact bounds prove the mover loses this line."""
+
+    adverse_value = -1 if mover == chess.WHITE else 1
+    return candidate.proof_bounds == (adverse_value, adverse_value)
+
+
+def _proof_safe_root_order(
+    mover: chess.Color,
+    scored: list[ScoredSeries] | tuple[ScoredSeries, ...],
+) -> tuple[ScoredSeries, ...]:
+    """Ranks exact root scores without choosing a proven loss over uncertainty.
+
+    Proof bounds outrank heuristic scores only for the single sound fact they
+    establish here: an exact opponent win. Unknown/partial intervals remain
+    eligible. If every scored line is proven adverse, preserve the historical
+    score and notation order so the engine still chooses its best resistance.
+    """
+
+    canonical = tuple(
+        sorted(
+            scored,
+            key=lambda item: (
+                -item.score if mover == chess.WHITE else item.score,
+                item.series.machine_notation,
+            ),
+        )
+    )
+    if not canonical or all(
+        _root_candidate_is_proven_adverse(mover, item) for item in canonical
+    ):
+        return canonical
+    return tuple(
+        item
+        for adverse in (False, True)
+        for item in canonical
+        if _root_candidate_is_proven_adverse(mover, item) is adverse
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -826,6 +874,10 @@ class SeriesSearcher:
                 blended_total = self.evaluation_overlay.score(state, cached.total)
                 if type(blended_total) is not int:
                     raise TypeError("evaluation overlay score must be an exact integer")
+                blended_total = max(
+                    -MAX_EVALUATION_OVERLAY_SCORE,
+                    min(MAX_EVALUATION_OVERLAY_SCORE, blended_total),
+                )
                 cached = replace(cached, total=blended_total)
             self._eval_cache[key] = cached
             self.stats.leaf_evaluations += 1
@@ -2492,7 +2544,8 @@ class SeriesSearcher:
         scored: list[ScoredSeries] = []
         root_alpha = -MATE_SCORE * 2
         root_beta = MATE_SCORE * 2
-        for candidate_index, result in enumerate(series):
+        has_non_adverse_exact = False
+        for result in series:
             try:
                 self._check_deadline()
                 terminal = self._terminal_score(result, mover, 1)
@@ -2511,21 +2564,24 @@ class SeriesSearcher:
                             raise RuntimeError(
                                 "replay-proven mate override has no terminal score"
                             )
-                        scored.append(
-                            ScoredSeries(
-                                self._materialize_series(result),
-                                score,
-                                (reply_override,),
-                                self._terminal_proof_bounds(
-                                    reply_override,
-                                    child_state.board.turn,
-                                ),
-                            )
+                        scored_candidate = ScoredSeries(
+                            self._materialize_series(result),
+                            score,
+                            (reply_override,),
+                            self._terminal_proof_bounds(
+                                reply_override,
+                                child_state.board.turn,
+                            ),
                         )
-                        if mover == chess.WHITE:
-                            root_alpha = max(root_alpha, score)
-                        else:
-                            root_beta = min(root_beta, score)
+                        scored.append(scored_candidate)
+                        if not _root_candidate_is_proven_adverse(
+                            mover, scored_candidate
+                        ):
+                            has_non_adverse_exact = True
+                            if mover == chess.WHITE:
+                                root_alpha = max(root_alpha, score)
+                            else:
+                                root_beta = min(root_beta, score)
                         continue
                     child_alpha = (
                         -MATE_SCORE * 2
@@ -2554,7 +2610,7 @@ class SeriesSearcher:
                                 child_beta,
                                 1,
                                 parent_mover=mover,
-                                has_prior_child=candidate_index > 0,
+                                has_prior_child=has_non_adverse_exact,
                             )
                         )
                     score_is_exact = (
@@ -2562,15 +2618,7 @@ class SeriesSearcher:
                         or child_alpha < score < child_beta
                     )
                     if not score_is_exact and scored:
-                        exact_best = min(
-                            scored,
-                            key=lambda item: (
-                                -item.score
-                                if mover == chess.WHITE
-                                else item.score,
-                                item.series.machine_notation,
-                            ),
-                        )
+                        exact_best = _proof_safe_root_order(mover, scored)[0]
                         if (
                             score == exact_best.score
                             and result.machine_notation
@@ -2616,22 +2664,21 @@ class SeriesSearcher:
                     self._materialize_series(series[0])
                 ) from error
             if score_is_exact:
-                scored.append(
-                    ScoredSeries(
-                        self._materialize_series(result),
-                        score,
-                        child_pv,
-                        proof_bounds,
-                    )
+                scored_candidate = ScoredSeries(
+                    self._materialize_series(result),
+                    score,
+                    child_pv,
+                    proof_bounds,
                 )
+                scored.append(scored_candidate)
+                if not _root_candidate_is_proven_adverse(mover, scored_candidate):
+                    has_non_adverse_exact = True
+                    if mover == chess.WHITE:
+                        root_alpha = max(root_alpha, score)
+                    else:
+                        root_beta = min(root_beta, score)
             else:
                 self.stats.root_bound_candidates += 1
-
-            if not self.limits.collect_all_root_scores:
-                if mover == chess.WHITE:
-                    root_alpha = max(root_alpha, score)
-                else:
-                    root_beta = min(root_beta, score)
             if not self.limits.continue_after_root_mate and (
                 mover == chess.WHITE
                 and score == MATE_SCORE - 1
@@ -2643,12 +2690,7 @@ class SeriesSearcher:
         # exact score. ``exact_width`` separately reports whether the retained
         # frontier contains every legal branch.
         self._root_scores_complete = len(scored) == len(series)
-        scored.sort(
-            key=lambda item: (
-                -item.score if mover == chess.WHITE else item.score,
-                item.series.machine_notation,
-            )
-        )
+        scored = list(_proof_safe_root_order(mover, scored))
         if not scored:
             static = self._evaluate(state).total
             return static, (), (), None
@@ -3146,16 +3188,9 @@ class SeriesSearcher:
                     self._root_scores_complete = False
                     if interrupted.scored:
                         mover = state.board.turn
-                        partial = tuple(
-                            sorted(
-                                interrupted.scored,
-                                key=lambda item: (
-                                    -item.score
-                                    if mover == chess.WHITE
-                                    else item.score,
-                                    item.series.machine_notation,
-                                ),
-                            )
+                        partial = _proof_safe_root_order(
+                            mover,
+                            interrupted.scored,
                         )
                         best = partial[0]
                         best_score = best.score
