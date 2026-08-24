@@ -1,0 +1,22 @@
+{
+  "generation": 2,
+  "mutation_seed": null,
+  "name": "bootstrap native WDL candidate r0.02",
+  "notes": "deterministic-texel-coordinate-v1 candidate from spc-native-value-corpus-018c64297c4be0002271; not strength-verified until tactical and fixed-suite match gates pass.",
+  "parent_profile_ids": [
+    "spc-534fff4218489a07"
+  ],
+  "profile_id": "spc-3a3d3c40405f2d0b",
+  "recommended_branch_cap": 32,
+  "recommended_depth": 2,
+  "schema_version": 1,
+  "weights": {
+    "boundary_check": 72,
+    "immediate_vulnerability": 132,
+    "king_space": 101,
+    "material": 26,
+    "promotion_corridors": 25,
+    "series_reach": 98,
+    "useful_mobility": 72
+  }
+}

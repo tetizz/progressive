@@ -104,6 +104,17 @@ immutable identity.
 
 ## Fit and gate candidates
 
+Install the optional training dependencies before fitting evaluators:
+
+```powershell
+python -m pip install -e ".[training]"
+```
+
+The checked-in development leader is
+[`native-corpus-development-leader.json`](../profiles/training/native-corpus-development-leader.json).
+Its provenance travels with the repository so fit receipts never depend on an
+ignored absolute path. It is a comparison input, not a promoted-strength claim.
+
 Training requires two roots generated with different seeds and otherwise
 identical generation contracts:
 

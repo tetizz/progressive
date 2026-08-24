@@ -18,6 +18,7 @@ classifiers = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3", "pytest-cov>=6.0"]
+training = ["numpy>=2.0,<3"]
 
 [project.scripts]
 spc = "scottish_progressive.cli:main"
