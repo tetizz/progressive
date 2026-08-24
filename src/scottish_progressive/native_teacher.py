@@ -650,7 +650,12 @@ def _receipt_path(job: _BucketJob, candidate: _Candidate) -> Path:
 def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+        # Repeating the already-long receipt filename in the temporary name can
+        # cross legacy Windows MAX_PATH even when the final path is valid.
+        # Atomicity comes from same-directory creation + replace, not the name.
+        prefix=".tmp-",
+        suffix=".json",
+        dir=path.parent,
     )
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:

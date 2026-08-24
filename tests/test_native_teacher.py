@@ -6,6 +6,7 @@ from dataclasses import replace
 import hashlib
 import json
 from threading import Barrier
+import tempfile
 
 import chess
 import pytest
@@ -25,6 +26,7 @@ from scottish_progressive.native_teacher import (
     NativeTeacherConfig,
     _BucketJob,
     _Candidate,
+    _atomic_json,
     _balanced_quotas,
     _complete_result_or_reason,
     _mate_distance,
@@ -153,6 +155,27 @@ def test_balanced_quotas_cover_profiles_series_and_split_exactly() -> None:
             assert quotas[("train", profile_id, series)] + quotas[
                 ("holdout", profile_id, series)
             ] == 8
+
+
+def test_atomic_receipt_temp_name_does_not_repeat_the_final_filename(
+    monkeypatch, tmp_path
+) -> None:
+    observed: dict[str, str] = {}
+    original_mkstemp = tempfile.mkstemp
+
+    def capture_mkstemp(*, prefix: str, suffix: str, dir: str | None = None):
+        observed.update(prefix=prefix, suffix=suffix)
+        return original_mkstemp(prefix=prefix, suffix=suffix, dir=dir)
+
+    monkeypatch.setattr(
+        "scottish_progressive.native_teacher.tempfile.mkstemp", capture_mkstemp
+    )
+    destination = tmp_path / "receipt-with-a-final-identity.json"
+    _atomic_json(destination, {"schema": "test-receipt"})
+    assert observed == {"prefix": ".tmp-", "suffix": ".json"}
+    assert json.loads(destination.read_text(encoding="utf-8")) == {
+        "schema": "test-receipt"
+    }
 
 
 def test_balanced_quotas_support_cycle4_floor_ceil_cells_deterministically() -> None:
