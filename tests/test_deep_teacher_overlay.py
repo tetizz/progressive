@@ -22,6 +22,7 @@ from scottish_progressive.deep_teacher_overlay import (
 )
 from scottish_progressive.league import GameRecord, _play_game
 from scottish_progressive.model import ProgressiveState
+from scottish_progressive.native_subtree import NativeDeepTeacherValueModel
 from scottish_progressive.profiles import baseline_profile, mutate_profile
 from scottish_progressive.strength import (
     StrengthMatchConfig,
@@ -146,6 +147,13 @@ def test_strict_model_loader_and_native_overlay_receipt(tmp_path: Path) -> None:
     assert payload.model_sha256 == hashlib.sha256(
         (tmp_path / "all47.json").read_bytes()
     ).hexdigest()
+    native_model = NativeDeepTeacherValueModel.from_overlay_payload(payload)
+    assert native_model.base_profile_id == payload.base_profile_id
+    assert native_model.variant_id == payload.variant_id
+    assert native_model.model_id == payload.model_id
+    assert native_model.model_sha256 == payload.model_sha256
+    assert native_model.native_source_identity == payload.native_source_identity
+    assert native_model.coefficients == payload.coefficients
 
 
 @pytest.mark.parametrize(

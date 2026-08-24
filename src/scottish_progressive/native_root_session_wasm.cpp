@@ -42,6 +42,12 @@ constexpr std::uint64_t MAX_WASM_MEMORY_BYTES = 256ULL * 1024ULL * 1024ULL;
 constexpr std::size_t MAX_ID_BYTES = 256;
 constexpr std::size_t MAX_CANONICAL_ID_BYTES = 16U * 1024U * 1024U;
 constexpr std::size_t MAX_UCI_MOVES = 256;
+constexpr std::string_view DEEP_TEACHER_OVERLAY_SCHEMA =
+    "spc-deep-teacher-match-overlay-v1";
+constexpr std::string_view DEEP_TEACHER_SCORE_POLICY =
+    "symmetric-half-away-from-zero-divide-by-1000000000-then-clamp-below-mate-v1";
+constexpr std::string_view DEEP_TEACHER_WORK_POLICY =
+    "charge-reach-plus-direct-and-two-move-legal-variants-v1";
 
 enum class JsonKind : std::uint8_t {
     Null,
@@ -728,6 +734,42 @@ void require_keys(
         });
 }
 
+[[nodiscard]] std::int64_t exact_i64_value(
+    const JsonValue& value,
+    std::int64_t minimum,
+    std::int64_t maximum,
+    std::string_view label
+) {
+    if (
+        value.kind != JsonKind::Number
+        || value.text.empty()
+        || value.text.find_first_of(".eE") != std::string::npos
+    ) {
+        throw RequestError(
+            "request-field-invalid",
+            std::string(label) + " is not an exact signed integer"
+        );
+    }
+    std::int64_t result = 0;
+    const auto parsed = std::from_chars(
+        value.text.data(),
+        value.text.data() + value.text.size(),
+        result
+    );
+    if (
+        parsed.ec != std::errc{}
+        || parsed.ptr != value.text.data() + value.text.size()
+        || result < minimum
+        || result > maximum
+    ) {
+        throw RequestError(
+            "request-field-invalid",
+            std::string(label) + " is outside its exact integer envelope"
+        );
+    }
+    return result;
+}
+
 [[nodiscard]] bool valid_uci(std::string_view move) noexcept {
     if (move.size() != 4 && move.size() != 5) {
         return false;
@@ -1000,7 +1042,116 @@ struct ParsedConfig {
     std::array<std::int64_t, 7> weights{};
 };
 
-[[nodiscard]] ParsedConfig parse_config(const JsonValue& value) {
+[[nodiscard]] bool supported_teacher_feature_count(
+    std::size_t count
+) noexcept {
+    return count == 7
+        || count == 14
+        || count == 19
+        || count == 38
+        || count == 44
+        || count == spc::native::TEACHER_VALUE_FEATURE_COUNT;
+}
+
+[[nodiscard]] spc::native::SubtreeDeepTeacherValueModel
+parse_deep_teacher_value_model(
+    const JsonValue& value,
+    std::string_view expected_profile_id
+) {
+    require_keys(
+        value,
+        {
+            "schema",
+            "base_profile_id",
+            "variant_id",
+            "model_id",
+            "model_sha256",
+            "native_source_identity",
+            "feature_count",
+            "fixed_point_scale",
+            "coefficients",
+            "score_policy",
+            "work_policy",
+        }
+    );
+    if (string_field(value, "schema") != DEEP_TEACHER_OVERLAY_SCHEMA) {
+        throw RequestError(
+            "value-model-invalid",
+            "deep-teacher overlay schema is unsupported"
+        );
+    }
+    spc::native::SubtreeDeepTeacherValueModel result;
+    result.base_profile_id = string_field(value, "base_profile_id");
+    result.variant_id = string_field(value, "variant_id");
+    result.model_id = string_field(value, "model_id");
+    result.model_sha256 = string_field(value, "model_sha256");
+    result.native_source_identity = string_field(
+        value,
+        "native_source_identity"
+    );
+    if (
+        result.base_profile_id != expected_profile_id
+        || !bounded_ascii(result.variant_id)
+        || !bounded_ascii(result.model_id)
+        || !lowercase_hex(result.model_sha256, 64)
+        || !lowercase_hex(result.native_source_identity, 64)
+        || string_field(value, "score_policy") != DEEP_TEACHER_SCORE_POLICY
+        || string_field(value, "work_policy") != DEEP_TEACHER_WORK_POLICY
+    ) {
+        throw RequestError(
+            "value-model-invalid",
+            "deep-teacher model identity or policy is invalid"
+        );
+    }
+    const std::size_t feature_count = static_cast<std::size_t>(u64_field(
+        value,
+        "feature_count",
+        1,
+        spc::native::TEACHER_VALUE_FEATURE_COUNT
+    ));
+    const std::int64_t scale = i64_field(
+        value,
+        "fixed_point_scale",
+        spc::native::DEEP_TEACHER_FIXED_POINT_SCALE,
+        spc::native::DEEP_TEACHER_FIXED_POINT_SCALE
+    );
+    const JsonValue& coefficients = field(value, "coefficients");
+    if (
+        !supported_teacher_feature_count(feature_count)
+        || coefficients.kind != JsonKind::Array
+        || coefficients.array.size() != feature_count
+    ) {
+        throw RequestError(
+            "value-model-invalid",
+            "deep-teacher coefficient shape is invalid"
+        );
+    }
+    bool normalized = false;
+    result.linear.feature_count = feature_count;
+    result.linear.fixed_point_scale = scale;
+    for (std::size_t index = 0; index < feature_count; ++index) {
+        const std::int64_t coefficient = exact_i64_value(
+            coefficients.array[index],
+            -scale,
+            scale,
+            "deep-teacher coefficient"
+        );
+        result.linear.coefficients[index] = coefficient;
+        normalized = normalized || coefficient == scale || coefficient == -scale;
+    }
+    if (!normalized) {
+        throw RequestError(
+            "value-model-invalid",
+            "deep-teacher coefficients are not canonically normalized"
+        );
+    }
+    return result;
+}
+
+[[nodiscard]] ParsedConfig parse_config(
+    const JsonValue& value,
+    std::string_view expected_profile_id
+) {
     require_keys(
         value,
         {
@@ -1015,7 +1166,8 @@ struct ParsedConfig {
             "root_contract_tt_capacity",
             "root_contract_eval_capacity",
             "weights",
-        }
+        },
+        {"deep_teacher_value_model"}
     );
     const JsonValue& weights = field(value, "weights");
     require_keys(
@@ -1074,6 +1226,20 @@ struct ParsedConfig {
         1,
         MAX_CACHE_CAPACITY
     );
+    std::optional<spc::native::SubtreeDeepTeacherValueModel>
+        deep_teacher_value_model;
+    if (const JsonValue* model = value.find("deep_teacher_value_model")) {
+        deep_teacher_value_model = parse_deep_teacher_value_model(
+            *model,
+            expected_profile_id
+        );
+        if (mate_score != 1'000'000) {
+            throw RequestError(
+                "value-model-invalid",
+                "deep-teacher model requires the frozen mate-score scale"
+            );
+        }
+    }
     result.core = spc::native::SubtreeSearchConfig{
         width,
         std::optional<std::uint64_t>{max_work},
@@ -1101,6 +1267,7 @@ struct ParsedConfig {
         },
         tt_capacity,
         eval_capacity,
+        std::move(deep_teacher_value_model),
     };
     return result;
 }
@@ -1360,6 +1527,13 @@ void write_stats(
            << stats.evaluation_reach_positions
            << ",\"incomplete_reach_evaluations\":"
            << stats.incomplete_reach_evaluations
+           << ",\"overlay_evaluations\":" << stats.overlay_evaluations
+           << ",\"overlay_reach_positions\":"
+           << stats.overlay_reach_positions
+           << ",\"overlay_direct_move_variants\":"
+           << stats.overlay_direct_move_variants
+           << ",\"overlay_two_move_variants\":"
+           << stats.overlay_two_move_variants
            << ",\"generation_positions\":" << stats.generation_positions
            << ",\"frontier_prunes\":" << stats.frontier_prunes
            << ",\"frontier_states_pruned\":"
@@ -1902,6 +2076,38 @@ void require_search_keys(const JsonValue& request) {
     );
 }
 
+void write_deep_teacher_value_model(
+    std::ostringstream& stream,
+    const spc::native::SubtreeDeepTeacherValueModel& model
+) {
+    stream << "{\"schema\":";
+    write_json_string(stream, DEEP_TEACHER_OVERLAY_SCHEMA);
+    stream << ",\"base_profile_id\":";
+    write_json_string(stream, model.base_profile_id);
+    stream << ",\"variant_id\":";
+    write_json_string(stream, model.variant_id);
+    stream << ",\"model_id\":";
+    write_json_string(stream, model.model_id);
+    stream << ",\"model_sha256\":";
+    write_json_string(stream, model.model_sha256);
+    stream << ",\"native_source_identity\":";
+    write_json_string(stream, model.native_source_identity);
+    stream << ",\"feature_count\":" << model.linear.feature_count
+           << ",\"fixed_point_scale\":" << model.linear.fixed_point_scale
+           << ",\"coefficients\":[";
+    for (std::size_t index = 0; index < model.linear.feature_count; ++index) {
+        if (index != 0) {
+            stream << ',';
+        }
+        stream << model.linear.coefficients[index];
+    }
+    stream << "],\"score_policy\":";
+    write_json_string(stream, DEEP_TEACHER_SCORE_POLICY);
+    stream << ",\"work_policy\":";
+    write_json_string(stream, DEEP_TEACHER_WORK_POLICY);
+    stream << '}';
+}
+
 void write_config(std::ostringstream& stream, const ParsedConfig& parsed) {
     const auto& config = parsed.core;
     stream << "{\"max_depth\":" << config.requested_depth
@@ -1926,7 +2132,15 @@ void write_config(std::ostringstream& stream, const ParsedConfig& parsed) {
            << ",\"immediate_vulnerability\":" << parsed.weights[4]
            << ",\"useful_mobility\":" << parsed.weights[5]
            << ",\"boundary_check\":" << parsed.weights[6]
-           << "}}";
+           << '}';
+    if (config.deep_teacher_value_model.has_value()) {
+        stream << ",\"deep_teacher_value_model\":";
+        write_deep_teacher_value_model(
+            stream,
+            *config.deep_teacher_value_model
+        );
+    }
+    stream << '}';
 }
 
 [[nodiscard]] std::string create_session_result(const JsonValue& request) {
@@ -1939,7 +2153,10 @@ void write_config(std::ostringstream& stream, const ParsedConfig& parsed) {
     spc::native::SubtreeState boundary = parse_boundary_object(
         field(request, "boundary")
     );
-    ParsedConfig parsed = parse_config(field(request, "config"));
+    ParsedConfig parsed = parse_config(
+        field(request, "config"),
+        identity.profile_id
+    );
     if (parsed.core.root_tactical_protection) {
         throw RequestError(
             "legacy-root-tactical-policy-unsupported",
@@ -2009,6 +2226,7 @@ void write_config(std::ostringstream& stream, const ParsedConfig& parsed) {
            << ",\"aspiration_windows\":true"
            << ",\"selected_owner_certification\":true"
            << ",\"canonical_root_tactical_policy\":true"
+           << ",\"deep_teacher_value_model\":true"
            << ",\"reply_mate_safety\":false}"
            << ",\"product_publishable\":false"
            << ",\"safety_certified\":false";
@@ -2418,7 +2636,7 @@ void write_search_echo(
 }  // namespace
 
 extern "C" const char* spc_root_session_contract_json() {
-    root_last_result = R"json({"schema":"spc-root-session-contract-v1","abi_version":2,"request_encoding":"caller-owned-utf8-pointer-length","response_ownership":"facade-owned","response_lifetime":"until-next-root-session-abi-call-on-this-worker","one_active_session_per_worker":true,"worker_threads":1,"pthreads_required":false,"product_publishable":false,"reply_mate_safety":false,"capabilities":{"enumerate":true,"import":true,"search":true,"call_work_credit":true,"hard_memory_limit":true,"tt_scout_rollback":true,"persistent_depth_reuse":true,"aspiration_windows":true,"selected_owner_certification":true,"canonical_root_tactical_policy":true},"request_schemas":{"create":"spc-root-session-create-v1","enumerate":"spc-root-session-enumerate-v1","import":"spc-root-session-import-v1","search":"spc-root-candidate-task-v1"},"result_schemas":{"create":"spc-root-session-create-result-v1","enumerate":"spc-root-session-enumeration-result-v1","import":"spc-root-session-import-result-v1","search":"spc-root-candidate-result-v1"},"hard_limits":{"maximum_request_utf8_bytes":16777216,"maximum_json_depth":24,"maximum_json_nodes":250000,"maximum_fen_utf8_bytes":512,"promoted_hex_exact_bytes":16,"maximum_ep_targets":8,"chess960":false,"minimum_depth":1,"maximum_depth":8,"minimum_width":1,"maximum_width":512,"minimum_max_work":1,"maximum_max_work":9007199254740991,"minimum_mate_score":1,"maximum_mate_score":1000000000,"minimum_aspiration_initial_delta":2048,"maximum_aspiration_attempts":4,"minimum_series_cache_capacity":1,"maximum_series_cache_capacity":1048576,"minimum_external_cache_weight":0,"external_cache_weight_lte_series_cache_capacity":true,"worker_threads":1,"root_tactical_protection_values":[false],"root_tactical_policy":"canonical-boundary-policy-v1","minimum_tt_capacity":1,"maximum_tt_capacity":1048576,"minimum_eval_capacity":1,"maximum_eval_capacity":1048576,"minimum_weight":25,"maximum_weight":300,"weight_fields":["material","king_space","series_reach","promotion_corridors","immediate_vulnerability","useful_mobility","boundary_check"],"maximum_series_number":256,"maximum_quiet_series":1000000,"maximum_wasm_memory_bytes":268435456},"manifest":{"preferred_series_required":true,"candidate_root_series_fields":["moves","machine_notation","transposition_count","child_boundary","outcome","ended_by_check"],"child_boundary_exact":true,"root_tactical_policy":"canonical-boundary-policy-v1"},"deadline":{"transport":"remaining_time_ms","coordinator_echo":"deadline_monotonic_ms","zero_means_immediate_timeout":true,"extension_rejected":true}})json";
+    root_last_result = R"json({"schema":"spc-root-session-contract-v1","abi_version":2,"request_encoding":"caller-owned-utf8-pointer-length","response_ownership":"facade-owned","response_lifetime":"until-next-root-session-abi-call-on-this-worker","one_active_session_per_worker":true,"worker_threads":1,"pthreads_required":false,"product_publishable":false,"reply_mate_safety":false,"capabilities":{"enumerate":true,"import":true,"search":true,"call_work_credit":true,"hard_memory_limit":true,"tt_scout_rollback":true,"persistent_depth_reuse":true,"aspiration_windows":true,"selected_owner_certification":true,"canonical_root_tactical_policy":true,"deep_teacher_value_model":true},"request_schemas":{"create":"spc-root-session-create-v1","enumerate":"spc-root-session-enumerate-v1","import":"spc-root-session-import-v1","search":"spc-root-candidate-task-v1"},"result_schemas":{"create":"spc-root-session-create-result-v1","enumerate":"spc-root-session-enumeration-result-v1","import":"spc-root-session-import-result-v1","search":"spc-root-candidate-result-v1"},"hard_limits":{"maximum_request_utf8_bytes":16777216,"maximum_json_depth":24,"maximum_json_nodes":250000,"maximum_fen_utf8_bytes":512,"promoted_hex_exact_bytes":16,"maximum_ep_targets":8,"chess960":false,"minimum_depth":1,"maximum_depth":8,"minimum_width":1,"maximum_width":512,"minimum_max_work":1,"maximum_max_work":9007199254740991,"minimum_mate_score":1,"maximum_mate_score":1000000000,"minimum_aspiration_initial_delta":2048,"maximum_aspiration_attempts":4,"minimum_series_cache_capacity":1,"maximum_series_cache_capacity":1048576,"minimum_external_cache_weight":0,"external_cache_weight_lte_series_cache_capacity":true,"worker_threads":1,"root_tactical_protection_values":[false],"root_tactical_policy":"canonical-boundary-policy-v1","minimum_tt_capacity":1,"maximum_tt_capacity":1048576,"minimum_eval_capacity":1,"maximum_eval_capacity":1048576,"minimum_weight":25,"maximum_weight":300,"weight_fields":["material","king_space","series_reach","promotion_corridors","immediate_vulnerability","useful_mobility","boundary_check"],"deep_teacher_value_model":{"optional":true,"schema":"spc-deep-teacher-match-overlay-v1","feature_counts":[7,14,19,38,44,47],"fixed_point_scale":1000000000,"mate_score":1000000,"score_policy":"symmetric-half-away-from-zero-divide-by-1000000000-then-clamp-below-mate-v1","work_policy":"charge-reach-plus-direct-and-two-move-legal-variants-v1"},"maximum_series_number":256,"maximum_quiet_series":1000000,"maximum_wasm_memory_bytes":268435456},"manifest":{"preferred_series_required":true,"candidate_root_series_fields":["moves","machine_notation","transposition_count","child_boundary","outcome","ended_by_check"],"child_boundary_exact":true,"root_tactical_policy":"canonical-boundary-policy-v1"},"deadline":{"transport":"remaining_time_ms","coordinator_echo":"deadline_monotonic_ms","zero_means_immediate_timeout":true,"extension_rejected":true}})json";
     return root_last_result.c_str();
 }
 

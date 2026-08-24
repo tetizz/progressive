@@ -10,6 +10,7 @@ import scottish_progressive.search as search_module
 from scottish_progressive.model import Outcome, ProgressiveState
 from scottish_progressive.native_subtree import (
     SUBTREE_STAT_FIELDS,
+    NativeDeepTeacherValueModel,
     NativeRootEnumerationResult,
     NativeSubtreeBound,
     NativeSubtreeSession,
@@ -40,6 +41,7 @@ def _session(
     eval_capacity: int = 262_144,
     root_tactical_protection: bool = False,
     native_threads: int = 1,
+    deep_teacher_value_model: NativeDeepTeacherValueModel | None = None,
 ) -> NativeSubtreeSession:
     _require_contract()
     return NativeSubtreeSession(
@@ -54,6 +56,20 @@ def _session(
         profile=baseline_profile(),
         root_contract_tt_capacity=tt_capacity,
         root_contract_eval_capacity=eval_capacity,
+        deep_teacher_value_model=deep_teacher_value_model,
+    )
+
+
+def _deep_teacher_model(
+    coefficients: tuple[int, ...],
+) -> NativeDeepTeacherValueModel:
+    return NativeDeepTeacherValueModel(
+        base_profile_id=baseline_profile().profile_id,
+        variant_id="spc-dtv-variant-native-contract-test",
+        model_id="spc-dtv-native-contract-test",
+        model_sha256="a" * 64,
+        native_source_identity=evaluation._native_source_identity(),  # noqa: SLF001
+        coefficients=coefficients,
     )
 
 
@@ -114,6 +130,236 @@ def _candidate_search_signature(result: object) -> tuple[object, ...]:
         ),
         result.proof_bounds,
     )
+
+
+@pytest.mark.parametrize(
+    ("fen", "expected_score"),
+    [
+        ("7k/8/8/8/8/8/P7/7K w - - 0 1", 1),
+        ("7k/p7/8/8/8/8/8/7K w - - 0 1", -1),
+    ],
+)
+def test_native_deep_teacher_rounds_half_away_and_accounts_exact_work(
+    fen: str,
+    expected_score: int,
+) -> None:
+    state = ProgressiveState.from_fen(fen, 1)
+    # The material feature is +/-100. A 5,000,000 coefficient therefore
+    # produces exactly +/-0.5 after the frozen 1e9 scale. The boundary feature
+    # is zero in both fixtures and carries the required normalized coefficient.
+    model = _deep_teacher_model(
+        (5_000_000, 0, 0, 0, 0, 0, 1_000_000_000)
+    )
+    baseline = _session(width=4, depth=1).search(
+        state,
+        depth=0,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        ply_from_root=0,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    modeled_session = _session(
+        width=4,
+        depth=1,
+        deep_teacher_value_model=model,
+    )
+    modeled = modeled_session.search(
+        state,
+        depth=0,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        ply_from_root=0,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    baseline_stats = dict(zip(SUBTREE_STAT_FIELDS, baseline.stats, strict=True))
+    modeled_stats = dict(zip(SUBTREE_STAT_FIELDS, modeled.stats, strict=True))
+
+    assert modeled.status == 0
+    assert modeled.score == expected_score
+    assert baseline_stats["overlay_evaluations"] == 0
+    assert modeled_stats["overlay_evaluations"] == 1
+    assert modeled_stats["overlay_reach_positions"] > 0
+    assert modeled_stats["overlay_direct_move_variants"] == 0
+    assert modeled_stats["overlay_two_move_variants"] == 0
+    assert modeled_stats["evaluation_reach_positions"] == (
+        baseline_stats["evaluation_reach_positions"]
+        + modeled_stats["overlay_reach_positions"]
+    )
+    assert modeled_stats["generation_positions"] == (
+        baseline_stats["generation_positions"]
+        + modeled_stats["overlay_reach_positions"]
+    )
+
+    cached = modeled_session.search(
+        state,
+        depth=0,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        ply_from_root=0,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    assert cached.score == expected_score
+    cached_stats = dict(zip(SUBTREE_STAT_FIELDS, cached.stats, strict=True))
+    assert cached_stats["nodes"] == modeled_stats["nodes"] + 1
+    for field in (
+        "leaf_evaluations",
+        "overlay_evaluations",
+        "overlay_reach_positions",
+        "generation_positions",
+    ):
+        assert cached_stats[field] == modeled_stats[field]
+
+
+def test_native_deep_teacher_work_exhaustion_fails_closed() -> None:
+    state = ProgressiveState.from_fen(
+        "7k/8/8/8/8/8/P7/7K w - - 0 1",
+        1,
+    )
+    baseline = _session(width=4, depth=1).search(
+        state,
+        depth=0,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        ply_from_root=0,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    baseline_stats = dict(zip(SUBTREE_STAT_FIELDS, baseline.stats, strict=True))
+    exact_base_work = baseline_stats["generation_positions"]
+    stopped = _session(
+        width=4,
+        depth=1,
+        max_work=exact_base_work,
+        deep_teacher_value_model=_deep_teacher_model(
+            (1_000_000_000, 0, 0, 0, 0, 0, 0)
+        ),
+    ).search(
+        state,
+        depth=0,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        ply_from_root=0,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    stopped_stats = dict(zip(SUBTREE_STAT_FIELDS, stopped.stats, strict=True))
+
+    assert stopped.status == 1
+    assert stopped.selective
+    assert stopped.evaluation_work_limit_reached
+    assert stopped_stats["overlay_evaluations"] == 1
+    assert stopped_stats["generation_positions"] == exact_base_work
+    assert stopped_stats["generation_work_limit_hits"] == 1
+
+
+def test_native_deep_teacher_charges_direct_and_two_move_variants() -> None:
+    state = ProgressiveState.from_fen(
+        "r1bq1rk1/ppp2ppp/2np1n2/2b1p3/2B1P3/2NP1N2/"
+        "PPP2PPP/R1BQ1RK1 w - - 0 8",
+        5,
+    )
+    baseline = _session(width=4, depth=1).search(
+        state,
+        depth=0,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        ply_from_root=0,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    modeled = _session(
+        width=4,
+        depth=1,
+        deep_teacher_value_model=_deep_teacher_model(
+            (1_000_000_000,) + (0,) * 46
+        ),
+    ).search(
+        state,
+        depth=0,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        ply_from_root=0,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    baseline_stats = dict(zip(SUBTREE_STAT_FIELDS, baseline.stats, strict=True))
+    modeled_stats = dict(zip(SUBTREE_STAT_FIELDS, modeled.stats, strict=True))
+    overlay_work = (
+        modeled_stats["overlay_reach_positions"]
+        + modeled_stats["overlay_direct_move_variants"]
+        + modeled_stats["overlay_two_move_variants"]
+    )
+
+    assert modeled.status == 0
+    assert modeled_stats["overlay_evaluations"] == 1
+    assert modeled_stats["overlay_direct_move_variants"] > 0
+    assert modeled_stats["overlay_two_move_variants"] > 0
+    assert modeled_stats["generation_positions"] == (
+        baseline_stats["generation_positions"] + overlay_work
+    )
+
+
+def test_native_root_deep_teacher_never_overspends_call_credit() -> None:
+    root = ProgressiveState.from_fen(
+        "rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        1,
+    )
+    model = _deep_teacher_model(
+        (1_000_000_000, 0, 0, 0, 0, 0, 0)
+    )
+
+    def prepared() -> tuple[NativeSubtreeSession, NativeRootEnumerationResult]:
+        session = _session(
+            width=4,
+            depth=1,
+            deep_teacher_value_model=model,
+        )
+        manifest = session.enumerate_root(
+            root,
+            preferred_series=None,
+            external_work=0,
+            remaining_nanoseconds=None,
+            call_work_credit=500_000,
+        )
+        assert manifest.status == 0
+        return session, manifest
+
+    measured_session, measured_manifest = prepared()
+    measured = measured_session.search_root_candidate(
+        enumeration_identity=measured_manifest.enumeration_identity,
+        candidate_identity=measured_manifest.candidates[0].candidate_identity,
+        child_depth=0,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=0,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+        call_work_credit=500_000,
+    )
+    assert measured.status == 0
+    assert measured.work.call_native_work > 1
+
+    short_session, short_manifest = prepared()
+    credit = measured.work.call_native_work - 1
+    stopped = short_session.search_root_candidate(
+        enumeration_identity=short_manifest.enumeration_identity,
+        candidate_identity=short_manifest.candidates[0].candidate_identity,
+        child_depth=0,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=0,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+        call_work_credit=credit,
+    )
+    assert stopped.status == 1
+    assert stopped.work.call_native_work <= credit
+    assert stopped.work.call_stats[
+        SUBTREE_STAT_FIELDS.index("overlay_evaluations")
+    ] == 0
 
 
 @pytest.mark.parametrize(

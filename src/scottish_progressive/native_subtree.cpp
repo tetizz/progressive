@@ -13,6 +13,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -25,6 +26,10 @@ constexpr std::array<int, 2> UNKNOWN_PROOF_BOUNDS{-1, 1};
 constexpr std::int64_t TACTICAL_DESCENDANT_PROMOTION_MAX_PLY = 2;
 constexpr std::int64_t ROOT_TACTICAL_PROTECTION_MIN_SERIES = 5;
 constexpr std::uint64_t MAX_TERMINAL_MATE_SCAN_WIDTH = 832;
+constexpr std::int64_t DEEP_TEACHER_MATE_SCORE = 1'000'000;
+constexpr std::int64_t DEEP_TEACHER_SCORE_LIMIT =
+    DEEP_TEACHER_MATE_SCORE - 10'000 - 1;
+constexpr std::uint64_t MAX_ORTHODOX_LEGAL_MOVE_VARIANTS = 218;
 #ifdef __EMSCRIPTEN__
 constexpr std::uint64_t ROOT_CONTRACT_PATH_COUNT_SATURATION_LIMIT =
     (std::uint64_t{1} << 53) - 1;
@@ -57,6 +62,104 @@ void append_text_field(std::string& target, const std::string& value) {
     target += std::to_string(value.size());
     target.push_back(':');
     target += value;
+}
+
+[[nodiscard]] bool bounded_identity(std::string_view value) noexcept {
+    return !value.empty()
+        && value.size() <= 256
+        && std::all_of(value.begin(), value.end(), [](unsigned char item) {
+            return item >= 0x21U && item <= 0x7eU;
+        });
+}
+
+[[nodiscard]] bool lowercase_sha256(std::string_view value) noexcept {
+    return value.size() == 64
+        && std::all_of(value.begin(), value.end(), [](char item) {
+            return (item >= '0' && item <= '9')
+                || (item >= 'a' && item <= 'f');
+        });
+}
+
+[[nodiscard]] bool supported_teacher_feature_count(
+    std::size_t count
+) noexcept {
+    return count == 7
+        || count == 14
+        || count == 19
+        || count == 38
+        || count == 44
+        || count == TEACHER_VALUE_FEATURE_COUNT;
+}
+
+[[nodiscard]] bool valid_teacher_model(
+    const SubtreeDeepTeacherValueModel& model
+) noexcept {
+    if (
+        !bounded_identity(model.base_profile_id)
+        || !bounded_identity(model.variant_id)
+        || !bounded_identity(model.model_id)
+        || !lowercase_sha256(model.model_sha256)
+        || !lowercase_sha256(model.native_source_identity)
+        || model.linear.fixed_point_scale != DEEP_TEACHER_FIXED_POINT_SCALE
+        || !supported_teacher_feature_count(model.linear.feature_count)
+    ) {
+        return false;
+    }
+    bool normalized = false;
+    for (std::size_t index = 0; index < model.linear.feature_count; ++index) {
+        const std::int64_t coefficient = model.linear.coefficients[index];
+        if (
+            coefficient < -DEEP_TEACHER_FIXED_POINT_SCALE
+            || coefficient > DEEP_TEACHER_FIXED_POINT_SCALE
+        ) {
+            return false;
+        }
+        normalized = normalized
+            || coefficient == DEEP_TEACHER_FIXED_POINT_SCALE
+            || coefficient == -DEEP_TEACHER_FIXED_POINT_SCALE;
+    }
+    return normalized;
+}
+
+[[nodiscard]] std::uint64_t maximum_teacher_overlay_work(
+    std::size_t feature_count
+) noexcept {
+    std::uint64_t result = 256;
+    if (feature_count >= 44) {
+        result += MAX_ORTHODOX_LEGAL_MOVE_VARIANTS;
+    }
+    if (feature_count == TEACHER_VALUE_FEATURE_COUNT) {
+        result += MAX_ORTHODOX_LEGAL_MOVE_VARIANTS
+            * MAX_ORTHODOX_LEGAL_MOVE_VARIANTS;
+    }
+    return result;
+}
+
+[[nodiscard]] std::optional<std::int64_t> rounded_fixed_point_score(
+    std::int64_t raw_score,
+    std::int64_t scale
+) noexcept {
+    if (scale <= 0) {
+        return std::nullopt;
+    }
+    const bool negative = raw_score < 0;
+    const std::uint64_t magnitude = negative
+        ? static_cast<std::uint64_t>(-(raw_score + 1)) + 1
+        : static_cast<std::uint64_t>(raw_score);
+    const std::uint64_t divisor = static_cast<std::uint64_t>(scale);
+    std::uint64_t quotient = magnitude / divisor;
+    const std::uint64_t remainder = magnitude % divisor;
+    if (remainder >= divisor - divisor / 2) {
+        ++quotient;
+    }
+    if (
+        quotient
+        > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())
+    ) {
+        return std::nullopt;
+    }
+    const std::int64_t rounded = static_cast<std::int64_t>(quotient);
+    return negative ? -rounded : rounded;
 }
 
 [[nodiscard]] bool structurally_valid_state(
@@ -298,6 +401,25 @@ void append_weights(std::string& result, const SubtreeSearchConfig& config) {
     }
 }
 
+void append_deep_teacher_model(
+    std::string& result,
+    const SubtreeDeepTeacherValueModel& model
+) {
+    result += "|deep-teacher";
+    append_text_field(result, model.base_profile_id);
+    append_text_field(result, model.variant_id);
+    append_text_field(result, model.model_id);
+    append_text_field(result, model.model_sha256);
+    append_text_field(result, model.native_source_identity);
+    result += std::to_string(model.linear.feature_count);
+    result.push_back(':');
+    result += std::to_string(model.linear.fixed_point_scale);
+    for (std::size_t index = 0; index < model.linear.feature_count; ++index) {
+        result.push_back(',');
+        result += std::to_string(model.linear.coefficients[index]);
+    }
+}
+
 [[nodiscard]] std::string enumeration_identity_impl(
     const SubtreeState& state,
     const SubtreeSearchConfig& config,
@@ -343,6 +465,12 @@ void append_weights(std::string& result, const SubtreeSearchConfig& config) {
         : "|root-tactical0";
     result += "|weights";
     append_weights(result, config);
+    if (config.deep_teacher_value_model.has_value()) {
+        append_deep_teacher_model(
+            result,
+            *config.deep_teacher_value_model
+        );
+    }
     result += "|preferred" + std::to_string(preferred_series.size()) + ":";
     for (const std::string& move : preferred_series) {
         append_text_field(result, move);
@@ -390,6 +518,10 @@ void append_weights(std::string& result, const SubtreeSearchConfig& config) {
     SPC_SUBTREE_DELTA(static_evaluation_positions);
     SPC_SUBTREE_DELTA(evaluation_reach_positions);
     SPC_SUBTREE_DELTA(incomplete_reach_evaluations);
+    SPC_SUBTREE_DELTA(overlay_evaluations);
+    SPC_SUBTREE_DELTA(overlay_reach_positions);
+    SPC_SUBTREE_DELTA(overlay_direct_move_variants);
+    SPC_SUBTREE_DELTA(overlay_two_move_variants);
     SPC_SUBTREE_DELTA(generation_positions);
     SPC_SUBTREE_DELTA(frontier_prunes);
     SPC_SUBTREE_DELTA(frontier_states_pruned);
@@ -878,6 +1010,11 @@ public:
             || config.worker_threads > 64
             || config.root_contract_tt_capacity == 0
             || config.root_contract_eval_capacity == 0
+            || config.deep_teacher_value_model.has_value()
+                && (
+                    config.mate_score != DEEP_TEACHER_MATE_SCORE
+                    || !valid_teacher_model(*config.deep_teacher_value_model)
+                )
         ) {
             throw std::invalid_argument("native subtree configuration is out of range");
         }
@@ -1683,13 +1820,133 @@ public:
                 );
             }
         }
-        eval_cache.emplace(key, evaluated->total);
+        std::int64_t total = evaluated->total;
+        if (config.deep_teacher_value_model.has_value()) {
+            const auto overlay_remaining = remaining_work();
+            // Root-session receipts promise never to exceed a per-call credit.
+            // The extractor charges every generated legal variant only after
+            // it has produced the feature vector, so reserve its orthodox
+            // worst case before starting. Legacy/Python calls keep the exact
+            // historical partial-budget behavior; certified root calls fail
+            // closed without consuming unreceipted work.
+            if (
+                root_contract_active
+                && overlay_remaining.has_value()
+                && *overlay_remaining < maximum_teacher_overlay_work(
+                    config.deep_teacher_value_model->linear.feature_count
+                )
+            ) {
+                if (!evaluation_work_limit_reached) {
+                    ++stats.generation_work_limit_hits;
+                }
+                evaluation_work_limit_reached = true;
+                throw StopSearch(
+                    SubtreeSearchStatus::WorkLimit,
+                    "native root deep-teacher reserve exceeds its work credit"
+                );
+            }
+            const std::uint64_t overlay_reach_limit = std::min<std::uint64_t>(
+                256,
+                overlay_remaining.value_or(256)
+            );
+            const auto features = teacher_value_features_v3(
+                state.board,
+                state.ep_targets,
+                state.series_number,
+                overlay_reach_limit,
+                config.deep_teacher_value_model->linear.feature_count
+            );
+            if (!features.has_value()) {
+                throw StopSearch(
+                    SubtreeSearchStatus::Unsupported,
+                    "native deep-teacher feature evaluation overflowed"
+                );
+            }
+            const std::uint64_t overlay_reach_positions = saturating_add(
+                features->white_reach.nodes,
+                features->black_reach.nodes
+            );
+            const std::uint64_t overlay_variant_positions = saturating_add(
+                features->direct_move_variants,
+                features->two_move_variants
+            );
+            const std::uint64_t overlay_work = saturating_add(
+                overlay_reach_positions,
+                overlay_variant_positions
+            );
+            ++stats.overlay_evaluations;
+            stats.overlay_reach_positions = saturating_add(
+                stats.overlay_reach_positions,
+                overlay_reach_positions
+            );
+            stats.overlay_direct_move_variants = saturating_add(
+                stats.overlay_direct_move_variants,
+                features->direct_move_variants
+            );
+            stats.overlay_two_move_variants = saturating_add(
+                stats.overlay_two_move_variants,
+                features->two_move_variants
+            );
+            stats.evaluation_reach_positions = saturating_add(
+                stats.evaluation_reach_positions,
+                overlay_reach_positions
+            );
+            stats.generation_positions = saturating_add(
+                stats.generation_positions,
+                overlay_work
+            );
+            const bool overlay_reach_complete =
+                overlay_reach_limit == 256
+                || (
+                    features->white_reach.complete
+                    && features->black_reach.complete
+                )
+                || overlay_reach_positions < overlay_reach_limit;
+            const bool overlay_complete = overlay_reach_complete
+                && (
+                    !overlay_remaining.has_value()
+                    || overlay_work <= *overlay_remaining
+                );
+            if (!overlay_complete) {
+                if (!evaluation_work_limit_reached) {
+                    ++stats.generation_work_limit_hits;
+                }
+                evaluation_work_limit_reached = true;
+                selective = true;
+                throw StopSearch(
+                    SubtreeSearchStatus::WorkLimit,
+                    "native deep-teacher evaluation did not complete within its work credit"
+                );
+            }
+            const auto raw_score = deep_teacher_score_v1(
+                *features,
+                config.deep_teacher_value_model->linear
+            );
+            const auto rounded_score = raw_score.has_value()
+                ? rounded_fixed_point_score(
+                    *raw_score,
+                    config.deep_teacher_value_model->linear.fixed_point_scale
+                )
+                : std::nullopt;
+            if (!rounded_score.has_value()) {
+                throw StopSearch(
+                    SubtreeSearchStatus::Unsupported,
+                    "native deep-teacher score overflowed"
+                );
+            }
+            total = std::clamp(
+                *rounded_score,
+                -DEEP_TEACHER_SCORE_LIMIT,
+                DEEP_TEACHER_SCORE_LIMIT
+            );
+        }
+        eval_cache.emplace(key, total);
         eval_entries_peak = std::max<std::uint64_t>(
             eval_entries_peak,
             static_cast<std::uint64_t>(eval_cache.size())
         );
         ++stats.leaf_evaluations;
-        return evaluated->total;
+        return total;
     }
 
     void begin_transaction() {

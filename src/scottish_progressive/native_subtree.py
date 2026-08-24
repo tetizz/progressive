@@ -41,6 +41,10 @@ SUBTREE_STAT_FIELDS = (
     "static_evaluation_positions",
     "evaluation_reach_positions",
     "incomplete_reach_evaluations",
+    "overlay_evaluations",
+    "overlay_reach_positions",
+    "overlay_direct_move_variants",
+    "overlay_two_move_variants",
     "generation_positions",
     "frontier_prunes",
     "frontier_states_pruned",
@@ -56,6 +60,108 @@ SUBTREE_STAT_FIELDS = (
     "series_generation_cache_peak",
     "series_generation_cache_entries_peak",
 )
+
+_DEEP_TEACHER_FIXED_POINT_SCALE = 1_000_000_000
+_DEEP_TEACHER_FEATURE_COUNTS = frozenset({7, 14, 19, 38, 44, 47})
+
+
+def _bounded_ascii_identity(value: object) -> bool:
+    return (
+        type(value) is str
+        and 1 <= len(value) <= 256
+        and all("!" <= item <= "~" for item in value)
+    )
+
+
+def _lowercase_sha256(value: object) -> bool:
+    return (
+        type(value) is str
+        and len(value) == 64
+        and all(item in "0123456789abcdef" for item in value)
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class NativeDeepTeacherValueModel:
+    """Validated, inactive-by-default model transport for native search."""
+
+    base_profile_id: str
+    variant_id: str
+    model_id: str
+    model_sha256: str
+    native_source_identity: str
+    coefficients: tuple[int, ...]
+    fixed_point_scale: int = _DEEP_TEACHER_FIXED_POINT_SCALE
+
+    def __post_init__(self) -> None:
+        if not all(
+            _bounded_ascii_identity(value)
+            for value in (
+                self.base_profile_id,
+                self.variant_id,
+                self.model_id,
+            )
+        ):
+            raise ValueError("native deep-teacher identity is invalid")
+        if not _lowercase_sha256(self.model_sha256):
+            raise ValueError("native deep-teacher model SHA-256 is invalid")
+        if not _lowercase_sha256(self.native_source_identity):
+            raise ValueError("native deep-teacher source identity is invalid")
+        if (
+            type(self.coefficients) is not tuple
+            or len(self.coefficients) not in _DEEP_TEACHER_FEATURE_COUNTS
+            or any(type(value) is not int for value in self.coefficients)
+        ):
+            raise ValueError("native deep-teacher coefficients are invalid")
+        if (
+            type(self.fixed_point_scale) is not int
+            or self.fixed_point_scale != _DEEP_TEACHER_FIXED_POINT_SCALE
+            or any(
+                abs(value) > self.fixed_point_scale
+                for value in self.coefficients
+            )
+            or max(abs(value) for value in self.coefficients)
+                != self.fixed_point_scale
+        ):
+            raise ValueError("native deep-teacher normalization is invalid")
+
+    @property
+    def feature_count(self) -> int:
+        return len(self.coefficients)
+
+    @classmethod
+    def from_overlay_payload(
+        cls,
+        payload: object,
+    ) -> NativeDeepTeacherValueModel:
+        # Local import avoids a module cycle: the overlay's public search
+        # protocol already imports this native transport through search.py.
+        from .deep_teacher_overlay import DeepTeacherOverlayPayload
+
+        if type(payload) is not DeepTeacherOverlayPayload:
+            raise TypeError("deep-teacher overlay payload has the wrong type")
+        payload.validate()
+        return cls(
+            base_profile_id=payload.base_profile_id,
+            variant_id=payload.variant_id,
+            model_id=payload.model_id,
+            model_sha256=payload.model_sha256,
+            native_source_identity=payload.native_source_identity,
+            coefficients=payload.coefficients,
+            fixed_point_scale=payload.fixed_point_scale,
+        )
+
+    def transport(self) -> tuple[object, ...]:
+        return (
+            self.base_profile_id,
+            self.variant_id,
+            self.model_id,
+            self.model_sha256,
+            self.native_source_identity,
+            self.feature_count,
+            self.coefficients,
+            self.fixed_point_scale,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -379,10 +485,25 @@ class NativeSubtreeSession:
         profile: EngineProfile,
         root_contract_tt_capacity: int = 262_144,
         root_contract_eval_capacity: int = 262_144,
+        deep_teacher_value_model: NativeDeepTeacherValueModel | None = None,
     ) -> None:
         native = evaluation._native_eval  # noqa: SLF001
         if native is None or not native_subtree_available():
             raise RuntimeError("source-matched native subtree API is unavailable")
+        if deep_teacher_value_model is not None:
+            if type(deep_teacher_value_model) is not NativeDeepTeacherValueModel:
+                raise TypeError("native deep-teacher model has the wrong type")
+            if deep_teacher_value_model.base_profile_id != profile.profile_id:
+                raise ValueError(
+                    "native deep-teacher model is bound to a different profile"
+                )
+            if (
+                deep_teacher_value_model.native_source_identity
+                != evaluation._native_source_identity()  # noqa: SLF001
+            ):
+                raise ValueError(
+                    "native deep-teacher model is bound to different sources"
+                )
         weights = profile.weights
         self._native = native
         self._descendant_width = max_series_per_node
@@ -414,6 +535,11 @@ class NativeSubtreeSession:
             ),
             root_contract_tt_capacity,
             root_contract_eval_capacity,
+            (
+                None
+                if deep_teacher_value_model is None
+                else deep_teacher_value_model.transport()
+            ),
         )
 
     def search(

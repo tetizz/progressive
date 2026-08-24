@@ -43,6 +43,19 @@ struct SubtreeState {
     std::vector<int> ep_targets;
 };
 
+// Optional frozen value model shared by the CPython descendant core and the
+// browser root-session core. Identity fields do not affect arithmetic, but are
+// included in every retained-root identity so two coefficient payloads can
+// never alias a cache/manifest contract.
+struct SubtreeDeepTeacherValueModel {
+    std::string base_profile_id;
+    std::string variant_id;
+    std::string model_id;
+    std::string model_sha256;
+    std::string native_source_identity;
+    DeepTeacherLinearModelV1 linear;
+};
+
 struct SubtreeSearchConfig {
     std::uint64_t max_series_per_node = 1;
     std::optional<std::uint64_t> max_work;
@@ -60,6 +73,9 @@ struct SubtreeSearchConfig {
     // enable this contract mode, preserving its established stats/PV parity.
     std::uint64_t root_contract_tt_capacity = 262'144;
     std::uint64_t root_contract_eval_capacity = 262'144;
+    // Absent by default. No production profile activates this field until a
+    // separately certified model is packaged and selected by its manifest.
+    std::optional<SubtreeDeepTeacherValueModel> deep_teacher_value_model;
 };
 
 struct SubtreeSearchStats {
@@ -79,6 +95,10 @@ struct SubtreeSearchStats {
     std::uint64_t static_evaluation_positions = 0;
     std::uint64_t evaluation_reach_positions = 0;
     std::uint64_t incomplete_reach_evaluations = 0;
+    std::uint64_t overlay_evaluations = 0;
+    std::uint64_t overlay_reach_positions = 0;
+    std::uint64_t overlay_direct_move_variants = 0;
+    std::uint64_t overlay_two_move_variants = 0;
     std::uint64_t generation_positions = 0;
     std::uint64_t frontier_prunes = 0;
     std::uint64_t frontier_states_pruned = 0;

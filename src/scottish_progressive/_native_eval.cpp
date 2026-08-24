@@ -7791,6 +7791,94 @@ bool parse_exact_signed_sequence(
     return true;
 }
 
+bool parse_subtree_deep_teacher_model(
+    PyObject* object,
+    std::optional<spc::native::SubtreeDeepTeacherValueModel>& result
+) {
+    if (object == Py_None) {
+        result.reset();
+        return true;
+    }
+    PyObject* sequence = PySequence_Fast(
+        object,
+        "native deep-teacher model must contain eight fields"
+    );
+    if (sequence == nullptr) {
+        return false;
+    }
+    if (PySequence_Fast_GET_SIZE(sequence) != 8) {
+        Py_DECREF(sequence);
+        PyErr_SetString(
+            PyExc_ValueError,
+            "native deep-teacher model must contain eight fields"
+        );
+        return false;
+    }
+    std::array<std::string, 5> identities;
+    for (Py_ssize_t index = 0; index < 5; ++index) {
+        Py_ssize_t length = 0;
+        const char* value = PyUnicode_AsUTF8AndSize(
+            PySequence_Fast_GET_ITEM(sequence, index),
+            &length
+        );
+        if (value == nullptr) {
+            Py_DECREF(sequence);
+            return false;
+        }
+        identities[static_cast<std::size_t>(index)] = std::string(
+            value,
+            static_cast<std::size_t>(length)
+        );
+    }
+    const std::size_t feature_count = PyLong_AsSize_t(
+        PySequence_Fast_GET_ITEM(sequence, 5)
+    );
+    if (feature_count == static_cast<std::size_t>(-1) && PyErr_Occurred()) {
+        Py_DECREF(sequence);
+        return false;
+    }
+    if (feature_count > spc::native::TEACHER_VALUE_FEATURE_COUNT) {
+        Py_DECREF(sequence);
+        PyErr_SetString(
+            PyExc_ValueError,
+            "native deep-teacher feature count is invalid"
+        );
+        return false;
+    }
+    std::array<long long, spc::native::TEACHER_VALUE_FEATURE_COUNT>
+        coefficients{};
+    if (!parse_exact_signed_sequence(
+            PySequence_Fast_GET_ITEM(sequence, 6),
+            coefficients.data(),
+            static_cast<Py_ssize_t>(feature_count),
+            "native deep-teacher coefficient count is invalid"
+        )) {
+        Py_DECREF(sequence);
+        return false;
+    }
+    const long long scale = PyLong_AsLongLong(
+        PySequence_Fast_GET_ITEM(sequence, 7)
+    );
+    if (scale == -1 && PyErr_Occurred()) {
+        Py_DECREF(sequence);
+        return false;
+    }
+    Py_DECREF(sequence);
+    spc::native::SubtreeDeepTeacherValueModel parsed;
+    parsed.base_profile_id = std::move(identities[0]);
+    parsed.variant_id = std::move(identities[1]);
+    parsed.model_id = std::move(identities[2]);
+    parsed.model_sha256 = std::move(identities[3]);
+    parsed.native_source_identity = std::move(identities[4]);
+    parsed.linear.feature_count = feature_count;
+    parsed.linear.fixed_point_scale = scale;
+    for (std::size_t index = 0; index < feature_count; ++index) {
+        parsed.linear.coefficients[index] = coefficients[index];
+    }
+    result = std::move(parsed);
+    return true;
+}
+
 bool parse_subtree_state(
     PyObject* object,
     spc::native::SubtreeState& state
@@ -7987,7 +8075,7 @@ PyObject* subtree_state_tuple(const spc::native::SubtreeState& state) {
 }
 
 PyObject* subtree_stats_tuple(const spc::native::SubtreeSearchStats& stats) {
-    const std::array<std::uint64_t, 30> values = {
+    const std::array<std::uint64_t, 34> values = {
         stats.nodes,
         stats.leaf_evaluations,
         stats.generated_raw_series,
@@ -8004,6 +8092,10 @@ PyObject* subtree_stats_tuple(const spc::native::SubtreeSearchStats& stats) {
         stats.static_evaluation_positions,
         stats.evaluation_reach_positions,
         stats.incomplete_reach_evaluations,
+        stats.overlay_evaluations,
+        stats.overlay_reach_positions,
+        stats.overlay_direct_move_variants,
+        stats.overlay_two_move_variants,
         stats.generation_positions,
         stats.frontier_prunes,
         stats.frontier_states_pruned,
@@ -8499,9 +8591,10 @@ PyObject* py_create_subtree_search(PyObject*, PyObject* arguments) {
     PyObject* full_weights_object = nullptr;
     unsigned long long root_tt_capacity = 0;
     unsigned long long root_eval_capacity = 0;
+    PyObject* deep_teacher_model_object = nullptr;
     if (!PyArg_ParseTuple(
             arguments,
-            "KOLLKKKpOOKK:create_subtree_search",
+            "KOLLKKKpOOKKO:create_subtree_search",
             &max_series,
             &max_work_object,
             &requested_depth,
@@ -8513,7 +8606,8 @@ PyObject* py_create_subtree_search(PyObject*, PyObject* arguments) {
             &fast_weights_object,
             &full_weights_object,
             &root_tt_capacity,
-            &root_eval_capacity
+            &root_eval_capacity,
+            &deep_teacher_model_object
         )) {
         return nullptr;
     }
@@ -8529,6 +8623,8 @@ PyObject* py_create_subtree_search(PyObject*, PyObject* arguments) {
     }
     std::array<long long, 5> fast{};
     std::array<long long, 7> full{};
+    std::optional<spc::native::SubtreeDeepTeacherValueModel>
+        deep_teacher_model;
     if (
         !parse_exact_signed_sequence(
             fast_weights_object,
@@ -8541,6 +8637,10 @@ PyObject* py_create_subtree_search(PyObject*, PyObject* arguments) {
             full.data(),
             static_cast<Py_ssize_t>(full.size()),
             "native subtree full_weights must contain seven integers"
+        )
+        || !parse_subtree_deep_teacher_model(
+            deep_teacher_model_object,
+            deep_teacher_model
         )
     ) {
         return nullptr;
@@ -8575,6 +8675,7 @@ PyObject* py_create_subtree_search(PyObject*, PyObject* arguments) {
                 },
                 root_tt_capacity,
                 root_eval_capacity,
+                std::move(deep_teacher_model),
             }
         );
         PyObject* capsule = PyCapsule_New(

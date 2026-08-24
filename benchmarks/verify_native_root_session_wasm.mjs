@@ -3,8 +3,10 @@ import { pathToFileURL } from "node:url";
 
 const modulePath = process.argv[2];
 if (!modulePath) {
-  throw new Error("usage: node verify_native_root_session_wasm.mjs <module.js>");
+  throw new Error("usage: node verify_native_root_session_wasm.mjs <module.js> [native-source-identity] [profile-id]");
 }
+const modelNativeSourceIdentity = process.argv[3] ?? "d".repeat(64);
+const modelProfileId = process.argv[4] ?? "spc-test-baseline";
 const factory = (await import(pathToFileURL(modulePath).href)).default;
 const wasm = await factory();
 
@@ -36,7 +38,7 @@ const identity = Object.freeze({
   thread_count: 1,
   engine_version: "test-engine-v1",
   ruleset_version: "progressive-v1",
-  profile_id: "spc-test-baseline",
+  profile_id: modelProfileId,
 });
 const boundary = Object.freeze({
   fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
@@ -77,6 +79,31 @@ const config = Object.freeze({
   },
 });
 const neuralS2Config = Object.freeze({ ...config, width: 32 });
+const deepTeacherValueModel = Object.freeze({
+  schema: "spc-deep-teacher-match-overlay-v1",
+  base_profile_id: identity.profile_id,
+  variant_id: "spc-dtv-variant-root-wasm-test",
+  model_id: "spc-dtv-root-wasm-test",
+  model_sha256: "c".repeat(64),
+  native_source_identity: modelNativeSourceIdentity,
+  feature_count: 7,
+  fixed_point_scale: 1_000_000_000,
+  coefficients: [1_000_000_000, 0, 0, 0, 0, 0, 0],
+  score_policy: "symmetric-half-away-from-zero-divide-by-1000000000-then-clamp-below-mate-v1",
+  work_policy: "charge-reach-plus-direct-and-two-move-legal-variants-v1",
+});
+const deepTeacherConfig = Object.freeze({
+  ...config,
+  deep_teacher_value_model: deepTeacherValueModel,
+});
+const materialBoundary = Object.freeze({
+  fen: "rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+  series: 1,
+  quiet_series: 0,
+  ep_targets: [],
+  promoted_hex: "0000000000000000",
+  chess960: false,
+});
 
 let createSequence = 0;
 function createRequest(overrides = {}) {
@@ -214,6 +241,12 @@ assert.equal(contract.product_publishable, false);
 assert.equal(contract.reply_mate_safety, false);
 assert.equal(contract.response_lifetime, "until-next-root-session-abi-call-on-this-worker");
 assert.equal(contract.capabilities.aspiration_windows, true);
+assert.equal(contract.capabilities.deep_teacher_value_model, true);
+assert.equal(contract.hard_limits.deep_teacher_value_model.optional, true);
+assert.deepEqual(
+  contract.hard_limits.deep_teacher_value_model.feature_counts,
+  [7, 14, 19, 38, 44, 47],
+);
 assert.equal(contract.hard_limits.minimum_aspiration_initial_delta, 2_048);
 assert.equal(contract.hard_limits.maximum_aspiration_attempts, 4);
 const aspirationInitialDelta = contract.hard_limits.minimum_aspiration_initial_delta;
@@ -365,6 +398,96 @@ assert.equal(aspirationRollbackRejected.status, "unsupported");
 assert.equal(aspirationRollbackRejected.error_code, "candidate-task-invalid");
 assert.equal(wasm._spc_root_session_destroy(coordinator.session_id), 1);
 assert.equal(wasm._spc_root_session_destroy(coordinator.session_id), 0);
+
+// The value model is an optional config extension. A plain create remains
+// byte-for-byte shape compatible, while a supplied model is profile-bound,
+// echoed exactly, included in enumeration identity, and charged at each leaf.
+const wrongProfileModel = {
+  ...deepTeacherValueModel,
+  base_profile_id: "spc-wrong-profile",
+};
+const wrongProfile = call(
+  wasm._spc_root_session_create_json,
+  [],
+  createRequest({
+    boundary: materialBoundary,
+    config: { ...config, deep_teacher_value_model: wrongProfileModel },
+  }),
+);
+assert.equal(wrongProfile.status, "unsupported");
+assert.equal(wrongProfile.error_code, "value-model-invalid");
+
+const materialBaselineSession = create({ boundary: materialBoundary });
+const materialDeadline = Math.floor(performance.now() + 60_000);
+const materialBaselineEnumeration = enumerate(
+  materialBaselineSession.session_id,
+  0,
+  materialDeadline,
+);
+assert.equal(materialBaselineEnumeration.status, "complete");
+const materialBaselineManifest = manifestOf(materialBaselineEnumeration);
+const materialBaseline = call(
+  wasm._spc_root_session_search_json,
+  [materialBaselineSession.session_id],
+  searchTask({
+    candidate: materialBaselineManifest.candidates[0],
+    manifest: materialBaselineManifest,
+    nativeBefore: materialBaselineEnumeration.work.native_work_after,
+    childDepth: 0,
+    deadline: materialDeadline,
+    iteration: "material-baseline",
+    task: "material-baseline",
+  }),
+);
+assert.equal(materialBaseline.status, "complete", JSON.stringify(materialBaseline));
+assert.equal(materialBaseline.work.call_stats.overlay_evaluations, 0);
+assert.equal(wasm._spc_root_session_destroy(materialBaselineSession.session_id), 1);
+
+const materialModelSession = create({
+  boundary: materialBoundary,
+  config: deepTeacherConfig,
+});
+assert.deepEqual(materialModelSession.config, deepTeacherConfig);
+const materialModelEnumeration = enumerate(
+  materialModelSession.session_id,
+  0,
+  materialDeadline,
+);
+assert.equal(materialModelEnumeration.status, "complete");
+assert.notEqual(
+  materialModelEnumeration.enumeration_identity,
+  materialBaselineEnumeration.enumeration_identity,
+);
+const materialModelManifest = manifestOf(materialModelEnumeration);
+assert.deepEqual(
+  materialModelManifest.candidates.map((item) => item.candidate_identity),
+  materialBaselineManifest.candidates.map((item) => item.candidate_identity),
+);
+const materialModeled = call(
+  wasm._spc_root_session_search_json,
+  [materialModelSession.session_id],
+  searchTask({
+    candidate: materialModelManifest.candidates[0],
+    manifest: materialModelManifest,
+    nativeBefore: materialModelEnumeration.work.native_work_after,
+    childDepth: 0,
+    deadline: materialDeadline,
+    iteration: "material-modeled",
+    task: "material-modeled",
+  }),
+);
+assert.equal(materialModeled.status, "complete", JSON.stringify(materialModeled));
+assert.equal(materialModeled.score, 975);
+assert.equal(materialModeled.work.call_stats.overlay_evaluations, 1);
+assert.ok(materialModeled.work.call_stats.overlay_reach_positions > 0);
+assert.equal(materialModeled.work.call_stats.overlay_direct_move_variants, 0);
+assert.equal(materialModeled.work.call_stats.overlay_two_move_variants, 0);
+assert.equal(
+  materialModeled.work.call_native_work,
+  materialBaseline.work.call_native_work
+    + materialModeled.work.call_stats.overlay_reach_positions,
+);
+assert.equal(wasm._spc_root_session_destroy(materialModelSession.session_id), 1);
 
 // Production neural ordering is scoped to Black's Series 2 after a real
 // completed White opening series. Freeze its full root manifest and one
@@ -1124,5 +1247,24 @@ process.stdout.write(`${JSON.stringify({
       && scout.tt_persistence === "rollback",
   },
   aspiration_fail_soft: aspirationFailSoft,
+  deep_teacher: {
+    boundary: materialBoundary,
+    config: deepTeacherConfig,
+    baseline_enumeration_identity: materialBaselineEnumeration.enumeration_identity,
+    enumeration_identity: materialModelEnumeration.enumeration_identity,
+    manifest: materialModelManifest,
+    baseline: {
+      score: materialBaseline.score,
+      proof_bounds: materialBaseline.proof_bounds,
+      child_pv: materialBaseline.child_pv,
+      work: materialBaseline.work,
+    },
+    modeled: {
+      score: materialModeled.score,
+      proof_bounds: materialModeled.proof_bounds,
+      child_pv: materialModeled.child_pv,
+      work: materialModeled.work,
+    },
+  },
   manifest,
 })}\n`);

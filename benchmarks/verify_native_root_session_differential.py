@@ -8,9 +8,11 @@ from typing import Any
 
 import chess
 
+import scottish_progressive.evaluation as evaluation
 from scottish_progressive.model import ProgressiveState, SeriesResult
 from scottish_progressive.native_subtree import (
     SUBTREE_STAT_FIELDS,
+    NativeDeepTeacherValueModel,
     NativeRootCandidateResult,
     NativeRootEnumerationResult,
     NativeRetainedRootCandidate,
@@ -127,7 +129,11 @@ def _candidate_result(result: NativeRootCandidateResult) -> dict[str, Any]:
     }
 
 
-def _session(*, width: int = 4) -> NativeSubtreeSession:
+def _session(
+    *,
+    width: int = 4,
+    deep_teacher_value_model: NativeDeepTeacherValueModel | None = None,
+) -> NativeSubtreeSession:
     return NativeSubtreeSession(
         max_series_per_node=width,
         max_work=2_000_000,
@@ -140,6 +146,7 @@ def _session(*, width: int = 4) -> NativeSubtreeSession:
         profile=baseline_profile(),
         root_contract_tt_capacity=16_384,
         root_contract_eval_capacity=16_384,
+        deep_teacher_value_model=deep_teacher_value_model,
     )
 
 
@@ -155,7 +162,13 @@ def main() -> int:
         )
     module = Path(sys.argv[1]).resolve()
     completed = subprocess.run(
-        ["node", str(NODE_GATE), str(module)],
+        [
+            "node",
+            str(NODE_GATE),
+            str(module),
+            evaluation._native_source_identity(),  # noqa: SLF001
+            baseline_profile().profile_id,
+        ],
         cwd=ROOT,
         check=True,
         capture_output=True,
@@ -212,6 +225,87 @@ def main() -> int:
     for expected, wasm_result in (
         (depth_one, actual["depth_one"]),
         (depth_two, actual["depth_two"]),
+    ):
+        assert expected.status == 0
+        assert expected.score == wasm_result["score"]
+        assert list(expected.proof_bounds) == wasm_result["proof_bounds"]
+        assert [
+            _series(item) for item in expected.child_principal_variation
+        ] == wasm_result["child_pv"]
+        assert _work(expected.work) == wasm_result["work"]
+
+    deep_actual = actual["deep_teacher"]
+    material_root = ProgressiveState.from_fen(
+        deep_actual["boundary"]["fen"],
+        deep_actual["boundary"]["series"],
+        quiet_series=deep_actual["boundary"]["quiet_series"],
+    )
+    material_baseline_session = _session()
+    material_baseline_manifest = material_baseline_session.enumerate_root(
+        material_root,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+        call_work_credit=500_000,
+    )
+    assert (
+        material_baseline_manifest.enumeration_identity
+        == deep_actual["baseline_enumeration_identity"]
+    )
+    material_baseline = material_baseline_session.search_root_candidate(
+        enumeration_identity=material_baseline_manifest.enumeration_identity,
+        candidate_identity=(
+            material_baseline_manifest.candidates[0].candidate_identity
+        ),
+        child_depth=0,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=0,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+        call_work_credit=500_000,
+    )
+    model_payload = deep_actual["config"]["deep_teacher_value_model"]
+    model = NativeDeepTeacherValueModel(
+        base_profile_id=model_payload["base_profile_id"],
+        variant_id=model_payload["variant_id"],
+        model_id=model_payload["model_id"],
+        model_sha256=model_payload["model_sha256"],
+        native_source_identity=model_payload["native_source_identity"],
+        coefficients=tuple(model_payload["coefficients"]),
+        fixed_point_scale=model_payload["fixed_point_scale"],
+    )
+    material_model_session = _session(deep_teacher_value_model=model)
+    material_model_manifest = material_model_session.enumerate_root(
+        material_root,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+        call_work_credit=500_000,
+    )
+    assert material_model_manifest.enumeration_identity == (
+        deep_actual["enumeration_identity"]
+    )
+    assert [
+        item.candidate_identity for item in material_model_manifest.candidates
+    ] == [
+        item["candidate_identity"]
+        for item in deep_actual["manifest"]["candidates"]
+    ]
+    material_modeled = material_model_session.search_root_candidate(
+        enumeration_identity=material_model_manifest.enumeration_identity,
+        candidate_identity=material_model_manifest.candidates[0].candidate_identity,
+        child_depth=0,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=0,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+        call_work_credit=500_000,
+    )
+    for expected, wasm_result in (
+        (material_baseline, deep_actual["baseline"]),
+        (material_modeled, deep_actual["modeled"]),
     ):
         assert expected.status == 0
         assert expected.score == wasm_result["score"]
