@@ -18,6 +18,11 @@ import webbrowser
 import chess
 
 from .database import TheoryDatabase
+from .deep_teacher_overlay import (
+    DeepTeacherEvaluationOverlay,
+    build_deep_teacher_overlay,
+    load_deep_teacher_overlay_payload,
+)
 from .mate_proof_cache import (
     DEFAULT_MATE_PROOF_CACHE_CAPACITY,
     MateProofCache,
@@ -38,7 +43,7 @@ from .rules import (
     _legal_move_variants,
     _stuck_result,
 )
-from .search import MATE_SCORE, SearchLimits, SearchResult, analyze
+from .search import EvaluationOverlay, MATE_SCORE, SearchLimits, SearchResult, analyze
 
 
 MAX_REQUEST_BYTES = 256 * 1024
@@ -114,6 +119,7 @@ class WebConfig:
     reports_dir: Path
     database_path: Path | None = None
     engine_profile: EngineProfile = field(default_factory=baseline_profile)
+    evaluation_overlay: DeepTeacherEvaluationOverlay | None = None
     request_limit: int = MAX_REQUEST_BYTES
     public_origin: str | None = None
     allowed_authority: str | None = None
@@ -842,6 +848,7 @@ def analyze_payload(
     *,
     database_path: Path | None = None,
     engine_profile: EngineProfile | None = None,
+    evaluation_overlay: EvaluationOverlay | None = None,
     request_limits: AnalysisRequestLimits = LOCAL_ANALYSIS_LIMITS,
     mate_proof_cache: MateProofCache | None = None,
 ) -> dict[str, object]:
@@ -963,6 +970,7 @@ def analyze_payload(
         limits,
         profile=engine_profile,
         required_prefix=required_prefix,
+        evaluation_overlay=evaluation_overlay,
         mate_proof_cache=mate_proof_cache,
     )
     quality: MoveQualityVerdict | None = None
@@ -973,6 +981,7 @@ def analyze_payload(
             limits,
             profile=engine_profile,
             required_prefix=parent_prefix,
+            evaluation_overlay=evaluation_overlay,
             mate_proof_cache=mate_proof_cache,
         )
         candidate_result = (
@@ -983,6 +992,7 @@ def analyze_payload(
                 limits,
                 profile=engine_profile,
                 required_prefix=prefix,
+                evaluation_overlay=evaluation_overlay,
                 mate_proof_cache=mate_proof_cache,
             )
         )
@@ -1181,6 +1191,7 @@ class AnalysisBoardHandler(BaseHTTPRequestHandler):
             path = self._route_path()
             if path == "/api/health":
                 limits = self.app_server.config.analysis_limits
+                overlay = self.app_server.config.evaluation_overlay
                 self._write_json(
                     {
                         "ok": True,
@@ -1190,8 +1201,31 @@ class AnalysisBoardHandler(BaseHTTPRequestHandler):
                             self.app_server.config.static_root
                         ),
                         "ruleset_version": RULESET_VERSION,
-                        "engine_profile_id": self.app_server.config.engine_profile.profile_id,
-                        "engine_profile_name": self.app_server.config.engine_profile.name,
+                        "engine_profile_id": (
+                            self.app_server.config.engine_profile.profile_id
+                            if overlay is None
+                            else overlay.variant_id
+                        ),
+                        "engine_profile_name": (
+                            self.app_server.config.engine_profile.name
+                            if overlay is None
+                            else overlay.name
+                        ),
+                        "base_engine_profile_id": (
+                            self.app_server.config.engine_profile.profile_id
+                        ),
+                        "deep_teacher_value_model": (
+                            None
+                            if overlay is None
+                            else {
+                                "model_id": overlay.payload.model_id,
+                                "model_sha256": overlay.payload.model_sha256,
+                                "variant_id": overlay.variant_id,
+                                "native_source_identity": (
+                                    overlay.payload.native_source_identity
+                                ),
+                            }
+                        ),
                         "engine_profile_recommended_depth": (
                             self.app_server.config.engine_profile.recommended_depth
                         ),
@@ -1334,6 +1368,7 @@ class AnalysisBoardHandler(BaseHTTPRequestHandler):
                     payload,
                     database_path=self.app_server.config.database_path,
                     engine_profile=self.app_server.config.engine_profile,
+                    evaluation_overlay=self.app_server.config.evaluation_overlay,
                     request_limits=self.app_server.config.analysis_limits,
                     mate_proof_cache=self.app_server.mate_proof_cache,
                 )
@@ -1401,6 +1436,7 @@ def create_server(
     *,
     database: str | Path | None = None,
     engine_profile: EngineProfile | str | Path | None = None,
+    deep_teacher_value_model: str | Path | None = None,
     static_root: str | Path | None = None,
     reports_dir: str | Path | None = None,
     request_limit: int = MAX_REQUEST_BYTES,
@@ -1438,6 +1474,16 @@ def create_server(
         if isinstance(engine_profile, (str, Path))
         else engine_profile or baseline_profile()
     )
+    configured_overlay: DeepTeacherEvaluationOverlay | None = None
+    if deep_teacher_value_model is not None:
+        overlay_payload = load_deep_teacher_overlay_payload(
+            deep_teacher_value_model,
+            configured_profile,
+        )
+        configured_overlay = build_deep_teacher_overlay(
+            overlay_payload,
+            configured_profile,
+        )
     static_path = Path(static_root).resolve() if static_root else _default_static_root()
     if not static_path.is_dir():
         raise ValueError(f"web static directory not found: {static_path}")
@@ -1461,6 +1507,7 @@ def create_server(
         reports_dir=(Path(reports_dir).resolve() if reports_dir else _default_reports_dir()),
         database_path=database_path,
         engine_profile=configured_profile,
+        evaluation_overlay=configured_overlay,
         request_limit=(
             min(request_limit, 64 * 1024)
             if normalized_origin is not None
@@ -1499,6 +1546,7 @@ def serve(
     open_browser: bool = True,
     database: str | Path | None = None,
     engine_profile: EngineProfile | str | Path | None = None,
+    deep_teacher_value_model: str | Path | None = None,
     public_origin: str | None = None,
     mate_proof_cache_path: str | Path | None = None,
     mate_proof_cache_capacity: int = DEFAULT_MATE_PROOF_CACHE_CAPACITY,
@@ -1508,6 +1556,7 @@ def serve(
         port,
         database=database,
         engine_profile=engine_profile,
+        deep_teacher_value_model=deep_teacher_value_model,
         public_origin=public_origin,
         mate_proof_cache_path=mate_proof_cache_path,
         mate_proof_cache_capacity=mate_proof_cache_capacity,

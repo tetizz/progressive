@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import json
 from pathlib import Path
+from types import SimpleNamespace
 import threading
 from typing import Iterator
 from urllib.error import HTTPError
@@ -13,6 +14,8 @@ import pytest
 
 from scottish_progressive.cli import main
 from scottish_progressive.model import ProgressiveState
+from scottish_progressive.profiles import baseline_profile
+from scottish_progressive.search import EvaluationOverlayScore
 from scottish_progressive.webapp import (
     APIError,
     LOCAL_ANALYSIS_LIMITS,
@@ -593,6 +596,8 @@ def test_http_health_prefix_static_and_traversal(tmp_path: Path) -> None:
         )
         assert health["engine_profile_recommended_depth"] == 2
         assert health["engine_profile_recommended_branch_cap"] == 32
+        assert health["base_engine_profile_id"] == health["engine_profile_id"]
+        assert health["deep_teacher_value_model"] is None
         assert len(health["ui_source_fingerprint"]) == 16
         assert health["mate_proof_cache"]["capacity"] == 4096
         assert health["mate_proof_cache"]["entries"] == 0
@@ -683,6 +688,147 @@ def test_web_cli_defaults_to_loopback_and_can_disable_browser(monkeypatch) -> No
         "mate_proof_cache_path": None,
         "mate_proof_cache_capacity": 4096,
     }
+
+
+def test_web_cli_passes_explicit_deep_teacher_model(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_serve(**kwargs: object) -> int:
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr("scottish_progressive.webapp.serve", fake_serve)
+    assert (
+        main(
+            [
+                "web",
+                "--no-browser",
+                "--deep-teacher-value-model",
+                "promoted-model.json",
+            ]
+        )
+        == 0
+    )
+    assert captured["deep_teacher_value_model"] == "promoted-model.json"
+
+
+def test_analyze_payload_uses_explicit_evaluation_overlay() -> None:
+    profile = baseline_profile()
+
+    class IdentityOverlay:
+        base_profile_id = profile.profile_id
+        variant_id = "spc-dtv-variant-web-test"
+        name = "Deep teacher web test"
+        requires_exact_work_receipt = False
+
+        def score(self, state: ProgressiveState, hand_score: int) -> int:
+            return hand_score
+
+        def score_with_work(
+            self,
+            state: ProgressiveState,
+            hand_score: int,
+            max_work_positions: int | None,
+        ) -> EvaluationOverlayScore:
+            return EvaluationOverlayScore(score=hand_score)
+
+    result = analyze_payload(
+        {
+            "fen": chess.STARTING_FEN,
+            "series": 1,
+            "depth": 1,
+            "max_series": 20,
+            "time_limit": 2,
+            "alternatives": 0,
+            "best_move_only": True,
+            "max_generation_positions": 100_000,
+        },
+        engine_profile=profile,
+        evaluation_overlay=IdentityOverlay(),
+    )
+
+    assert result["engine_profile_id"] == "spc-dtv-variant-web-test"
+    assert result["engine_profile_name"] == "Deep teacher web test"
+
+
+def test_server_loads_model_once_and_reports_exact_overlay_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "index.html").write_text("board", encoding="utf-8")
+    profile = baseline_profile()
+    model_payload = SimpleNamespace(
+        model_id="spc-dtv-web-model",
+        model_sha256="a" * 64,
+        native_source_identity="b" * 64,
+    )
+    overlay = SimpleNamespace(
+        payload=model_payload,
+        base_profile_id=profile.profile_id,
+        variant_id="spc-dtv-variant-web-model",
+        name="Deep teacher web model",
+    )
+    loaded: list[tuple[object, object]] = []
+
+    def fake_load(path: object, configured_profile: object) -> object:
+        loaded.append((path, configured_profile))
+        return model_payload
+
+    monkeypatch.setattr(
+        "scottish_progressive.webapp.load_deep_teacher_overlay_payload",
+        fake_load,
+    )
+    monkeypatch.setattr(
+        "scottish_progressive.webapp.build_deep_teacher_overlay",
+        lambda payload, configured_profile: overlay,
+    )
+    server = create_server(
+        "127.0.0.1",
+        0,
+        static_root=static,
+        reports_dir=tmp_path,
+        engine_profile=profile,
+        deep_teacher_value_model="promoted-model.json",
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, health = get_json(f"http://127.0.0.1:{server.server_port}/api/health")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert status == 200
+    assert loaded == [("promoted-model.json", profile)]
+    assert server.config.evaluation_overlay is overlay
+    assert health["engine_profile_id"] == overlay.variant_id
+    assert health["base_engine_profile_id"] == profile.profile_id
+    assert health["deep_teacher_value_model"] == {
+        "model_id": model_payload.model_id,
+        "model_sha256": model_payload.model_sha256,
+        "variant_id": overlay.variant_id,
+        "native_source_identity": model_payload.native_source_identity,
+    }
+
+
+def test_server_fails_closed_when_explicit_model_cannot_be_loaded(
+    tmp_path: Path,
+) -> None:
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "index.html").write_text("board", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="could not load deep-teacher model"):
+        create_server(
+            "127.0.0.1",
+            0,
+            static_root=static,
+            reports_dir=tmp_path,
+            deep_teacher_value_model=tmp_path / "missing-model.json",
+        )
 
 
 def test_server_rejects_non_loopback_binding(tmp_path: Path) -> None:

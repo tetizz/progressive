@@ -269,6 +269,8 @@ def _serve_web(args: argparse.Namespace) -> int:
     )
     if args.engine_profile:
         options["engine_profile"] = args.engine_profile
+    if args.deep_teacher_value_model:
+        options["deep_teacher_value_model"] = args.deep_teacher_value_model
     return serve(**options)
 
 
@@ -783,6 +785,13 @@ def build_parser() -> argparse.ArgumentParser:
     web.add_argument(
         "--engine-profile",
         help="promoted champion JSON used as the board's single analysis engine",
+    )
+    web.add_argument(
+        "--deep-teacher-value-model",
+        help=(
+            "explicit promoted deep-teacher model JSON layered over the board's "
+            "engine profile; omitted by default"
+        ),
     )
     web.add_argument(
         "--public-origin",
