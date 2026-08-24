@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.fit_deep_teacher_value import (
+    DEFAULT_ADVERSE_PAIR_WEIGHT,
     MATE_SCORE,
     QUARANTINED_HOLDOUT_CORPORA,
     TeacherLabel,
@@ -16,8 +17,12 @@ from scripts.fit_deep_teacher_value import (
     _exclusive_json,
     _label_semantic_keys,
     _linear_scorer,
+    _metric_objective,
+    _metrics,
+    _model_payload,
     _pairwise_rows,
     _terminal_score,
+    _validate_adverse_pair_weight,
 )
 
 
@@ -122,6 +127,133 @@ def test_terminal_best_still_teaches_ranking_among_nonterminal_alternatives() ->
     assert rows.shape == (3, 7)
     assert tuple(outcomes) == (1.0, 1.0, 1.0)
     assert weights.sum() > 0
+
+
+def _proof_option(
+    series: str,
+    *,
+    score: int,
+    proof: str | None,
+    feature: int,
+    is_best: bool = False,
+) -> TeacherOption:
+    return TeacherOption(
+        series=series,
+        score_white=score,
+        proof=proof,
+        proof_bounds=(-1, 1),
+        signed_mate_distance=None,
+        final_state_key=f"final-{series}",
+        final_pfen=f"pfen-{series}",
+        outcome=None,
+        ended_by_check=False,
+        is_teacher_best=is_best,
+        is_hard_negative=False,
+        features=(feature,) * 47,
+        base_features=(feature,) * 7,
+    )
+
+
+def _proof_label(
+    *options: TeacherOption,
+    mover_sign: int = 1,
+) -> TeacherLabel:
+    best = next((option for option in options if option.is_teacher_best), options[0])
+    return TeacherLabel(
+        split="train",
+        state_key="proof-root",
+        position_hash="proof-position",
+        pfen="proof-pfen",
+        series_number=5,
+        mover_sign=mover_sign,
+        source_profile_id="source",
+        teacher_tier="tactical_d3",
+        teacher_depth_series=3,
+        teacher_best_series=best.series,
+        teacher_score_white=best.score_white,
+        teacher_proof=best.proof,
+        teacher_signed_mate_distance=None,
+        options=tuple(options),
+    )
+
+
+def test_mover_adverse_proof_contrast_gets_configured_pair_weight() -> None:
+    safe = _proof_option("safe", score=20, proof=None, feature=2, is_best=True)
+    adverse = _proof_option("adverse", score=-20, proof="black", feature=-2)
+    ordinary = _proof_option("ordinary", score=-20, proof=None, feature=-2)
+
+    _rows, _outcomes, weighted = _pairwise_rows(
+        (_proof_label(safe, adverse),), "base7", adverse_pair_weight=7.0
+    )
+    _rows, _outcomes, unweighted = _pairwise_rows(
+        (_proof_label(safe, ordinary),), "base7", adverse_pair_weight=7.0
+    )
+
+    assert weighted.shape == unweighted.shape == (1,)
+    assert weighted[0] == pytest.approx(unweighted[0] * 7.0)
+
+
+def test_raw_metrics_count_avoidable_and_unavoidable_adverse_choices() -> None:
+    safe = _proof_option("safe", score=20, proof=None, feature=0, is_best=True)
+    adverse = _proof_option("adverse", score=-20, proof="black", feature=1)
+    avoidable = _metrics(
+        (_proof_label(safe, adverse),),
+        lambda _label, option: float(option.features[0]),
+        include_rows=True,
+    )
+
+    assert avoidable["rows"][0]["chosen_series"] == "adverse"
+    assert avoidable["overall"]["chosen_proven_adverse"] == 1
+    assert avoidable["overall"]["chosen_avoidable_proven_adverse"] == 1
+
+    other_adverse = _proof_option(
+        "other-adverse", score=-30, proof="black", feature=0
+    )
+    unavoidable = _metrics(
+        (_proof_label(adverse, other_adverse),),
+        lambda _label, option: float(option.features[0]),
+    )
+
+    assert unavoidable["overall"]["chosen_proven_adverse"] == 1
+    assert unavoidable["overall"]["chosen_avoidable_proven_adverse"] == 0
+
+
+def test_avoidable_adverse_count_is_primary_model_and_profile_objective() -> None:
+    lower_regret_but_adverse = {
+        "chosen_avoidable_proven_adverse": 1,
+        "normalized_regret": 0.0,
+        "gap_weighted_pairwise_accuracy": 1.0,
+        "agreement": 1.0,
+    }
+    safe_but_worse_aggregate = {
+        "chosen_avoidable_proven_adverse": 0,
+        "normalized_regret": 1.0,
+        "gap_weighted_pairwise_accuracy": 0.0,
+        "agreement": 0.0,
+    }
+
+    assert _metric_objective(safe_but_worse_aggregate) < _metric_objective(
+        lower_regret_but_adverse
+    )
+
+
+def test_adverse_pair_weight_is_bounded_and_hashed_into_model_metadata() -> None:
+    assert _validate_adverse_pair_weight(DEFAULT_ADVERSE_PAIR_WEIGHT) == 8.0
+    for invalid in (0.5, float("nan"), float("inf"), 1_001.0):
+        with pytest.raises(ValueError, match="adverse_pair_weight"):
+            _validate_adverse_pair_weight(invalid)
+
+    model = _model_payload(
+        group="base7",
+        ridge=0.01,
+        coefficients=(1,) * 7,
+        adverse_pair_weight=11.0,
+        corpus_id="corpus",
+        corpus_sha256="a" * 64,
+    )
+
+    assert model["adverse_pair_weight"] == 11.0
+    assert model["model_id"].startswith("spc-dtv-")
 
 
 def test_cross_validation_keeps_transposed_option_states_in_one_fold() -> None:

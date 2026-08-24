@@ -36,6 +36,7 @@ FIT_RECEIPT_SCHEMA = "spc-deep-teacher-fit-receipt-v1"
 HOLDOUT_RECEIPT_SCHEMA = "spc-deep-teacher-holdout-receipt-v1"
 FIXED_POINT_SCALE = 1_000_000_000
 MATE_SCORE = 1_000_000
+DEFAULT_ADVERSE_PAIR_WEIGHT = 8.0
 BASELINE_WEIGHTS = (100,) * len(FEATURE_NAMES)
 DEVELOPMENT_PROFILE_WEIGHTS = (238, 188, 203, 223, 28, 164, 294)
 NONROUTE_GROUPS = (
@@ -187,6 +188,20 @@ class TeacherLabel:
                 for option in self.options
             )
         )
+
+
+def _option_is_mover_adverse(
+    label: TeacherLabel, option: TeacherOption
+) -> bool:
+    opponent = "black" if label.mover_sign == 1 else "white"
+    return option.proof == opponent
+
+
+def _validate_adverse_pair_weight(value: float) -> float:
+    weight = float(value)
+    if not math.isfinite(weight) or not 1.0 <= weight <= 1_000.0:
+        raise ValueError("adverse_pair_weight must be finite and between 1 and 1000")
+    return weight
 
 
 def _cached_payload_matches(
@@ -608,7 +623,9 @@ def _selected_features(option: TeacherOption, group: str) -> tuple[int, ...]:
 def _pairwise_rows(
     labels: Sequence[TeacherLabel],
     group: str,
+    adverse_pair_weight: float = DEFAULT_ADVERSE_PAIR_WEIGHT,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    adverse_pair_weight = _validate_adverse_pair_weight(adverse_pair_weight)
     rows: list[tuple[int, ...]] = []
     outcomes: list[float] = []
     weights: list[float] = []
@@ -637,9 +654,12 @@ def _pairwise_rows(
                 )
             )
             outcomes.append(1.0 if delta > 0 else -1.0)
-            weights.append(
-                min(1.0, abs(delta) / 1000.0) / len(comparisons)
-            )
+            pair_weight = min(1.0, abs(delta) / 1000.0) / len(comparisons)
+            if _option_is_mover_adverse(label, left) != _option_is_mover_adverse(
+                label, right
+            ):
+                pair_weight *= adverse_pair_weight
+            weights.append(pair_weight)
     if not rows:
         raise ValueError("teacher train split has no nonterminal ranking pairs")
     return (
@@ -653,8 +673,12 @@ def _fit_pairwise(
     labels: Sequence[TeacherLabel],
     group: str,
     ridge: float,
+    adverse_pair_weight: float = DEFAULT_ADVERSE_PAIR_WEIGHT,
 ) -> tuple[np.ndarray, dict[str, Any]]:
-    rows, outcomes, sample_weights = _pairwise_rows(labels, group)
+    adverse_pair_weight = _validate_adverse_pair_weight(adverse_pair_weight)
+    rows, outcomes, sample_weights = _pairwise_rows(
+        labels, group, adverse_pair_weight
+    )
     deviations = np.sqrt(np.average(rows * rows, axis=0, weights=sample_weights))
     deviations[deviations < 1e-9] = 1.0
     matrix = rows / deviations
@@ -714,6 +738,7 @@ def _fit_pairwise(
         "ridge": ridge,
         "pairs": len(outcomes),
         "iterations": iterations,
+        "adverse_pair_weight": adverse_pair_weight,
     }
 
 
@@ -811,8 +836,14 @@ def _metric_rows(
                     pair_correct += gap_weight
                 elif predicted_delta == 0:
                     pair_correct += gap_weight / 2.0
-        opponent = "black" if label.mover_sign == 1 else "white"
-        chosen_proven_adverse = chosen.proof == opponent
+        chosen_proven_adverse = _option_is_mover_adverse(label, chosen)
+        chosen_avoidable_proven_adverse = bool(
+            chosen_proven_adverse
+            and any(
+                not _option_is_mover_adverse(label, option)
+                for option in label.options
+            )
+        )
         rows.append(
             {
                 "state_key": label.state_key,
@@ -829,6 +860,9 @@ def _metric_rows(
                 "chosen_series": chosen.series,
                 "teacher_best_series": label.teacher_best_series,
                 "chosen_proven_adverse": chosen_proven_adverse,
+                "chosen_avoidable_proven_adverse": (
+                    chosen_avoidable_proven_adverse
+                ),
             }
         )
     return rows
@@ -842,6 +876,7 @@ def _summarize_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "agreement": None,
             "gap_weighted_pairwise_accuracy": None,
             "chosen_proven_adverse": 0,
+            "chosen_avoidable_proven_adverse": 0,
         }
     pair_weight = sum(float(row["pair_weight"]) for row in rows)
     return {
@@ -854,6 +889,9 @@ def _summarize_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             else 1.0
         ),
         "chosen_proven_adverse": sum(bool(row["chosen_proven_adverse"]) for row in rows),
+        "chosen_avoidable_proven_adverse": sum(
+            bool(row["chosen_avoidable_proven_adverse"]) for row in rows
+        ),
     }
 
 
@@ -958,7 +996,9 @@ def _cross_validate(
     labels: Sequence[TeacherLabel],
     group: str,
     ridge: float,
+    adverse_pair_weight: float = DEFAULT_ADVERSE_PAIR_WEIGHT,
 ) -> dict[str, Any]:
+    adverse_pair_weight = _validate_adverse_pair_weight(adverse_pair_weight)
     folds = _folds(labels)
     all_rows: list[dict[str, Any]] = []
     fold_rows: list[dict[str, Any]] = []
@@ -978,7 +1018,9 @@ def _cross_validate(
             raise ValueError(
                 f"cross-validation semantic-state leakage: {len(semantic_overlap)}"
             )
-        coefficients, fit = _fit_pairwise(training, group, ridge)
+        coefficients, fit = _fit_pairwise(
+            training, group, ridge, adverse_pair_weight
+        )
         rows = _metric_rows(validation, _linear_scorer(coefficients, group))
         all_rows.extend(rows)
         fold_rows.append(
@@ -996,17 +1038,24 @@ def _cross_validate(
     return {
         "group": group,
         "ridge": ridge,
+        "adverse_pair_weight": adverse_pair_weight,
         "out_of_fold": _summarize_rows(all_rows),
         "folds": fold_rows,
     }
 
 
-def _selection_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
-    metrics = row["out_of_fold"]
+def _metric_objective(metrics: Mapping[str, Any]) -> tuple[int, float, float, float]:
     return (
-        metrics["normalized_regret"],
-        -metrics["gap_weighted_pairwise_accuracy"],
-        -metrics["agreement"],
+        int(metrics["chosen_avoidable_proven_adverse"]),
+        float(metrics["normalized_regret"]),
+        -float(metrics["gap_weighted_pairwise_accuracy"]),
+        -float(metrics["agreement"]),
+    )
+
+
+def _selection_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
+    return (
+        *_metric_objective(row["out_of_fold"]),
         len(_indices(str(row["group"]))),
         row["ridge"],
     )
@@ -1025,6 +1074,7 @@ def _model_payload(
     group: str,
     ridge: float,
     coefficients: Sequence[int],
+    adverse_pair_weight: float,
     corpus_id: str,
     corpus_sha256: str,
 ) -> dict[str, Any]:
@@ -1039,6 +1089,9 @@ def _model_payload(
         "fixed_point_scale": FIXED_POINT_SCALE,
         "coefficients": list(coefficients),
         "ridge": ridge,
+        "adverse_pair_weight": _validate_adverse_pair_weight(
+            adverse_pair_weight
+        ),
         "terminal_override": "replayed terminal checkmate and draw outcomes are authoritative",
         "teacher_corpus_id": corpus_id,
         "teacher_corpus_sha256": corpus_sha256,
@@ -1058,6 +1111,10 @@ def _load_model(path: Path) -> dict[str, Any]:
         raise ValueError(f"model_id mismatch: {path}")
     if model.get("schema") != MODEL_SCHEMA:
         raise ValueError(f"unsupported model schema: {path}")
+    try:
+        _validate_adverse_pair_weight(float(model["adverse_pair_weight"]))
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"model adverse pair weight is invalid: {path}") from error
     group = str(model["feature_group"])
     expected_names = [
         TEACHER_VALUE_FEATURE_NAMES[index] for index in _indices(group)
@@ -1071,16 +1128,12 @@ def _coordinate_profile(
     labels: Sequence[TeacherLabel],
     starts: Sequence[Sequence[int]],
 ) -> tuple[int, ...]:
-    def objective(weights: Sequence[int]) -> tuple[float, float, float]:
+    def objective(weights: Sequence[int]) -> tuple[int, float, float, float]:
         metrics = _metrics(labels, _profile_scorer(weights))["overall"]
-        return (
-            metrics["normalized_regret"],
-            -metrics["gap_weighted_pairwise_accuracy"],
-            -metrics["agreement"],
-        )
+        return _metric_objective(metrics)
 
     best: tuple[int, ...] | None = None
-    best_value: tuple[float, float, float] | None = None
+    best_value: tuple[int, float, float, float] | None = None
     for requested in starts:
         current = tuple(max(25, min(300, int(value))) for value in requested)
         current_value = objective(current)
@@ -1089,7 +1142,9 @@ def _coordinate_profile(
             while changed:
                 changed = False
                 for index in range(len(current)):
-                    proposals: list[tuple[tuple[float, float, float], tuple[int, ...]]] = []
+                    proposals: list[
+                        tuple[tuple[int, float, float, float], tuple[int, ...]]
+                    ] = []
                     for direction in (-1, 1):
                         proposal = list(current)
                         proposal[index] = max(
@@ -1144,13 +1199,16 @@ def _fit_command(args: argparse.Namespace) -> None:
     _reject_quarantined_holdout(corpus)
     corpus_sha = _sha256(corpus_path)
     corpus_id = str(corpus["corpus_id"])
+    adverse_pair_weight = _validate_adverse_pair_weight(
+        getattr(args, "adverse_pair_weight", DEFAULT_ADVERSE_PAIR_WEIGHT)
+    )
     train, leakage = _materialize_labels(corpus, selected_split="train")
     if not train:
         raise ValueError("teacher corpus has no train labels")
     leader = load_profile(leader_path)
 
     cv_rows = [
-        _cross_validate(train, group, ridge)
+        _cross_validate(train, group, ridge, adverse_pair_weight)
         for group in (*NONROUTE_GROUPS, "all47")
         for ridge in RIDGES
     ]
@@ -1171,12 +1229,14 @@ def _fit_command(args: argparse.Namespace) -> None:
             train,
             str(selection["group"]),
             float(selection["ridge"]),
+            adverse_pair_weight,
         )
         quantized = _quantize(raw)
         model = _model_payload(
             group=str(selection["group"]),
             ridge=float(selection["ridge"]),
             coefficients=quantized,
+            adverse_pair_weight=adverse_pair_weight,
             corpus_id=corpus_id,
             corpus_sha256=corpus_sha,
         )
@@ -1202,7 +1262,9 @@ def _fit_command(args: argparse.Namespace) -> None:
 
     # The matchable seven-weight surface is distilled separately.  The richer
     # model never silently changes the native/browser evaluator.
-    projected_raw, _ = _fit_pairwise(train, "base7", 0.01)
+    projected_raw, _ = _fit_pairwise(
+        train, "base7", 0.01, adverse_pair_weight
+    )
     median = float(np.median(np.abs(projected_raw)))
     projected = tuple(
         max(25, min(300, round(abs(value) * 100.0 / max(1e-9, median))))
@@ -1248,9 +1310,19 @@ def _fit_command(args: argparse.Namespace) -> None:
         "selection": {
             "method": (
                 "five-fold semantic-component-disjoint all-nonterminal-pairs "
-                "ridge ranking"
+                "proof-contrast-weighted ridge ranking"
             ),
             "ridges": list(RIDGES),
+            "adverse_pair_weight": adverse_pair_weight,
+            "adverse_pair_rule": (
+                "multiply a pair's deterministic gap weight when exactly one "
+                "option has a proof for the mover's opponent"
+            ),
+            "primary_objective": (
+                "raw avoidable proven-adverse selections, normalized regret, "
+                "pairwise accuracy, agreement"
+            ),
+            "raw_option_argmax_metrics": True,
             "rows": cv_rows,
         },
         "models": {
@@ -1330,6 +1402,10 @@ def _holdout_gate(
         "lower_regret_than_both_references": candidate_overall["normalized_regret"] < best_regret,
         "higher_pairwise_accuracy_than_both_references": candidate_overall["gap_weighted_pairwise_accuracy"] > best_pairwise,
         "no_proven_adverse_selection": candidate_overall["chosen_proven_adverse"] == 0,
+        "no_avoidable_proven_adverse_selection": candidate_overall[
+            "chosen_avoidable_proven_adverse"
+        ]
+        == 0,
         "white_regret_no_worse_than_baseline": stratum_regret_no_worse(
             candidate, "mover", "white"
         ),
@@ -1348,6 +1424,10 @@ def _holdout_gate(
         "lower_regret_than_nonroute": route_overall["normalized_regret"] < candidate_overall["normalized_regret"],
         "higher_pairwise_accuracy_than_nonroute": route_overall["gap_weighted_pairwise_accuracy"] > candidate_overall["gap_weighted_pairwise_accuracy"],
         "no_proven_adverse_selection": route_overall["chosen_proven_adverse"] == 0,
+        "no_avoidable_proven_adverse_selection": route_overall[
+            "chosen_avoidable_proven_adverse"
+        ]
+        == 0,
     }
     route_gate["passed"] = all(route_gate.values())
     profile_overall = profile["overall"]
@@ -1355,6 +1435,10 @@ def _holdout_gate(
         "lower_regret_than_both_references": profile_overall["normalized_regret"] < best_regret,
         "higher_pairwise_accuracy_than_both_references": profile_overall["gap_weighted_pairwise_accuracy"] > best_pairwise,
         "no_proven_adverse_selection": profile_overall["chosen_proven_adverse"] == 0,
+        "no_avoidable_proven_adverse_selection": profile_overall[
+            "chosen_avoidable_proven_adverse"
+        ]
+        == 0,
         "white_regret_no_worse_than_baseline": stratum_regret_no_worse(
             profile, "mover", "white"
         ),
@@ -1580,6 +1664,15 @@ def parse_args() -> argparse.Namespace:
     fit.add_argument("teacher_corpus", type=Path)
     fit.add_argument("leader_profile", type=Path)
     fit.add_argument("output", type=Path)
+    fit.add_argument(
+        "--adverse-pair-weight",
+        type=float,
+        default=DEFAULT_ADVERSE_PAIR_WEIGHT,
+        help=(
+            "Pairwise weight multiplier when exactly one option is proven "
+            "adverse to the mover (default: %(default)s)."
+        ),
+    )
     fit.set_defaults(handler=_fit_command)
     holdout = commands.add_parser("evaluate-holdout")
     holdout.add_argument("teacher_corpus", type=Path)
