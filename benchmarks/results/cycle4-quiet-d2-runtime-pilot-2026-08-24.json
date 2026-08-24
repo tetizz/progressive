@@ -35,6 +35,14 @@
     "corpus_id": "spc-native-teacher-56fddb638d0cd162c08d",
     "artifact_sha256": "a9715535eddee29d7cd302d42ba35e52a161c4e4009d5cd7a0cc9a4b69ae8ef4"
   },
+  "worker_geometry_comparison": {
+    "same_seed_and_inputs": true,
+    "workers_8_elapsed_seconds": 188.81284749996848,
+    "workers_16_elapsed_seconds": 188.81391530000838,
+    "workers_16_artifact_sha256": "6de454f71231d42b79b83bb3807172b2a40c04a24ff9b22e6aa366f2580df67c",
+    "selected_workers": 8,
+    "reason": "Sixteen logical workers produced the same 24 labels and 46 failures with no wall-clock gain; eight workers avoid extra memory and scheduling pressure."
+  },
   "cycle4_projection": {
     "quiet_depth2_target_roots": 3072,
     "linear_quiet_depth2_hours": 6.713345688887768,
