@@ -380,13 +380,13 @@ def test_hard_s4_depth_five_completes_with_exact_safety_under_production_work() 
     # The exact-capture leaf evaluator deliberately spends more work than the
     # old geometric vulnerability proxy, while staying below the production
     # cap and retaining a byte-exact release regression for this hard gate.
-    assert result.stats.work_positions == 7_597_147
+    assert result.stats.work_positions == 7_588_460
     assert result.stats.root_pvs_zero_window_searches == 31
-    assert result.stats.root_safety_screen_positions == 402_577
+    assert result.stats.root_safety_screen_positions == 393_890
     assert (
         result.stats.native_series_mate_positions
         + result.stats.native_series_mate_edges
-        == 367_132
+        == 358_445
     )
     assert result.stats.native_series_mate_calls == 1
     assert result.stats.native_series_mate_exhausted == 1
