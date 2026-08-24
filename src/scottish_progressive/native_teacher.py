@@ -22,7 +22,12 @@ import chess
 from . import evaluation
 from .corpus_pipeline import read_native_generation_contract
 from .corpus_samples import NativeBoundarySample, decode_native_boundary_sample
-from .corpus_shards import CorpusRecord, CorpusStore, progressive_state_dedup_key
+from .corpus_shards import (
+    CorpusRecord,
+    CorpusStore,
+    ShardMetadata,
+    progressive_state_dedup_key,
+)
 from .fast_training import CachedFeatures
 from .league import run_rules_tactical_gate
 from .model import ENGINE_SOURCE_FINGERPRINT, ENGINE_VERSION, ProgressiveState, SeriesResult
@@ -53,6 +58,23 @@ def _canonical_json(payload: Mapping[str, Any]) -> bytes:
 
 def _sha256(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(_canonical_json(payload)).hexdigest()
+
+
+def semantic_exclusion_sha256(state_keys: Iterable[str]) -> str:
+    keys = sorted(set(state_keys))
+    if any(
+        not isinstance(key, str)
+        or len(key) != 64
+        or any(character not in "0123456789abcdef" for character in key)
+        for key in keys
+    ):
+        raise ValueError("development exclusion keys must be SHA-256 hex")
+    return _sha256(
+        {
+            "schema": "spc-development-semantic-exclusion-v1",
+            "state_keys": keys,
+        }
+    )
 
 
 def _source_file_sha256(filename: str) -> str:
@@ -210,10 +232,18 @@ def _candidate_matches_mode(candidate: _Candidate, mode: str) -> bool:
     return True
 
 
-def _group_records(store: CorpusStore) -> Iterable[tuple[CorpusRecord, ...]]:
+def _group_records(
+    store: CorpusStore,
+    verified_shards: Sequence[ShardMetadata] | None = None,
+) -> Iterable[tuple[CorpusRecord, ...]]:
     current_attempt: int | None = None
     current: list[CorpusRecord] = []
-    for record in store.iter_records():
+    records = (
+        store.iter_records()
+        if verified_shards is None
+        else store.iter_snapshot_records(verified_shards)
+    )
+    for record in records:
         if current_attempt is None:
             current_attempt = record.attempt_index
         if record.attempt_index != current_attempt:
@@ -241,6 +271,7 @@ def _candidate_population(
     split: str,
     config: NativeTeacherConfig,
     excluded_keys: set[str],
+    verified_shards: Sequence[ShardMetadata] | None = None,
 ) -> tuple[dict[str, _Candidate], set[str], dict[str, int]]:
     if split not in {"train", "holdout"}:
         raise ValueError("split must be train or holdout")
@@ -249,7 +280,7 @@ def _candidate_population(
     duplicate_occurrences = 0
     overlap_occurrences = 0
     terminal_boundaries = 0
-    for group in _group_records(store):
+    for group in _group_records(store, verified_shards):
         terminal_boundaries += 1
         for record in group[:-1]:
             sample = decode_native_boundary_sample(record.payload)
@@ -1104,6 +1135,27 @@ def _validate_replacement_cache_source(
         )
 
 
+def _verified_attempt_window(
+    shards: Sequence[ShardMetadata],
+    *,
+    split: str,
+    expected_attempts: int,
+) -> tuple[int, int]:
+    if not shards:
+        raise ValueError("teacher source corpus has no durable attempt shards")
+    for previous, current in zip(shards, shards[1:]):
+        if previous.attempt_range.stop != current.attempt_range.start:
+            raise ValueError("teacher source corpus attempt window is not contiguous")
+    attempt_start = shards[0].attempt_range.start
+    attempt_stop = shards[-1].attempt_range.stop
+    if attempt_start != 0 or attempt_stop != expected_attempts:
+        raise ValueError(
+            f"{split} corpus attempt window is [{attempt_start}, {attempt_stop}); "
+            f"expected [0, {expected_attempts})"
+        )
+    return attempt_start, attempt_stop
+
+
 def build_native_teacher_corpus(
     train_store: CorpusStore,
     holdout_store: CorpusStore,
@@ -1115,7 +1167,9 @@ def build_native_teacher_corpus(
     forbidden_train_option_final_state_keys: Iterable[str] = (),
     forbidden_train_state_keys: Iterable[str] = (),
     forbidden_holdout_state_keys: Iterable[str] = (),
+    development_forbidden_holdout_state_keys: Iterable[str] = (),
     prior_receipt_cache_contract: Mapping[str, Any] | None = None,
+    preregistration_generation_provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     config = config or NativeTeacherConfig()
     forbidden_train_state_keys = frozenset(
@@ -1125,8 +1179,14 @@ def build_native_teacher_corpus(
             *forbidden_train_state_keys,
         )
     )
+    development_forbidden_holdout_state_keys = frozenset(
+        str(key) for key in development_forbidden_holdout_state_keys
+    )
     forbidden_holdout_state_keys = frozenset(
-        str(key) for key in forbidden_holdout_state_keys
+        {
+            *(str(key) for key in forbidden_holdout_state_keys),
+            *development_forbidden_holdout_state_keys,
+        }
     )
     malformed_forbidden_keys = sorted(
         key
@@ -1135,6 +1195,18 @@ def build_native_teacher_corpus(
     )
     if malformed_forbidden_keys:
         raise ValueError("forbidden train option final-state keys must be SHA-256 hex")
+    if preregistration_generation_provenance is not None:
+        provenance = dict(preregistration_generation_provenance)
+        if (
+            provenance.get("schema")
+            != "spc-cycle4-preregistered-generation-provenance-v1"
+            or not isinstance(provenance.get("preregistration"), Mapping)
+            or not isinstance(provenance.get("trajectory_generation_starts"), Mapping)
+            or not isinstance(provenance.get("teacher_generation_start"), Mapping)
+        ):
+            raise ValueError("preregistered generation provenance is malformed")
+    else:
+        provenance = None
     native_mate_identity = native_mate_runtime_identity()
     if not native_subtree_available() or native_mate_identity == "unavailable":
         raise RuntimeError(
@@ -1159,8 +1231,32 @@ def build_native_teacher_corpus(
     profile_ids = train_store.identity.profile_ids
     if len(profile_ids) != 4:
         raise ValueError("deep teacher pilot requires exactly four source profiles")
-    train_manifest = train_store.verify()
-    holdout_manifest = holdout_store.verify()
+    train_manifest, train_shards = train_store.verified_snapshot()
+    holdout_manifest, holdout_shards = holdout_store.verified_snapshot()
+    if provenance is not None:
+        trajectory_starts = provenance["trajectory_generation_starts"]
+        if (
+            not isinstance(trajectory_starts, Mapping)
+            or not isinstance(trajectory_starts.get("train"), Mapping)
+            or not isinstance(trajectory_starts.get("sealed_holdout"), Mapping)
+            or trajectory_starts["train"].get("corpus") != train_manifest
+            or trajectory_starts["sealed_holdout"].get("corpus")
+            != holdout_manifest
+        ):
+            raise ValueError(
+                "teacher corpus snapshots differ from completion-receipt provenance"
+            )
+
+    train_attempt_start, train_attempt_stop = _verified_attempt_window(
+        train_shards,
+        split="train",
+        expected_attempts=config.expected_train_attempts,
+    )
+    holdout_attempt_start, holdout_attempt_stop = _verified_attempt_window(
+        holdout_shards,
+        split="holdout",
+        expected_attempts=config.expected_holdout_attempts,
+    )
     if train_manifest["attempt_count"] != config.expected_train_attempts:
         raise ValueError(
             f"train corpus has {train_manifest['attempt_count']} attempts; "
@@ -1208,13 +1304,19 @@ def build_native_teacher_corpus(
         split="train",
         config=config,
         excluded_keys=set(),
+        verified_shards=train_shards,
     )
     holdout_candidates, holdout_keys, holdout_population = _candidate_population(
         holdout_store,
         split="holdout",
         config=config,
         excluded_keys=train_keys,
+        verified_shards=holdout_shards,
     )
+    if train_store.verified_snapshot() != (train_manifest, train_shards):
+        raise ValueError("train corpus changed while the teacher snapshot was consumed")
+    if holdout_store.verified_snapshot() != (holdout_manifest, holdout_shards):
+        raise ValueError("holdout corpus changed while the teacher snapshot was consumed")
     overlap = train_keys & holdout_keys
     if set(train_candidates) & set(holdout_candidates):
         raise AssertionError("exact train/holdout state overlap survived filtering")
@@ -1356,6 +1458,11 @@ def build_native_teacher_corpus(
         "teacher_profile": teacher_profile.as_dict(),
         "config": config.as_dict(),
         "generation": {
+            **(
+                {}
+                if provenance is None
+                else {"preregistration_generation_provenance": provenance}
+            ),
             "train_contract_sha256": train_contract.digest_hex,
             "holdout_contract_sha256": holdout_contract.digest_hex,
             "train_corpus_sha256": train_manifest["corpus_sha256"],
@@ -1364,7 +1471,14 @@ def build_native_teacher_corpus(
             "profile_schedule": "ordered-pair-round-robin",
             "train_attempts": train_manifest["attempt_count"],
             "holdout_attempts": holdout_manifest["attempt_count"],
+            "train_attempt_start": train_attempt_start,
+            "train_attempt_stop": train_attempt_stop,
+            "holdout_attempt_start": holdout_attempt_start,
+            "holdout_attempt_stop": holdout_attempt_stop,
             "prior_receipt_cache_reuse": prior_receipt_cache_contract is not None,
+            "development_holdout_exclusion_sha256": semantic_exclusion_sha256(
+                development_forbidden_holdout_state_keys
+            ),
             "root_receipt_cache_contract": {
                 **cache_contract_payload,
                 "cache_contract_id": cache_contract_id,
@@ -1398,6 +1512,9 @@ def build_native_teacher_corpus(
             ),
             "forbidden_train_state_keys": sorted(forbidden_train_state_keys),
             "forbidden_holdout_state_keys": sorted(forbidden_holdout_state_keys),
+            "development_forbidden_holdout_state_keys": sorted(
+                development_forbidden_holdout_state_keys
+            ),
             "receipt_cache_source_fingerprint": cache_contract_payload[
                 "source_fingerprint"
             ],
@@ -1478,6 +1595,10 @@ def build_native_teacher_corpus(
         },
     }
     corpus_id = "spc-native-teacher-" + _sha256(deterministic)[:20]
+    if train_store.verified_snapshot() != (train_manifest, train_shards):
+        raise ValueError("train corpus changed before teacher publication")
+    if holdout_store.verified_snapshot() != (holdout_manifest, holdout_shards):
+        raise ValueError("holdout corpus changed before teacher publication")
     return {
         **deterministic,
         "corpus_id": corpus_id,
@@ -1620,10 +1741,11 @@ def _validated_mixed_tier(
 def merge_native_teacher_tiers(
     quiet_depth2: Mapping[str, Any],
     tactical_depth3: Mapping[str, Any],
+    *,
+    merge_generation_start: Mapping[str, Any] | None = None,
+    merge_generation_source_binding: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Merge the fixed cycle-3 tiers without blending depth-dependent metrics."""
-
-    started = time.perf_counter()
+    """Merge preregistered tiers without blending depth-dependent metrics."""
     common_fields = ("engine_version", "source_fingerprint", "teacher_profile")
     for field in common_fields:
         if quiet_depth2.get(field) != tactical_depth3.get(field):
@@ -1643,11 +1765,136 @@ def merge_native_teacher_tiers(
         "profile_schedule",
         "train_attempts",
         "holdout_attempts",
+        "train_attempt_start",
+        "train_attempt_stop",
+        "holdout_attempt_start",
+        "holdout_attempt_stop",
+        "development_holdout_exclusion_sha256",
         "prior_receipt_cache_reuse",
     )
     for field in generation_fields:
         if quiet_generation.get(field) != tactical_generation.get(field):
             raise ValueError(f"teacher tiers disagree on generation {field}")
+    preregistered_provenance: dict[str, Any] | None = None
+    quiet_provenance = quiet_generation.get(
+        "preregistration_generation_provenance"
+    )
+    tactical_provenance = tactical_generation.get(
+        "preregistration_generation_provenance"
+    )
+    if (quiet_provenance is None) != (tactical_provenance is None):
+        raise ValueError("teacher tiers disagree on preregistration provenance")
+    if quiet_provenance is not None:
+        if not isinstance(quiet_provenance, Mapping) or not isinstance(
+            tactical_provenance, Mapping
+        ):
+            raise ValueError("teacher preregistration provenance is malformed")
+        common_provenance_fields = (
+            "schema",
+            "preregistration",
+            "trajectory_generation_starts",
+        )
+        if any(
+            quiet_provenance.get(field) != tactical_provenance.get(field)
+            for field in common_provenance_fields
+        ):
+            raise ValueError("teacher tiers disagree on preregistration source binding")
+        quiet_start = quiet_provenance.get("teacher_generation_start")
+        tactical_start = tactical_provenance.get("teacher_generation_start")
+        quiet_source_binding = quiet_provenance.get(
+            "teacher_generation_source_binding"
+        )
+        tactical_source_binding = tactical_provenance.get(
+            "teacher_generation_source_binding"
+        )
+        quiet_augmentation_start = quiet_provenance.get(
+            "teacher_semantic_augmentation_start"
+        )
+        tactical_augmentation_start = tactical_provenance.get(
+            "teacher_semantic_augmentation_start"
+        )
+        quiet_augmentation_source_binding = quiet_provenance.get(
+            "teacher_semantic_augmentation_source_binding"
+        )
+        tactical_augmentation_source_binding = tactical_provenance.get(
+            "teacher_semantic_augmentation_source_binding"
+        )
+        if (
+            not isinstance(quiet_start, Mapping)
+            or quiet_start.get("tier") != "quiet_depth2"
+            or not isinstance(tactical_start, Mapping)
+            or tactical_start.get("tier") != "tactical_depth3"
+            or not isinstance(quiet_source_binding, Mapping)
+            or quiet_source_binding.get("tier") != "quiet_depth2"
+            or not isinstance(tactical_source_binding, Mapping)
+            or tactical_source_binding.get("tier") != "tactical_depth3"
+            or not isinstance(quiet_augmentation_start, Mapping)
+            or quiet_augmentation_start.get("tier") != "quiet_depth2"
+            or not isinstance(tactical_augmentation_start, Mapping)
+            or tactical_augmentation_start.get("tier") != "tactical_depth3"
+            or not isinstance(quiet_augmentation_source_binding, Mapping)
+            or quiet_augmentation_source_binding.get("tier") != "quiet_depth2"
+            or not isinstance(tactical_augmentation_source_binding, Mapping)
+            or tactical_augmentation_source_binding.get("tier")
+            != "tactical_depth3"
+        ):
+            raise ValueError("teacher tier generation/augmentation bindings differ")
+        preregistered_provenance = {
+            "schema": quiet_provenance["schema"],
+            "preregistration": dict(quiet_provenance["preregistration"]),
+            "trajectory_generation_starts": dict(
+                quiet_provenance["trajectory_generation_starts"]
+            ),
+            "teacher_generation_starts": {
+                "quiet_depth2": dict(quiet_start),
+                "tactical_depth3": dict(tactical_start),
+            },
+            "teacher_generation_source_bindings": {
+                "quiet_depth2": dict(quiet_source_binding),
+                "tactical_depth3": dict(tactical_source_binding),
+            },
+            "semantic_augmentation_starts": {
+                "quiet_depth2": dict(quiet_augmentation_start),
+                "tactical_depth3": dict(tactical_augmentation_start),
+            },
+            "semantic_augmentation_source_bindings": {
+                "quiet_depth2": dict(quiet_augmentation_source_binding),
+                "tactical_depth3": dict(tactical_augmentation_source_binding),
+            },
+        }
+        if merge_generation_start is not None:
+            if (
+                merge_generation_start.get("schema")
+                != "spc-cycle4-teacher-merge-start-v1"
+                or not isinstance(merge_generation_start.get("path"), str)
+                or not isinstance(
+                    merge_generation_start.get("raw_artifact_sha256"), str
+                )
+            ):
+                raise ValueError("teacher merge generation-start binding differs")
+            preregistered_provenance["merge_generation_start"] = dict(
+                merge_generation_start
+            )
+            if (
+                not isinstance(merge_generation_source_binding, Mapping)
+                or merge_generation_source_binding.get("schema")
+                != "spc-cycle4-teacher-merge-sources-v1"
+                or not isinstance(
+                    merge_generation_source_binding.get("path"), str
+                )
+                or not isinstance(
+                    merge_generation_source_binding.get("raw_artifact_sha256"),
+                    str,
+                )
+            ):
+                raise ValueError("teacher merge source binding differs")
+            preregistered_provenance["merge_generation_source_binding"] = dict(
+                merge_generation_source_binding
+            )
+    elif merge_generation_start is not None:
+        raise ValueError("merge start cannot be bound to unpreregistered teacher tiers")
+    elif merge_generation_source_binding is not None:
+        raise ValueError("merge source cannot be bound to unpreregistered teacher tiers")
 
     quiet_labels = _validated_mixed_tier(
         quiet_depth2,
@@ -1745,7 +1992,18 @@ def merge_native_teacher_tiers(
         "source_fingerprint": quiet_depth2["source_fingerprint"],
         "teacher_profile": quiet_depth2["teacher_profile"],
         "generation": {
-            field: quiet_generation[field] for field in generation_fields
+            **{
+                field: quiet_generation[field] for field in generation_fields
+            },
+            **(
+                {}
+                if preregistered_provenance is None
+                else {
+                    "preregistration_generation_provenance": (
+                        preregistered_provenance
+                    )
+                }
+            ),
         },
         "tiers": tier_payloads,
         "labels": labels,
@@ -1779,7 +2037,6 @@ def merge_native_teacher_tiers(
         **deterministic,
         "corpus_id": "spc-native-mixed-teacher-" + _sha256(deterministic)[:20],
         "runtime": {
-            "merge_elapsed_seconds": time.perf_counter() - started,
             "tier_runtime": {
                 "quiet_d2": quiet_depth2["runtime"],
                 "tactical_d3": tactical_depth3["runtime"],

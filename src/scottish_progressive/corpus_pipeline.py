@@ -817,6 +817,7 @@ class CorpusGenerationPlan:
     shard_size: int = 10_000
     batch_size: int = 256
     workers: int = 1
+    protocol_root_binding_sha256: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "root", Path(self.root).expanduser().resolve())
@@ -835,6 +836,15 @@ class CorpusGenerationPlan:
             raise ValueError("corpus attempt range overflows unsigned 64 bits")
         if self.batch_size > (1 << 32) - 1:
             raise ValueError("batch_size exceeds the native v2 request limit")
+        if self.protocol_root_binding_sha256 is not None and (
+            not isinstance(self.protocol_root_binding_sha256, str)
+            or len(self.protocol_root_binding_sha256) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in self.protocol_root_binding_sha256
+            )
+        ):
+            raise ValueError("protocol_root_binding_sha256 must be a lowercase SHA-256")
 
     @property
     def attempt_stop(self) -> int:
@@ -912,7 +922,11 @@ def materialize_native_generation_contract(
 
     if not isinstance(plan, CorpusGenerationPlan):
         raise TypeError("plan must be a CorpusGenerationPlan")
-    store = CorpusStore(plan.root, plan.identity)
+    store = CorpusStore(
+        plan.root,
+        plan.identity,
+        protocol_root_binding_sha256=plan.protocol_root_binding_sha256,
+    )
     return _materialize_native_generation_contract(plan, store)
 
 
@@ -1109,7 +1123,11 @@ def generate_corpus(plan: CorpusGenerationPlan) -> dict[str, object]:
     if not isinstance(plan, CorpusGenerationPlan):
         raise TypeError("plan must be a CorpusGenerationPlan")
     validate_current_native_generation_config(plan.config)
-    store = CorpusStore(plan.root, plan.identity)
+    store = CorpusStore(
+        plan.root,
+        plan.identity,
+        protocol_root_binding_sha256=plan.protocol_root_binding_sha256,
+    )
     generation_contract = _materialize_native_generation_contract(plan, store)
     _ensure_native_outcomes_directory(store)
     completed, pending = _pending_ranges(store, plan.shard_ranges)
@@ -1216,18 +1234,28 @@ def verify_native_boundary_corpus(
     store: CorpusStore,
     *,
     count_unique_states: bool = True,
+    verified_snapshot: tuple[dict[str, Any], tuple[ShardMetadata, ...]] | None = None,
 ) -> dict[str, int | None]:
-    """Decode every payload and bind it back to its full state SHA-256."""
+    """Decode every payload from one exact, unchanged corpus snapshot."""
 
     if not isinstance(store, CorpusStore):
         raise TypeError("store must be a CorpusStore")
+    snapshot = store.verified_snapshot() if verified_snapshot is None else verified_snapshot
+    manifest, shards = snapshot
+    if (
+        not isinstance(manifest, dict)
+        or not isinstance(shards, tuple)
+        or manifest.get("record_count")
+        != sum(shard.record_count for shard in shards)
+    ):
+        raise ValueError("verified corpus snapshot is malformed")
     records = 0
     wins = 0
     losses = 0
     draws = 0
     seen: set[bytes] | None = set() if count_unique_states else None
     duplicate_states = 0
-    for record in store.iter_records():
+    for record in store.iter_snapshot_records(shards):
         sample = decode_native_boundary_sample(record.payload)
         expected_key = progressive_state_dedup_key(
             sample.state,
@@ -1246,7 +1274,7 @@ def verify_native_boundary_corpus(
                 duplicate_states += 1
             else:
                 seen.add(record.state_key)
-    return {
+    result = {
         "records": records,
         "wins": wins,
         "losses": losses,
@@ -1254,3 +1282,8 @@ def verify_native_boundary_corpus(
         "unique_states": None if seen is None else len(seen),
         "duplicate_states": None if seen is None else duplicate_states,
     }
+    if records != manifest["record_count"]:
+        raise ValueError("verified corpus snapshot record count drifted")
+    if store.verified_snapshot() != snapshot:
+        raise ValueError("native corpus changed while payloads were verified")
+    return result

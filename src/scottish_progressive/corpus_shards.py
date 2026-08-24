@@ -692,19 +692,54 @@ class CorpusStore:
     never visible as corpus data, so a stable owner may safely restart a range.
     """
 
-    def __init__(self, root: str | Path, identity: CorpusIdentity) -> None:
+    def __init__(
+        self,
+        root: str | Path,
+        identity: CorpusIdentity,
+        *,
+        protocol_root_binding_sha256: str | None = None,
+        _protocol_read_only: bool = False,
+    ) -> None:
         self.root = Path(root).expanduser().resolve()
         self.identity = identity
+        if protocol_root_binding_sha256 is not None and (
+            not isinstance(protocol_root_binding_sha256, str)
+            or len(protocol_root_binding_sha256) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in protocol_root_binding_sha256
+            )
+        ):
+            raise CorpusStoreError("protocol root-binding SHA-256 is malformed")
+        self._protocol_root_binding_sha256 = protocol_root_binding_sha256
+        self._protocol_read_only = bool(_protocol_read_only)
         self.shards_directory = self.root / "shards"
         self.claims_directory = self.root / "claims"
         self.manifest_path = self.root / "manifest.json"
-        self.root.mkdir(parents=True, exist_ok=True)
-        self.shards_directory.mkdir(parents=True, exist_ok=True)
-        self.claims_directory.mkdir(parents=True, exist_ok=True)
+        self._assert_protocol_root_access(write=not self._protocol_read_only)
+        if self._protocol_read_only:
+            if (
+                not self.root.is_dir()
+                or not self.shards_directory.is_dir()
+                or not self.claims_directory.is_dir()
+            ):
+                raise CorpusStoreError(
+                    "read-only corpus open requires a complete existing store"
+                )
+        else:
+            self.root.mkdir(parents=True, exist_ok=True)
+            self.shards_directory.mkdir(parents=True, exist_ok=True)
+            self.claims_directory.mkdir(parents=True, exist_ok=True)
         with _exclusive_store_lock(self.root):
+            self._assert_protocol_root_access(write=not self._protocol_read_only)
             if not self.manifest_path.exists():
+                if self._protocol_read_only:
+                    raise CorpusStoreError("read-only corpus open cannot create a manifest")
                 _atomic_write_json(self.manifest_path, _manifest_payload(identity, ()))
-            self._synchronize_locked()
+            if self._protocol_read_only:
+                self._load_manifest_locked()
+            else:
+                self._synchronize_locked()
         self.verify()
 
     @classmethod
@@ -744,7 +779,60 @@ class CorpusStore:
             profile_ids=tuple(profile_ids),
             ruleset_version=identity_payload["ruleset_version"],
         )
-        return cls(resolved, identity)
+        return cls(resolved, identity, _protocol_read_only=True)
+
+    def _protocol_root_binding_digest(self) -> str | None:
+        start_path = self.root.with_name(
+            self.root.name + ".cycle4-preregistration-generation-start.json"
+        )
+        binding_path = self.root / "cycle4-preregistration-root-binding.json"
+        start_exists = start_path.exists()
+        binding_exists = binding_path.exists()
+        if not start_exists and not binding_exists:
+            return None
+        if not start_exists or not binding_exists:
+            raise CorpusStoreError(
+                "protocol corpus root has an incomplete external ownership binding"
+            )
+        try:
+            start_raw = start_path.read_bytes()
+            binding_raw = binding_path.read_bytes()
+            start = json.loads(
+                start_raw, object_pairs_hook=_reject_duplicate_json_pairs
+            )
+            binding = json.loads(
+                binding_raw, object_pairs_hook=_reject_duplicate_json_pairs
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise CorpusStoreError(
+                f"protocol corpus ownership binding is unreadable: {error}"
+            ) from error
+        expected = {
+            "schema": "spc-cycle4-trajectory-root-binding-v1",
+            "root": str(self.root),
+            "generation_start": {
+                "path": str(start_path),
+                "raw_artifact_sha256": hashlib.sha256(start_raw).hexdigest(),
+            },
+        }
+        if binding != expected:
+            raise CorpusStoreError("protocol corpus ownership binding differs")
+        return hashlib.sha256(binding_raw).hexdigest()
+
+    def _assert_protocol_root_access(self, *, write: bool) -> None:
+        digest = self._protocol_root_binding_digest()
+        if digest is None:
+            if self._protocol_root_binding_sha256 is not None:
+                raise CorpusStoreError("protocol root-binding token has no binding")
+            return
+        if self._protocol_root_binding_sha256 is not None:
+            if self._protocol_root_binding_sha256 != digest:
+                raise CorpusStoreError("protocol root-binding token differs")
+            return
+        if write:
+            raise CorpusStoreError(
+                "protocol-owned corpus root requires its exact root-binding token"
+            )
 
     def _load_manifest_locked(self) -> tuple[ShardMetadata, ...]:
         payload = _read_canonical_json(self.manifest_path)
@@ -765,6 +853,7 @@ class CorpusStore:
         return shards
 
     def _publish_manifest_locked(self, shards: Sequence[ShardMetadata]) -> None:
+        self._assert_protocol_root_access(write=True)
         _atomic_write_json(self.manifest_path, _manifest_payload(self.identity, shards))
 
     def _claim_from_path(self, path: Path) -> _RangeClaim:
@@ -842,6 +931,7 @@ class CorpusStore:
         return claims
 
     def _synchronize_locked(self) -> tuple[ShardMetadata, ...]:
+        self._assert_protocol_root_access(write=True)
         shards = list(self._load_manifest_locked())
         claims = self._claims_locked()
         known_files = {shard.file for shard in shards}
@@ -892,7 +982,11 @@ class CorpusStore:
     @property
     def manifest(self) -> dict[str, Any]:
         with _exclusive_store_lock(self.root):
-            self._synchronize_locked()
+            self._assert_protocol_root_access(write=not self._protocol_read_only)
+            if self._protocol_read_only:
+                self._load_manifest_locked()
+            else:
+                self._synchronize_locked()
             return _read_canonical_json(self.manifest_path)
 
     @property
@@ -906,6 +1000,7 @@ class CorpusStore:
         *,
         owner_id: str,
     ) -> CorpusShardWriter:
+        self._assert_protocol_root_access(write=True)
         attempt_range = AttemptRange(attempt_start, attempt_stop)
         claim = _RangeClaim(attempt_range, _owner_digest(owner_id), self.identity.digest)
         with _exclusive_store_lock(self.root):
@@ -947,8 +1042,10 @@ class CorpusStore:
         self._release_claim(claim)
 
     def _release_claim(self, claim: _RangeClaim) -> None:
+        self._assert_protocol_root_access(write=True)
         path = self.claims_directory / claim.file_name
         with _exclusive_store_lock(self.root):
+            self._assert_protocol_root_access(write=True)
             if path.exists():
                 existing = self._claim_from_path(path)
                 if not existing.has_same_owner(claim):
@@ -963,6 +1060,7 @@ class CorpusStore:
         record_count: int,
         before_publish: Callable[[ShardMetadata], str | None] | None = None,
     ) -> ShardMetadata:
+        self._assert_protocol_root_access(write=True)
         sha256 = _sha256_file(temporary_path)
         final_name = (
             f"shard-{claim.attempt_range.start:020d}-{claim.attempt_range.stop:020d}-"
@@ -1051,7 +1149,12 @@ class CorpusStore:
 
     def _verified_shards(self) -> tuple[ShardMetadata, ...]:
         with _exclusive_store_lock(self.root):
-            shards = self._synchronize_locked()
+            self._assert_protocol_root_access(write=not self._protocol_read_only)
+            shards = (
+                self._load_manifest_locked()
+                if self._protocol_read_only
+                else self._synchronize_locked()
+            )
         verified: list[ShardMetadata] = []
         for expected in shards:
             path = self.root / expected.file
@@ -1074,6 +1177,101 @@ class CorpusStore:
             "corpus_sha256": payload["corpus_sha256"],
             **payload["totals"],
         }
+
+    def verified_snapshot(
+        self,
+    ) -> tuple[dict[str, Any], tuple[ShardMetadata, ...]]:
+        """Freeze one verified manifest view for a bounded corpus consumer.
+
+        The returned shard tuple is content-addressed. Consumers that need the
+        records behind this exact manifest must pass it to
+        ``iter_snapshot_records`` and then compare a second snapshot before
+        publishing any result. This prevents a growing store from mixing the
+        identity/window from one manifest with records from another.
+        """
+
+        shards = self._verified_shards()
+        payload = _manifest_payload(self.identity, shards)
+        return (
+            {
+                "corpus_sha256": payload["corpus_sha256"],
+                **payload["totals"],
+            },
+            shards,
+        )
+
+    def iter_snapshot_records(
+        self,
+        shards: Sequence[ShardMetadata],
+        *,
+        deduplicate_states: bool = False,
+    ) -> Iterator[CorpusRecord]:
+        """Yield records parsed and hashed from the exact frozen shard bytes."""
+
+        ordered = _validate_nonoverlapping(tuple(shards))
+        seen: set[bytes] | None = set() if deduplicate_states else None
+        for expected in ordered:
+            path = self.root / expected.file
+            digest = hashlib.sha256()
+            size_bytes = 0
+            records: list[CorpusRecord] = []
+            with path.open("rb") as stream:
+                raw_header = _read_exact(stream, _SHARD_HEADER.size, "header")
+                digest.update(raw_header)
+                size_bytes += len(raw_header)
+                attempt_range, declared_count, identity_digest = _unpack_shard_header(
+                    raw_header, path
+                )
+                if identity_digest != self.identity.digest:
+                    raise CorpusIdentityError(
+                        f"shard {path.name} has a different corpus identity"
+                    )
+                if attempt_range != expected.attempt_range:
+                    raise ShardCorruptionError(
+                        f"shard {path.name} attempt range changed from the snapshot"
+                    )
+                if declared_count != expected.record_count:
+                    raise ShardCorruptionError(
+                        f"shard {path.name} record count changed from the snapshot"
+                    )
+                prior_order: tuple[int, int] | None = None
+                for _ in range(declared_count):
+                    raw = _read_exact(stream, _RECORD_HEADER.size, "record header")
+                    digest.update(raw)
+                    size_bytes += len(raw)
+                    attempt, sequence, state_key, payload_size = _RECORD_HEADER.unpack(raw)
+                    if not attempt_range.contains(attempt):
+                        raise ShardCorruptionError(
+                            f"record attempt {attempt} is outside {attempt_range}"
+                        )
+                    order = (attempt, sequence)
+                    if prior_order is not None and order <= prior_order:
+                        raise ShardCorruptionError(
+                            "shard records are duplicated or not deterministic"
+                        )
+                    if state_key == _ZERO_DIGEST or payload_size > _MAX_RECORD_PAYLOAD:
+                        raise ShardCorruptionError("shard record header is invalid")
+                    payload = _read_exact(stream, payload_size, "record payload")
+                    digest.update(payload)
+                    size_bytes += len(payload)
+                    prior_order = order
+                    records.append(CorpusRecord(attempt, sequence, state_key, payload))
+                if stream.read(1):
+                    raise ShardCorruptionError(f"shard {path.name} has trailing bytes")
+                if os.fstat(stream.fileno()).st_size != size_bytes:
+                    raise ShardCorruptionError(
+                        f"shard {path.name} changed while its snapshot was read"
+                    )
+            if size_bytes != expected.size_bytes or digest.hexdigest() != expected.sha256:
+                raise ShardCorruptionError(
+                    f"shard {path.name} bytes changed from the verified snapshot"
+                )
+            for record in records:
+                if seen is not None:
+                    if record.state_key in seen:
+                        continue
+                    seen.add(record.state_key)
+                yield record
 
     def iter_records(self, *, deduplicate_states: bool = False) -> Iterator[CorpusRecord]:
         """Yields deterministic range/attempt order, optionally keeping first state."""

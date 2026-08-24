@@ -126,6 +126,46 @@ def test_manifest_binds_schema_source_profiles_and_rules(tmp_path: Path) -> None
     assert reopened.verify() == store.verify()
 
 
+def test_verified_snapshot_reads_exact_shards_and_detects_later_append(
+    tmp_path: Path,
+) -> None:
+    store = CorpusStore(tmp_path / "corpus", _identity())
+    first = CorpusRecord.from_state(0, 0, _state(), b"first")
+    _write_one(store, 0, 1, [first], owner="worker-0")
+
+    manifest, shards = store.verified_snapshot()
+    assert manifest["attempt_count"] == 1
+    assert [record.payload for record in store.iter_snapshot_records(shards)] == [
+        b"first"
+    ]
+    second = CorpusRecord.from_state(1, 0, _state(quiet_series=1), b"second")
+    _write_one(store, 1, 2, [second], owner="worker-1")
+    assert store.verified_snapshot() != (manifest, shards)
+    assert [record.payload for record in store.iter_snapshot_records(shards)] == [
+        b"first"
+    ]
+
+
+def test_snapshot_record_reader_rejects_mutated_bytes_before_yield(
+    tmp_path: Path,
+) -> None:
+    store = CorpusStore(tmp_path / "corpus", _identity())
+    _write_one(
+        store,
+        0,
+        1,
+        [CorpusRecord.from_state(0, 0, _state(), b"immutable")],
+        owner="worker-0",
+    )
+    _, shards = store.verified_snapshot()
+    shard_path = store.root / shards[0].file
+    raw = bytearray(shard_path.read_bytes())
+    raw[-1] ^= 1
+    shard_path.write_bytes(raw)
+
+    with pytest.raises(ShardCorruptionError, match="bytes changed"):
+        list(store.iter_snapshot_records(shards))
+
 def test_binary_shard_finalization_is_atomic_and_content_addressed(
     tmp_path: Path,
 ) -> None:

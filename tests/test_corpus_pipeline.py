@@ -216,6 +216,78 @@ def test_pipeline_generates_resumes_and_verifies_fixed_binary_samples(
     )
 
 
+def test_protocol_owned_root_requires_and_accepts_exact_binding_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = (tmp_path / "protocol-corpus").resolve()
+    start_path = root.with_name(
+        root.name + ".cycle4-preregistration-generation-start.json"
+    )
+    start_path.write_text(
+        json.dumps({"schema": "test-generation-start"}), encoding="utf-8"
+    )
+    root.mkdir()
+    binding_path = root / "cycle4-preregistration-root-binding.json"
+    binding = {
+        "schema": "spc-cycle4-trajectory-root-binding-v1",
+        "root": str(root),
+        "generation_start": {
+            "path": str(start_path),
+            "raw_artifact_sha256": corpus_shards.hashlib.sha256(
+                start_path.read_bytes()
+            ).hexdigest(),
+        },
+    }
+    binding_path.write_text(json.dumps(binding), encoding="utf-8")
+    binding_sha = corpus_shards.hashlib.sha256(binding_path.read_bytes()).hexdigest()
+
+    calls: list[tuple[int, int]] = []
+
+    def generate(
+        config: NativeCorpusConfig,
+        profiles: tuple[object, ...],
+        *,
+        first_attempt: int,
+        attempt_count: int,
+    ) -> NativeFullGameBatch:
+        calls.append((first_attempt, attempt_count))
+        return _fake_batch(
+            config,
+            profiles,
+            first_attempt=first_attempt,
+            attempt_count=attempt_count,
+        )
+
+    monkeypatch.setattr(corpus_pipeline, "generate_native_full_game_batch", generate)
+    plan = CorpusGenerationPlan(
+        root=root,
+        config=NativeCorpusConfig(
+            max_frontier_states=8,
+            candidate_count=4,
+            policy=NativeRankPolicy.uniform(),
+        ),
+        profiles=(baseline_profile(),),
+        first_attempt=0,
+        attempt_count=1,
+        shard_size=1,
+        batch_size=1,
+        workers=1,
+    )
+    with pytest.raises(
+        corpus_shards.CorpusStoreError,
+        match="requires its exact root-binding token",
+    ):
+        generate_corpus(plan)
+    assert calls == []
+
+    bound_plan = replace(plan, protocol_root_binding_sha256=binding_sha)
+    receipt = generate_corpus(bound_plan)
+    assert calls == [(0, 1)]
+    assert receipt["generated_attempts"] == 1
+    assert CorpusStore.open(root).verify()["attempt_count"] == 1
+
+
 def test_all_rejected_empty_shard_keeps_exact_durable_outcomes_on_resume(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

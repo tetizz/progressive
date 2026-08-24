@@ -13,7 +13,11 @@ import pytest
 from scripts.build_native_teacher_corpus import _cross_tier_forbidden_state_keys
 
 from scottish_progressive.corpus_samples import NativeBoundarySample
-from scottish_progressive.corpus_shards import progressive_state_dedup_key
+from scottish_progressive.corpus_shards import (
+    AttemptRange,
+    ShardMetadata,
+    progressive_state_dedup_key,
+)
 from scottish_progressive.evaluation import evaluate
 from scottish_progressive.model import ProgressiveState
 from scottish_progressive.native_corpus import (
@@ -30,10 +34,12 @@ from scottish_progressive.native_teacher import (
     _mate_distance,
     _resolve_receipt_cache_contract,
     _validate_replacement_cache_source,
+    _verified_attempt_window,
     _run_bucket,
     _run_buckets_parallel,
     _single_candidate_job,
     merge_native_teacher_tiers,
+    semantic_exclusion_sha256,
 )
 from scottish_progressive.profiles import baseline_profile, create_population
 from scottish_progressive.rules import play_series
@@ -431,6 +437,31 @@ def test_prior_receipt_cache_contract_is_fail_closed(tmp_path) -> None:
         )
 
 
+def test_teacher_attempt_window_must_start_at_zero_and_end_at_expected_count() -> None:
+    def shard(start: int, stop: int, tag: str) -> ShardMetadata:
+        return ShardMetadata(
+            attempt_range=AttemptRange(start, stop),
+            owner_sha256=hashlib.sha256(f"owner-{tag}".encode()).hexdigest(),
+            file=f"shards/{tag}.spcbin",
+            sha256=hashlib.sha256(f"shard-{tag}".encode()).hexdigest(),
+            size_bytes=1,
+            record_count=1,
+        )
+
+    exact = (shard(0, 4, "a"), shard(4, 8, "b"))
+    assert _verified_attempt_window(
+        exact, split="train", expected_attempts=8
+    ) == (0, 8)
+
+    shifted = (shard(1, 5, "c"), shard(5, 9, "d"))
+    with pytest.raises(ValueError, match=r"expected \[0, 8\)"):
+        _verified_attempt_window(shifted, split="train", expected_attempts=8)
+
+    gapped = (shard(0, 4, "e"), shard(5, 8, "f"))
+    with pytest.raises(ValueError, match="not contiguous"):
+        _verified_attempt_window(gapped, split="train", expected_attempts=8)
+
+
 def test_label_runtime_identities_pin_search_eval_rules_and_native(
     monkeypatch, tmp_path
 ) -> None:
@@ -583,6 +614,11 @@ def _mixed_tier_payload(
             "profile_schedule": "ordered-pair-round-robin",
             "train_attempts": 8_192,
             "holdout_attempts": 4_096,
+            "train_attempt_start": 0,
+            "train_attempt_stop": 8_192,
+            "holdout_attempt_start": 0,
+            "holdout_attempt_stop": 4_096,
+            "development_holdout_exclusion_sha256": semantic_exclusion_sha256(()),
             "prior_receipt_cache_reuse": False,
         },
         "selection": {"quota_by_cell": quota_rows},
