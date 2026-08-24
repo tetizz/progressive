@@ -168,6 +168,7 @@ class SearchLimits:
     max_generation_positions: int | None = None
     collect_all_root_scores: bool = True
     native_threads: int = 1
+    continue_after_root_mate: bool = False
 
     def __post_init__(self) -> None:
         if self.depth_series < 1:
@@ -2631,7 +2632,7 @@ class SeriesSearcher:
                     root_alpha = max(root_alpha, score)
                 else:
                     root_beta = min(root_beta, score)
-            if (
+            if not self.limits.continue_after_root_mate and (
                 mover == chess.WHITE
                 and score == MATE_SCORE - 1
                 or mover == chess.BLACK

@@ -13,7 +13,11 @@ from scottish_progressive.corpus_pipeline import (
     verify_native_boundary_corpus,
 )
 from scottish_progressive.corpus_shards import CorpusStore
-from scottish_progressive.native_corpus import NativeCorpusConfig, NativeRankPolicy
+from scottish_progressive.native_corpus import (
+    NativeCorpusConfig,
+    NativeProfileSchedule,
+    NativeRankPolicy,
+)
 from scottish_progressive.profiles import baseline_profile, load_profile
 
 
@@ -57,6 +61,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-positions-per-game", type=int, default=10_000_000)
     parser.add_argument("--uniform", action="store_true")
     parser.add_argument(
+        "--ordered-pairs",
+        action="store_true",
+        help=(
+            "cycle every ordered white/black profile pairing instead of "
+            "self-play only; with N profiles each N**2-attempt block is balanced"
+        ),
+    )
+    parser.add_argument(
         "--profile",
         action="append",
         type=Path,
@@ -86,6 +98,11 @@ def main() -> None:
         max_positions_per_game=args.max_positions_per_game,
         candidate_count=args.candidates,
         policy=NativeRankPolicy.uniform() if args.uniform else NativeRankPolicy(),
+        schedule=(
+            NativeProfileSchedule.ORDERED_PAIR_ROUND_ROBIN
+            if args.ordered_pairs
+            else NativeProfileSchedule.SELF_ROUND_ROBIN
+        ),
     )
     plan = CorpusGenerationPlan(
         root=args.root,

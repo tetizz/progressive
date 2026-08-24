@@ -37,6 +37,25 @@ def test_search_finds_immediate_seriesmate() -> None:
     assert result.forced == "white"
 
 
+def test_full_root_mode_scores_every_retained_option_after_immediate_mate() -> None:
+    state = ProgressiveState.from_fen(
+        "7k/8/5KQ1/8/8/8/8/8 w - - 0 1", 1
+    )
+    frontier = generate_series(state)
+    result = analyze(
+        state,
+        SearchLimits(
+            depth_series=1,
+            collect_all_root_scores=True,
+            continue_after_root_mate=True,
+        ),
+    )
+
+    assert result.score == MATE_SCORE - 1
+    assert len(result.alternatives) == len(frontier)
+    assert result.root_scores_complete
+
+
 def test_best_only_root_mode_keeps_legal_mate_dominant() -> None:
     state = ProgressiveState.from_fen(
         "7k/8/5KQ1/8/8/8/8/8 w - - 0 1", 1
