@@ -155,6 +155,34 @@ def test_balanced_quotas_cover_profiles_series_and_split_exactly() -> None:
             ] == 8
 
 
+def test_balanced_quotas_support_cycle4_floor_ceil_cells_deterministically() -> None:
+    profiles = tuple(f"profile-{index}" for index in range(4))
+    config = NativeTeacherConfig(
+        target_roots=1_024,
+        train_roots=768,
+        depth_series=3,
+        seed=4_040_824_003,
+        expected_train_attempts=262_144,
+        expected_holdout_attempts=131_072,
+        selection_mode="tactical-low-complexity",
+    )
+    quotas = _balanced_quotas(profiles, config)
+    assert quotas == _balanced_quotas(profiles, config)
+    assert len(quotas) == 48
+    assert sum(value for key, value in quotas.items() if key[0] == "train") == 768
+    assert sum(value for key, value in quotas.items() if key[0] == "holdout") == 256
+    cell_totals = [
+        quotas[("train", profile_id, series)]
+        + quotas[("holdout", profile_id, series)]
+        for profile_id in profiles
+        for series in range(4, 10)
+    ]
+    assert set(cell_totals) == {42, 43}
+    assert max(cell_totals) - min(cell_totals) == 1
+    changed_seed = replace(config, seed=config.seed + 1)
+    assert quotas != _balanced_quotas(profiles, changed_seed)
+
+
 def test_incomplete_search_is_never_accepted_or_source_recovered(
     monkeypatch, tmp_path
 ) -> None:
@@ -495,61 +523,66 @@ def _mixed_tier_payload(
     depth: int,
     target_roots: int,
     train_roots: int,
+    train_attempts: int = 8_192,
+    holdout_attempts: int = 4_096,
+    seed: int = 2_026_082_303,
 ) -> dict[str, object]:
     profile_ids = [f"profile-{index}" for index in range(4)]
-    cells = [(profile_id, series) for profile_id in profile_ids for series in range(4, 10)]
+    config = NativeTeacherConfig(
+        target_roots=target_roots,
+        train_roots=train_roots,
+        depth_series=depth,
+        seed=seed,
+        expected_train_attempts=train_attempts,
+        expected_holdout_attempts=holdout_attempts,
+        selection_mode=selection_mode,
+    )
     labels: list[dict[str, object]] = []
     quota_rows: list[dict[str, object]] = []
-    train_extra_cells = train_roots - len(cells)
-    for cell_index, (profile_id, series) in enumerate(cells):
-        cell_total = target_roots // len(cells)
-        if cell_total == 6:
-            split_quotas = {"train": 4, "holdout": 2}
-        else:
-            train_quota = 2 if cell_index < train_extra_cells else 1
-            split_quotas = {"train": train_quota, "holdout": cell_total - train_quota}
-        for split, quota in split_quotas.items():
-            quota_rows.append(
+    for (split, profile_id, series), quota in sorted(
+        _balanced_quotas(profile_ids, config).items()
+    ):
+        quota_rows.append(
+            {
+                "split": split,
+                "source_profile_id": profile_id,
+                "series_number": series,
+                "quota": quota,
+                "accepted": quota,
+            }
+        )
+        for row_index in range(quota):
+            prefix = f"{tag}|{split}|{profile_id}|{series}|{row_index}"
+            root_key = hashlib.sha256((prefix + "|root").encode()).hexdigest()
+            option_key = hashlib.sha256((prefix + "|option").encode()).hexdigest()
+            labels.append(
                 {
                     "split": split,
+                    "state_key_sha256": root_key,
                     "source_profile_id": profile_id,
                     "series_number": series,
-                    "quota": quota,
-                    "accepted": quota,
+                    "search": {
+                        "requested_depth_series": depth,
+                        "completed_depth_series": depth,
+                        "root_scores_complete": True,
+                        "timed_out": False,
+                        "work_limit_reached": False,
+                    },
+                    "options": [
+                        {
+                            "proof_bounds": [-1, 1],
+                            "proof": None,
+                            "signed_mate_distance_series": None,
+                            "principal_variation": [],
+                            "final_state_key_sha256": option_key,
+                            "final_pfen": "synthetic",
+                            "final_features": {},
+                            "is_hard_negative": False,
+                            "hard_negative_reasons": [],
+                        }
+                    ],
                 }
             )
-            for row_index in range(quota):
-                prefix = f"{tag}|{split}|{profile_id}|{series}|{row_index}"
-                root_key = hashlib.sha256((prefix + "|root").encode()).hexdigest()
-                option_key = hashlib.sha256((prefix + "|option").encode()).hexdigest()
-                labels.append(
-                    {
-                        "split": split,
-                        "state_key_sha256": root_key,
-                        "source_profile_id": profile_id,
-                        "series_number": series,
-                        "search": {
-                            "requested_depth_series": depth,
-                            "completed_depth_series": depth,
-                            "root_scores_complete": True,
-                            "timed_out": False,
-                            "work_limit_reached": False,
-                        },
-                        "options": [
-                            {
-                                "proof_bounds": [-1, 1],
-                                "proof": None,
-                                "signed_mate_distance_series": None,
-                                "principal_variation": [],
-                                "final_state_key_sha256": option_key,
-                                "final_pfen": "synthetic",
-                                "final_features": {},
-                                "is_hard_negative": False,
-                                "hard_negative_reasons": [],
-                            }
-                        ],
-                    }
-                )
     quality = {
         "status": "complete",
         "accepted_roots": target_roots,
@@ -564,16 +597,7 @@ def _mixed_tier_payload(
         "engine_version": "test-engine",
         "source_fingerprint": "0123456789abcdef",
         "teacher_profile": baseline_profile().as_dict(),
-        "config": {
-            "selection_mode": selection_mode,
-            "depth_series": depth,
-            "branch_cap": 32,
-            "target_roots": target_roots,
-            "train_roots": train_roots,
-            "hard_negative_count": 4,
-            "expected_train_attempts": 8_192,
-            "expected_holdout_attempts": 4_096,
-        },
+        "config": config.as_dict(),
         "generation": {
             "train_contract_sha256": "train-contract",
             "holdout_contract_sha256": "holdout-contract",
@@ -581,8 +605,8 @@ def _mixed_tier_payload(
             "holdout_corpus_sha256": "holdout-corpus",
             "ordered_profile_ids": profile_ids,
             "profile_schedule": "ordered-pair-round-robin",
-            "train_attempts": 8_192,
-            "holdout_attempts": 4_096,
+            "train_attempts": train_attempts,
+            "holdout_attempts": holdout_attempts,
             "prior_receipt_cache_reuse": False,
         },
         "selection": {"quota_by_cell": quota_rows},
@@ -633,3 +657,68 @@ def test_mixed_depth_merge_keeps_tier_metrics_separate_and_fails_on_leakage() ->
     )["options"][0]["final_state_key_sha256"] = train_final
     with pytest.raises(ValueError, match="leakage audit failed"):
         merge_native_teacher_tiers(quiet, leaking)
+
+
+def test_cycle4_merge_accepts_exact_frozen_scale_and_rejects_quota_tampering() -> None:
+    common = {
+        "seed": 4_040_824_003,
+        "expected_train_attempts": 262_144,
+        "expected_holdout_attempts": 131_072,
+    }
+    quiet_config = NativeTeacherConfig(
+        **common,
+        target_roots=3_072,
+        train_roots=2_304,
+        depth_series=2,
+        selection_mode="quiet-nonterminal",
+    )
+    tactical_config = NativeTeacherConfig(
+        **common,
+        target_roots=1_024,
+        train_roots=768,
+        depth_series=3,
+        selection_mode="tactical-low-complexity",
+    )
+    quiet = _mixed_tier_payload(
+        tag="cycle4-quiet",
+        selection_mode="quiet-nonterminal",
+        depth=2,
+        target_roots=3_072,
+        train_roots=2_304,
+        train_attempts=262_144,
+        holdout_attempts=131_072,
+        seed=common["seed"],
+    )
+    tactical = _mixed_tier_payload(
+        tag="cycle4-tactical",
+        selection_mode="tactical-low-complexity",
+        depth=3,
+        target_roots=1_024,
+        train_roots=768,
+        train_attempts=262_144,
+        holdout_attempts=131_072,
+        seed=common["seed"],
+    )
+    merged = merge_native_teacher_tiers(
+        quiet,
+        tactical,
+        quiet_config=quiet_config,
+        tactical_config=tactical_config,
+    )
+    assert merged["quality"]["accepted_roots"] == 4_096
+    assert merged["quality"]["train_roots"] == 3_072
+    assert merged["quality"]["holdout_roots"] == 1_024
+    assert all(
+        not values for values in merged["selection"]["audit_state_keys"].values()
+    )
+
+    tampered = deepcopy(tactical)
+    tampered["selection"]["quota_by_cell"][0]["quota"] += 1
+    tampered["selection"]["quota_by_cell"][0]["accepted"] += 1
+    with pytest.raises(ValueError, match="profile/series balance drifted"):
+        merge_native_teacher_tiers(
+            quiet,
+            tampered,
+            quiet_config=quiet_config,
+            tactical_config=tactical_config,
+        )

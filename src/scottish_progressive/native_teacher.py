@@ -10,7 +10,6 @@ from concurrent.futures import (
 from dataclasses import asdict, dataclass, field, replace
 import hashlib
 import json
-import math
 import os
 from pathlib import Path
 import tempfile
@@ -326,38 +325,76 @@ def _balanced_quotas(
 ) -> dict[tuple[str, str, int], int]:
     series_numbers = tuple(range(config.minimum_series, config.maximum_series + 1))
     cells = tuple((profile_id, series) for profile_id in profile_ids for series in series_numbers)
-    if config.target_roots % len(cells):
-        raise ValueError("target_roots must divide evenly across profile/series cells")
-    cell_total = config.target_roots // len(cells)
-    exact_train_per_cell = cell_total * config.train_roots / config.target_roots
-    base_train = math.floor(exact_train_per_cell)
-    remaining = config.train_roots - base_train * len(cells)
-    train = {cell: base_train for cell in cells}
+    if not cells:
+        raise ValueError("teacher quota grid must contain at least one cell")
+
+    # Targets need not divide evenly across the 24 profile/series cells.  Use
+    # deterministic floor/ceil apportionment so larger preregistered cycles do
+    # not have to distort their total merely to satisfy the grid geometry.
+    base_total, total_remainder = divmod(config.target_roots, len(cells))
+    cell_totals = {cell: base_total for cell in cells}
     profile_extras = Counter[str]()
     series_extras = Counter[int]()
     remaining_cells = set(cells)
-    for extra_index in range(remaining):
+    for extra_index in range(total_remainder):
         cell = min(
             remaining_cells,
             key=lambda item: (
                 profile_extras[item[0]],
                 series_extras[item[1]],
                 hashlib.sha256(
-                    f"{config.seed}|quota|{extra_index}|{item[0]}|{item[1]}".encode(
+                    f"{config.seed}|total-quota|{extra_index}|{item[0]}|{item[1]}".encode(
+                        "ascii"
+                    )
+                ).digest(),
+            ),
+        )
+        cell_totals[cell] += 1
+        profile_extras[cell[0]] += 1
+        series_extras[cell[1]] += 1
+        remaining_cells.remove(cell)
+
+    # Apportion the exact train total proportionally within those capacities.
+    # Largest-remainder allocation is deterministic and leaves holdout as the
+    # exact complement in every cell.
+    train = {
+        cell: (config.train_roots * cell_total) // config.target_roots
+        for cell, cell_total in cell_totals.items()
+    }
+    train_remainder = config.train_roots - sum(train.values())
+    train_profile_extras = Counter[str]()
+    train_series_extras = Counter[int]()
+    remaining_train_cells = {
+        cell for cell in cells if train[cell] < cell_totals[cell]
+    }
+    for extra_index in range(train_remainder):
+        if not remaining_train_cells:
+            raise AssertionError("balanced train quota exceeded cell capacity")
+        cell = min(
+            remaining_train_cells,
+            key=lambda item: (
+                -(config.train_roots * cell_totals[item] % config.target_roots),
+                train_profile_extras[item[0]],
+                train_series_extras[item[1]],
+                hashlib.sha256(
+                    f"{config.seed}|train-quota|{extra_index}|{item[0]}|{item[1]}".encode(
                         "ascii"
                     )
                 ).digest(),
             ),
         )
         train[cell] += 1
-        profile_extras[cell[0]] += 1
-        series_extras[cell[1]] += 1
-        remaining_cells.remove(cell)
+        train_profile_extras[cell[0]] += 1
+        train_series_extras[cell[1]] += 1
+        if train[cell] == cell_totals[cell]:
+            remaining_train_cells.remove(cell)
     quotas: dict[tuple[str, str, int], int] = {}
     for profile_id, series in cells:
         train_quota = train[(profile_id, series)]
         quotas[("train", profile_id, series)] = train_quota
-        quotas[("holdout", profile_id, series)] = cell_total - train_quota
+        quotas[("holdout", profile_id, series)] = (
+            cell_totals[(profile_id, series)] - train_quota
+        )
     if sum(value for key, value in quotas.items() if key[0] == "train") != config.train_roots:
         raise AssertionError("balanced train quota drifted")
     if sum(value for key, value in quotas.items() if key[0] == "holdout") != config.holdout_roots:
@@ -1504,10 +1541,7 @@ def _validated_mixed_tier(
     payload: Mapping[str, Any],
     *,
     tier_name: str,
-    selection_mode: str,
-    depth_series: int,
-    target_roots: int,
-    train_roots: int,
+    expected_config: NativeTeacherConfig,
 ) -> list[dict[str, Any]]:
     if payload.get("schema") != NATIVE_TEACHER_SCHEMA:
         raise ValueError(f"{tier_name} teacher schema is unsupported")
@@ -1523,21 +1557,12 @@ def _validated_mixed_tier(
         for item in (config, quality, contract, selection)
     ) or not isinstance(labels, list):
         raise ValueError(f"{tier_name} teacher artifact is malformed")
-    expected_config = {
-        "selection_mode": selection_mode,
-        "depth_series": depth_series,
-        "branch_cap": 32,
-        "target_roots": target_roots,
-        "train_roots": train_roots,
-        "hard_negative_count": 4,
-        "expected_train_attempts": 8_192,
-        "expected_holdout_attempts": 4_096,
-    }
-    for key, expected in expected_config.items():
-        if config.get(key) != expected:
-            raise ValueError(
-                f"{tier_name} config {key}={config.get(key)!r}; expected {expected!r}"
-            )
+    expected_config_payload = expected_config.as_dict()
+    if dict(config) != expected_config_payload:
+        raise ValueError(f"{tier_name} teacher config differs from its frozen contract")
+    target_roots = expected_config.target_roots
+    train_roots = expected_config.train_roots
+    depth_series = expected_config.depth_series
     if quality.get("status") != "complete":
         raise ValueError(f"{tier_name} teacher artifact is incomplete")
     if quality.get("accepted_roots") != target_roots:
@@ -1558,20 +1583,48 @@ def _validated_mixed_tier(
         raise ValueError(f"{tier_name} permits incomplete cached labels")
     if contract.get("full_retained_root_scores_required") is not True:
         raise ValueError(f"{tier_name} does not require full retained scores")
+    generation = payload.get("generation")
+    profile_ids = (
+        generation.get("ordered_profile_ids")
+        if isinstance(generation, Mapping)
+        else None
+    )
+    if (
+        not isinstance(profile_ids, list)
+        or len(profile_ids) != 4
+        or any(not isinstance(profile_id, str) or not profile_id for profile_id in profile_ids)
+        or len(set(profile_ids)) != len(profile_ids)
+    ):
+        raise ValueError(f"{tier_name} ordered profile IDs are malformed")
+    expected_quotas = _balanced_quotas(profile_ids, expected_config)
     quotas = selection.get("quota_by_cell")
-    if not isinstance(quotas, list) or len(quotas) != 48:
+    if not isinstance(quotas, list) or len(quotas) != len(expected_quotas):
         raise ValueError(f"{tier_name} cell quotas are incomplete")
-    aggregate_cells: Counter[tuple[str, int]] = Counter()
+    observed_quotas: dict[tuple[str, str, int], int] = {}
     for row in quotas:
-        if not isinstance(row, Mapping) or row.get("accepted") != row.get("quota"):
-            raise ValueError(f"{tier_name} has an unfilled profile/series cell")
-        aggregate_cells[(str(row["source_profile_id"]), int(row["series_number"]))] += int(
-            row["accepted"]
+        if not isinstance(row, Mapping) or set(row) != {
+            "split",
+            "source_profile_id",
+            "series_number",
+            "quota",
+            "accepted",
+        }:
+            raise ValueError(f"{tier_name} has a malformed profile/series cell")
+        key = (
+            str(row["split"]),
+            str(row["source_profile_id"]),
+            int(row["series_number"]),
         )
-    expected_per_cell = target_roots // 24
-    if len(aggregate_cells) != 24 or set(aggregate_cells.values()) != {
-        expected_per_cell
-    }:
+        quota = row.get("quota")
+        if (
+            type(quota) is not int
+            or quota < 0
+            or row.get("accepted") != quota
+            or key in observed_quotas
+        ):
+            raise ValueError(f"{tier_name} has an unfilled profile/series cell")
+        observed_quotas[key] = quota
+    if observed_quotas != expected_quotas:
         raise ValueError(f"{tier_name} profile/series balance drifted")
     if len(labels) != target_roots:
         raise ValueError(f"{tier_name} label count drifted")
@@ -1620,8 +1673,44 @@ def _validated_mixed_tier(
 def merge_native_teacher_tiers(
     quiet_depth2: Mapping[str, Any],
     tactical_depth3: Mapping[str, Any],
+    *,
+    quiet_config: NativeTeacherConfig | None = None,
+    tactical_config: NativeTeacherConfig | None = None,
 ) -> dict[str, Any]:
-    """Merge the fixed cycle-3 tiers without blending depth-dependent metrics."""
+    """Merge two frozen tiers without blending depth-dependent metrics."""
+
+    quiet_config = quiet_config or NativeTeacherConfig(
+        target_roots=144,
+        train_roots=96,
+        depth_series=2,
+        selection_mode="quiet-nonterminal",
+    )
+    tactical_config = tactical_config or NativeTeacherConfig(
+        target_roots=48,
+        train_roots=32,
+        depth_series=3,
+        selection_mode="tactical-low-complexity",
+    )
+    if quiet_config.selection_mode != "quiet-nonterminal" or quiet_config.depth_series != 2:
+        raise ValueError("quiet teacher merge contract must be quiet depth 2")
+    if (
+        tactical_config.selection_mode != "tactical-low-complexity"
+        or tactical_config.depth_series != 3
+    ):
+        raise ValueError("tactical teacher merge contract must be tactical depth 3")
+    shared_config_fields = (
+        "minimum_series",
+        "maximum_series",
+        "branch_cap",
+        "max_generation_positions",
+        "hard_negative_count",
+        "seed",
+        "expected_train_attempts",
+        "expected_holdout_attempts",
+    )
+    for field in shared_config_fields:
+        if getattr(quiet_config, field) != getattr(tactical_config, field):
+            raise ValueError(f"teacher merge contracts disagree on {field}")
 
     started = time.perf_counter()
     common_fields = ("engine_version", "source_fingerprint", "teacher_profile")
@@ -1652,18 +1741,12 @@ def merge_native_teacher_tiers(
     quiet_labels = _validated_mixed_tier(
         quiet_depth2,
         tier_name="quiet_d2",
-        selection_mode="quiet-nonterminal",
-        depth_series=2,
-        target_roots=144,
-        train_roots=96,
+        expected_config=quiet_config,
     )
     tactical_labels = _validated_mixed_tier(
         tactical_depth3,
         tier_name="tactical_d3",
-        selection_mode="tactical-low-complexity",
-        depth_series=3,
-        target_roots=48,
-        train_roots=32,
+        expected_config=tactical_config,
     )
     labels = sorted(
         (*quiet_labels, *tactical_labels),
