@@ -2129,6 +2129,749 @@ std::optional<FullEvaluation> full_evaluate(
     return result;
 }
 
+namespace {
+
+[[nodiscard]] int teacher_attackers_count(
+    const BoardState& board,
+    bool color,
+    int target
+) noexcept {
+    const Position position = evaluation_position(board);
+    Bitboard pieces = board.occupied[color ? 1 : 0];
+    int count = 0;
+    while (pieces != 0) {
+        const int source = static_cast<int>(std::countr_zero(pieces));
+        pieces &= pieces - 1;
+        count += (
+            attacks_from(
+                position,
+                source,
+                piece_type_at(position, source),
+                color
+            )
+            & bit(target)
+        ) != 0 ? 1 : 0;
+    }
+    return count;
+}
+
+[[nodiscard]] int teacher_minor_development(
+    const BoardState& board,
+    bool color
+) noexcept {
+    const Bitboard own = board.occupied[color ? 1 : 0];
+    Bitboard minors = (board.knights | board.bishops) & own;
+    const int home_rank = color == WHITE ? 0 : 7;
+    int developed = 0;
+    while (minors != 0) {
+        const int source = static_cast<int>(std::countr_zero(minors));
+        minors &= minors - 1;
+        developed += (source >> 3) != home_rank ? 1 : 0;
+    }
+    return developed;
+}
+
+[[nodiscard]] std::array<int, 8> teacher_pawn_file_counts(
+    const BoardState& board,
+    bool color
+) noexcept {
+    std::array<int, 8> counts{};
+    Bitboard pawns = board.pawns & board.occupied[color ? 1 : 0];
+    while (pawns != 0) {
+        const int source = static_cast<int>(std::countr_zero(pawns));
+        pawns &= pawns - 1;
+        ++counts[static_cast<std::size_t>(source & 7)];
+    }
+    return counts;
+}
+
+[[nodiscard]] int teacher_pawn_islands(
+    const std::array<int, 8>& files
+) noexcept {
+    int islands = 0;
+    bool prior = false;
+    for (const int count : files) {
+        const bool occupied = count != 0;
+        islands += occupied && !prior ? 1 : 0;
+        prior = occupied;
+    }
+    return islands;
+}
+
+[[nodiscard]] Bitboard teacher_passed_pawns(
+    const BoardState& board,
+    bool color
+) noexcept {
+    Bitboard candidates = board.pawns & board.occupied[color ? 1 : 0];
+    const Bitboard enemy = board.pawns & board.occupied[(!color) ? 1 : 0];
+    Bitboard passed = 0;
+    while (candidates != 0) {
+        const int source = static_cast<int>(std::countr_zero(candidates));
+        candidates &= candidates - 1;
+        const int source_file = source & 7;
+        const int source_rank = source >> 3;
+        bool blocked = false;
+        Bitboard enemies = enemy;
+        while (enemies != 0) {
+            const int target = static_cast<int>(std::countr_zero(enemies));
+            enemies &= enemies - 1;
+            const int target_file = target & 7;
+            const int target_rank = target >> 3;
+            if (std::abs(target_file - source_file) > 1) {
+                continue;
+            }
+            if (
+                (color == WHITE && target_rank > source_rank)
+                || (color == BLACK && target_rank < source_rank)
+            ) {
+                blocked = true;
+                break;
+            }
+        }
+        if (!blocked) {
+            passed |= bit(source);
+        }
+    }
+    return passed;
+}
+
+[[nodiscard]] int teacher_passed_advance(
+    Bitboard passed,
+    bool color
+) noexcept {
+    int value = 0;
+    while (passed != 0) {
+        const int source = static_cast<int>(std::countr_zero(passed));
+        passed &= passed - 1;
+        const int rank = source >> 3;
+        value += color == WHITE ? rank - 1 : 6 - rank;
+    }
+    return value;
+}
+
+[[nodiscard]] int teacher_connected_passed(Bitboard passed) noexcept {
+    std::array<bool, 8> files{};
+    while (passed != 0) {
+        const int source = static_cast<int>(std::countr_zero(passed));
+        passed &= passed - 1;
+        files[static_cast<std::size_t>(source & 7)] = true;
+    }
+    int connected = 0;
+    for (std::size_t file = 0; file < files.size(); ++file) {
+        if (!files[file]) {
+            continue;
+        }
+        connected += (
+            (file > 0 && files[file - 1])
+            || (file + 1 < files.size() && files[file + 1])
+        ) ? 1 : 0;
+    }
+    return connected;
+}
+
+[[nodiscard]] int teacher_rook_open_files(
+    const BoardState& board,
+    bool color
+) noexcept {
+    std::array<bool, 8> pawn_files{};
+    Bitboard pawns = board.pawns;
+    while (pawns != 0) {
+        const int source = static_cast<int>(std::countr_zero(pawns));
+        pawns &= pawns - 1;
+        pawn_files[static_cast<std::size_t>(source & 7)] = true;
+    }
+    Bitboard rooks = board.rooks & board.occupied[color ? 1 : 0];
+    int count = 0;
+    while (rooks != 0) {
+        const int source = static_cast<int>(std::countr_zero(rooks));
+        rooks &= rooks - 1;
+        count += !pawn_files[static_cast<std::size_t>(source & 7)] ? 1 : 0;
+    }
+    return count;
+}
+
+[[nodiscard]] int teacher_rook_seventh(
+    const BoardState& board,
+    bool color
+) noexcept {
+    Bitboard rooks = board.rooks & board.occupied[color ? 1 : 0];
+    const int target_rank = color == WHITE ? 6 : 1;
+    int count = 0;
+    while (rooks != 0) {
+        const int source = static_cast<int>(std::countr_zero(rooks));
+        rooks &= rooks - 1;
+        count += (source >> 3) == target_rank ? 1 : 0;
+    }
+    return count;
+}
+
+[[nodiscard]] int teacher_king_shelter(
+    const BoardState& board,
+    bool color
+) noexcept {
+    const Position position = evaluation_position(board);
+    const int king = king_square(position, color);
+    if (king < 0) {
+        return 0;
+    }
+    const int king_file = king & 7;
+    const int king_rank = king >> 3;
+    const int direction = color == WHITE ? 1 : -1;
+    const Bitboard own_pawns = board.pawns & board.occupied[color ? 1 : 0];
+    int shield = 0;
+    for (
+        int file = std::max(0, king_file - 1);
+        file <= std::min(7, king_file + 1);
+        ++file
+    ) {
+        for (const auto [distance, value] : {
+                 std::pair<int, int>{1, 2},
+                 std::pair<int, int>{2, 1},
+             }) {
+            const int rank = king_rank + direction * distance;
+            if (inside(file, rank) && (own_pawns & bit(square(file, rank))) != 0) {
+                shield += value;
+            }
+        }
+    }
+    return shield;
+}
+
+[[nodiscard]] bool teacher_is_pinned(
+    const BoardState& board,
+    bool color,
+    int target
+) noexcept {
+    const Position position = evaluation_position(board);
+    const int king = king_square(position, color);
+    if (king < 0 || king == target) {
+        return false;
+    }
+    const int king_file = king & 7;
+    const int king_rank = king >> 3;
+    const int target_file = target & 7;
+    const int target_rank = target >> 3;
+    const int file_delta = target_file - king_file;
+    const int rank_delta = target_rank - king_rank;
+    const bool orthogonal = file_delta == 0 || rank_delta == 0;
+    const bool diagonal = std::abs(file_delta) == std::abs(rank_delta);
+    if (!orthogonal && !diagonal) {
+        return false;
+    }
+    const int file_step = (file_delta > 0) - (file_delta < 0);
+    const int rank_step = (rank_delta > 0) - (rank_delta < 0);
+    const Bitboard occupancy = board.occupied[0] | board.occupied[1];
+    int file = king_file + file_step;
+    int rank = king_rank + rank_step;
+    while (inside(file, rank) && square(file, rank) != target) {
+        if ((occupancy & bit(square(file, rank))) != 0) {
+            return false;
+        }
+        file += file_step;
+        rank += rank_step;
+    }
+    if (!inside(file, rank)) {
+        return false;
+    }
+    file += file_step;
+    rank += rank_step;
+    while (inside(file, rank)) {
+        const int sniper = square(file, rank);
+        if ((occupancy & bit(sniper)) == 0) {
+            file += file_step;
+            rank += rank_step;
+            continue;
+        }
+        if ((board.occupied[(!color) ? 1 : 0] & bit(sniper)) == 0) {
+            return false;
+        }
+        const int piece_type = piece_type_at(position, sniper);
+        return piece_type == QUEEN
+            || (orthogonal && piece_type == ROOK)
+            || (diagonal && piece_type == BISHOP);
+    }
+    return false;
+}
+
+struct TeacherAttackMaterial {
+    std::int64_t attacked = 0;
+    std::int64_t hanging = 0;
+    std::int64_t pinned = 0;
+    std::int64_t queen_exposed = 0;
+};
+
+[[nodiscard]] TeacherAttackMaterial teacher_material_under_attack(
+    const BoardState& board,
+    bool color
+) noexcept {
+    const Position position = evaluation_position(board);
+    const Bitboard own = board.occupied[color ? 1 : 0];
+    TeacherAttackMaterial result;
+    for (int piece_type = PAWN; piece_type < KING; ++piece_type) {
+        Bitboard pieces = own;
+        switch (piece_type) {
+            case PAWN: pieces &= board.pawns; break;
+            case KNIGHT: pieces &= board.knights; break;
+            case BISHOP: pieces &= board.bishops; break;
+            case ROOK: pieces &= board.rooks; break;
+            case QUEEN: pieces &= board.queens; break;
+            default: pieces = 0; break;
+        }
+        while (pieces != 0) {
+            const int source = static_cast<int>(std::countr_zero(pieces));
+            pieces &= pieces - 1;
+            const int attackers = teacher_attackers_count(board, !color, source);
+            const int defenders = teacher_attackers_count(board, color, source);
+            const int value = PIECE_VALUES[static_cast<std::size_t>(piece_type)];
+            if (attackers != 0) {
+                result.attacked += value;
+                if (defenders == 0) {
+                    result.hanging += value;
+                }
+                if (piece_type == QUEEN) {
+                    result.queen_exposed = 1;
+                }
+            }
+            if (teacher_is_pinned(board, color, source)) {
+                result.pinned += value;
+            }
+        }
+    }
+    return result;
+}
+
+[[nodiscard]] int teacher_capture_value(
+    const BoardState& board,
+    const ExpandedMove& expanded
+) noexcept {
+    if (!expanded.is_capture) {
+        return 0;
+    }
+    const int target = expanded.move.to_square;
+    const Bitboard occupancy = board.occupied[0] | board.occupied[1];
+    if (
+        expanded.move.required_ep_square >= 0
+        && (occupancy & bit(target)) == 0
+    ) {
+        return PIECE_VALUES[PAWN];
+    }
+    return PIECE_VALUES[static_cast<std::size_t>(piece_type_at(
+        evaluation_position(board),
+        target
+    ))];
+}
+
+[[nodiscard]] std::vector<int> teacher_ep_after_move(
+    const ExpandedMove& expanded
+) {
+    if (
+        expanded.is_pawn_move
+        && std::abs(
+            static_cast<int>(expanded.move.to_square)
+            - static_cast<int>(expanded.move.from_square)
+        ) == 16
+    ) {
+        return {
+            (static_cast<int>(expanded.move.to_square)
+             + static_cast<int>(expanded.move.from_square)) / 2,
+        };
+    }
+    return {};
+}
+
+[[nodiscard]] bool teacher_delivered_mate(
+    const ExpandedMove& expanded
+) {
+    return expanded.delivered_check
+        && !has_legal_move(expanded.child, teacher_ep_after_move(expanded));
+}
+
+[[nodiscard]] std::array<std::int64_t, 9> teacher_direct_threats(
+    const BoardState& boundary,
+    const std::vector<int>& ep_targets,
+    std::int64_t series_number,
+    bool include_two_move,
+    std::uint64_t& direct_work,
+    std::uint64_t& two_move_work
+) {
+    const bool mover = boundary.white_to_move;
+    const std::int64_t sign = mover == WHITE ? 1 : -1;
+    std::array<std::int64_t, 9> values{};
+    const auto direct = expand_legal_move_variants(boundary, ep_targets);
+    direct_work = direct.size();
+    for (const ExpandedMove& first : direct) {
+        const int capture_value = teacher_capture_value(boundary, first);
+        if (capture_value != 0) {
+            ++values[0];
+            values[1] += capture_value;
+            values[2] = std::max<std::int64_t>(values[2], capture_value);
+        }
+        values[3] += first.delivered_check ? 1 : 0;
+        values[4] += teacher_delivered_mate(first) ? 1 : 0;
+        values[5] += first.move.promotion != 0 ? 1 : 0;
+        if (!include_two_move || first.delivered_check || series_number < 2) {
+            continue;
+        }
+
+        BoardState same_mover = first.child;
+        same_mover.white_to_move = mover;
+        const auto second = expand_legal_move_variants(same_mover, {});
+        two_move_work += second.size();
+        bool route_has_check = false;
+        bool route_has_mate = false;
+        int route_capture = 0;
+        for (const ExpandedMove& reply : second) {
+            route_capture = std::max(
+                route_capture,
+                teacher_capture_value(same_mover, reply)
+            );
+            route_has_check = route_has_check || reply.delivered_check;
+            route_has_mate = route_has_mate || teacher_delivered_mate(reply);
+        }
+        values[6] = std::max<std::int64_t>(values[6], route_capture);
+        values[7] += route_has_check ? 1 : 0;
+        values[8] += route_has_mate ? 1 : 0;
+    }
+    for (std::int64_t& value : values) {
+        value *= sign;
+    }
+    return values;
+}
+
+[[nodiscard]] int teacher_route_value(const ReachProbe& reach) noexcept {
+    if (!reach.distance.has_value()) {
+        return 0;
+    }
+    return 4 - static_cast<int>(std::min<std::int64_t>(
+        4,
+        std::max<std::int64_t>(0, *reach.distance)
+    ));
+}
+
+[[nodiscard]] int teacher_ring_attacks(
+    const BoardState& board,
+    bool attacker,
+    bool king_color
+) noexcept {
+    const Position position = evaluation_position(board);
+    const int king = king_square(position, king_color);
+    if (king < 0) {
+        return 0;
+    }
+    Bitboard ring = KING_ATTACK_MASKS[static_cast<std::size_t>(king)] | bit(king);
+    int total = 0;
+    while (ring != 0) {
+        const int target = static_cast<int>(std::countr_zero(ring));
+        ring &= ring - 1;
+        total += teacher_attackers_count(board, attacker, target);
+    }
+    return total;
+}
+
+[[nodiscard]] int teacher_promotable(
+    const BoardState& board,
+    bool color,
+    std::int64_t series_number
+) noexcept {
+    const std::int64_t budget = series_number
+        + (board.white_to_move == color ? 0 : 1);
+    const int target_rank = color == WHITE ? 7 : 0;
+    const int direction = color == WHITE ? 1 : -1;
+    const Bitboard occupancy = board.occupied[0] | board.occupied[1];
+    Bitboard pawns = board.pawns & board.occupied[color ? 1 : 0];
+    int count = 0;
+    while (pawns != 0) {
+        const int source = static_cast<int>(std::countr_zero(pawns));
+        pawns &= pawns - 1;
+        const int file = source & 7;
+        const int rank = source >> 3;
+        const int distance = std::abs(target_rank - rank);
+        bool blocked = false;
+        for (
+            int next_rank = rank + direction;
+            next_rank != target_rank + direction;
+            next_rank += direction
+        ) {
+            if ((occupancy & bit(square(file, next_rank))) != 0) {
+                blocked = true;
+                break;
+            }
+        }
+        count += !blocked && distance <= budget ? 1 : 0;
+    }
+    return count;
+}
+
+[[nodiscard]] int teacher_king_edge_distance(
+    const BoardState& board,
+    bool color
+) noexcept {
+    const int king = king_square(evaluation_position(board), color);
+    if (king < 0) {
+        return 0;
+    }
+    const int file = king & 7;
+    const int rank = king >> 3;
+    return std::min({file, 7 - file, rank, 7 - rank});
+}
+
+[[nodiscard]] int teacher_control(
+    const BoardState& board,
+    bool color,
+    Bitboard targets
+) noexcept {
+    int value = 0;
+    while (targets != 0) {
+        const int target = static_cast<int>(std::countr_zero(targets));
+        targets &= targets - 1;
+        value += teacher_attackers_count(board, color, target);
+    }
+    return value;
+}
+
+[[nodiscard]] bool teacher_model_feature_count(std::size_t count) noexcept {
+    return count == 7
+        || count == 14
+        || count == 19
+        || count == 38
+        || count == 44
+        || count == TEACHER_VALUE_FEATURE_COUNT;
+}
+
+}  // namespace
+
+std::optional<TeacherValueFeaturesV3> teacher_value_features_v3(
+    const BoardState& board,
+    const std::vector<int>& ep_targets,
+    std::int64_t series_number,
+    std::uint64_t max_reach_positions,
+    std::size_t feature_count
+) {
+    if (!teacher_model_feature_count(feature_count)) {
+        return std::nullopt;
+    }
+    const FullWeights unit_weights{100, 100, 100, 100, 100, 100, 100};
+    const auto base = full_evaluate(
+        board,
+        ep_targets,
+        series_number,
+        max_reach_positions,
+        unit_weights
+    );
+    if (!base.has_value()) {
+        return std::nullopt;
+    }
+
+    TeacherValueFeaturesV3 result;
+    result.white_reach = base->white_reach;
+    result.black_reach = base->black_reach;
+    result.values[0] = base->material;
+    result.values[1] = base->king_space;
+    result.values[2] = base->series_reach;
+    result.values[3] = base->promotion_corridors;
+    result.values[4] = base->immediate_vulnerability;
+    result.values[5] = base->useful_mobility;
+    result.values[6] = base->boundary_check;
+    if (feature_count == 7) {
+        return result;
+    }
+
+    const std::int64_t centered_phase = std::min<std::int64_t>(
+        series_number,
+        10
+    ) - 4;
+    for (std::size_t index = 0; index < 7; ++index) {
+        if (!checked_multiply(
+                result.values[index],
+                centered_phase,
+                result.values[index + 7]
+            )) {
+            return std::nullopt;
+        }
+    }
+    if (feature_count == 14) {
+        return result;
+    }
+
+    result.values[14] = teacher_ring_attacks(board, WHITE, BLACK)
+        - teacher_ring_attacks(board, BLACK, WHITE);
+    result.values[15] = teacher_promotable(board, WHITE, series_number)
+        - teacher_promotable(board, BLACK, series_number);
+    result.values[16] = teacher_king_edge_distance(board, BLACK)
+        - teacher_king_edge_distance(board, WHITE);
+    result.values[17] = teacher_route_value(base->white_reach)
+        - teacher_route_value(base->black_reach);
+    result.values[18] = (
+        base->white_reach.complete && base->black_reach.complete
+    ) ? 1 : 0;
+    if (feature_count == 19) {
+        return result;
+    }
+
+    constexpr std::array<int, 4> CENTER = {
+        square(3, 3), square(4, 3), square(3, 4), square(4, 4),
+    };
+    Bitboard center = 0;
+    for (const int target : CENTER) {
+        center |= bit(target);
+    }
+    Bitboard extended_center = 0;
+    for (int file = 2; file < 6; ++file) {
+        for (int rank = 2; rank < 6; ++rank) {
+            extended_center |= bit(square(file, rank));
+        }
+    }
+    result.values[19] = teacher_minor_development(board, WHITE)
+        - teacher_minor_development(board, BLACK);
+    const Position position = evaluation_position(board);
+    for (const int target : CENTER) {
+        const Bitboard target_bit = bit(target);
+        if (((board.occupied[0] | board.occupied[1]) & target_bit) == 0) {
+            continue;
+        }
+        const bool color = (board.occupied[1] & target_bit) != 0;
+        const int multiplier = piece_type_at(position, target) == PAWN ? 2 : 1;
+        result.values[20] += color == WHITE ? multiplier : -multiplier;
+    }
+    result.values[21] = teacher_control(board, WHITE, center)
+        - teacher_control(board, BLACK, center);
+    result.values[22] = teacher_control(board, WHITE, extended_center)
+        - teacher_control(board, BLACK, extended_center);
+
+    Bitboard white_pawns = board.pawns & board.occupied[1];
+    Bitboard black_pawns = board.pawns & board.occupied[0];
+    while (white_pawns != 0) {
+        const int source = static_cast<int>(std::countr_zero(white_pawns));
+        white_pawns &= white_pawns - 1;
+        result.values[23] += (source >> 3) - 1;
+    }
+    while (black_pawns != 0) {
+        const int source = static_cast<int>(std::countr_zero(black_pawns));
+        black_pawns &= black_pawns - 1;
+        result.values[23] -= 6 - (source >> 3);
+    }
+
+    const Bitboard white_passed = teacher_passed_pawns(board, WHITE);
+    const Bitboard black_passed = teacher_passed_pawns(board, BLACK);
+    result.values[24] = std::popcount(white_passed) - std::popcount(black_passed);
+    result.values[25] = teacher_passed_advance(white_passed, WHITE)
+        - teacher_passed_advance(black_passed, BLACK);
+    result.values[26] = teacher_connected_passed(white_passed)
+        - teacher_connected_passed(black_passed);
+
+    const auto white_files = teacher_pawn_file_counts(board, WHITE);
+    const auto black_files = teacher_pawn_file_counts(board, BLACK);
+    for (std::size_t file = 0; file < white_files.size(); ++file) {
+        const bool white_isolated = white_files[file] != 0
+            && (file == 0 || white_files[file - 1] == 0)
+            && (file + 1 == white_files.size() || white_files[file + 1] == 0);
+        const bool black_isolated = black_files[file] != 0
+            && (file == 0 || black_files[file - 1] == 0)
+            && (file + 1 == black_files.size() || black_files[file + 1] == 0);
+        result.values[27] -= white_isolated ? white_files[file] : 0;
+        result.values[27] += black_isolated ? black_files[file] : 0;
+        result.values[28] -= std::max(0, white_files[file] - 1);
+        result.values[28] += std::max(0, black_files[file] - 1);
+    }
+    result.values[29] = -teacher_pawn_islands(white_files)
+        + teacher_pawn_islands(black_files);
+    result.values[30] = (
+        std::popcount(board.bishops & board.occupied[1]) >= 2 ? 1 : 0
+    ) - (
+        std::popcount(board.bishops & board.occupied[0]) >= 2 ? 1 : 0
+    );
+    result.values[31] = teacher_rook_open_files(board, WHITE)
+        - teacher_rook_open_files(board, BLACK);
+    result.values[32] = teacher_rook_seventh(board, WHITE)
+        - teacher_rook_seventh(board, BLACK);
+    result.values[33] = teacher_king_shelter(board, WHITE)
+        - teacher_king_shelter(board, BLACK);
+
+    const TeacherAttackMaterial white_attack = teacher_material_under_attack(
+        board,
+        WHITE
+    );
+    const TeacherAttackMaterial black_attack = teacher_material_under_attack(
+        board,
+        BLACK
+    );
+    result.values[34] = black_attack.attacked - white_attack.attacked;
+    result.values[35] = black_attack.hanging - white_attack.hanging;
+    result.values[36] = black_attack.pinned - white_attack.pinned;
+    result.values[37] = black_attack.queen_exposed - white_attack.queen_exposed;
+    if (feature_count == 38) {
+        return result;
+    }
+
+    const auto threats = teacher_direct_threats(
+        board,
+        ep_targets,
+        series_number,
+        feature_count == TEACHER_VALUE_FEATURE_COUNT,
+        result.direct_move_variants,
+        result.two_move_variants
+    );
+    std::copy(threats.begin(), threats.end(), result.values.begin() + 38);
+    return result;
+}
+
+std::optional<std::int64_t> deep_teacher_score_v1(
+    const TeacherValueFeaturesV3& features,
+    const DeepTeacherLinearModelV1& model
+) noexcept {
+    if (
+        model.fixed_point_scale != DEEP_TEACHER_FIXED_POINT_SCALE
+        || !teacher_model_feature_count(model.feature_count)
+    ) {
+        return std::nullopt;
+    }
+    std::int64_t total = 0;
+    for (std::size_t index = 0; index < model.feature_count; ++index) {
+        std::int64_t term = 0;
+        if (
+            !checked_multiply(
+                features.values[index],
+                model.coefficients[index],
+                term
+            )
+            || !checked_add(total, term, total)
+        ) {
+            return std::nullopt;
+        }
+    }
+    return total;
+}
+
+bool root_candidate_is_proven_adverse_v1(
+    const bool mover_white,
+    const std::array<int, 2>& proof_bounds
+) noexcept {
+    const int opponent = mover_white ? -1 : 1;
+    return proof_bounds[0] == opponent && proof_bounds[1] == opponent;
+}
+
+bool proof_aware_root_precedes_v1(
+    const bool mover_white,
+    const ProofAwareRootCandidateV1& left,
+    const ProofAwareRootCandidateV1& right
+) noexcept {
+    const bool left_adverse = root_candidate_is_proven_adverse_v1(
+        mover_white,
+        left.proof_bounds
+    );
+    const bool right_adverse = root_candidate_is_proven_adverse_v1(
+        mover_white,
+        right.proof_bounds
+    );
+    if (left_adverse != right_adverse) {
+        return !left_adverse;
+    }
+    if (left.score != right.score) {
+        return mover_white ? left.score > right.score : left.score < right.score;
+    }
+    return left.machine_notation < right.machine_notation;
+}
+
 std::uint16_t legal_move_uci_key(const LegalMove& move) noexcept {
     std::uint16_t promotion = 0;
     switch (move.promotion) {
@@ -6070,6 +6813,374 @@ PyObject* optional_distance_object(
     return PyLong_FromLongLong(*distance);
 }
 
+PyObject* py_teacher_value_features_v3(PyObject*, PyObject* arguments) {
+    constexpr Py_ssize_t MIN_ARGUMENT_COUNT = 14;
+    constexpr Py_ssize_t MAX_ARGUMENT_COUNT = 15;
+    const Py_ssize_t argument_count = PyTuple_GET_SIZE(arguments);
+    if (
+        argument_count < MIN_ARGUMENT_COUNT
+        || argument_count > MAX_ARGUMENT_COUNT
+    ) {
+        PyErr_Format(
+            PyExc_TypeError,
+            "teacher_value_features_v3() takes 14 or 15 arguments (%zd given)",
+            argument_count
+        );
+        return nullptr;
+    }
+
+    std::array<unsigned long long, 10> masks{};
+    for (Py_ssize_t index = 0; index < 10; ++index) {
+        masks[static_cast<std::size_t>(index)] = PyLong_AsUnsignedLongLong(
+            PyTuple_GET_ITEM(arguments, index)
+        );
+        if (
+            masks[static_cast<std::size_t>(index)]
+                == static_cast<unsigned long long>(-1)
+            && PyErr_Occurred()
+        ) {
+            return nullptr;
+        }
+    }
+    const int white_to_move = PyObject_IsTrue(PyTuple_GET_ITEM(arguments, 10));
+    if (white_to_move < 0) {
+        return nullptr;
+    }
+    const long long series_number = PyLong_AsLongLong(
+        PyTuple_GET_ITEM(arguments, 11)
+    );
+    if (series_number == -1 && PyErr_Occurred()) {
+        return nullptr;
+    }
+    std::vector<int> ep_targets;
+    try {
+        if (!parse_square_sequence(
+                PyTuple_GET_ITEM(arguments, 12),
+                ep_targets,
+                "ep_targets must be an iterable of squares"
+            )) {
+            return nullptr;
+        }
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    } catch (const std::length_error&) {
+        return PyErr_NoMemory();
+    }
+    const unsigned long long max_reach_positions = PyLong_AsUnsignedLongLong(
+        PyTuple_GET_ITEM(arguments, 13)
+    );
+    if (
+        max_reach_positions == static_cast<unsigned long long>(-1)
+        && PyErr_Occurred()
+    ) {
+        return nullptr;
+    }
+    std::size_t feature_count = spc::native::TEACHER_VALUE_FEATURE_COUNT;
+    if (argument_count == MAX_ARGUMENT_COUNT) {
+        const unsigned long long supplied = PyLong_AsUnsignedLongLong(
+            PyTuple_GET_ITEM(arguments, 14)
+        );
+        if (supplied == static_cast<unsigned long long>(-1) && PyErr_Occurred()) {
+            return nullptr;
+        }
+        if (
+            !(
+                supplied == 7
+                || supplied == 14
+                || supplied == 19
+                || supplied == 38
+                || supplied == 44
+                || supplied == 47
+            )
+        ) {
+            PyErr_SetString(
+                PyExc_ValueError,
+                "teacher feature count must be a frozen prefix group"
+            );
+            return nullptr;
+        }
+        feature_count = static_cast<std::size_t>(supplied);
+    }
+
+    const spc::native::BoardState board{
+        masks[0],
+        masks[1],
+        masks[2],
+        masks[3],
+        masks[4],
+        masks[5],
+        {masks[7], masks[6]},
+        masks[8],
+        masks[9],
+        white_to_move != 0,
+    };
+    std::optional<spc::native::TeacherValueFeaturesV3> evaluated;
+    try {
+        evaluated = spc::native::teacher_value_features_v3(
+            board,
+            ep_targets,
+            series_number,
+            max_reach_positions,
+            feature_count
+        );
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    } catch (...) {
+        PyErr_SetString(
+            PyExc_RuntimeError,
+            "native teacher-value feature extraction failed"
+        );
+        return nullptr;
+    }
+    if (!evaluated.has_value()) {
+        PyErr_SetString(
+            PyExc_OverflowError,
+            "native teacher-value feature extraction exceeded signed 64-bit arithmetic"
+        );
+        return nullptr;
+    }
+    PyObject* result = PyTuple_New(static_cast<Py_ssize_t>(feature_count));
+    if (result == nullptr) {
+        return nullptr;
+    }
+    for (std::size_t index = 0; index < feature_count; ++index) {
+        PyObject* value = PyLong_FromLongLong(evaluated->values[index]);
+        if (value == nullptr) {
+            Py_DECREF(result);
+            return nullptr;
+        }
+        PyTuple_SET_ITEM(result, static_cast<Py_ssize_t>(index), value);
+    }
+    return result;
+}
+
+PyObject* py_deep_teacher_score_v1(PyObject*, PyObject* arguments) {
+    PyObject* feature_object = nullptr;
+    PyObject* coefficient_object = nullptr;
+    long long fixed_point_scale = 0;
+    if (!PyArg_ParseTuple(
+            arguments,
+            "OOL:deep_teacher_score_v1",
+            &feature_object,
+            &coefficient_object,
+            &fixed_point_scale
+        )) {
+        return nullptr;
+    }
+    PyObject* feature_sequence = PySequence_Fast(
+        feature_object,
+        "features must be an iterable of exact integers"
+    );
+    if (feature_sequence == nullptr) {
+        return nullptr;
+    }
+    PyObject* coefficient_sequence = PySequence_Fast(
+        coefficient_object,
+        "coefficients must be an iterable of exact integers"
+    );
+    if (coefficient_sequence == nullptr) {
+        Py_DECREF(feature_sequence);
+        return nullptr;
+    }
+    const Py_ssize_t feature_count = PySequence_Fast_GET_SIZE(feature_sequence);
+    const Py_ssize_t coefficient_count = PySequence_Fast_GET_SIZE(
+        coefficient_sequence
+    );
+    if (
+        feature_count
+            != static_cast<Py_ssize_t>(spc::native::TEACHER_VALUE_FEATURE_COUNT)
+        || !(
+            coefficient_count == 7
+            || coefficient_count == 14
+            || coefficient_count == 19
+            || coefficient_count == 38
+            || coefficient_count == 44
+            || coefficient_count == 47
+        )
+        || !PyLong_CheckExact(PyTuple_GET_ITEM(arguments, 2))
+        || fixed_point_scale != spc::native::DEEP_TEACHER_FIXED_POINT_SCALE
+    ) {
+        Py_DECREF(feature_sequence);
+        Py_DECREF(coefficient_sequence);
+        PyErr_SetString(
+            PyExc_ValueError,
+            "deep teacher model must use 47 features, a frozen prefix group, and scale 1000000000"
+        );
+        return nullptr;
+    }
+
+    spc::native::TeacherValueFeaturesV3 features;
+    spc::native::DeepTeacherLinearModelV1 model;
+    model.feature_count = static_cast<std::size_t>(coefficient_count);
+    model.fixed_point_scale = fixed_point_scale;
+    for (Py_ssize_t index = 0; index < feature_count; ++index) {
+        if (!PyLong_CheckExact(PySequence_Fast_GET_ITEM(feature_sequence, index))) {
+            Py_DECREF(feature_sequence);
+            Py_DECREF(coefficient_sequence);
+            PyErr_SetString(PyExc_TypeError, "features must be exact integers");
+            return nullptr;
+        }
+        const long long value = PyLong_AsLongLong(
+            PySequence_Fast_GET_ITEM(feature_sequence, index)
+        );
+        if (value == -1 && PyErr_Occurred()) {
+            Py_DECREF(feature_sequence);
+            Py_DECREF(coefficient_sequence);
+            return nullptr;
+        }
+        features.values[static_cast<std::size_t>(index)] = value;
+    }
+    for (Py_ssize_t index = 0; index < coefficient_count; ++index) {
+        if (!PyLong_CheckExact(PySequence_Fast_GET_ITEM(coefficient_sequence, index))) {
+            Py_DECREF(feature_sequence);
+            Py_DECREF(coefficient_sequence);
+            PyErr_SetString(PyExc_TypeError, "coefficients must be exact integers");
+            return nullptr;
+        }
+        const long long value = PyLong_AsLongLong(
+            PySequence_Fast_GET_ITEM(coefficient_sequence, index)
+        );
+        if (value == -1 && PyErr_Occurred()) {
+            Py_DECREF(feature_sequence);
+            Py_DECREF(coefficient_sequence);
+            return nullptr;
+        }
+        model.coefficients[static_cast<std::size_t>(index)] = value;
+    }
+    Py_DECREF(feature_sequence);
+    Py_DECREF(coefficient_sequence);
+
+    const auto score = spc::native::deep_teacher_score_v1(features, model);
+    if (!score.has_value()) {
+        PyErr_SetString(
+            PyExc_OverflowError,
+            "deep teacher fixed-point dot product exceeded signed 64-bit arithmetic"
+        );
+        return nullptr;
+    }
+    return PyLong_FromLongLong(*score);
+}
+
+PyObject* py_proof_aware_root_precedes_v1(PyObject*, PyObject* arguments) {
+    constexpr Py_ssize_t ARGUMENT_COUNT = 7;
+    if (PyTuple_GET_SIZE(arguments) != ARGUMENT_COUNT) {
+        PyErr_Format(
+            PyExc_TypeError,
+            "proof_aware_root_precedes_v1() takes exactly %zd arguments (%zd given)",
+            ARGUMENT_COUNT,
+            PyTuple_GET_SIZE(arguments)
+        );
+        return nullptr;
+    }
+
+    PyObject* mover_object = PyTuple_GET_ITEM(arguments, 0);
+    PyObject* left_score_object = PyTuple_GET_ITEM(arguments, 1);
+    PyObject* left_bounds_object = PyTuple_GET_ITEM(arguments, 2);
+    PyObject* left_notation_object = PyTuple_GET_ITEM(arguments, 3);
+    PyObject* right_score_object = PyTuple_GET_ITEM(arguments, 4);
+    PyObject* right_bounds_object = PyTuple_GET_ITEM(arguments, 5);
+    PyObject* right_notation_object = PyTuple_GET_ITEM(arguments, 6);
+    if (!PyBool_Check(mover_object)) {
+        PyErr_SetString(PyExc_TypeError, "mover_white must be an exact bool");
+        return nullptr;
+    }
+    if (
+        !PyLong_CheckExact(left_score_object)
+        || !PyLong_CheckExact(right_score_object)
+    ) {
+        PyErr_SetString(PyExc_TypeError, "root scores must be exact integers");
+        return nullptr;
+    }
+    if (
+        !PyUnicode_CheckExact(left_notation_object)
+        || !PyUnicode_CheckExact(right_notation_object)
+    ) {
+        PyErr_SetString(PyExc_TypeError, "machine notations must be exact strings");
+        return nullptr;
+    }
+
+    const long long left_score = PyLong_AsLongLong(left_score_object);
+    if (left_score == -1 && PyErr_Occurred()) return nullptr;
+    const long long right_score = PyLong_AsLongLong(right_score_object);
+    if (right_score == -1 && PyErr_Occurred()) return nullptr;
+
+    const auto parse_bounds = [](
+        PyObject* object,
+        std::array<int, 2>& target
+    ) -> bool {
+        PyObject* sequence = PySequence_Fast(
+            object,
+            "proof bounds must be a two-item iterable"
+        );
+        if (sequence == nullptr) return false;
+        if (PySequence_Fast_GET_SIZE(sequence) != 2) {
+            Py_DECREF(sequence);
+            PyErr_SetString(PyExc_ValueError, "proof bounds must contain two values");
+            return false;
+        }
+        for (Py_ssize_t index = 0; index < 2; ++index) {
+            PyObject* value = PySequence_Fast_GET_ITEM(sequence, index);
+            if (!PyLong_CheckExact(value)) {
+                Py_DECREF(sequence);
+                PyErr_SetString(PyExc_TypeError, "proof bounds must be exact integers");
+                return false;
+            }
+            const long parsed = PyLong_AsLong(value);
+            if ((parsed == -1 && PyErr_Occurred()) || parsed < -1 || parsed > 1) {
+                Py_DECREF(sequence);
+                if (!PyErr_Occurred()) {
+                    PyErr_SetString(PyExc_ValueError, "proof bounds must be in [-1, 1]");
+                }
+                return false;
+            }
+            target[static_cast<std::size_t>(index)] = static_cast<int>(parsed);
+        }
+        Py_DECREF(sequence);
+        return true;
+    };
+
+    std::array<int, 2> left_bounds{};
+    std::array<int, 2> right_bounds{};
+    if (
+        !parse_bounds(left_bounds_object, left_bounds)
+        || !parse_bounds(right_bounds_object, right_bounds)
+    ) {
+        return nullptr;
+    }
+
+    Py_ssize_t left_length = 0;
+    const char* left_notation = PyUnicode_AsUTF8AndSize(
+        left_notation_object,
+        &left_length
+    );
+    if (left_notation == nullptr) return nullptr;
+    Py_ssize_t right_length = 0;
+    const char* right_notation = PyUnicode_AsUTF8AndSize(
+        right_notation_object,
+        &right_length
+    );
+    if (right_notation == nullptr) return nullptr;
+
+    const spc::native::ProofAwareRootCandidateV1 left{
+        left_score,
+        left_bounds,
+        std::string_view(left_notation, static_cast<std::size_t>(left_length)),
+    };
+    const spc::native::ProofAwareRootCandidateV1 right{
+        right_score,
+        right_bounds,
+        std::string_view(right_notation, static_cast<std::size_t>(right_length)),
+    };
+    if (spc::native::proof_aware_root_precedes_v1(
+            mover_object == Py_True,
+            left,
+            right
+        )) {
+        Py_RETURN_TRUE;
+    }
+    Py_RETURN_FALSE;
+}
+
 PyObject* py_full_evaluate(PyObject*, PyObject* arguments) {
     constexpr Py_ssize_t ARGUMENT_COUNT = 21;
     if (PyTuple_GET_SIZE(arguments) != ARGUMENT_COUNT) {
@@ -8050,6 +9161,24 @@ PyMethodDef METHODS[] = {
         py_full_evaluate,
         METH_VARARGS,
         PyDoc_STR("Exact compiled full leaf evaluation with bounded reach work.")
+    },
+    {
+        "teacher_value_features_v3",
+        py_teacher_value_features_v3,
+        METH_VARARGS,
+        PyDoc_STR("Exact compiled frozen teacher feature-prefix contract.")
+    },
+    {
+        "deep_teacher_score_v1",
+        py_deep_teacher_score_v1,
+        METH_VARARGS,
+        PyDoc_STR("Exact frozen-prefix deep-teacher fixed-point dot product.")
+    },
+    {
+        "proof_aware_root_precedes_v1",
+        py_proof_aware_root_precedes_v1,
+        METH_VARARGS,
+        PyDoc_STR("Proof-aware mover score and canonical-notation comparator.")
     },
     {
         "fast_evaluate",

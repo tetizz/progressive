@@ -17,6 +17,7 @@
   const WHITE = "white";
   const BLACK = "black";
   const CHECKED_PV_SELECTION_POLICY = "reject-adverse-checked-pv-mates-v1";
+  const PROOF_AWARE_SELECTION_POLICY = "exclude-proven-opponent-wins-unless-forced-v1";
   const MIN_ASPIRATION_INITIAL_DELTA = 2_048;
   const MAX_ASPIRATION_ATTEMPTS = 4;
 
@@ -527,8 +528,22 @@
     }
   }
 
-  function better(left, right, whiteToMove) {
+  function provenOpponentWin(record, whiteToMove) {
+    const proof = Array.isArray(record?.proofBounds)
+      ? record.proofBounds
+      : record?.proof_bounds;
+    const opponent = whiteToMove ? -1 : 1;
+    return Array.isArray(proof)
+      && proof.length === 2
+      && proof[0] === opponent
+      && proof[1] === opponent;
+  }
+
+  function proofAwareRootPrecedes(left, right, whiteToMove) {
     if (right === null) return true;
+    const leftAdverse = provenOpponentWin(left, whiteToMove);
+    const rightAdverse = provenOpponentWin(right, whiteToMove);
+    if (leftAdverse !== rightAdverse) return !leftAdverse;
     if (left.score !== right.score) {
       return whiteToMove ? left.score > right.score : left.score < right.score;
     }
@@ -544,6 +559,14 @@
   function coversFinal(record, incumbent, whiteToMove) {
     if (record.exact) return true;
     if (!record.bound || !incumbent) return false;
+    const recordAdverse = provenOpponentWin(record, whiteToMove);
+    const incumbentAdverse = provenOpponentWin(incumbent, whiteToMove);
+    if (recordAdverse !== incumbentAdverse) {
+      // A proven loss cannot displace a surviving non-loss. An unknown or
+      // non-adverse scout must receive an exact re-search before it can rescue
+      // a currently selected proven loss.
+      return recordAdverse;
+    }
     if (whiteToMove && record.bound.kind === UPPER) {
       return record.bound.score < incumbent.score
         || (
@@ -877,7 +900,7 @@
         if (
           record.exact
           && record.policyRejected !== true
-          && better(record, next, whiteToMove)
+          && proofAwareRootPrecedes(record, next, whiteToMove)
         ) next = record;
       }
       const nextSignature = next === null
@@ -976,6 +999,8 @@
           safety_status: "terminal",
           safety_certified: true,
           selection_policy: CHECKED_PV_SELECTION_POLICY,
+          proof_selection_policy: PROOF_AWARE_SELECTION_POLICY,
+          proof_aware_selection: true,
           selection_policy_filtered: false,
           pv_horizon_line_rejections: 0,
           coverage_scope: "all-retained-candidates",
@@ -1617,6 +1642,14 @@
         );
       }
       const rootScoresComplete = [...records.values()].every((record) => record.exact);
+      const proofEligibleRecords = [...records.values()].filter(
+        (record) => record.policyRejected !== true,
+      );
+      const provenAdverseCandidates = proofEligibleRecords.filter(
+        (record) => provenOpponentWin(record, whiteToMove),
+      ).length;
+      const proofPolicyFiltered = provenAdverseCandidates > 0
+        && provenAdverseCandidates < proofEligibleRecords.length;
       return Object.freeze({
         schema: RESULT_SCHEMA,
         status: COMPLETE,
@@ -1639,6 +1672,10 @@
         safety_status: safetyStatus,
         safety_certified: safetyStatus === "exhausted" || safetyStatus === "terminal",
         selection_policy: CHECKED_PV_SELECTION_POLICY,
+        proof_selection_policy: PROOF_AWARE_SELECTION_POLICY,
+        proof_aware_selection: true,
+        proof_policy_filtered: proofPolicyFiltered,
+        proven_adverse_candidates: provenAdverseCandidates,
         selection_policy_filtered: pvHorizonLineRejections > 0,
         pv_horizon_line_rejections: pvHorizonLineRejections,
         coverage_scope: pvHorizonLineRejections > 0
@@ -1689,6 +1726,8 @@
     normalizeManifest,
     classifyBound,
     coversFinal,
+    provenOpponentWin,
+    proofAwareRootPrecedes,
     runRootIteration,
   });
 

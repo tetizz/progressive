@@ -2,10 +2,12 @@
 
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace spc::native {
@@ -96,6 +98,51 @@ struct FullEvaluation {
     ReachProbe white_reach;
     ReachProbe black_reach;
 };
+
+// Frozen Python contract in teacher_value_features.py.  Every supported
+// model group is a prefix of this exact order (7, 14, 19, 38, 44, or 47).
+// Keeping the values in the shared native core makes the same implementation
+// available to CPython and the single-threaded WebAssembly build.
+inline constexpr std::size_t TEACHER_VALUE_FEATURE_COUNT = 47;
+inline constexpr std::int64_t DEEP_TEACHER_FIXED_POINT_SCALE = 1'000'000'000;
+
+struct TeacherValueFeaturesV3 {
+    std::array<std::int64_t, TEACHER_VALUE_FEATURE_COUNT> values{};
+    ReachProbe white_reach;
+    ReachProbe black_reach;
+    // Exact generated legal variants used by the direct and two-move threat
+    // suffix.  A search caller can account for this work before activation.
+    std::uint64_t direct_move_variants = 0;
+    std::uint64_t two_move_variants = 0;
+};
+
+struct DeepTeacherLinearModelV1 {
+    std::array<std::int64_t, TEACHER_VALUE_FEATURE_COUNT> coefficients{};
+    std::size_t feature_count = 0;
+    std::int64_t fixed_point_scale = DEEP_TEACHER_FIXED_POINT_SCALE;
+};
+
+// Root-choice safety contract shared by CPython and the WebAssembly build.
+// A candidate is adverse only when its proof interval is the exact opponent
+// result. Unknown and partial intervals remain eligible. If every candidate is
+// adverse, comparing them pairwise still falls back to the ordinary mover
+// score and canonical notation order.
+struct ProofAwareRootCandidateV1 {
+    std::int64_t score = 0;
+    std::array<int, 2> proof_bounds{-1, 1};
+    std::string_view machine_notation;
+};
+
+[[nodiscard]] bool root_candidate_is_proven_adverse_v1(
+    bool mover_white,
+    const std::array<int, 2>& proof_bounds
+) noexcept;
+
+[[nodiscard]] bool proof_aware_root_precedes_v1(
+    bool mover_white,
+    const ProofAwareRootCandidateV1& left,
+    const ProofAwareRootCandidateV1& right
+) noexcept;
 
 inline constexpr std::uint8_t S3_NEURAL_ORDERING_MODEL = 1;
 inline constexpr std::int64_t S3_NEURAL_ORDERING_BLEND_PERCENT = 75;
@@ -230,6 +277,24 @@ struct CompleteSeriesResponse {
     std::uint64_t max_reach_positions,
     const FullWeights& weights
 );
+
+[[nodiscard]] std::optional<TeacherValueFeaturesV3>
+teacher_value_features_v3(
+    const BoardState& position,
+    const std::vector<int>& ep_targets,
+    std::int64_t series_number,
+    std::uint64_t max_reach_positions = 256,
+    std::size_t feature_count = TEACHER_VALUE_FEATURE_COUNT
+);
+
+// Returns the exact fixed-point dot product used by
+// fit_deep_teacher_value.py.  It deliberately does not divide by the scale:
+// doing so would introduce ranking ties that the frozen Python evaluator does
+// not have.  Terminal mate/draw values remain the searcher's responsibility.
+[[nodiscard]] std::optional<std::int64_t> deep_teacher_score_v1(
+    const TeacherValueFeaturesV3& features,
+    const DeepTeacherLinearModelV1& model
+) noexcept;
 
 [[nodiscard]] std::vector<LegalMove> legal_move_variants(
     const BoardState& position,

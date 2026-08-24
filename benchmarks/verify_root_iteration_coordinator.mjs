@@ -133,9 +133,10 @@ function sleep(milliseconds) {
 
 
 class SyntheticWorker {
-  constructor(id, oracle, options = {}) {
+  constructor(id, oracle, proofOracle, options = {}) {
     this.id = id;
     this.oracle = oracle;
+    this.proofOracle = proofOracle;
     this.call_work_credit_supported = true;
     this.hard_memory_limit_supported = true;
     this.identity = { ...IDENTITY, ...(options.identity || {}) };
@@ -203,7 +204,7 @@ class SyntheticWorker {
       status: "complete",
       bound,
       score,
-      proof_bounds: [-1, 1],
+      proof_bounds: [...(this.proofOracle.get(task.candidate_identity) ?? [-1, 1])],
       child_pv: [`${task.candidate_identity}-pv`],
       work: {
         call_work_credit: task.call_work_credit,
@@ -230,10 +231,14 @@ class SyntheticWorker {
 
 function workers(count, definitions, options = {}) {
   const oracle = new Map(definitions.map((item) => [item.id, item.score]));
+  const proofOracle = new Map(
+    definitions.map((item) => [item.id, item.proof ?? [-1, 1]]),
+  );
   const events = options.events ?? [];
   return Array.from({ length: count }, (_, index) => new SyntheticWorker(
     `worker-${index}`,
     oracle,
+    proofOracle,
     { ...options, events, ...(options.perWorker?.[index] || {}) },
   ));
 }
@@ -420,6 +425,88 @@ async function testWhiteCanonicalTies() {
     .map((task) => task.purpose);
   assert.deepEqual(purposes("a"), ["scout", "threat-research", "selected-certification"]);
   assert.deepEqual(purposes("c"), ["scout"]);
+}
+
+
+async function testProofAwareRootSelection() {
+  const policy = "exclude-proven-opponent-wins-unless-forced-v1";
+  const white = [
+    { id: "white-loss", key: "a2a3", score: 100, proof: [-1, -1] },
+    { id: "white-safe", key: "b2b3", score: 10, proof: [-1, 1] },
+  ];
+  const whitePool = workers(1, white);
+  const whiteResult = await api.runRootIteration({
+    request: request(1, { iteration_id: "proof-aware-white" }),
+    manifest: manifest(white),
+    workers: whitePool,
+    safetyProbe: exhaustedSafety(),
+  });
+  assert.equal(whiteResult.selected.candidate_identity, "white-safe");
+  assert.equal(whiteResult.proof_selection_policy, policy);
+  assert.equal(whiteResult.proof_aware_selection, true);
+  assert.equal(whiteResult.proof_policy_filtered, true);
+  assert.equal(whiteResult.proven_adverse_candidates, 1);
+  assert.deepEqual(
+    whitePool[0].calls
+      .filter((task) => task.candidate_identity === "white-safe")
+      .map((task) => task.purpose),
+    ["scout", "threat-research", "selected-certification"],
+  );
+
+  const black = [
+    { id: "black-loss", key: "a7a6", score: -100, proof: [1, 1] },
+    { id: "black-safe", key: "b7b6", score: -10, proof: [-1, 1] },
+  ];
+  const blackPool = workers(1, black);
+  const blackResult = await api.runRootIteration({
+    request: request(1, { series: 2, iteration_id: "proof-aware-black" }),
+    manifest: manifest(black, { white: false }),
+    workers: blackPool,
+    safetyProbe: exhaustedSafety(),
+  });
+  assert.equal(blackResult.selected.candidate_identity, "black-safe");
+  assert.equal(blackResult.proof_policy_filtered, true);
+  assert.deepEqual(
+    blackPool[0].calls
+      .filter((task) => task.candidate_identity === "black-safe")
+      .map((task) => task.purpose),
+    ["scout", "threat-research", "selected-certification"],
+  );
+
+  const forcedLoss = [
+    { id: "worse", key: "a2a3", score: 90, proof: [-1, -1] },
+    { id: "better", key: "b2b3", score: 100, proof: [-1, -1] },
+  ];
+  const forcedResult = await api.runRootIteration({
+    request: request(1, { iteration_id: "proof-aware-forced-loss" }),
+    manifest: manifest(forcedLoss),
+    workers: workers(1, forcedLoss),
+    safetyProbe: exhaustedSafety(),
+  });
+  assert.equal(forcedResult.selected.candidate_identity, "better");
+  assert.equal(forcedResult.proof_policy_filtered, false);
+  assert.equal(forcedResult.proven_adverse_candidates, 2);
+
+  const record = (score, proofBounds, orderKey) => ({
+    score,
+    proofBounds,
+    candidate: { order_key: orderKey },
+  });
+  assert(api.proofAwareRootPrecedes(
+    record(10, [-1, 1], "z"),
+    record(100, [-1, -1], "a"),
+    true,
+  ));
+  assert(api.proofAwareRootPrecedes(
+    record(-10, [-1, 1], "z"),
+    record(-100, [1, 1], "a"),
+    false,
+  ));
+  assert(api.proofAwareRootPrecedes(
+    record(100, [-1, -1], "b"),
+    record(90, [-1, -1], "a"),
+    true,
+  ));
 }
 
 
@@ -1210,6 +1297,7 @@ async function testUnsupportedEnvelope() {
 const streaming = await testStreamingWhiteAndStaleEpoch();
 await testCertifiedInitialFullWave();
 await testWhiteCanonicalTies();
+await testProofAwareRootSelection();
 await testBlackMirror();
 await testTerminalProductionOrder();
 await testSafetyRevisionAndBoundInvalidation();
@@ -1223,7 +1311,7 @@ await testUnsupportedEnvelope();
 
 process.stdout.write(`${JSON.stringify({
   schema: "spc-root-iteration-coordinator-verifier-v1",
-  scenarios: 19,
+  scenarios: 23,
   response_order_permutations: 8,
   response_order_worker_count: 8,
   streaming_first_wave: true,
@@ -1231,6 +1319,9 @@ process.stdout.write(`${JSON.stringify({
   stale_epoch_revalidated: true,
   white_black_mirrored: true,
   canonical_ties: true,
+  proof_aware_white_black_veto: true,
+  proof_aware_forced_loss_fallback: true,
+  proof_aware_scout_research: true,
   terminal_production_order: true,
   safety_revision_bound_invalidation: true,
   checked_pv_policy_veto_without_score_forgery: true,
