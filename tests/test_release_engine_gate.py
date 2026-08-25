@@ -35,6 +35,19 @@ MANIFEST = (
 )
 
 
+@pytest.fixture
+def certificate_build_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Simulate running the receipt-only tests at the certified build commit."""
+
+    from scottish_progressive import model
+
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    fingerprint = manifest["variants"]["single"]["root_session_certificate"][
+        "source_fingerprint"
+    ]
+    monkeypatch.setattr(model, "ENGINE_SOURCE_FINGERPRINT", fingerprint)
+
+
 def _browser_receipt(*, scenario: str = "initial", mode: str = "faster") -> dict:
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     variant = manifest["variants"]["single"]
@@ -186,18 +199,19 @@ def _browser_receipt(*, scenario: str = "initial", mode: str = "faster") -> dict
     }
 
 
-def test_certified_baseline_is_bound_to_checked_in_wasm_certificate() -> None:
-    baseline = certified_baseline(MANIFEST)
+def test_certified_baseline_rejects_stale_checked_in_browser_assets() -> None:
+    from scottish_progressive.model import ENGINE_SOURCE_FINGERPRINT
 
-    assert baseline["certificate_id"] == "spc-root-session-a7ee2880fae4203f"
-    assert baseline["profile_id"] == "spc-68942034c41b4cc4"
-    assert baseline["status"] == "certified"
-    assert baseline["wasm_sha256"] == (
-        "25a2a89518dfb67793deb72df20cc4c491e43ea4c9558d1a458aa215a95901f6"
-    )
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    assert manifest["source_fingerprint"] != ENGINE_SOURCE_FINGERPRINT
+
+    with pytest.raises(GateError, match="stale.*source_fingerprint"):
+        certified_baseline(MANIFEST)
 
 
-def test_browser_receipt_normalizes_real_engine_metrics_and_identity() -> None:
+def test_browser_receipt_normalizes_real_engine_metrics_and_identity(
+    certificate_build_checkout: None,
+) -> None:
     sample = normalize_browser_receipt(
         _browser_receipt(),
         scenario="initial",
@@ -224,7 +238,9 @@ def test_browser_receipt_normalizes_real_engine_metrics_and_identity() -> None:
     assert sample["artifact"]["source_revision"] == "a" * 40
 
 
-def test_browser_receipt_rejects_a_budget_or_boundary_mismatch() -> None:
+def test_browser_receipt_rejects_a_budget_or_boundary_mismatch(
+    certificate_build_checkout: None,
+) -> None:
     wrong_budget = _browser_receipt()
     wrong_budget["worker_receipt"]["geometry"]["max_work"] -= 1
     with pytest.raises(GateError, match="max_work"):
@@ -246,7 +262,9 @@ def test_browser_receipt_rejects_a_budget_or_boundary_mismatch() -> None:
         )
 
 
-def test_browser_receipt_rejects_stale_or_unbound_artifact_identity() -> None:
+def test_browser_receipt_rejects_stale_or_unbound_artifact_identity(
+    certificate_build_checkout: None,
+) -> None:
     receipt = _browser_receipt()
     receipt["worker_receipt"]["artifact"]["wasm_sha256"] = "0" * 64
 
@@ -259,7 +277,9 @@ def test_browser_receipt_rejects_stale_or_unbound_artifact_identity() -> None:
         )
 
 
-def test_browser_receipt_rejects_non_opera_or_failed_worker_safety_gate() -> None:
+def test_browser_receipt_rejects_non_opera_or_failed_worker_safety_gate(
+    certificate_build_checkout: None,
+) -> None:
     non_opera = _browser_receipt()
     non_opera["cdp"]["user_agent"] = "Mozilla/5.0 Chrome/150.0.0.0"
     non_opera["page_environment"]["userAgent"] = "Mozilla/5.0 Chrome/150.0.0.0"
@@ -282,7 +302,9 @@ def test_browser_receipt_rejects_non_opera_or_failed_worker_safety_gate() -> Non
         )
 
 
-def test_browser_receipt_rejects_an_unsettled_work_ledger() -> None:
+def test_browser_receipt_rejects_an_unsettled_work_ledger(
+    certificate_build_checkout: None,
+) -> None:
     receipt = _browser_receipt()
     receipt["worker_receipt"]["result"]["work"]["reserved_work"] = 1
 
@@ -381,7 +403,9 @@ def _passing_strength_report() -> dict:
     }
 
 
-def test_equal_budget_strength_decision_is_bound_to_certified_baseline() -> None:
+def test_equal_budget_strength_decision_is_bound_to_certified_baseline(
+    certificate_build_checkout: None,
+) -> None:
     decision = evaluate_strength_report(
         _passing_strength_report(),
         certified_baseline(MANIFEST),
@@ -394,7 +418,9 @@ def test_equal_budget_strength_decision_is_bound_to_certified_baseline() -> None
     assert decision["binary_baseline_participant"] is False
 
 
-def test_strength_decision_rejects_an_uncertified_reference() -> None:
+def test_strength_decision_rejects_an_uncertified_reference(
+    certificate_build_checkout: None,
+) -> None:
     report = _passing_strength_report()
     report["reference"]["profile_id"] = "spc-not-certified"
 
@@ -406,7 +432,9 @@ def test_strength_decision_rejects_an_uncertified_reference() -> None:
         )
 
 
-def test_browser_release_requires_all_four_d5_mode_cases_within_budget() -> None:
+def test_browser_release_requires_all_four_d5_mode_cases_within_budget(
+    certificate_build_checkout: None,
+) -> None:
     samples = [
         normalize_browser_receipt(
             _browser_receipt(scenario=scenario, mode=mode),
@@ -426,7 +454,9 @@ def test_browser_release_requires_all_four_d5_mode_cases_within_budget() -> None
     assert decision["all_within_mode_budget"] is True
 
 
-def test_browser_release_fails_a_slow_or_incomplete_required_case() -> None:
+def test_browser_release_fails_a_slow_or_incomplete_required_case(
+    certificate_build_checkout: None,
+) -> None:
     samples = [
         normalize_browser_receipt(
             _browser_receipt(scenario=scenario, mode=mode),
@@ -447,7 +477,9 @@ def test_browser_release_fails_a_slow_or_incomplete_required_case() -> None:
     assert decision["all_within_mode_budget"] is False
 
 
-def test_browser_release_rejects_mixed_artifact_commits() -> None:
+def test_browser_release_rejects_mixed_artifact_commits(
+    certificate_build_checkout: None,
+) -> None:
     samples = [
         normalize_browser_receipt(
             _browser_receipt(scenario=scenario, mode=mode),
