@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -324,6 +327,81 @@ def test_native_gate_requires_a_source_matched_compiled_engine() -> None:
     assert identity["module_filename"].endswith(".pyd")
     assert len(identity["module_sha256"]) == 64
     assert identity["source_identity"] == identity["expected_source_identity"]
+
+
+@pytest.mark.parametrize(
+    ("label", "module_name"),
+    (
+        ("package", "scottish_progressive"),
+        ("evaluation", "scottish_progressive.evaluation"),
+        ("model", "scottish_progressive.model"),
+    ),
+)
+def test_native_gate_rejects_foreign_editable_python_modules(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    label: str,
+    module_name: str,
+) -> None:
+    import importlib
+
+    module = importlib.import_module(module_name)
+    foreign_file = tmp_path / module_name.replace(".", "_") / "module.py"
+    foreign_file.parent.mkdir(parents=True)
+    foreign_file.write_text("# foreign editable install\n", encoding="utf-8")
+    monkeypatch.setattr(module, "__file__", str(foreign_file))
+
+    with pytest.raises(GateError, match=rf"{label}.*outside.*checkout"):
+        native_runtime_identity()
+
+
+def test_native_gate_rejects_a_foreign_compiled_extension_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from scottish_progressive import evaluation
+
+    foreign_extension = tmp_path / "foreign" / "_native_eval.pyd"
+    foreign_extension.parent.mkdir(parents=True)
+    foreign_extension.write_bytes(b"not this checkout's extension")
+    monkeypatch.setattr(evaluation._native_eval, "__file__", str(foreign_extension))
+
+    with pytest.raises(GateError, match=r"compiled extension.*outside.*checkout"):
+        native_runtime_identity()
+
+
+def test_harness_precedes_a_foreign_editable_pythonpath(tmp_path: Path) -> None:
+    foreign_root = tmp_path / "foreign-editable"
+    foreign_package = foreign_root / "scottish_progressive"
+    foreign_package.mkdir(parents=True)
+    (foreign_package / "__init__.py").write_text(
+        "raise RuntimeError('foreign editable package imported')\n",
+        encoding="utf-8",
+    )
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(foreign_root)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json; "
+                "from benchmarks.release_engine_gate import native_runtime_identity; "
+                "print(json.dumps(native_runtime_identity()))"
+            ),
+        ],
+        cwd=ROOT,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    identity = json.loads(completed.stdout)
+
+    assert Path(identity["package_file"]).is_relative_to(ROOT / "src")
+    assert Path(identity["evaluation_file"]).is_relative_to(ROOT / "src")
+    assert Path(identity["model_file"]).is_relative_to(ROOT / "src")
+    assert Path(identity["module_path"]).is_relative_to(ROOT / "src")
 
 
 def test_black_after_e4_scenario_is_an_authoritative_series_boundary() -> None:
