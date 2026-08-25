@@ -3,24 +3,46 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
 from scottish_progressive.fast_training import CachedFeatures
+from scottish_progressive.fullgame import FullGameSemanticConfig
+from scottish_progressive.fullgame_codec import (
+    FullGameRecord,
+    RejectReason,
+    RejectedAttempt,
+    Terminal,
+)
 from scottish_progressive.cli import main
 from scottish_progressive.league import OPENING_SUITE_VERSION, OpeningCase
 from scottish_progressive.model import ProgressiveState
 from scottish_progressive.profiles import baseline_profile
 from scottish_progressive.rules import play_series
 from scottish_progressive.selfplay_training import (
+    FULLGAME_CORPUS_METHOD,
+    HUMAN_REFUTATION_BLUNDERS,
+    HUMAN_REFUTATION_GATE_ID,
+    HUMAN_REFUTATION_TRACE,
     SelfPlayCorpus,
     SelfPlaySample,
+    _ReplayedGame,
+    _samples_from_replayed_full_games,
+    build_fullgame_corpus,
     build_selfplay_corpus,
+    build_verified_fullgame_corpus,
+    evaluate_human_refutation_gate,
     tune_selfplay_profile,
 )
 
 
 MATE_FEN = "7k/8/5KQ1/8/8/8/8/8 w - - 0 1"
+SHORT_FULL_GAME = (
+    ("d2d3",),
+    ("e7e5", "e8e7"),
+    ("d1d2", "d2f4", "f4e5"),
+)
 
 
 def _mate_game(job_key: str, case_id: str, *, series: str = "g6g7") -> dict[str, object]:
@@ -192,6 +214,293 @@ def test_corpus_logical_digest_includes_committed_wal_rows(tmp_path: Path) -> No
         )
     finally:
         connection.close()
+
+
+def _fullgame_fixture(
+    attempt_index: int,
+    series: tuple[tuple[str, ...], ...],
+) -> FullGameRecord:
+    return FullGameRecord(
+        attempt_index=attempt_index,
+        terminal=Terminal.CHECKMATE_WHITE,
+        series=series,
+        logical_work=100 + attempt_index,
+    )
+
+
+def test_fullgame_corpus_replays_weak_labels_without_universal_root_leakage() -> None:
+    config = FullGameSemanticConfig.from_profile(baseline_profile())
+    records = (
+        _fullgame_fixture(0, HUMAN_REFUTATION_TRACE),
+        _fullgame_fixture(1, SHORT_FULL_GAME),
+        RejectedAttempt(2, RejectReason.WORK_LIMIT, logical_work=77),
+    )
+
+    corpus = None
+    for seed in range(100):
+        candidate = build_fullgame_corpus(
+            records,
+            config,
+            seed=seed,
+            holdout_percent=50,
+        )
+        if candidate.train_samples and candidate.holdout_samples:
+            corpus = candidate
+            break
+    assert corpus is not None
+    assert corpus.method == FULLGAME_CORPUS_METHOD
+    assert corpus.completed_games == 2
+    assert corpus.excluded_games == 1
+    assert len(corpus.samples) == 6
+    assert all(sample.series_number >= 2 for sample in corpus.samples)
+    assert ProgressiveState.initial().position_hash not in {
+        sample.position_hash for sample in corpus.samples
+    }
+    assert {
+        sample.profile_id for sample in corpus.samples
+    } == {baseline_profile().profile_id}
+    assert {
+        sample.position_hash for sample in corpus.train_samples
+    }.isdisjoint(
+        sample.position_hash for sample in corpus.holdout_samples
+    )
+    games: dict[str, list[SelfPlaySample]] = {}
+    for sample in corpus.samples:
+        games.setdefault(sample.game_key, []).append(sample)
+    assert len(games) == 2
+    for samples in games.values():
+        assert len({sample.split for sample in samples}) == 1
+        assert sum(sample.sample_weight for sample in samples) == pytest.approx(1.0)
+    assert "weak value label" in corpus.as_dict()["summary"]["label_contract"]
+    assert "never promotion evidence" in corpus.as_dict()["summary"][
+        "label_contract"
+    ]
+
+
+def test_dense_fullgame_transpositions_keep_per_game_splits_disjoint() -> None:
+    initial = ProgressiveState.initial()
+    shared = play_series(initial, ("e2e4",)).final_state
+    first_moves = tuple(
+        move.uci()
+        for move in initial.board.legal_moves
+        if move.uci() != "e2e4"
+    )[:12]
+    profile_id = baseline_profile().profile_id
+    games = tuple(
+        _ReplayedGame(
+            run_id="dense-fullgame-run",
+            game_key=f"dense-game-{index:02d}",
+            opening_case_id=f"after-s1-{move}",
+            line_family=f"fullgame-after-s1:{index:02d}",
+            result="1-0",
+            target_white_score=1.0,
+            states=(play_series(initial, (move,)).final_state, shared),
+            profile_ids=(profile_id, profile_id),
+            chosen_series=("a7a6/b7b6", "a7a6/b7b6"),
+        )
+        for index, move in enumerate(first_moves)
+    )
+
+    selected = None
+    for seed in range(100):
+        first = _samples_from_replayed_full_games(
+            games, seed=seed, holdout_percent=50
+        )
+        if {sample.split for sample in first[0]} == {"train", "holdout"}:
+            repeated = _samples_from_replayed_full_games(
+                games, seed=seed, holdout_percent=50
+            )
+            selected = (first, repeated)
+            break
+    assert selected is not None
+    (samples, shadowed, removed), repeated = selected
+    assert (samples, shadowed, removed) == repeated
+    assert shadowed == 0
+    assert removed > 0
+    assert len({sample.split_component for sample in samples}) == len(games)
+    assert initial.position_hash not in {
+        sample.position_hash for sample in samples
+    }
+
+    games_by_key: dict[str, list[SelfPlaySample]] = {}
+    for sample in samples:
+        games_by_key.setdefault(sample.game_key, []).append(sample)
+    assert set(games_by_key) == {game.game_key for game in games}
+    for game_samples in games_by_key.values():
+        assert len({sample.split for sample in game_samples}) == 1
+        assert len({sample.split_component for sample in game_samples}) == 1
+        assert sum(sample.sample_weight for sample in game_samples) == pytest.approx(1.0)
+    train_hashes = {
+        sample.position_hash for sample in samples if sample.split == "train"
+    }
+    holdout_hashes = {
+        sample.position_hash for sample in samples if sample.split == "holdout"
+    }
+    assert train_hashes.isdisjoint(holdout_hashes)
+    assert shared.position_hash in train_hashes
+    assert shared.position_hash not in holdout_hashes
+
+
+def test_fullgame_corpus_rejects_duplicate_and_illegal_accepted_traces() -> None:
+    config = FullGameSemanticConfig.from_profile(baseline_profile())
+    duplicate = _fullgame_fixture(1, HUMAN_REFUTATION_TRACE)
+    with pytest.raises(ValueError, match="duplicate accepted trace"):
+        build_fullgame_corpus(
+            (_fullgame_fixture(0, HUMAN_REFUTATION_TRACE), duplicate),
+            config,
+        )
+
+    illegal = _fullgame_fixture(
+        0,
+        (*HUMAN_REFUTATION_TRACE[:-1], (("d1c2", "c2c7"))),
+    )
+    with pytest.raises(
+        ValueError, match="illegal|incomplete|terminal|checkmate|authoritative"
+    ):
+        build_fullgame_corpus((illegal,), config)
+
+    bad_attribution = FullGameRecord(
+        attempt_index=0,
+        terminal=Terminal.CHECKMATE_WHITE,
+        series=SHORT_FULL_GAME,
+        white_profile_index=1,
+    )
+    with pytest.raises(ValueError, match="invalid profile attribution"):
+        build_fullgame_corpus((bad_attribution,), config)
+
+
+def test_verified_fullgame_adapter_uses_verified_store_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import scottish_progressive.fullgame as fullgame
+
+    config = FullGameSemanticConfig.from_profile(baseline_profile())
+    manifest = {"semantic_config": config.as_dict()}
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="ascii",
+    )
+    verification = {
+        "accepted_unique_games": 1,
+        "authoritative_replay": "passed",
+        "checkpoint_rejections": 2,
+        "logical_work": 999,
+        "micro_moves": 6,
+        "path_count_saturations": 0,
+        "series": 3,
+        "simulation_id": config.simulation_id,
+        "terminal_counts": {"checkmate_white": 1},
+        "trace_deduplication": "passed",
+    }
+    monkeypatch.setattr(fullgame, "verify_fullgame_run", lambda root: verification)
+    monkeypatch.setattr(
+        fullgame,
+        "iter_fullgame_records",
+        lambda root: iter((_fullgame_fixture(0, SHORT_FULL_GAME),)),
+    )
+
+    corpus = build_verified_fullgame_corpus(
+        tmp_path,
+        holdout_percent=0,
+        max_games=1,
+    )
+
+    assert corpus.completed_games == 1
+    assert corpus.excluded_games == 2
+    assert corpus.database_evidence[1]["authoritative_replay"] == "passed"
+    assert corpus.database_evidence[1]["trace_deduplication"] == "passed"
+
+    verification["accepted_unique_games"] = 2
+    prefix = build_verified_fullgame_corpus(
+        tmp_path,
+        holdout_percent=0,
+        max_games=1,
+    )
+    assert prefix.excluded_games == 0
+    assert prefix.database_evidence[1]["consumed_entire_snapshot"] is False
+    assert "store-wide evidence only" in prefix.database_evidence[1][
+        "checkpoint_rejections_scope"
+    ]
+
+
+def test_human_refutation_gate_requires_complete_search_and_avoids_both_blunders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_complete_analyze(state, limits, profile):
+        safe = {
+            2: ("e7e6", "e8e7"),
+            4: ("b8c6", "c6d4", "g8f6", "d4f3"),
+        }[state.series_number]
+        selected = play_series(state, safe)
+        return SimpleNamespace(
+            best_series=selected,
+            principal_variation=(selected,),
+            score=123,
+            requested_depth=limits.depth_series,
+            completed_depth=limits.depth_series,
+            exact_width=False,
+            timed_out=False,
+            work_limit_reached=False,
+            stats=SimpleNamespace(work_positions=1234, nodes=42),
+            elapsed_seconds=0.25,
+        )
+
+    monkeypatch.setattr(
+        "scottish_progressive.selfplay_training.analyze", fake_complete_analyze
+    )
+    passed = evaluate_human_refutation_gate(baseline_profile())
+    assert passed["gate_id"] == HUMAN_REFUTATION_GATE_ID
+    assert passed["passed"] is True
+    assert passed["fixture"]["terminal"] == "checkmate-white"
+    assert all(anchor["avoided_known_blunder"] for anchor in passed["anchors"])
+
+    def fake_incomplete_analyze(state, limits, profile):
+        selected = play_series(
+            state, HUMAN_REFUTATION_BLUNDERS[state.series_number]
+        )
+        return SimpleNamespace(
+            best_series=selected,
+            principal_variation=(selected,),
+            score=-1,
+            requested_depth=limits.depth_series,
+            completed_depth=1,
+            exact_width=False,
+            timed_out=True,
+            work_limit_reached=False,
+            stats=SimpleNamespace(work_positions=500, nodes=12),
+            elapsed_seconds=5.0,
+        )
+
+    monkeypatch.setattr(
+        "scottish_progressive.selfplay_training.analyze", fake_incomplete_analyze
+    )
+    failed = evaluate_human_refutation_gate(baseline_profile())
+    assert failed["passed"] is False
+    assert all(not anchor["passed"] for anchor in failed["anchors"])
+    assert all(
+        not anchor["completed_required_search"] for anchor in failed["anchors"]
+    )
+
+    def fake_empty_analyze(state, limits, profile):
+        return SimpleNamespace(
+            best_series=None,
+            principal_variation=(),
+            score=0,
+            requested_depth=limits.depth_series,
+            completed_depth=limits.depth_series,
+            exact_width=True,
+            timed_out=False,
+            work_limit_reached=False,
+            stats=SimpleNamespace(work_positions=1, nodes=1),
+            elapsed_seconds=0.01,
+        )
+
+    monkeypatch.setattr(
+        "scottish_progressive.selfplay_training.analyze", fake_empty_analyze
+    )
+    empty = evaluate_human_refutation_gate(baseline_profile())
+    assert empty["passed"] is False
+    assert all(not anchor["avoided_known_blunder"] for anchor in empty["anchors"])
 
 
 def test_train_selfplay_cli_writes_reproducible_candidate_artifacts(

@@ -15,10 +15,16 @@ from scottish_progressive.league import (
     GameJob,
     LeagueConfig,
     LeagueStore,
+    OpeningCase,
     _preliminary_jobs,
     _play_game,
 )
-from scottish_progressive.model import ProgressiveState
+from scottish_progressive.model import ENGINE_SOURCE_FINGERPRINT, ProgressiveState
+from scottish_progressive.neural_evaluator import (
+    FEATURE_COUNT,
+    FixedPointNetwork,
+    NeuralBlend,
+)
 from scottish_progressive.profiles import (
     baseline_profile,
     create_population,
@@ -31,6 +37,7 @@ from scottish_progressive.strength import (
     SEEDED_OPENING_SUITE_FORMAT,
     STRENGTH_REPORT_FORMAT,
     StrengthMatchConfig,
+    StrengthParticipant,
     _build_jobs,
     _worker_failure,
     build_seeded_opening_suite,
@@ -45,6 +52,28 @@ def _profiles():
     reference = baseline_profile()
     candidate = mutate_profile(reference, seed=404, name="candidate")
     return candidate, reference
+
+
+def _neural_participant() -> StrengthParticipant:
+    profile = baseline_profile()
+    network = FixedPointNetwork(
+        source_fingerprint=ENGINE_SOURCE_FINGERPRINT,
+        base_profile_id=profile.profile_id,
+        teacher_fingerprint="teacher-fixture",
+        corpus_fingerprint="corpus-fixture",
+        trainer_fingerprint="trainer-fixture",
+        hidden_size=1,
+        input_weights=(0,) * FEATURE_COUNT,
+        hidden_bias=(0,),
+        output_weights=(0,),
+        output_bias=0,
+        output_denominator=256,
+        recommended_blend_percent=25,
+    )
+    return StrengthParticipant(
+        profile,
+        NeuralBlend.for_profile(network, profile, blend_percent=25),
+    )
 
 
 def test_strength_jobs_are_deterministic_unique_and_color_swapped() -> None:
@@ -75,6 +104,50 @@ def test_strength_jobs_are_deterministic_unique_and_color_swapped() -> None:
             assert game.max_generation_positions == 12_345
             assert game.max_game_work_positions == 123_456
             assert game.emergency_max_series == 23
+
+
+def test_neural_participant_round_trips_and_plays_as_effective_match_identity() -> None:
+    candidate = _neural_participant()
+    reference = StrengthParticipant(baseline_profile())
+    restored = StrengthParticipant.from_dict(candidate.as_dict())
+    assert restored == candidate
+    assert restored.participant_id != reference.participant_id
+
+    jobs = _build_jobs(candidate, reference, StrengthMatchConfig.smoke(seed=71))
+    assert jobs[0].white_evaluation_overlay == candidate.evaluation_overlay
+    assert jobs[1].black_evaluation_overlay == candidate.evaluation_overlay
+
+    mate = OpeningCase(
+        case_id="neural-immediate-mate",
+        fen="7k/8/5KQ1/8/8/8/8/8 w - - 0 1",
+        series_number=1,
+        source="neural match identity regression",
+    )
+    record = _play_game(
+        GameJob(
+            job_key="neural-game",
+            run_id="neural-run",
+            generation=0,
+            stage="neural-screen",
+            opening_index=0,
+            opening=mate,
+            seed=71,
+            white_profile=candidate.profile,
+            black_profile=reference.profile,
+            search_depth=1,
+            max_series_per_node=32,
+            max_generation_positions=250_000,
+            max_game_work_positions=1_000_000,
+            emergency_max_series=18,
+            white_evaluation_overlay=candidate.evaluation_overlay,
+        )
+    )
+    assert record.result == "1-0"
+    assert record.white_profile_id == candidate.participant_id
+    assert record.black_profile_id == reference.participant_id
+    assert record.decisive_profile_id == candidate.participant_id
+    assert record.trace[0]["profile_id"] == candidate.participant_id
+    assert record.trace[0]["evaluation_overlay_id"] == candidate.participant_id
 
 
 def test_strength_config_rejects_duplicate_suite_cases_and_identical_profiles() -> None:

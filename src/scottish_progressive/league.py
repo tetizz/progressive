@@ -414,6 +414,8 @@ class GameJob:
     max_game_work_positions: int | None
     emergency_max_series: int | None
     opening_suite_version: str = OPENING_SUITE_VERSION
+    white_evaluation_overlay: EvaluationOverlay | None = None
+    black_evaluation_overlay: EvaluationOverlay | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -527,6 +529,19 @@ def _winner_for_terminal(result: Any, mover: chess.Color) -> chess.Color | None:
     return mover if result.ended_by_check else not mover
 
 
+def _job_seat(
+    job: GameJob,
+    color: chess.Color,
+) -> tuple[EngineProfile, EvaluationOverlay | None, str]:
+    if color == chess.WHITE:
+        profile, overlay = job.white_profile, job.white_evaluation_overlay
+    else:
+        profile, overlay = job.black_profile, job.black_evaluation_overlay
+    if overlay is not None and overlay.base_profile_id != profile.profile_id:
+        raise ValueError("game evaluation overlay is bound to a different base profile")
+    return profile, overlay, profile.profile_id if overlay is None else overlay.variant_id
+
+
 def _technical_failure(
     job: GameJob,
     state: ProgressiveState,
@@ -536,6 +551,8 @@ def _technical_failure(
     *,
     error: str | None = None,
 ) -> GameRecord:
+    white_id = _job_seat(job, chess.WHITE)[2]
+    black_id = _job_seat(job, chess.BLACK)[2]
     return GameRecord(
         job.job_key,
         job.run_id,
@@ -545,8 +562,8 @@ def _technical_failure(
         job.opening.case_id,
         job.opening_suite_version,
         job.seed,
-        job.white_profile.profile_id,
-        job.black_profile.profile_id,
+        white_id,
+        black_id,
         "*",
         reason,
         None,
@@ -564,6 +581,8 @@ def _play_game(job: GameJob) -> GameRecord:
     start_pfen = state.pfen
     trace: list[dict[str, Any]] = []
     game_work_positions = 0
+    white_id = _job_seat(job, chess.WHITE)[2]
+    black_id = _job_seat(job, chess.BLACK)[2]
 
     def technical_incomplete(reason: str) -> GameRecord:
         return GameRecord(
@@ -575,8 +594,8 @@ def _play_game(job: GameJob) -> GameRecord:
             job.opening.case_id,
             job.opening_suite_version,
             job.seed,
-            job.white_profile.profile_id,
-            job.black_profile.profile_id,
+            white_id,
+            black_id,
             "*",
             reason,
             None,
@@ -592,7 +611,7 @@ def _play_game(job: GameJob) -> GameRecord:
         or state.series_number <= job.emergency_max_series
     ):
         mover = state.board.turn
-        profile = job.white_profile if mover == chess.WHITE else job.black_profile
+        profile, evaluation_overlay, engine_id = _job_seat(job, mover)
         remaining_game_work = (
             None
             if job.max_game_work_positions is None
@@ -620,13 +639,14 @@ def _play_game(job: GameJob) -> GameRecord:
                     collect_all_root_scores=False,
                 ),
                 profile=profile,
+                evaluation_overlay=evaluation_overlay,
             )
         except BaseException as error:
             return _technical_failure(
                 job,
                 state,
                 trace,
-                profile.profile_id,
+                engine_id,
                 "engine-exception",
                 error=f"{type(error).__name__}: {error}",
             )
@@ -639,7 +659,11 @@ def _play_game(job: GameJob) -> GameRecord:
         selected = result.best_series
         attempted_trace = {
             "series_number": state.series_number,
-            "profile_id": profile.profile_id,
+            "profile_id": engine_id,
+            "base_profile_id": profile.profile_id,
+            "evaluation_overlay_id": (
+                None if evaluation_overlay is None else evaluation_overlay.variant_id
+            ),
             "series": selected.machine_notation if selected else None,
             "notation": selected.notation if selected else None,
             "score_white_heuristic_points": getattr(result, "score", None),
@@ -714,12 +738,12 @@ def _play_game(job: GameJob) -> GameRecord:
                     else "engine-no-move"
                 )
                 return _technical_failure(
-                    job, state, trace, profile.profile_id, reason
+                    job, state, trace, engine_id, reason
                 )
             return GameRecord(
                 job.job_key, job.run_id, job.generation, job.stage,
                 job.opening_index, job.opening.case_id, job.opening_suite_version,
-                job.seed, job.white_profile.profile_id, job.black_profile.profile_id,
+                job.seed, white_id, black_id,
                 "1/2-1/2", "proven-draw-no-mating-material", None, None,
                 start_pfen, state.pfen, len(trace), tuple(trace),
             )
@@ -730,9 +754,9 @@ def _play_game(job: GameJob) -> GameRecord:
         state = selected.final_state
         if winner is not None:
             winner_id = (
-                job.white_profile.profile_id
+                white_id
                 if winner == chess.WHITE
-                else job.black_profile.profile_id
+                else black_id
             )
             return GameRecord(
                 job.job_key,
@@ -743,8 +767,8 @@ def _play_game(job: GameJob) -> GameRecord:
                 job.opening.case_id,
                 job.opening_suite_version,
                 job.seed,
-                job.white_profile.profile_id,
-                job.black_profile.profile_id,
+                white_id,
+                black_id,
                 "1-0" if winner == chess.WHITE else "0-1",
                 "checkmate",
                 winner_id,
@@ -764,8 +788,8 @@ def _play_game(job: GameJob) -> GameRecord:
                 job.opening.case_id,
                 job.opening_suite_version,
                 job.seed,
-                job.white_profile.profile_id,
-                job.black_profile.profile_id,
+                white_id,
+                black_id,
                 "1/2-1/2",
                 selected.outcome.value,
                 None,
@@ -1145,7 +1169,10 @@ def run_rules_tactical_gate(
     search_depth: int,
     max_series_per_node: int,
     max_generation_positions: int = 250_000,
+    evaluation_overlay: EvaluationOverlay | None = None,
 ) -> GateReport:
+    if evaluation_overlay is not None and evaluation_overlay.base_profile_id != profile.profile_id:
+        raise ValueError("tactical gate overlay is bound to a different base profile")
     checks: list[dict[str, Any]] = []
     try:
         initial_count = len(generate_series(ProgressiveState.initial()))
@@ -1228,6 +1255,7 @@ def run_rules_tactical_gate(
                 max_generation_positions=max_generation_positions,
             ),
             profile=profile,
+            evaluation_overlay=evaluation_overlay,
         )
         passed = (
             not mate.timed_out
@@ -1268,6 +1296,7 @@ def run_rules_tactical_gate(
                 max_generation_positions=max(250_000, max_generation_positions),
             ),
             profile=profile,
+            evaluation_overlay=evaluation_overlay,
         )
         passed = (
             not published_result.timed_out
@@ -1303,7 +1332,10 @@ def run_rules_tactical_gate(
 
     try:
         checks.append(
-            _evaluate_human_first_game_refutation(profile)
+            _evaluate_human_first_game_refutation(
+                profile,
+                evaluation_overlay=evaluation_overlay,
+            )
         )
     except BaseException as error:
         checks.append(

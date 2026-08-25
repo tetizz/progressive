@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import sqlite3
 import tempfile
-from typing import Any, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 
 import chess
 
@@ -17,11 +17,30 @@ from .league import OPENING_SUITE, OPENING_SUITE_VERSION, OpeningCase
 from .model import ENGINE_SOURCE_FINGERPRINT, ENGINE_VERSION, Outcome, ProgressiveState
 from .profiles import EngineProfile, EvaluationWeights
 from .rules import SeriesLegalityError, play_series
+from .search import EvaluationOverlay, SearchLimits, analyze
+
+if TYPE_CHECKING:
+    from .fullgame import FullGameSemanticConfig
+    from .fullgame_codec import FullGameRecord, RejectedAttempt
 
 
 SELFPLAY_CORPUS_SCHEMA = 1
 SELFPLAY_CORPUS_METHOD = "replayed-league-value-corpus-v1"
+FULLGAME_CORPUS_METHOD = "replayed-fullgame-exploration-value-corpus-v1"
 SELFPLAY_TUNER_METHOD = "deterministic-texel-coordinate-v1"
+HUMAN_REFUTATION_GATE_ID = "human-nf3-qf6-c2-mate-v1"
+
+HUMAN_REFUTATION_TRACE: tuple[tuple[str, ...], ...] = (
+    ("g1f3",),
+    ("e7e6", "d8f6"),
+    ("d2d4", "c1g5", "g5f6"),
+    ("c7c5", "c5d4", "d4d3", "d3c2"),
+    ("d1c2", "c2c8"),
+)
+HUMAN_REFUTATION_BLUNDERS = {
+    2: HUMAN_REFUTATION_TRACE[1],
+    4: HUMAN_REFUTATION_TRACE[3],
+}
 
 
 def _canonical_json(payload: Mapping[str, Any]) -> bytes:
@@ -113,6 +132,7 @@ class SelfPlayCorpus:
     completed_games: int
     excluded_games: int
     samples: tuple[SelfPlaySample, ...]
+    method: str = SELFPLAY_CORPUS_METHOD
 
     def __post_init__(self) -> None:
         if not 0 <= self.holdout_percent <= 50:
@@ -121,10 +141,17 @@ class SelfPlayCorpus:
             raise ValueError("self-play corpus requires at least one completed game")
         if not self.samples:
             raise ValueError("self-play corpus requires at least one replayed sample")
+        if self.method not in {SELFPLAY_CORPUS_METHOD, FULLGAME_CORPUS_METHOD}:
+            raise ValueError("self-play corpus method is unsupported")
 
     @property
     def corpus_id(self) -> str:
-        return _digest("spc-selfplay-corpus-", self.deterministic_payload())
+        prefix = (
+            "spc-fullgame-corpus-"
+            if self.method == FULLGAME_CORPUS_METHOD
+            else "spc-selfplay-corpus-"
+        )
+        return _digest(prefix, self.deterministic_payload())
 
     @property
     def train_samples(self) -> tuple[SelfPlaySample, ...]:
@@ -137,7 +164,7 @@ class SelfPlayCorpus:
     def deterministic_payload(self) -> dict[str, Any]:
         return {
             "schema_version": SELFPLAY_CORPUS_SCHEMA,
-            "method": SELFPLAY_CORPUS_METHOD,
+            "method": self.method,
             "engine_version": ENGINE_VERSION,
             "source_fingerprint": ENGINE_SOURCE_FINGERPRINT,
             "seed": self.seed,
@@ -164,8 +191,17 @@ class SelfPlayCorpus:
                     for result, game_keys in sorted(games_by_result.items())
                 },
                 "label_contract": (
-                    "eventual legal checkmate or rules-proven ten-series draw; "
-                    "manual and technical results excluded"
+                    (
+                        "exploration-policy terminal WDL is a weak value label only; "
+                        "every accepted trace is legally replayed, duplicate traces "
+                        "and manual or technical results are excluded, and these "
+                        "labels are never promotion evidence"
+                    )
+                    if self.method == FULLGAME_CORPUS_METHOD
+                    else (
+                        "eventual legal checkmate or rules-proven ten-series draw; "
+                        "manual and technical results excluded"
+                    )
                 ),
                 "weight_contract": "each completed game contributes total weight 1",
             },
@@ -203,6 +239,177 @@ class _DisjointSet:
             self.parent[right_root] = left_root
         else:
             self.parent[left_root] = right_root
+
+
+def _samples_from_replayed_games(
+    replayed: Sequence[_ReplayedGame],
+    *,
+    seed: int,
+    holdout_percent: int,
+) -> tuple[SelfPlaySample, ...]:
+    """Splits whole transposition components, then materializes samples."""
+
+    families = sorted({game.line_family for game in replayed})
+    components = _DisjointSet(families)
+    owners_by_position: dict[str, set[str]] = {}
+    for game in replayed:
+        for state in game.states:
+            owners_by_position.setdefault(state.position_hash, set()).add(
+                game.line_family
+            )
+    for owners in owners_by_position.values():
+        ordered = sorted(owners)
+        for owner in ordered[1:]:
+            components.union(ordered[0], owner)
+    members_by_root: dict[str, list[str]] = {}
+    for family in families:
+        members_by_root.setdefault(components.find(family), []).append(family)
+    component_ids = {
+        family: _digest(
+            "spc-split-component-",
+            {"families": sorted(members_by_root[components.find(family)])},
+        )
+        for family in families
+    }
+
+    samples: list[SelfPlaySample] = []
+    for game in sorted(replayed, key=lambda item: (item.run_id, item.game_key)):
+        component_id = component_ids[game.line_family]
+        split = (
+            "holdout"
+            if _split_bucket(seed, component_id) < holdout_percent
+            else "train"
+        )
+        weight = 1.0 / len(game.states)
+        for state, profile_id, chosen in zip(
+            game.states, game.profile_ids, game.chosen_series, strict=True
+        ):
+            samples.append(
+                SelfPlaySample(
+                    position_hash=state.position_hash,
+                    pfen=state.pfen,
+                    run_id=game.run_id,
+                    game_key=game.game_key,
+                    opening_case_id=game.opening_case_id,
+                    line_family=game.line_family,
+                    split_component=component_id,
+                    split=split,
+                    series_number=state.series_number,
+                    mover="white" if state.board.turn == chess.WHITE else "black",
+                    profile_id=profile_id,
+                    chosen_series=chosen,
+                    result=game.result,
+                    target_white_score=game.target_white_score,
+                    sample_weight=weight,
+                    features=CachedFeatures.from_state(state),
+                )
+            )
+    return tuple(samples)
+
+
+def _samples_from_replayed_full_games(
+    replayed: Sequence[_ReplayedGame],
+    *,
+    seed: int,
+    holdout_percent: int,
+) -> tuple[tuple[SelfPlaySample, ...], int, int]:
+    """Splits whole full games, then removes lower-priority transpositions.
+
+    Full-game exploration stores are intentionally dense: connecting every game
+    that ever reaches the same boundary produces one giant component in a large
+    run. Each game therefore receives its own deterministic split component. A
+    position seen in both splits is retained only in train; the remaining rows
+    of every represented game are reweighted to keep total game weight at one.
+    """
+
+    ordered_games = tuple(
+        sorted(replayed, key=lambda item: (item.run_id, item.game_key))
+    )
+    game_identities = [(game.run_id, game.game_key) for game in ordered_games]
+    if len(set(game_identities)) != len(game_identities):
+        raise ValueError("full-game corpus repeats a replayed game identity")
+
+    assignments: dict[tuple[str, str], tuple[str, str]] = {}
+    owner_by_position: dict[str, str] = {}
+    for game in ordered_games:
+        if not game.states:
+            raise ValueError("full-game corpus cannot split an empty replayed game")
+        identity = (game.run_id, game.game_key)
+        component_id = _digest(
+            "spc-split-component-",
+            {"run_id": game.run_id, "game_key": game.game_key},
+        )
+        split = (
+            "holdout"
+            if _split_bucket(seed, component_id) < holdout_percent
+            else "train"
+        )
+        assignments[identity] = (component_id, split)
+        for state in game.states:
+            current = owner_by_position.get(state.position_hash)
+            if current is None or (current == "holdout" and split == "train"):
+                owner_by_position[state.position_hash] = split
+
+    samples: list[SelfPlaySample] = []
+    fully_shadowed_games = 0
+    removed_position_occurrences = 0
+    for game in ordered_games:
+        component_id, split = assignments[(game.run_id, game.game_key)]
+        retained = tuple(
+            index
+            for index, state in enumerate(game.states)
+            if owner_by_position[state.position_hash] == split
+        )
+        removed_position_occurrences += len(game.states) - len(retained)
+        if not retained:
+            fully_shadowed_games += 1
+            continue
+        weight = 1.0 / len(retained)
+        for index in retained:
+            state = game.states[index]
+            samples.append(
+                SelfPlaySample(
+                    position_hash=state.position_hash,
+                    pfen=state.pfen,
+                    run_id=game.run_id,
+                    game_key=game.game_key,
+                    opening_case_id=game.opening_case_id,
+                    line_family=game.line_family,
+                    split_component=component_id,
+                    split=split,
+                    series_number=state.series_number,
+                    mover="white" if state.board.turn == chess.WHITE else "black",
+                    profile_id=game.profile_ids[index],
+                    chosen_series=game.chosen_series[index],
+                    result=game.result,
+                    target_white_score=game.target_white_score,
+                    sample_weight=weight,
+                    features=CachedFeatures.from_state(state),
+                )
+            )
+
+    if not samples:
+        raise ValueError("no leakage-safe full-game samples remain")
+    hashes_by_split = {
+        split: {
+            sample.position_hash for sample in samples if sample.split == split
+        }
+        for split in ("train", "holdout")
+    }
+    if hashes_by_split["train"] & hashes_by_split["holdout"]:
+        raise AssertionError("full-game train/holdout position leakage")
+    games_by_key: dict[str, list[SelfPlaySample]] = {}
+    for sample in samples:
+        games_by_key.setdefault(sample.game_key, []).append(sample)
+    for game_samples in games_by_key.values():
+        if (
+            len({sample.split for sample in game_samples}) != 1
+            or len({sample.split_component for sample in game_samples}) != 1
+            or abs(sum(sample.sample_weight for sample in game_samples) - 1.0)
+            > 1e-12
+        ):
+            raise AssertionError("full-game split/weight contract failed")
+    return tuple(samples), fully_shadowed_games, removed_position_occurrences
 
 
 def _opening_from_payload(payload: Mapping[str, Any]) -> OpeningCase:
@@ -454,69 +661,396 @@ def build_selfplay_corpus(
     if not replayed:
         raise ValueError("no conclusive replayable self-play games were found")
 
-    families = sorted({game.line_family for game in replayed})
-    components = _DisjointSet(families)
-    owners_by_position: dict[str, set[str]] = {}
-    for game in replayed:
-        for state in game.states:
-            owners_by_position.setdefault(state.position_hash, set()).add(
-                game.line_family
-            )
-    for owners in owners_by_position.values():
-        ordered = sorted(owners)
-        for owner in ordered[1:]:
-            components.union(ordered[0], owner)
-    members_by_root: dict[str, list[str]] = {}
-    for family in families:
-        members_by_root.setdefault(components.find(family), []).append(family)
-    component_ids = {
-        family: _digest(
-            "spc-split-component-",
-            {"families": sorted(members_by_root[components.find(family)])},
-        )
-        for family in families
-    }
-
-    samples: list[SelfPlaySample] = []
-    for game in sorted(replayed, key=lambda item: (item.run_id, item.game_key)):
-        component_id = component_ids[game.line_family]
-        split = (
-            "holdout"
-            if _split_bucket(seed, component_id) < holdout_percent
-            else "train"
-        )
-        weight = 1.0 / len(game.states)
-        for state, profile_id, chosen in zip(
-            game.states, game.profile_ids, game.chosen_series, strict=True
-        ):
-            samples.append(
-                SelfPlaySample(
-                    position_hash=state.position_hash,
-                    pfen=state.pfen,
-                    run_id=game.run_id,
-                    game_key=game.game_key,
-                    opening_case_id=game.opening_case_id,
-                    line_family=game.line_family,
-                    split_component=component_id,
-                    split=split,
-                    series_number=state.series_number,
-                    mover="white" if state.board.turn == chess.WHITE else "black",
-                    profile_id=profile_id,
-                    chosen_series=chosen,
-                    result=game.result,
-                    target_white_score=game.target_white_score,
-                    sample_weight=weight,
-                    features=CachedFeatures.from_state(state),
-                )
-            )
+    samples = _samples_from_replayed_games(
+        replayed,
+        seed=seed,
+        holdout_percent=holdout_percent,
+    )
     return SelfPlayCorpus(
         seed=seed,
         holdout_percent=holdout_percent,
         database_evidence=tuple(evidence),
         completed_games=len(replayed),
         excluded_games=excluded_games,
-        samples=tuple(samples),
+        samples=samples,
     )
+
+
+def build_fullgame_corpus(
+    records: Iterable["FullGameRecord | RejectedAttempt"],
+    config: "FullGameSemanticConfig",
+    *,
+    seed: int = 20260820,
+    holdout_percent: int = 20,
+    excluded_attempts: int = 0,
+    evidence: Sequence[Mapping[str, Any]] = (),
+) -> SelfPlayCorpus:
+    """Builds a weak-value corpus from authoritative full-game traces.
+
+    Rollout WDL is deliberately treated as a weak value label: the generator is
+    an exploration policy, not champion play.  Every accepted trace is replayed,
+    exact trace duplicates are rejected, and technical attempts never receive a
+    target. The universal initial S1 boundary is omitted. Whole games receive
+    deterministic split components before any row is retained; a boundary that
+    occurs in both splits is kept only in train, and each represented game's
+    remaining samples are renormalized to total weight one.
+    """
+
+    from .fullgame import (
+        DATA_PURPOSE,
+        STRENGTH_CLAIM,
+        FullGameSemanticConfig,
+        game_id,
+    )
+    from .fullgame_codec import (
+        FullGameRecord,
+        RejectedAttempt,
+        replay_record,
+        trace_sha256,
+    )
+
+    if type(config) is not FullGameSemanticConfig:
+        raise ValueError("full-game corpus requires an exact semantic config")
+    if config.data_purpose != DATA_PURPOSE or config.strength_claim != STRENGTH_CLAIM:
+        raise ValueError("full-game corpus accepts exploration-only data")
+    if not 0 <= holdout_percent <= 50:
+        raise ValueError("holdout_percent must be between 0 and 50")
+    if type(excluded_attempts) is not int or excluded_attempts < 0:
+        raise ValueError("excluded_attempts must be a nonnegative integer")
+    if any(not isinstance(item, Mapping) for item in evidence):
+        raise ValueError("full-game corpus evidence entries must be mappings")
+
+    replayed: list[_ReplayedGame] = []
+    seen_attempts: set[int] = set()
+    seen_traces: set[str] = set()
+    rejected_count = 0
+    logical_work = 0
+    path_saturations = 0
+
+    for item in records:
+        if type(item) not in {FullGameRecord, RejectedAttempt}:
+            raise ValueError("full-game corpus input contains an unsupported record")
+        if item.attempt_index in seen_attempts:
+            raise ValueError(
+                f"full-game corpus repeats attempt {item.attempt_index}"
+            )
+        seen_attempts.add(item.attempt_index)
+        expected_pair = (
+            config.profile_pair(item.attempt_index)
+            if config.backend_kind == "native"
+            else (0, 0)
+        )
+        if (
+            item.white_profile_index,
+            item.black_profile_index,
+        ) != expected_pair:
+            raise ValueError(
+                f"full-game attempt {item.attempt_index} has invalid profile attribution"
+            )
+        logical_work += item.logical_work
+        path_saturations += item.path_count_saturations
+        if type(item) is RejectedAttempt:
+            rejected_count += 1
+            continue
+
+        replay_record(item)
+        trace_digest = trace_sha256(item)
+        if trace_digest in seen_traces:
+            raise ValueError("full-game corpus contains a duplicate accepted trace")
+        seen_traces.add(trace_digest)
+
+        state = ProgressiveState.initial()
+        states: list[ProgressiveState] = []
+        profile_ids: list[str] = []
+        chosen_series: list[str] = []
+        for series_index, moves in enumerate(item.series):
+            if series_index:
+                states.append(state)
+                profile_index = (
+                    item.white_profile_index
+                    if state.board.turn == chess.WHITE
+                    else item.black_profile_index
+                )
+                profile_ids.append(config.profile_pool[profile_index].profile_id)
+                chosen_series.append("/".join(moves))
+            result = play_series(state, moves)
+            if result.machine_notation != "/".join(moves):
+                raise ValueError("full-game trace contains noncanonical move notation")
+            state = result.final_state
+        if not states:
+            raise ValueError(
+                "full-game trace has no post-S1 boundary for leakage-safe training"
+            )
+        first_boundary = states[0]
+        replayed.append(
+            _ReplayedGame(
+                run_id=config.simulation_id,
+                game_key=game_id(config, item.attempt_index),
+                opening_case_id=f"after-s1-{item.series[0][0]}",
+                line_family=f"fullgame-after-s1:{first_boundary.position_hash}",
+                result=item.result,
+                target_white_score=_result_target(item.result),
+                states=tuple(states),
+                profile_ids=tuple(profile_ids),
+                chosen_series=tuple(chosen_series),
+            )
+        )
+
+    if not replayed:
+        raise ValueError("no accepted replayable full games were found")
+    samples, fully_shadowed_games, removed_position_occurrences = (
+        _samples_from_replayed_full_games(
+            replayed,
+            seed=seed,
+            holdout_percent=holdout_percent,
+        )
+    )
+    semantic_payload = config.as_dict()
+    source_evidence: tuple[Mapping[str, Any], ...] = (
+        {
+            "source_kind": "fullgame-exploration-records",
+            "simulation_id": config.simulation_id,
+            "semantic_config_sha256": hashlib.sha256(
+                _canonical_json(semantic_payload)
+            ).hexdigest(),
+            "data_purpose": config.data_purpose,
+            "strength_claim": config.strength_claim,
+            "policy_id": config.rank_policy_id,
+            "profile_schedule_id": config.profile_schedule_id,
+            "profile_ids": [profile.profile_id for profile in config.profile_pool],
+            "accepted_records": len(replayed),
+            "rejected_records": rejected_count,
+            "leakage_filter": "whole-game-split-priority-dedup-v1",
+            "fully_shadowed_games": fully_shadowed_games,
+            "removed_position_occurrences": removed_position_occurrences,
+            "logical_work": logical_work,
+            "path_count_saturations": path_saturations,
+        },
+        *(dict(item) for item in evidence),
+    )
+    return SelfPlayCorpus(
+        seed=seed,
+        holdout_percent=holdout_percent,
+        database_evidence=source_evidence,
+        completed_games=len(replayed) - fully_shadowed_games,
+        excluded_games=(
+            excluded_attempts + rejected_count + fully_shadowed_games
+        ),
+        samples=samples,
+        method=FULLGAME_CORPUS_METHOD,
+    )
+
+
+def build_verified_fullgame_corpus(
+    root: str | Path,
+    *,
+    seed: int = 20260820,
+    holdout_percent: int = 20,
+    max_games: int | None = None,
+) -> SelfPlayCorpus:
+    """Consumes one stable, store-verified full-game checkpoint snapshot."""
+
+    from .fullgame import (
+        FullGameSemanticConfig,
+        iter_fullgame_records,
+        verify_fullgame_run,
+    )
+
+    if max_games is not None and (
+        type(max_games) is not int or max_games < 1
+    ):
+        raise ValueError("max_games must be a positive integer")
+    base = Path(root).expanduser().resolve()
+    manifest_path = base / "manifest.json"
+    try:
+        raw_before = manifest_path.read_bytes()
+    except OSError as error:
+        raise ValueError(f"could not read full-game manifest: {error}") from error
+    verification = verify_fullgame_run(base)
+    try:
+        raw_verified = manifest_path.read_bytes()
+        manifest = json.loads(raw_verified.decode("ascii"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"could not read full-game manifest: {error}") from error
+    if raw_before != raw_verified:
+        raise ValueError("full-game store changed while it was being verified")
+    config = FullGameSemanticConfig.from_dict(manifest["semantic_config"])
+    if config.simulation_id != verification["simulation_id"]:
+        raise ValueError("verified full-game simulation identity changed")
+
+    selected: list[FullGameRecord] = []
+    for record in iter_fullgame_records(base):
+        selected.append(record)
+        if max_games is not None and len(selected) >= max_games:
+            break
+    try:
+        raw_after = manifest_path.read_bytes()
+    except OSError as error:
+        raise ValueError(f"could not reread full-game manifest: {error}") from error
+    if raw_after != raw_verified:
+        raise ValueError("full-game store changed while the corpus was being built")
+    consumed_entire_snapshot = (
+        len(selected) == int(verification["accepted_unique_games"])
+    )
+
+    return build_fullgame_corpus(
+        selected,
+        config,
+        seed=seed,
+        holdout_percent=holdout_percent,
+        excluded_attempts=(
+            int(verification["checkpoint_rejections"])
+            if consumed_entire_snapshot
+            else 0
+        ),
+        evidence=(
+            {
+                "source_kind": "verified-fullgame-store-snapshot",
+                "manifest_sha256": hashlib.sha256(raw_verified).hexdigest(),
+                "authoritative_replay": verification["authoritative_replay"],
+                "trace_deduplication": verification["trace_deduplication"],
+                "store_accepted_unique_games": verification[
+                    "accepted_unique_games"
+                ],
+                "consumed_games": len(selected),
+                "consumed_entire_snapshot": consumed_entire_snapshot,
+                "checkpoint_rejections": verification[
+                    "checkpoint_rejections"
+                ],
+                "checkpoint_rejections_scope": (
+                    "included in excluded_games for full-snapshot consumption"
+                    if consumed_entire_snapshot
+                    else "store-wide evidence only; not attributed to this prefix"
+                ),
+                "logical_work": verification["logical_work"],
+                "series": verification["series"],
+                "micro_moves": verification["micro_moves"],
+            },
+        ),
+    )
+
+
+def evaluate_human_refutation_gate(
+    profile: EngineProfile,
+    *,
+    limits: SearchLimits | None = None,
+    evaluation_overlay: EvaluationOverlay | None = None,
+) -> dict[str, Any]:
+    """Replays the reported Series-5 mate and tests both losing Black turns.
+
+    A candidate passes only after completing the requested search depth at both
+    anchors and selecting neither known losing series.  An attractive fallback
+    returned after a timeout or work cap is not promotion evidence.
+    """
+
+    if evaluation_overlay is not None and evaluation_overlay.base_profile_id != profile.profile_id:
+        raise ValueError("human refutation overlay is bound to a different base profile")
+    selected_limits = limits or SearchLimits(
+        depth_series=2,
+        max_series_per_node=32,
+        max_generation_positions=250_000,
+        collect_all_root_scores=False,
+    )
+    states_by_series: dict[int, ProgressiveState] = {}
+    state = ProgressiveState.initial()
+    last_result = None
+    last_mover = state.board.turn
+    replayed_notation: list[str] = []
+    for moves in HUMAN_REFUTATION_TRACE:
+        states_by_series[state.series_number] = state
+        last_mover = state.board.turn
+        last_result = play_series(state, moves)
+        if last_result.machine_notation != "/".join(moves):
+            raise AssertionError("human refutation fixture is not canonical")
+        replayed_notation.append(last_result.machine_notation)
+        state = last_result.final_state
+    if (
+        last_result is None
+        or last_result.outcome != Outcome.CHECKMATE
+        or not last_result.ended_by_check
+        or last_mover != chess.WHITE
+    ):
+        raise AssertionError("human refutation fixture must end in White checkmate")
+
+    anchors: list[dict[str, Any]] = []
+    for series_number, blunder in sorted(HUMAN_REFUTATION_BLUNDERS.items()):
+        if evaluation_overlay is None:
+            result = analyze(states_by_series[series_number], selected_limits, profile)
+        else:
+            result = analyze(
+                states_by_series[series_number],
+                selected_limits,
+                profile,
+                evaluation_overlay=evaluation_overlay,
+            )
+        selected = (
+            None
+            if result.best_series is None
+            else result.best_series.machine_notation
+        )
+        completed = (
+            selected_limits.depth_series >= 2
+            and selected is not None
+            and result.requested_depth == selected_limits.depth_series
+            and result.completed_depth == selected_limits.depth_series
+            and not result.timed_out
+            and not result.work_limit_reached
+        )
+        avoided = selected is not None and selected != "/".join(blunder)
+        anchors.append(
+            {
+                "series_number": series_number,
+                "position_hash": states_by_series[series_number].position_hash,
+                "known_losing_series": "/".join(blunder),
+                "selected_series": selected,
+                "score_white": result.score,
+                "principal_variation": [
+                    item.machine_notation for item in result.principal_variation
+                ],
+                "requested_depth": result.requested_depth,
+                "completed_depth": result.completed_depth,
+                "exact_width": result.exact_width,
+                "timed_out": result.timed_out,
+                "work_limit_reached": result.work_limit_reached,
+                "work_positions": result.stats.work_positions,
+                "nodes": result.stats.nodes,
+                "elapsed_seconds": result.elapsed_seconds,
+                "completed_required_search": completed,
+                "avoided_known_blunder": avoided,
+                "passed": completed and avoided,
+            }
+        )
+
+    return {
+        "gate_id": HUMAN_REFUTATION_GATE_ID,
+        "profile_id": (
+            profile.profile_id
+            if evaluation_overlay is None
+            else evaluation_overlay.variant_id
+        ),
+        "profile_name": (
+            profile.name if evaluation_overlay is None else evaluation_overlay.name
+        ),
+        "base_profile_id": profile.profile_id,
+        "passed": all(anchor["passed"] for anchor in anchors),
+        "fixture": {
+            "series": replayed_notation,
+            "terminal": "checkmate-white",
+            "final_pfen": state.pfen,
+        },
+        "limits": {
+            "depth_series": selected_limits.depth_series,
+            "max_series_per_node": selected_limits.max_series_per_node,
+            "max_generation_positions": selected_limits.max_generation_positions,
+            "time_limit_seconds": selected_limits.time_limit_seconds,
+            "collect_all_root_scores": selected_limits.collect_all_root_scores,
+        },
+        "anchors": anchors,
+        "claim_scope": (
+            "mandatory tactical regression only; passing does not promote a "
+            "profile without a separate fresh color-swapped match"
+        ),
+    }
 
 
 def _probability(score: int, scale: int) -> float:
@@ -671,7 +1205,8 @@ def tune_selfplay_profile(
         parent_profile_ids=(parent.profile_id,),
         notes=(
             f"{SELFPLAY_TUNER_METHOD} candidate from {corpus.corpus_id}; "
-            "not strength-verified until tactical and fixed-suite match gates pass."
+            f"not strength-verified until {HUMAN_REFUTATION_GATE_ID} and a "
+            "fresh color-swapped fixed-suite match both pass."
         ),
     )
     tuned_train_loss = _weighted_log_loss(
@@ -688,6 +1223,7 @@ def tune_selfplay_profile(
     )
     report = {
         "method": SELFPLAY_TUNER_METHOD,
+        "corpus_method": corpus.method,
         "corpus_id": corpus.corpus_id,
         "parent_profile_id": parent.profile_id,
         "candidate_profile_id": tuned.profile_id,
@@ -710,5 +1246,9 @@ def tune_selfplay_profile(
             "self-play value-fit proxy only; tactical and controlled match "
             "promotion remain mandatory"
         ),
+        "required_promotion_gates": [
+            HUMAN_REFUTATION_GATE_ID,
+            "fresh-color-swapped-fixed-suite-match",
+        ],
     }
     return tuned, report

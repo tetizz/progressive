@@ -430,6 +430,158 @@ def _train_fast(args: argparse.Namespace) -> int:
     return 0
 
 
+def _fullgames_run(args: argparse.Namespace) -> int:
+    from .fullgame import FullGameSemanticConfig, run_fullgame_generation
+    from .profiles import baseline_profile
+
+    if args.profile_pool:
+        profiles = tuple(load_profile(path) for path in args.profile_pool)
+    elif args.profile:
+        profiles = (load_profile(args.profile),)
+    else:
+        profiles = (baseline_profile(),)
+    config = FullGameSemanticConfig.from_profiles(
+        profiles,
+        seed=args.seed,
+        max_attempt_series=args.technical_max_series,
+        max_frontier_states=args.frontier_cap,
+        max_positions_per_series=args.max_positions_per_series,
+        max_positions_per_game=args.max_positions_per_game,
+        candidate_count=args.candidates,
+        backend_kind=args.backend,
+    )
+
+    def show_progress(payload: dict[str, object]) -> None:
+        print(
+            "full games "
+            f"{payload['accepted_unique_games']}/{payload['target_unique_games']} | "
+            f"attempts {payload['attempts_committed']} | "
+            f"unique/s {float(payload['accepted_unique_games_per_second']):.2f}",
+            flush=True,
+        )
+
+    result = run_fullgame_generation(
+        args.root,
+        config,
+        target_unique_games=args.target,
+        attempts_per_chunk=args.attempts_per_chunk,
+        backend=args.backend,
+        max_attempts=args.max_attempts,
+        requested_workers=args.workers,
+        memory_per_worker_mb=args.memory_per_worker_mb,
+        reserve_memory_mb=args.reserve_memory_mb,
+        progress=None if args.json else show_progress,
+    )
+    if args.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        print(
+            f"Stored {result['accepted_unique_games']} globally unique, "
+            "replay-verified terminal games."
+        )
+        print(
+            f"Measured this run: {result['accepted_unique_games_per_second']:.2f} "
+            "accepted unique games/s; "
+            f"{result['committed_attempts_per_second']:.2f} committed attempts/s."
+        )
+        print(
+            f"Rejected: {result['native_or_policy_rejects']}; "
+            f"duplicate traces: {result['duplicate_traces']}."
+        )
+        print(
+            "Scope: exploration rollout data, not champion play; "
+            f"{len(config.profile_pool)} immutable profile(s) use "
+            f"{config.profile_schedule_id}."
+        )
+        print(f"Run directory: {Path(args.root).expanduser().resolve()}")
+    return 0
+
+
+def _fullgames_status(args: argparse.Namespace) -> int:
+    from .fullgame import fullgame_status
+
+    print(json.dumps(fullgame_status(args.root), indent=2, sort_keys=True))
+    return 0
+
+
+def _fullgames_verify(args: argparse.Namespace) -> int:
+    from .fullgame import verify_fullgame_run
+
+    print(json.dumps(verify_fullgame_run(args.root), indent=2, sort_keys=True))
+    return 0
+
+
+def _fullgames_export(args: argparse.Namespace) -> int:
+    from .fullgame import export_fullgame_jsonl
+
+    result = export_fullgame_jsonl(args.root, args.destination, limit=args.limit)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _challengers_preflight(args: argparse.Namespace) -> int:
+    from .challengers import preflight_challengers
+
+    try:
+        payload = preflight_challengers(
+            args.run_root,
+            fullgame_store=args.fullgame_store,
+            profile_path=args.profile,
+            batch_registry=args.batch_registry,
+            progress=lambda message: print(message, file=sys.stderr, flush=True),
+        )
+    except RuntimeError as error:
+        raise ValueError(str(error)) from error
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def _challengers_run(args: argparse.Namespace) -> int:
+    from .challengers import run_challengers
+
+    try:
+        payload = run_challengers(
+            args.run_root,
+            fullgame_store=args.fullgame_store,
+            profile_path=args.profile,
+            batch_registry=args.batch_registry,
+            checkpoint_every=args.checkpoint_every,
+            progress=lambda message: print(message, file=sys.stderr, flush=True),
+        )
+    except RuntimeError as error:
+        raise ValueError(str(error)) from error
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def _challengers_status(args: argparse.Namespace) -> int:
+    from .challengers import challenger_status
+
+    try:
+        payload = challenger_status(
+            args.run_root,
+            fullgame_store=args.fullgame_store,
+            profile_path=args.profile,
+            batch_registry=args.batch_registry,
+        )
+    except RuntimeError as error:
+        raise ValueError(str(error)) from error
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def _challengers_abandon(args: argparse.Namespace) -> int:
+    from .challengers import abandon_challenger_batch
+
+    payload = abandon_challenger_batch(
+        args.run_root,
+        batch_registry=args.batch_registry,
+        reason=args.reason,
+    )
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
 def _train_selfplay(args: argparse.Namespace) -> int:
     from .profiles import baseline_profile, save_profile
     from .selfplay_training import (
@@ -877,6 +1029,174 @@ def build_parser() -> argparse.ArgumentParser:
     league_resources.add_argument("--memory-per-worker-mb", type=int, default=512)
     league_resources.add_argument("--reserve-memory-mb", type=int, default=512)
     league_resources.set_defaults(handler=_league_resources)
+
+    fullgames = subparsers.add_parser(
+        "fullgames",
+        help="generate, resume, verify, or export complete terminal self-play games",
+    )
+    fullgame_commands = fullgames.add_subparsers(
+        dest="fullgames_command", required=True
+    )
+    fullgames_run = fullgame_commands.add_parser(
+        "run",
+        help="run a checkpointed S1-to-terminal full-game generator",
+    )
+    fullgames_run.add_argument("root", help="run directory for chunks and checkpoint")
+    fullgames_run.add_argument(
+        "--target",
+        type=int,
+        default=10_000,
+        help="globally unique replay-verified terminal games to retain",
+    )
+    fullgames_run.add_argument(
+        "--attempts-per-chunk",
+        type=int,
+        default=64,
+        help="bounded execution batch size; safe to change when resuming",
+    )
+    fullgames_run.add_argument(
+        "--backend",
+        choices=("native", "reference"),
+        default="native",
+        help="native for throughput; reference is the slow correctness oracle",
+    )
+    fullgames_profiles = fullgames_run.add_mutually_exclusive_group()
+    fullgames_profiles.add_argument("--profile", help="one immutable profile JSON")
+    fullgames_profiles.add_argument(
+        "--profile-pool",
+        nargs="+",
+        metavar="PROFILE",
+        help=(
+            "immutable profile JSONs; multiple profiles use a fair ordered-pair "
+            "color schedule"
+        ),
+    )
+    fullgames_run.add_argument("--seed", type=int, default=20260820)
+    fullgames_run.add_argument("--frontier-cap", type=int, default=8)
+    fullgames_run.add_argument("--candidates", type=int, default=8)
+    fullgames_run.add_argument(
+        "--max-positions-per-series", type=int, default=5_000
+    )
+    fullgames_run.add_argument(
+        "--max-positions-per-game",
+        type=int,
+        default=5_000_000,
+        help="finite logical-work safety cap; exhaustion is rejected, never a result",
+    )
+    fullgames_run.add_argument(
+        "--technical-max-series",
+        type=int,
+        default=0,
+        help="0 is unbounded; nonzero exhaustion is rejected, never a draw",
+    )
+    fullgames_run.add_argument(
+        "--max-attempts",
+        type=int,
+        help="stop this invocation after at most this many committed attempts",
+    )
+    fullgames_run.add_argument(
+        "--workers",
+        type=int,
+        help="requested native workers; default uses the detected CPU/RAM envelope",
+    )
+    fullgames_run.add_argument("--memory-per-worker-mb", type=int, default=512)
+    fullgames_run.add_argument("--reserve-memory-mb", type=int, default=1024)
+    fullgames_run.add_argument("--json", action="store_true")
+    fullgames_run.set_defaults(handler=_fullgames_run)
+
+    fullgames_status_parser = fullgame_commands.add_parser(
+        "status", help="show the last atomically published checkpoint status"
+    )
+    fullgames_status_parser.add_argument("root")
+    fullgames_status_parser.set_defaults(handler=_fullgames_status)
+
+    fullgames_verify_parser = fullgame_commands.add_parser(
+        "verify", help="replay every retained game and audit chunks/checkpoint"
+    )
+    fullgames_verify_parser.add_argument("root")
+    fullgames_verify_parser.set_defaults(handler=_fullgames_verify)
+
+    fullgames_export_parser = fullgame_commands.add_parser(
+        "export", help="atomically export replayable full games as JSON Lines"
+    )
+    fullgames_export_parser.add_argument("root")
+    fullgames_export_parser.add_argument("destination")
+    fullgames_export_parser.add_argument("--limit", type=int)
+    fullgames_export_parser.set_defaults(handler=_fullgames_export)
+
+    challenger_inputs = argparse.ArgumentParser(add_help=False)
+    challenger_inputs.add_argument(
+        "run_root", help="directory for the sealed funnel and tournament checkpoints"
+    )
+    challenger_inputs.add_argument(
+        "--fullgame-store",
+        required=True,
+        help="completed replay-verified full-game store used for proxy data/exclusions",
+    )
+    challenger_inputs.add_argument(
+        "--profile",
+        required=True,
+        help="immutable current-champion EngineProfile JSON used as the baseline",
+    )
+    challenger_inputs.add_argument(
+        "--batch-registry",
+        required=True,
+        help="trusted chronological promotion-batch registry",
+    )
+    challengers = subparsers.add_parser(
+        "challengers",
+        help=(
+            "preflight or resume the 2^22 cached challenger funnel and frozen "
+            "full-game tournament; never writes a champion"
+        ),
+    )
+    challenger_commands = challengers.add_subparsers(
+        dest="challengers_command", required=True
+    )
+    challengers_preflight = challenger_commands.add_parser(
+        "preflight",
+        parents=[challenger_inputs],
+        help="verify and seal the corpus, profile, source, runtime, and proxy cache",
+    )
+    challengers_preflight.set_defaults(handler=_challengers_preflight)
+    challengers_run = challenger_commands.add_parser(
+        "run",
+        parents=[challenger_inputs],
+        help=(
+            "resume all cached cuts, live tactical gates, and the canonical "
+            "first-1000/expansion/full tournament"
+        ),
+    )
+    challengers_run.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=65_536,
+        help="Stage-A candidates per atomic checkpoint; safe to change on resume",
+    )
+    challengers_run.set_defaults(handler=_challengers_run)
+    challengers_status_parser = challenger_commands.add_parser(
+        "status",
+        parents=[challenger_inputs],
+        help="validate sealed input identities and show funnel/tournament progress",
+    )
+    challengers_status_parser.set_defaults(handler=_challengers_status)
+    challengers_abandon_parser = challenger_commands.add_parser(
+        "abandon",
+        help=(
+            "consume a source-stale or invalid-opening-plan alpha batch with "
+            "a sealed no-promotion decision"
+        ),
+    )
+    challengers_abandon_parser.add_argument("run_root")
+    challengers_abandon_parser.add_argument(
+        "--batch-registry", required=True, help="trusted chronological batch registry"
+    )
+    challengers_abandon_parser.add_argument(
+        "--reason",
+        required=True,
+        choices=("source-stale", "invalid-opening-plan"),
+    )
+    challengers_abandon_parser.set_defaults(handler=_challengers_abandon)
 
     train_fast = subparsers.add_parser(
         "train-fast",

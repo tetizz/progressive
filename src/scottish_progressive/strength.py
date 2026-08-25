@@ -25,6 +25,7 @@ from .league import (
     runtime_provenance,
 )
 from .model import ENGINE_SOURCE_FINGERPRINT, ENGINE_VERSION, ProgressiveState
+from .neural_evaluator import NeuralBlend
 from .profiles import EngineProfile, baseline_profile, load_profile
 from .resources import ResourceBudget, detect_resource_budget
 from .rules import generate_series, play_series
@@ -162,6 +163,197 @@ def verify_seeded_opening_suite(suite: SeededOpeningSuite) -> None:
     )
     if suite.version != expected_version:
         raise ValueError("seeded opening suite version does not match its content")
+
+
+def seeded_opening_suite_from_dict(
+    payload: Mapping[str, Any],
+) -> SeededOpeningSuite:
+    """Reconstructs and verifies the canonical content-addressed suite payload."""
+
+    if payload.get("format") != SEEDED_OPENING_SUITE_FORMAT:
+        raise ValueError("unsupported seeded opening suite")
+    raw_cases = payload.get("cases")
+    raw_histories = payload.get("histories")
+    if not isinstance(raw_cases, list) or not isinstance(raw_histories, list):
+        raise ValueError("seeded opening suite cases/histories are missing")
+    cases: list[OpeningCase] = []
+    for raw in raw_cases:
+        if not isinstance(raw, Mapping):
+            raise ValueError("seeded opening case is invalid")
+        case = OpeningCase(
+            case_id=str(raw["case_id"]),
+            fen=str(raw["fen"]),
+            series_number=int(raw["series_number"]),
+            quiet_series=int(raw.get("quiet_series", 0)),
+            ep_targets=tuple(str(value) for value in raw.get("ep_targets", ())),
+            source=str(raw.get("source", "curated")),
+        )
+        canonical = case.as_dict()
+        if any(
+            key in raw and raw[key] != canonical[key]
+            for key in ("pfen", "position_hash")
+        ):
+            raise ValueError("seeded opening case hash does not replay")
+        cases.append(case)
+    histories: list[SeededOpeningHistory] = []
+    for raw in raw_histories:
+        if not isinstance(raw, Mapping):
+            raise ValueError("seeded opening history is invalid")
+        histories.append(
+            SeededOpeningHistory(
+                case_id=str(raw["case_id"]),
+                target_series=int(raw["target_series"]),
+                attempt=int(raw["attempt"]),
+                series=tuple(
+                    tuple(str(move) for move in moves)
+                    for moves in raw.get("series", ())
+                ),
+            )
+        )
+    suite = SeededOpeningSuite(
+        version=str(payload["version"]),
+        seed=int(payload["seed"]),
+        min_series=int(payload["min_series"]),
+        max_series=int(payload["max_series"]),
+        max_frontier_states=int(payload["max_frontier_states"]),
+        cases=tuple(cases),
+        histories=tuple(histories),
+    )
+    verify_seeded_opening_suite(suite)
+    canonical_payload = suite.as_dict()
+    if json.dumps(
+        canonical_payload, sort_keys=True, separators=(",", ":")
+    ) != json.dumps(payload, sort_keys=True, separators=(",", ":")):
+        raise ValueError("seeded opening suite payload is not canonical")
+    return suite
+
+
+def subset_seeded_opening_suite(
+    suite: SeededOpeningSuite,
+    case_ids: Sequence[str],
+    *,
+    seed: int | None = None,
+) -> SeededOpeningSuite:
+    """Builds a verified content-addressed subset in the declared case order.
+
+    Tournament replacement waves use this to run only unresolved logical pairs.
+    The source suite remains immutable; the returned suite gets its own version
+    binding the exact ordered cases, histories, and (optionally derived) seed.
+    """
+
+    verify_seeded_opening_suite(suite)
+    selected_ids = tuple(str(case_id) for case_id in case_ids)
+    if not selected_ids or len(set(selected_ids)) != len(selected_ids):
+        raise ValueError("seeded opening subset case ids must be non-empty and unique")
+    by_id = {
+        case.case_id: (case, history)
+        for case, history in zip(suite.cases, suite.histories, strict=True)
+    }
+    missing = [case_id for case_id in selected_ids if case_id not in by_id]
+    if missing:
+        raise ValueError(
+            "seeded opening subset contains a case outside its source suite: "
+            + ", ".join(missing)
+        )
+    cases = tuple(by_id[case_id][0] for case_id in selected_ids)
+    histories = tuple(by_id[case_id][1] for case_id in selected_ids)
+    selected_seed = suite.seed if seed is None else seed
+    if type(selected_seed) is not int or not 0 <= selected_seed < 1 << 64:
+        raise ValueError("seeded opening subset seed must fit u64")
+    subset = SeededOpeningSuite(
+        version=_seeded_suite_version(
+            seed=selected_seed,
+            min_series=suite.min_series,
+            max_series=suite.max_series,
+            max_frontier_states=suite.max_frontier_states,
+            cases=cases,
+            histories=histories,
+        ),
+        seed=selected_seed,
+        min_series=suite.min_series,
+        max_series=suite.max_series,
+        max_frontier_states=suite.max_frontier_states,
+        cases=cases,
+        histories=histories,
+    )
+    verify_seeded_opening_suite(subset)
+    return subset
+
+
+def compose_seeded_opening_suite(
+    selections: Sequence[tuple[SeededOpeningSuite, str]],
+    *,
+    seed: int,
+) -> SeededOpeningSuite:
+    """Composes ordered cases from frozen source suites into one verified suite."""
+
+    if not selections:
+        raise ValueError("composed seeded opening suite cannot be empty")
+    if type(seed) is not int or not 0 <= seed < 1 << 64:
+        raise ValueError("composed seeded opening suite seed must fit u64")
+    cases: list[OpeningCase] = []
+    histories: list[SeededOpeningHistory] = []
+    settings: tuple[int, int, int] | None = None
+    indexed_sources: dict[
+        int,
+        tuple[
+            SeededOpeningSuite,
+            dict[str, tuple[OpeningCase, SeededOpeningHistory]],
+        ],
+    ] = {}
+    for suite, case_id in selections:
+        source_key = id(suite)
+        indexed = indexed_sources.get(source_key)
+        if indexed is None or indexed[0] is not suite:
+            verify_seeded_opening_suite(suite)
+            indexed = (
+                suite,
+                {
+                    case.case_id: (case, history)
+                    for case, history in zip(
+                        suite.cases, suite.histories, strict=True
+                    )
+                },
+            )
+            indexed_sources[source_key] = indexed
+        actual_settings = (
+            suite.min_series,
+            suite.max_series,
+            suite.max_frontier_states,
+        )
+        if settings is None:
+            settings = actual_settings
+        elif settings != actual_settings:
+            raise ValueError("composed seeded opening suites use different settings")
+        by_id = indexed[1]
+        if case_id not in by_id:
+            raise ValueError("composed opening case is outside its source suite")
+        case, history = by_id[case_id]
+        cases.append(case)
+        histories.append(history)
+    if len({case.case_id for case in cases}) != len(cases):
+        raise ValueError("composed seeded opening suite repeats a case id")
+    if len({case.state().position_hash for case in cases}) != len(cases):
+        raise ValueError("composed seeded opening suite repeats a position")
+    assert settings is not None
+    suite = SeededOpeningSuite(
+        version=_seeded_suite_version(
+            seed=seed,
+            min_series=settings[0],
+            max_series=settings[1],
+            max_frontier_states=settings[2],
+            cases=cases,
+            histories=histories,
+        ),
+        seed=seed,
+        min_series=settings[0],
+        max_series=settings[1],
+        max_frontier_states=settings[2],
+        cases=tuple(cases),
+        histories=tuple(histories),
+    )
+    verify_seeded_opening_suite(suite)
+    return suite
 
 
 def build_seeded_opening_suite(
@@ -378,6 +570,77 @@ class StrengthMatchConfig:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class StrengthParticipant:
+    """One actual search identity: hand profile plus an optional neural leaf layer."""
+
+    profile: EngineProfile
+    evaluation_overlay: NeuralBlend | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            self.evaluation_overlay is not None
+            and self.evaluation_overlay.base_profile_id != self.profile.profile_id
+        ):
+            raise ValueError("strength participant overlay is bound to another profile")
+
+    @property
+    def participant_id(self) -> str:
+        return (
+            self.profile.profile_id
+            if self.evaluation_overlay is None
+            else self.evaluation_overlay.variant_id
+        )
+
+    @property
+    def name(self) -> str:
+        return (
+            self.profile.name
+            if self.evaluation_overlay is None
+            else self.evaluation_overlay.name
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        if self.evaluation_overlay is None:
+            return self.profile.as_dict()
+        return {
+            "format": "spc-strength-participant-v1",
+            "profile_id": self.participant_id,
+            "name": self.name,
+            "base_profile_id": self.profile.profile_id,
+            "base_profile": self.profile.as_dict(),
+            "evaluation_overlay": self.evaluation_overlay.as_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> StrengthParticipant:
+        if not isinstance(payload, Mapping):
+            raise ValueError("strength participant must be an object")
+        if payload.get("format") != "spc-strength-participant-v1":
+            return cls(EngineProfile.from_dict(payload))
+        try:
+            raw_profile = payload["base_profile"]
+            raw_overlay = payload["evaluation_overlay"]
+            if not isinstance(raw_profile, Mapping) or not isinstance(raw_overlay, Mapping):
+                raise ValueError("neural participant payload is incomplete")
+            profile = EngineProfile.from_dict(raw_profile)
+            participant = cls(
+                profile,
+                NeuralBlend.from_dict(raw_overlay, profile=profile),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"invalid strength participant: {error}") from error
+        if str(payload.get("profile_id", participant.participant_id)) != participant.participant_id:
+            raise ValueError("strength participant effective id does not match")
+        if str(payload.get("name", participant.name)) != participant.name:
+            raise ValueError("strength participant name does not match")
+        return participant
+
+
+def _participant(value: EngineProfile | StrengthParticipant) -> StrengthParticipant:
+    return value if isinstance(value, StrengthParticipant) else StrengthParticipant(value)
+
+
 def resolve_match_profile(reference: str | Path) -> EngineProfile:
     """Loads an EngineProfile JSON/envelope, or the named built-in baseline."""
 
@@ -446,13 +709,15 @@ def _ordered_openings(
 
 
 def _build_jobs(
-    candidate: EngineProfile,
-    reference: EngineProfile,
+    candidate: EngineProfile | StrengthParticipant,
+    reference: EngineProfile | StrengthParticipant,
     config: StrengthMatchConfig,
     opening_cases: SeededOpeningSuite | Sequence[OpeningCase] | None = None,
 ) -> tuple[GameJob, ...]:
-    if candidate.profile_id == reference.profile_id:
-        raise ValueError("strength match requires two different engine profiles")
+    candidate = _participant(candidate)
+    reference = _participant(reference)
+    if candidate.participant_id == reference.participant_id:
+        raise ValueError("strength match requires two different engine profiles or variants")
     openings = _ordered_openings(config, opening_cases)
     opening_identity = json.dumps(
         [opening.as_dict() for opening in openings],
@@ -461,8 +726,8 @@ def _build_jobs(
     )
     run_id = "strength-" + _stable_id(
         STRENGTH_REPORT_FORMAT,
-        candidate.profile_id,
-        reference.profile_id,
+        candidate.participant_id,
+        reference.participant_id,
         json.dumps(config.as_dict(), sort_keys=True, separators=(",", ":")),
         opening_identity,
     )[:20]
@@ -489,8 +754,8 @@ def _build_jobs(
                         opening.case_id,
                         opening_payload,
                         pair_seed,
-                        white.profile_id,
-                        black.profile_id,
+                        white.participant_id,
+                        black.participant_id,
                     ),
                     run_id=run_id,
                     generation=0,
@@ -498,14 +763,16 @@ def _build_jobs(
                     opening_index=opening_index,
                     opening=opening,
                     seed=pair_seed,
-                    white_profile=white,
-                    black_profile=black,
+                    white_profile=white.profile,
+                    black_profile=black.profile,
                     search_depth=config.search_depth,
                     max_series_per_node=config.max_series_per_node,
                     max_generation_positions=config.max_generation_positions,
                     max_game_work_positions=config.max_game_work_positions,
                     emergency_max_series=config.emergency_max_series,
                     opening_suite_version=config.opening_suite_version,
+                    white_evaluation_overlay=white.evaluation_overlay,
+                    black_evaluation_overlay=black.evaluation_overlay,
                 )
             )
     return tuple(jobs)
@@ -530,6 +797,16 @@ def _game_payload(record: GameRecord, opening: OpeningCase) -> dict[str, Any]:
 
 def _worker_failure(job: GameJob, error: BaseException) -> GameRecord:
     state = job.opening.state()
+    white_id = (
+        job.white_profile.profile_id
+        if job.white_evaluation_overlay is None
+        else job.white_evaluation_overlay.variant_id
+    )
+    black_id = (
+        job.black_profile.profile_id
+        if job.black_evaluation_overlay is None
+        else job.black_evaluation_overlay.variant_id
+    )
     return GameRecord(
         job.job_key,
         job.run_id,
@@ -539,8 +816,8 @@ def _worker_failure(job: GameJob, error: BaseException) -> GameRecord:
         job.opening.case_id,
         job.opening_suite_version,
         job.seed,
-        job.white_profile.profile_id,
-        job.black_profile.profile_id,
+        white_id,
+        black_id,
         "*",
         "worker-exception",
         None,
@@ -610,20 +887,22 @@ def _descriptive_elo(score_rate: float | None) -> dict[str, Any]:
 
 def _summarize(
     records: Sequence[GameRecord],
-    candidate: EngineProfile,
-    reference: EngineProfile,
+    candidate: EngineProfile | StrengthParticipant,
+    reference: EngineProfile | StrengthParticipant,
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
+    candidate = _participant(candidate)
+    reference = _participant(reference)
     game_wins = game_draws = game_losses = incomplete_games = 0
     game_points = 0.0
     completed_games = 0
     failure_reasons: dict[str, int] = {}
-    profile_failures = {candidate.profile_id: 0, reference.profile_id: 0}
+    profile_failures = {candidate.participant_id: 0, reference.participant_id: 0}
     worker_failures = 0
     shared_limit_failures = 0
     pairs: list[dict[str, Any]] = []
 
     for record in records:
-        points = _profile_points(record, candidate.profile_id)
+        points = _profile_points(record, candidate.participant_id)
         if points is None:
             incomplete_games += 1
         else:
@@ -660,7 +939,9 @@ def _summarize(
     for pair_index in range(0, len(records), 2):
         paired = records[pair_index : pair_index + 2]
         case_id = paired[0].opening_case_id
-        points = [_profile_points(record, candidate.profile_id) for record in paired]
+        points = [
+            _profile_points(record, candidate.participant_id) for record in paired
+        ]
         if len(paired) != 2 or any(value is None for value in points):
             pair_result = "incomplete"
             total_points: float | None = None
@@ -724,8 +1005,8 @@ def _summarize(
         "candidate_pair_score_rate": pair_score_rate,
         "technical_failures": {
             "total_profile_failures": sum(profile_failures.values()),
-            "candidate": profile_failures.get(candidate.profile_id, 0),
-            "reference": profile_failures.get(reference.profile_id, 0),
+            "candidate": profile_failures.get(candidate.participant_id, 0),
+            "reference": profile_failures.get(reference.participant_id, 0),
             "unattributed_worker_failures": worker_failures,
             "unattributed_match_limit_failures": shared_limit_failures,
             "by_reason": dict(sorted(failure_reasons.items())),
@@ -736,8 +1017,8 @@ def _summarize(
 
 
 def run_strength_match(
-    candidate: EngineProfile,
-    reference: EngineProfile,
+    candidate: EngineProfile | StrengthParticipant,
+    reference: EngineProfile | StrengthParticipant,
     *,
     config: StrengthMatchConfig | None = None,
     opening_cases: SeededOpeningSuite | Sequence[OpeningCase] | None = None,
@@ -756,7 +1037,14 @@ def run_strength_match(
     """
 
     config = config or StrengthMatchConfig()
-    jobs = _build_jobs(candidate, reference, config, opening_cases)
+    candidate_participant = _participant(candidate)
+    reference_participant = _participant(reference)
+    jobs = _build_jobs(
+        candidate_participant,
+        reference_participant,
+        config,
+        opening_cases,
+    )
     detected_resources = detect_resource_budget(
         requested_workers,
         memory_per_worker_mb=memory_per_worker_mb,
@@ -769,7 +1057,11 @@ def run_strength_match(
     records = _execute_jobs(jobs, resources, progress)
     elapsed_seconds = time.perf_counter() - started
 
-    summary, pair_payload = _summarize(records, candidate, reference)
+    summary, pair_payload = _summarize(
+        records,
+        candidate_participant,
+        reference_participant,
+    )
     opening_by_id = {job.opening.case_id: job.opening for job in jobs}
     selected_case_ids = tuple(job.opening.case_id for job in jobs[::2])
     report_id = jobs[0].run_id
@@ -782,8 +1074,8 @@ def run_strength_match(
             "source_fingerprint": ENGINE_SOURCE_FINGERPRINT,
             "runtime": runtime_provenance(),
         },
-        "candidate": candidate.as_dict(),
-        "reference": reference.as_dict(),
+        "candidate": candidate_participant.as_dict(),
+        "reference": reference_participant.as_dict(),
         "config": config.as_dict(),
         "opening_suite": (
             opening_cases.as_dict()
