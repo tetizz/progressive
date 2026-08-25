@@ -122,6 +122,10 @@ kernel, source fingerprint, profile, and certificate. The raw build receipt's
 exact source revision is also recorded and must match across all four cases.
 The selected series is replayed with the authoritative rules engine.
 
+The certificate fingerprint must also equal the currently imported engine
+fingerprint. Stale checked-in browser assets therefore fail clearly and must be
+rebuilt and recertified before browser release evidence can pass.
+
 The release decision fails if any required receipt is missing, duplicated,
 uses a different artifact, misses D5, times out, or exceeds its mode's wall
 budget. WASM nodes/NPS and retained-state count remain `null` because the

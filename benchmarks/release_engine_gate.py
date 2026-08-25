@@ -893,6 +893,14 @@ def certified_baseline(manifest_path: str | Path = DEFAULT_BROWSER_MANIFEST) -> 
         root.get("source_fingerprint") == source_fingerprint,
         "manifest and certificate source_fingerprint differ",
     )
+    from scottish_progressive.model import ENGINE_SOURCE_FINGERPRINT
+
+    _require(
+        source_fingerprint == ENGINE_SOURCE_FINGERPRINT,
+        "stale browser assets: certified source_fingerprint "
+        f"{source_fingerprint!r} does not match current engine "
+        f"{ENGINE_SOURCE_FINGERPRINT!r}; rebuild and recertify the browser engine",
+    )
     for field in ("wasm_sha256", "module_js_sha256", "kernel_sha256"):
         digest = certificate.get(field)
         _require(
