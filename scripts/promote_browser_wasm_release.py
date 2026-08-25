@@ -828,6 +828,11 @@ def _validate_root_parity(
         raise ReleaseGateError(f"root D5 oracle session config is invalid: {error}") from error
     if config != normalized_config:
         raise ReleaseGateError("root D5 oracle session config is not canonical")
+    if "deep_teacher_value_model" in normalized_config:
+        raise ReleaseGateError(
+            "the current release receipt schema is baseline-only; modeled browser "
+            "activation requires a separately certified strength/parity receipt"
+        )
     if payload.get("memory") != build.memory:
         raise ReleaseGateError("root D5 oracle memory envelope differs from the build")
     retained_manifest_sha256 = payload.get("retained_manifest_sha256")

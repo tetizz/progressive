@@ -39,6 +39,7 @@ LOCATE_FILE_LITERAL_CALL = re.compile(
 MAX_INITIAL_MEMORY_BYTES = 128 * 1024 * 1024
 MAXIMUM_MEMORY_BYTES = 256 * 1024 * 1024
 MAX_ESTIMATED_PEAK_MEMORY_BYTES = 192 * 1024 * 1024
+MAX_VALUE_MODEL_BYTES = 64 * 1024
 COMBINED_EXPORTS = [
     "_spc_start_kernel_search_json",
     "_spc_boundary_kernel_search_json",
@@ -57,6 +58,14 @@ COMBINED_EXPORTS = [
     "_malloc",
     "_free",
 ]
+NATIVE_SOURCE_FILES = (
+    "_native_eval.cpp",
+    "native_eval.hpp",
+    "native_subtree.cpp",
+    "native_subtree.hpp",
+    "native_selfplay.cpp",
+    "native_selfplay.hpp",
+)
 ROOT_SESSION_CONFIG_KEYS = {
     "max_depth",
     "width",
@@ -79,6 +88,104 @@ ROOT_SESSION_WEIGHT_KEYS = {
     "useful_mobility",
     "boundary_check",
 }
+DEEP_TEACHER_MODEL_SCHEMA = "spc-deep-teacher-linear-value-v1"
+DEEP_TEACHER_OVERLAY_SCHEMA = "spc-deep-teacher-match-overlay-v1"
+DEEP_TEACHER_FEATURE_SCHEMA = "spc-teacher-value-features-v3"
+DEEP_TEACHER_FIXED_POINT_SCALE = 1_000_000_000
+DEEP_TEACHER_TERMINAL_POLICY = (
+    "replayed terminal checkmate and draw outcomes are authoritative"
+)
+DEEP_TEACHER_SCORE_POLICY = (
+    "symmetric-half-away-from-zero-divide-by-1000000000-then-clamp-below-mate-v1"
+)
+DEEP_TEACHER_WORK_POLICY = (
+    "charge-reach-plus-direct-and-two-move-legal-variants-v1"
+)
+VALUE_MODEL_ACTIVATION_SCHEMA = "spc-browser-value-model-activation-v1"
+VALUE_MODEL_ASSET_SCHEMA = "spc-browser-value-model-asset-v1"
+DEEP_TEACHER_CONFIG_KEYS = {
+    "schema",
+    "base_profile_id",
+    "variant_id",
+    "model_id",
+    "model_sha256",
+    "native_source_identity",
+    "feature_count",
+    "fixed_point_scale",
+    "coefficients",
+    "score_policy",
+    "work_policy",
+}
+DEEP_TEACHER_MODEL_KEYS = {
+    "schema",
+    "feature_schema",
+    "feature_group",
+    "feature_names",
+    "fixed_point_scale",
+    "coefficients",
+    "ridge",
+    "adverse_pair_weight",
+    "terminal_override",
+    "teacher_corpus_id",
+    "teacher_corpus_sha256",
+    "teacher_corpus_semantic_sha256",
+    "teacher_corpus_raw_artifact_sha256",
+    "model_id",
+}
+DEEP_TEACHER_FEATURE_COUNTS = {
+    "base7": 7,
+    "phase14": 14,
+    "cached19": 19,
+    "positional38": 38,
+    "direct44": 44,
+    "all47": 47,
+}
+_BASE_TEACHER_FEATURE_NAMES = (
+    "material",
+    "king_space",
+    "series_reach",
+    "promotion_corridors",
+    "immediate_vulnerability",
+    "useful_mobility",
+    "boundary_check",
+)
+DEEP_TEACHER_FEATURE_NAMES = (
+    *_BASE_TEACHER_FEATURE_NAMES,
+    *(f"{name}_x_centered_phase" for name in _BASE_TEACHER_FEATURE_NAMES),
+    "king_ring_attack_balance",
+    "promotable_next_series_balance",
+    "king_edge_safety_balance",
+    "check_route_balance",
+    "reach_complete",
+    "developed_minor_balance",
+    "center_occupancy_balance",
+    "center_control_balance",
+    "extended_center_control_balance",
+    "pawn_space_balance",
+    "passed_pawn_balance",
+    "passed_pawn_advance_balance",
+    "connected_passed_pawn_balance",
+    "isolated_pawn_liability_balance",
+    "doubled_pawn_liability_balance",
+    "pawn_island_liability_balance",
+    "bishop_pair_balance",
+    "rook_open_file_balance",
+    "rook_seventh_rank_balance",
+    "king_pawn_shelter_balance",
+    "attacked_material_balance",
+    "hanging_material_balance",
+    "pinned_material_balance",
+    "queen_exposure_balance",
+    "direct_capture_count_for_mover",
+    "direct_capture_value_for_mover",
+    "direct_max_capture_value_for_mover",
+    "direct_check_count_for_mover",
+    "direct_mate_count_for_mover",
+    "direct_promotion_count_for_mover",
+    "two_move_capture_value_for_mover",
+    "two_move_check_routes_for_mover",
+    "two_move_mate_routes_for_mover",
+)
 
 
 def sha256_file(path: Path) -> str:
@@ -102,6 +209,21 @@ def engine_source_fingerprint(package: Path) -> str:
     return digest.hexdigest()[:16]
 
 
+def native_source_identity(package: Path) -> str:
+    """Digest the exact native evaluator sources bound into a value model."""
+
+    digest = hashlib.sha256()
+    try:
+        for filename in NATIVE_SOURCE_FILES:
+            digest.update(filename.encode("utf-8"))
+            digest.update((package / filename).read_bytes())
+    except OSError as error:
+        raise ValueError(
+            f"could not bind deep-teacher native source identity: {error}"
+        ) from error
+    return digest.hexdigest()
+
+
 def _require_mapping(value: object, label: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError(f"{label} must be a JSON object")
@@ -114,6 +236,135 @@ def load_certificate(path: Path) -> Mapping[str, Any]:
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ValueError(f"could not read safety certificate: {error}") from error
     return _require_mapping(payload, "safety certificate")
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"JSON object repeats key {key!r}")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"JSON contains nonfinite value {value}")
+
+
+def _canonical_json_sha256(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _strict_json_bytes(raw: bytes, label: str) -> Mapping[str, Any]:
+    try:
+        parsed = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_unique_json_object,
+            parse_constant=_reject_json_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise ValueError(f"{label} is not strict UTF-8 JSON: {error}") from error
+    return _require_mapping(parsed, label)
+
+
+def _validate_original_deep_teacher_model(
+    path: Path,
+    configured: Mapping[str, Any],
+) -> dict[str, object]:
+    """Validate the exact training artifact copied into a browser bundle."""
+
+    try:
+        raw = path.read_bytes()
+    except OSError as error:
+        raise ValueError(f"could not read deep-teacher model asset: {error}") from error
+    if len(raw) > MAX_VALUE_MODEL_BYTES:
+        raise ValueError("deep-teacher model asset exceeds the frozen browser size limit")
+    payload = _strict_json_bytes(raw, "deep-teacher model asset")
+    if set(payload) != DEEP_TEACHER_MODEL_KEYS:
+        raise ValueError("deep-teacher model asset keys differ from the frozen schema")
+    group = payload.get("feature_group")
+    feature_count = DEEP_TEACHER_FEATURE_COUNTS.get(group)
+    names = payload.get("feature_names")
+    coefficients = payload.get("coefficients")
+    if (
+        payload.get("schema") != DEEP_TEACHER_MODEL_SCHEMA
+        or payload.get("feature_schema") != DEEP_TEACHER_FEATURE_SCHEMA
+        or feature_count is None
+        or not isinstance(names, list)
+        or names != list(DEEP_TEACHER_FEATURE_NAMES[:feature_count])
+        or not isinstance(coefficients, list)
+        or any(isinstance(item, bool) or not isinstance(item, int) for item in coefficients)
+        or len(coefficients) != feature_count
+        or any(abs(item) > DEEP_TEACHER_FIXED_POINT_SCALE for item in coefficients)
+        or max((abs(item) for item in coefficients), default=0)
+        != DEEP_TEACHER_FIXED_POINT_SCALE
+        or payload.get("fixed_point_scale") != DEEP_TEACHER_FIXED_POINT_SCALE
+        or payload.get("terminal_override") != DEEP_TEACHER_TERMINAL_POLICY
+    ):
+        raise ValueError("deep-teacher model asset feature contract is invalid")
+    ridge = payload.get("ridge")
+    adverse = payload.get("adverse_pair_weight")
+    if (
+        isinstance(ridge, bool)
+        or not isinstance(ridge, float)
+        or not 0.0 < ridge < float("inf")
+        or isinstance(adverse, bool)
+        or not isinstance(adverse, float)
+        or not 1.0 <= adverse <= 1_000.0
+    ):
+        raise ValueError("deep-teacher model asset fit parameters are invalid")
+    for name in (
+        "teacher_corpus_sha256",
+        "teacher_corpus_semantic_sha256",
+        "teacher_corpus_raw_artifact_sha256",
+    ):
+        if not HEX_64.fullmatch(str(payload.get(name, ""))):
+            raise ValueError(f"deep-teacher model asset has invalid {name}")
+    if payload.get("teacher_corpus_sha256") != payload.get(
+        "teacher_corpus_semantic_sha256"
+    ):
+        raise ValueError("deep-teacher model asset semantic corpus identity differs")
+    if not isinstance(payload.get("teacher_corpus_id"), str) or not str(
+        payload["teacher_corpus_id"]
+    ).strip():
+        raise ValueError("deep-teacher model asset corpus identity is invalid")
+    model_core = {
+        key: payload[key]
+        for key in sorted(
+            DEEP_TEACHER_MODEL_KEYS
+            - {"model_id", "teacher_corpus_raw_artifact_sha256"}
+        )
+    }
+    expected_model_id = "spc-dtv-" + _canonical_json_sha256(model_core)[:20]
+    if payload.get("model_id") != expected_model_id:
+        raise ValueError("deep-teacher model asset model_id is not self-authenticating")
+    actual_sha256 = hashlib.sha256(raw).hexdigest()
+    if (
+        configured.get("model_id") != expected_model_id
+        or configured.get("model_sha256") != actual_sha256
+        or configured.get("feature_count") != feature_count
+        or configured.get("fixed_point_scale") != DEEP_TEACHER_FIXED_POINT_SCALE
+        or configured.get("coefficients") != coefficients
+    ):
+        raise ValueError("deep-teacher model asset differs from its certified config")
+    return {
+        "schema": VALUE_MODEL_ASSET_SCHEMA,
+        "file": _manifest_asset_name(path.name, ".json"),
+        "sha256": actual_sha256,
+        "model_schema": DEEP_TEACHER_MODEL_SCHEMA,
+        "model_id": expected_model_id,
+        "variant_id": configured["variant_id"],
+        "base_profile_id": configured["base_profile_id"],
+        "native_source_identity": configured["native_source_identity"],
+    }
 
 
 def validate_memory_limits(value: object) -> dict[str, int | bool]:
@@ -329,9 +580,14 @@ def _validate_combined_capability_identity(
 def _validate_root_session_config(
     value: object,
     contract: Mapping[str, Any],
+    *,
+    engine_profile_id: str | None = None,
 ) -> dict[str, object]:
     config = _require_mapping(value, "root-session certified config")
-    if set(config) != ROOT_SESSION_CONFIG_KEYS:
+    if set(config) not in (
+        ROOT_SESSION_CONFIG_KEYS,
+        ROOT_SESSION_CONFIG_KEYS | {"deep_teacher_value_model"},
+    ):
         raise ValueError("root-session config must exactly bind every native field")
     hard_limits = _require_mapping(
         contract.get("hard_limits"),
@@ -452,7 +708,7 @@ def _validate_root_session_config(
         ):
             raise ValueError(f"root-session weight {key} is invalid")
         normalized_weights[key] = candidate
-    return {
+    normalized: dict[str, object] = {
         "max_depth": max_depth,
         "width": width,
         "max_work": max_work,
@@ -465,12 +721,137 @@ def _validate_root_session_config(
         "root_contract_eval_capacity": eval_capacity,
         "weights": normalized_weights,
     }
+    model = config.get("deep_teacher_value_model")
+    if model is not None:
+        normalized["deep_teacher_value_model"] = _validate_deep_teacher_config(
+            model,
+            contract,
+            engine_profile_id=engine_profile_id,
+            mate_score=mate_score,
+        )
+    return normalized
+
+
+def _validate_deep_teacher_config(
+    value: object,
+    contract: Mapping[str, Any],
+    *,
+    engine_profile_id: str | None,
+    mate_score: int,
+) -> dict[str, object]:
+    model = _require_mapping(value, "root-session deep-teacher model")
+    capabilities = _require_mapping(
+        contract.get("capabilities"),
+        "root-session contract capabilities",
+    )
+    hard_limits = _require_mapping(
+        contract.get("hard_limits"),
+        "root-session contract hard limits",
+    )
+    model_limits = _require_mapping(
+        hard_limits.get("deep_teacher_value_model"),
+        "root-session deep-teacher hard limits",
+    )
+    if (
+        set(model) != DEEP_TEACHER_CONFIG_KEYS
+        or capabilities.get("deep_teacher_value_model") is not True
+        or model_limits.get("optional") is not True
+        or model_limits.get("schema") != DEEP_TEACHER_OVERLAY_SCHEMA
+        or model_limits.get("feature_counts") != [7, 14, 19, 38, 44, 47]
+        or model_limits.get("fixed_point_scale") != DEEP_TEACHER_FIXED_POINT_SCALE
+        or model_limits.get("mate_score") != 1_000_000
+        or model_limits.get("score_policy") != DEEP_TEACHER_SCORE_POLICY
+        or model_limits.get("work_policy") != DEEP_TEACHER_WORK_POLICY
+        or mate_score != 1_000_000
+    ):
+        raise ValueError("root-session deep-teacher contract is not certified")
+    base_profile_id = model.get("base_profile_id")
+    variant_id = model.get("variant_id")
+    model_id = model.get("model_id")
+    if (
+        model.get("schema") != DEEP_TEACHER_OVERLAY_SCHEMA
+        or not isinstance(base_profile_id, str)
+        or not base_profile_id
+        or engine_profile_id is not None
+        and base_profile_id != engine_profile_id
+        or not isinstance(variant_id, str)
+        or re.fullmatch(r"spc-dtv-variant-[0-9a-f]{20}", variant_id) is None
+        or not isinstance(model_id, str)
+        or re.fullmatch(r"spc-dtv-[0-9a-f]{20}", model_id) is None
+        or not HEX_64.fullmatch(str(model.get("model_sha256", "")))
+        or not HEX_64.fullmatch(str(model.get("native_source_identity", "")))
+        or model.get("score_policy") != DEEP_TEACHER_SCORE_POLICY
+        or model.get("work_policy") != DEEP_TEACHER_WORK_POLICY
+    ):
+        raise ValueError("root-session deep-teacher identity or policy is invalid")
+    feature_count = model.get("feature_count")
+    coefficients = model.get("coefficients")
+    if (
+        isinstance(feature_count, bool)
+        or feature_count not in {7, 14, 19, 38, 44, 47}
+        or model.get("fixed_point_scale") != DEEP_TEACHER_FIXED_POINT_SCALE
+        or not isinstance(coefficients, list)
+        or len(coefficients) != feature_count
+        or any(isinstance(item, bool) or not isinstance(item, int) for item in coefficients)
+        or any(abs(item) > DEEP_TEACHER_FIXED_POINT_SCALE for item in coefficients)
+        or max((abs(item) for item in coefficients), default=0)
+        != DEEP_TEACHER_FIXED_POINT_SCALE
+    ):
+        raise ValueError("root-session deep-teacher coefficient shape is invalid")
+    return {
+        "schema": DEEP_TEACHER_OVERLAY_SCHEMA,
+        "base_profile_id": base_profile_id,
+        "variant_id": variant_id,
+        "model_id": model_id,
+        "model_sha256": model["model_sha256"],
+        "native_source_identity": model["native_source_identity"],
+        "feature_count": feature_count,
+        "fixed_point_scale": DEEP_TEACHER_FIXED_POINT_SCALE,
+        "coefficients": list(coefficients),
+        "score_policy": DEEP_TEACHER_SCORE_POLICY,
+        "work_policy": DEEP_TEACHER_WORK_POLICY,
+    }
+
+
+def _validate_value_model_asset_descriptor(
+    value: object,
+    configured: Mapping[str, Any],
+) -> dict[str, object]:
+    descriptor = _require_mapping(value, "browser value-model asset descriptor")
+    expected_keys = {
+        "schema",
+        "file",
+        "sha256",
+        "model_schema",
+        "model_id",
+        "variant_id",
+        "base_profile_id",
+        "native_source_identity",
+    }
+    if (
+        set(descriptor) != expected_keys
+        or descriptor.get("schema") != VALUE_MODEL_ASSET_SCHEMA
+        or descriptor.get("model_schema") != DEEP_TEACHER_MODEL_SCHEMA
+        or descriptor.get("sha256") != configured.get("model_sha256")
+        or descriptor.get("model_id") != configured.get("model_id")
+        or descriptor.get("variant_id") != configured.get("variant_id")
+        or descriptor.get("base_profile_id") != configured.get("base_profile_id")
+        or descriptor.get("native_source_identity")
+        != configured.get("native_source_identity")
+    ):
+        raise ValueError("browser value-model asset descriptor differs from its config")
+    return {
+        **descriptor,
+        "file": _manifest_asset_name(descriptor.get("file"), ".json"),
+    }
 
 
 def _validate_root_geometry(
     value: object,
     memory: Mapping[str, int | bool],
     contract: Mapping[str, Any],
+    *,
+    engine_profile_id: str | None = None,
 ) -> dict[str, object]:
     geometry = _require_mapping(value, "root-session geometry")
     expected_keys = {
@@ -527,6 +908,7 @@ def _validate_root_geometry(
     session_config = _validate_root_session_config(
         geometry.get("session_config"),
         contract,
+        engine_profile_id=engine_profile_id,
     )
     play_limits = _require_mapping(
         geometry.get("play_limits"),
@@ -693,7 +1075,29 @@ def validate_root_session_certificate(
         certificate.get("geometry"),
         memory,
         contract,
+        engine_profile_id=engine["profile_id"],
     )
+    configured_model = geometry["session_config"].get(
+        "deep_teacher_value_model"
+    )
+    asset_descriptor = certificate.get("value_model_asset")
+    if configured_model is None:
+        if asset_descriptor is not None:
+            raise ValueError(
+                "baseline root-session certificate cannot claim a value-model asset"
+            )
+    else:
+        _validate_value_model_asset_descriptor(asset_descriptor, configured_model)
+        for key in (
+            "value_model_asset_bound",
+            "value_model_native_python_wasm_parity",
+            "value_model_browser_worker_smoke",
+            "value_model_strength_gate",
+        ):
+            if evidence.get(key) is not True:
+                raise ValueError(
+                    "modeled root-session certificate lacks activation evidence"
+                )
     return (
         memory,
         engine,
@@ -925,9 +1329,12 @@ def _build_variant(
     certificate_path: Path | None,
     prefix_certificate_path: Path | None,
     root_session_certificate_path: Path | None,
+    value_model_root_session_certificate_path: Path | None,
+    value_model_path: Path | None,
     mate_certificate_path: Path | None,
     support_paths: tuple[Path, ...],
     source_fingerprint: str,
+    value_model_native_source_identity: str | None,
     destination: Path,
 ) -> Mapping[str, Any]:
     if runtime_variant == "single" and support_paths:
@@ -946,6 +1353,26 @@ def _build_variant(
         raise ValueError(
             f"{runtime_variant} requires at least one capability certificate"
         )
+    if (value_model_root_session_certificate_path is None) != (
+        value_model_path is None
+    ):
+        raise ValueError(
+            "value-model asset and modeled root-session certificate are all-or-none"
+        )
+    if value_model_root_session_certificate_path is not None and (
+        root_session_certificate_path is None
+    ):
+        raise ValueError(
+            "value-model activation requires a certified baseline root-session fallback"
+        )
+    if (
+        value_model_root_session_certificate_path is not None
+        and certificate_path is not None
+    ):
+        raise ValueError(
+            "value-model activation cannot share one identity with the baseline "
+            "analysis capability"
+        )
     required_paths = [
         (wasm, "WebAssembly binary"),
         (module_js, "Emscripten module"),
@@ -957,6 +1384,15 @@ def _build_variant(
         required_paths.append((prefix_certificate_path, "prefix certificate"))
     if root_session_certificate_path is not None:
         required_paths.append((root_session_certificate_path, "root-session certificate"))
+    if value_model_root_session_certificate_path is not None:
+        required_paths.append(
+            (
+                value_model_root_session_certificate_path,
+                "value-model root-session certificate",
+            )
+        )
+    if value_model_path is not None:
+        required_paths.append((value_model_path, "deep-teacher value-model asset"))
     if mate_certificate_path is not None:
         required_paths.append((mate_certificate_path, "mate certificate"))
     for path, label in required_paths:
@@ -974,6 +1410,11 @@ def _build_variant(
         if root_session_certificate_path
         else None
     )
+    value_model_root_session_certificate = (
+        load_certificate(value_model_root_session_certificate_path)
+        if value_model_root_session_certificate_path
+        else None
+    )
     mate_certificate = (
         load_certificate(mate_certificate_path)
         if mate_certificate_path
@@ -985,6 +1426,7 @@ def _build_variant(
             certificate,
             prefix_certificate,
             root_session_certificate,
+            value_model_root_session_certificate,
             mate_certificate,
         )
         if value is not None
@@ -1062,6 +1504,57 @@ def _build_variant(
             thread_count=thread_count,
             support_files=support_files,
         )
+    value_model_memory: dict[str, int | bool] | None = None
+    value_model_engine: dict[str, str] | None = None
+    value_model_kernel_sha256: str | None = None
+    value_model_exception_strategy: str | None = None
+    value_model_contract: dict[str, object] | None = None
+    value_model_geometry: dict[str, object] | None = None
+    value_model_asset: dict[str, object] | None = None
+    if value_model_root_session_certificate is not None:
+        (
+            value_model_memory,
+            value_model_engine,
+            value_model_kernel_sha256,
+            value_model_exception_strategy,
+            value_model_contract,
+            value_model_geometry,
+        ) = validate_root_session_certificate(
+            value_model_root_session_certificate,
+            source_fingerprint=source_fingerprint,
+            wasm_sha256=wasm_sha256,
+            module_js_sha256=module_js_sha256,
+            runtime_variant=runtime_variant,
+            thread_count=thread_count,
+            support_files=support_files,
+        )
+        assert value_model_path is not None
+        configured_model = _require_mapping(
+            value_model_geometry["session_config"].get(
+                "deep_teacher_value_model"
+            ),
+            "modeled root-session config",
+        )
+        if (
+            value_model_native_source_identity is None
+            or configured_model.get("native_source_identity")
+            != value_model_native_source_identity
+        ):
+            raise ValueError(
+                "deep-teacher model native source identity differs from the source package"
+            )
+        value_model_asset = _validate_original_deep_teacher_model(
+            value_model_path,
+            configured_model,
+        )
+        certified_asset = _validate_value_model_asset_descriptor(
+            value_model_root_session_certificate.get("value_model_asset"),
+            configured_model,
+        )
+        if value_model_asset != certified_asset:
+            raise ValueError(
+                "deep-teacher model asset differs from its activation certificate"
+            )
     mate_memory: dict[str, int | bool] | None = None
     mate_engine: dict[str, str] | None = None
     mate_kernel_sha256: str | None = None
@@ -1100,6 +1593,7 @@ def _build_variant(
             ("search", search_memory),
             ("prefix", prefix_memory),
             ("root-session", root_memory),
+            ("value-model root-session", value_model_memory),
             ("mate", mate_memory),
         )
         if memory is not None
@@ -1120,6 +1614,7 @@ def _build_variant(
     for name, engine in (
         ("prefix", prefix_engine),
         ("root-session", root_engine),
+        ("value-model root-session", value_model_engine),
         ("mate", mate_engine),
     ):
         if engine is not None:
@@ -1132,6 +1627,58 @@ def _build_variant(
     if root_engine is not None and mate_engine is not None:
         if root_engine["profile_id"] != mate_engine["profile_id"]:
             raise ValueError("root-session and mate certificates have different profiles")
+    if root_engine is not None and value_model_engine is not None:
+        if root_engine != value_model_engine:
+            raise ValueError(
+                "baseline and modeled root-session certificates have different engines"
+            )
+    if root_kernel_sha256 is not None and value_model_kernel_sha256 is not None:
+        if root_kernel_sha256 != value_model_kernel_sha256:
+            raise ValueError(
+                "baseline and modeled root-session certificates have different kernels"
+            )
+    if root_exception_strategy is not None and value_model_exception_strategy is not None:
+        if root_exception_strategy != value_model_exception_strategy:
+            raise ValueError(
+                "baseline and modeled root-session certificates have different runtimes"
+            )
+    if root_contract is not None and value_model_contract is not None:
+        if root_contract != value_model_contract:
+            raise ValueError(
+                "baseline and modeled root-session certificates have different contracts"
+            )
+    if (
+        root_session_certificate is not None
+        and value_model_root_session_certificate is not None
+        and any(
+            root_session_certificate.get(key)
+            != value_model_root_session_certificate.get(key)
+            for key in ("wasm_simd", "allocator", "runtime_requirements")
+        )
+    ):
+        raise ValueError(
+            "baseline and modeled root-session certificates have different runtimes"
+        )
+    if root_geometry is not None and value_model_geometry is not None:
+        baseline_geometry = dict(root_geometry)
+        modeled_geometry = dict(value_model_geometry)
+        baseline_config = dict(
+            _require_mapping(
+                baseline_geometry.pop("session_config"),
+                "baseline root-session config",
+            )
+        )
+        modeled_config = dict(
+            _require_mapping(
+                modeled_geometry.pop("session_config"),
+                "modeled root-session config",
+            )
+        )
+        modeled_config.pop("deep_teacher_value_model", None)
+        if baseline_geometry != modeled_geometry or baseline_config != modeled_config:
+            raise ValueError(
+                "modeled root-session certificate changes non-model play geometry"
+            )
     if certificate is not None and root_engine is not None:
         search_profile = _require_mapping(certificate.get("engine"), "search engine").get(
             "engine_profile_id"
@@ -1171,6 +1718,12 @@ def _build_variant(
     by_name = {path.name: path for path in support_paths}
     for item in support_files:
         shutil.copyfile(by_name[item["name"]], destination / item["name"])
+    if value_model_path is not None:
+        assert value_model_asset is not None
+        shutil.copyfile(
+            value_model_path,
+            destination / str(value_model_asset["file"]),
+        )
     variant: dict[str, Any] = {
         "thread_count": thread_count,
         "wasm": wasm_name,
@@ -1262,6 +1815,58 @@ def _build_variant(
                 _require_mapping(root_session_certificate["evidence"], "root evidence")
             ),
         }
+    if value_model_root_session_certificate is not None:
+        assert value_model_memory is not None
+        assert value_model_engine is not None
+        assert value_model_kernel_sha256 is not None
+        assert value_model_exception_strategy is not None
+        assert value_model_contract is not None
+        assert value_model_geometry is not None
+        assert value_model_asset is not None
+        modeled_certificate = {
+            "schema": ROOT_SESSION_CERTIFICATE_SCHEMA,
+            "status": "certified",
+            "certificate_id": value_model_root_session_certificate["certificate_id"],
+            "contract_version": 1,
+            "abi_version": 2,
+            "root_session_certified": True,
+            "reply_mate_safety": False,
+            "product_publishable": False,
+            "source_fingerprint": source_fingerprint,
+            "kernel_sha256": value_model_kernel_sha256,
+            "runtime_variant": runtime_variant,
+            "thread_count": thread_count,
+            "wasm_sha256": wasm_sha256,
+            "module_js_sha256": module_js_sha256,
+            "support_files": support_files,
+            "exports": COMBINED_EXPORTS,
+            "exception_strategy": value_model_exception_strategy,
+            "wasm_simd": value_model_root_session_certificate["wasm_simd"],
+            "allocator": value_model_root_session_certificate["allocator"],
+            "runtime_requirements": dict(
+                _require_mapping(
+                    value_model_root_session_certificate["runtime_requirements"],
+                    "modeled root runtime requirements",
+                )
+            ),
+            "memory": value_model_memory,
+            "engine": value_model_engine,
+            "root_session_contract": value_model_contract,
+            "geometry": value_model_geometry,
+            "value_model_asset": value_model_asset,
+            "evidence": dict(
+                _require_mapping(
+                    value_model_root_session_certificate["evidence"],
+                    "modeled root evidence",
+                )
+            ),
+        }
+        variant["value_model_activation"] = {
+            "schema": VALUE_MODEL_ACTIVATION_SCHEMA,
+            "status": "certified",
+            "asset": value_model_asset,
+            "root_session_certificate": modeled_certificate,
+        }
     if mate_certificate is not None:
         assert mate_memory is not None
         assert mate_engine is not None
@@ -1309,6 +1914,8 @@ def build_bundle(
     single_certificate_path: Path | None = None,
     single_prefix_certificate_path: Path | None = None,
     single_root_session_certificate_path: Path | None = None,
+    single_value_model_root_session_certificate_path: Path | None = None,
+    single_value_model_path: Path | None = None,
     single_mate_certificate_path: Path | None = None,
     single_support_paths: tuple[Path, ...] = (),
     pthread_wasm: Path | None = None,
@@ -1342,6 +1949,11 @@ def build_bundle(
     source_fingerprint = engine_source_fingerprint(source_package)
     if not HEX_16.fullmatch(source_fingerprint):
         raise ValueError("calculated engine source fingerprint is invalid")
+    value_model_native_source_identity = (
+        native_source_identity(source_package)
+        if single_value_model_root_session_certificate_path is not None
+        else None
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
         prefix=f".{output.name}.", dir=output.parent
@@ -1356,9 +1968,16 @@ def build_bundle(
                 certificate_path=single_certificate_path,
                 prefix_certificate_path=single_prefix_certificate_path,
                 root_session_certificate_path=single_root_session_certificate_path,
+                value_model_root_session_certificate_path=(
+                    single_value_model_root_session_certificate_path
+                ),
+                value_model_path=single_value_model_path,
                 mate_certificate_path=single_mate_certificate_path,
                 support_paths=single_support_paths,
                 source_fingerprint=source_fingerprint,
+                value_model_native_source_identity=(
+                    value_model_native_source_identity
+                ),
                 destination=staging / "single",
             )
         }
@@ -1440,6 +2059,7 @@ def validate_existing_bundle(bundle: Path, source_package: Path) -> Mapping[str,
     certificate_value = variant.get("safety_certificate")
     prefix_certificate_value = variant.get("prefix_certificate")
     root_certificate_value = variant.get("root_session_certificate")
+    value_model_activation_value = variant.get("value_model_activation")
     mate_certificate_value = variant.get("mate_certificate")
     if all(
         value is None
@@ -1517,6 +2137,117 @@ def validate_existing_bundle(bundle: Path, source_package: Path) -> Mapping[str,
             thread_count=1,
             support_files=[],
         )
+    value_model_memory: dict[str, int | bool] | None = None
+    value_model_engine: dict[str, str] | None = None
+    value_model_kernel: str | None = None
+    value_model_exception: str | None = None
+    value_model_asset: dict[str, object] | None = None
+    value_model_name: str | None = None
+    if value_model_activation_value is not None:
+        if root_certificate_value is None:
+            raise ValueError(
+                "browser value-model activation has no certified baseline fallback"
+            )
+        activation = _require_mapping(
+            value_model_activation_value,
+            "browser value-model activation",
+        )
+        if (
+            set(activation)
+            != {"schema", "status", "asset", "root_session_certificate"}
+            or activation.get("schema") != VALUE_MODEL_ACTIVATION_SCHEMA
+            or activation.get("status") != "certified"
+        ):
+            raise ValueError("browser value-model activation envelope is invalid")
+        value_model_certificate = _require_mapping(
+            activation.get("root_session_certificate"),
+            "modeled root-session certificate",
+        )
+        (
+            value_model_memory,
+            value_model_engine,
+            value_model_kernel,
+            value_model_exception,
+            value_model_contract,
+            value_model_geometry,
+        ) = validate_root_session_certificate(
+            value_model_certificate,
+            source_fingerprint=source_fingerprint,
+            wasm_sha256=wasm_sha256,
+            module_js_sha256=module_js_sha256,
+            runtime_variant="single",
+            thread_count=1,
+            support_files=[],
+        )
+        configured_model = _require_mapping(
+            value_model_geometry["session_config"].get(
+                "deep_teacher_value_model"
+            ),
+            "modeled root-session config",
+        )
+        if configured_model.get("native_source_identity") != native_source_identity(
+            source_package
+        ):
+            raise ValueError(
+                "deep-teacher model native source identity differs from the source package"
+            )
+        value_model_asset = _validate_value_model_asset_descriptor(
+            activation.get("asset"),
+            configured_model,
+        )
+        certified_asset = _validate_value_model_asset_descriptor(
+            value_model_certificate.get("value_model_asset"),
+            configured_model,
+        )
+        if value_model_asset != certified_asset:
+            raise ValueError(
+                "value-model activation asset differs from its root certificate"
+            )
+        value_model_name = str(value_model_asset["file"])
+        model_path = lane / value_model_name
+        if not model_path.is_file():
+            raise FileNotFoundError("certified browser value-model asset is missing")
+        if _validate_original_deep_teacher_model(
+            model_path,
+            configured_model,
+        ) != value_model_asset:
+            raise ValueError("browser value-model asset does not match its descriptor")
+        if (
+            root_memory != value_model_memory
+            or root_engine != value_model_engine
+            or root_kernel != value_model_kernel
+            or root_exception != value_model_exception
+            or _root_contract != value_model_contract
+        ):
+            raise ValueError(
+                "baseline and modeled root-session certificates differ outside config"
+            )
+        if any(
+            root_certificate.get(key) != value_model_certificate.get(key)
+            for key in ("wasm_simd", "allocator", "runtime_requirements")
+        ):
+            raise ValueError(
+                "baseline and modeled root-session certificates have different runtimes"
+            )
+        baseline_geometry = dict(_root_geometry)
+        modeled_geometry = dict(value_model_geometry)
+        baseline_config = dict(
+            _require_mapping(
+                baseline_geometry.pop("session_config"),
+                "baseline root-session config",
+            )
+        )
+        modeled_config = dict(
+            _require_mapping(
+                modeled_geometry.pop("session_config"),
+                "modeled root-session config",
+            )
+        )
+        modeled_config.pop("deep_teacher_value_model", None)
+        if baseline_geometry != modeled_geometry or baseline_config != modeled_config:
+            raise ValueError(
+                "modeled root-session certificate changes non-model play geometry"
+            )
     mate_memory: dict[str, int | bool] | None = None
     mate_engine: dict[str, str] | None = None
     mate_kernel: str | None = None
@@ -1542,18 +2273,32 @@ def validate_existing_bundle(bundle: Path, source_package: Path) -> Mapping[str,
         )
     memories = [
         value
-        for value in (search_memory, prefix_memory if prefix_certificate_value else None, root_memory, mate_memory)
+        for value in (
+            search_memory,
+            prefix_memory if prefix_certificate_value else None,
+            root_memory,
+            value_model_memory,
+            mate_memory,
+        )
         if value is not None
     ]
     if any(value != memories[0] for value in memories[1:]):
         raise ValueError("combined capability certificates have different memory envelopes")
-    kernels = [value for value in (root_kernel, mate_kernel) if value is not None]
+    kernels = [
+        value
+        for value in (root_kernel, value_model_kernel, mate_kernel)
+        if value is not None
+    ]
     if kernels and (
         any(value != kernels[0] for value in kernels[1:])
         or variant.get("kernel_sha256") != kernels[0]
     ):
         raise ValueError("combined root/mate kernel identity mismatch")
-    exceptions = [value for value in (root_exception, mate_exception) if value is not None]
+    exceptions = [
+        value
+        for value in (root_exception, value_model_exception, mate_exception)
+        if value is not None
+    ]
     if any(value != exceptions[0] for value in exceptions[1:]):
         raise ValueError("combined root/mate exception strategy mismatch")
     if (
@@ -1581,6 +2326,8 @@ def validate_existing_bundle(bundle: Path, source_package: Path) -> Mapping[str,
         f"single/{wasm_name}",
         f"single/{module_name}",
     }
+    if value_model_name is not None:
+        expected_files.add(f"single/{value_model_name}")
     actual_files = {
         path.relative_to(bundle).as_posix()
         for path in bundle.rglob("*")
@@ -1604,6 +2351,8 @@ def main() -> None:
     parser.add_argument("--single-certificate", type=Path)
     parser.add_argument("--single-prefix-certificate", type=Path)
     parser.add_argument("--single-root-session-certificate", type=Path)
+    parser.add_argument("--single-value-model-root-session-certificate", type=Path)
+    parser.add_argument("--single-value-model", type=Path)
     parser.add_argument("--single-mate-certificate", type=Path)
     parser.add_argument("--single-support-file", type=Path, action="append", default=[])
     parser.add_argument("--pthread-wasm", type=Path)
@@ -1627,6 +2376,8 @@ def main() -> None:
                 arguments.single_certificate,
                 arguments.single_prefix_certificate,
                 arguments.single_root_session_certificate,
+                arguments.single_value_model_root_session_certificate,
+                arguments.single_value_model,
                 arguments.single_mate_certificate,
                 arguments.pthread_wasm,
                 arguments.pthread_module_js,
@@ -1681,6 +2432,16 @@ def main() -> None:
         single_root_session_certificate_path=(
             arguments.single_root_session_certificate.resolve()
             if arguments.single_root_session_certificate
+            else None
+        ),
+        single_value_model_root_session_certificate_path=(
+            arguments.single_value_model_root_session_certificate.resolve()
+            if arguments.single_value_model_root_session_certificate
+            else None
+        ),
+        single_value_model_path=(
+            arguments.single_value_model.resolve()
+            if arguments.single_value_model
             else None
         ),
         single_mate_certificate_path=(

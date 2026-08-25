@@ -7,6 +7,15 @@ const MATE_CERTIFICATE_SCHEMA = "spc-series-mate-certificate-v1";
 const ROOT_SESSION_ABI_VERSION = 2;
 const MATE_ABI_VERSION = 1;
 const ROOT_TACTICAL_POLICY = "canonical-boundary-policy-v1";
+const DEEP_TEACHER_MODEL_SCHEMA = "spc-deep-teacher-linear-value-v1";
+const DEEP_TEACHER_OVERLAY_SCHEMA = "spc-deep-teacher-match-overlay-v1";
+const VALUE_MODEL_ACTIVATION_SCHEMA = "spc-browser-value-model-activation-v1";
+const VALUE_MODEL_ASSET_SCHEMA = "spc-browser-value-model-asset-v1";
+const DEEP_TEACHER_SCORE_POLICY = "symmetric-half-away-from-zero-divide-by-1000000000-then-clamp-below-mate-v1";
+const DEEP_TEACHER_WORK_POLICY = "charge-reach-plus-direct-and-two-move-legal-variants-v1";
+const DEEP_TEACHER_FIXED_POINT_SCALE = 1_000_000_000;
+const DEEP_TEACHER_TERMINAL_POLICY = "replayed terminal checkmate and draw outcomes are authoritative";
+const MAX_VALUE_MODEL_BYTES = 64 * 1024;
 const MIN_ASPIRATION_INITIAL_DELTA = 2_048;
 const MAX_ASPIRATION_ATTEMPTS = 4;
 const COMBINED_EXPORTS = Object.freeze([
@@ -35,6 +44,89 @@ const ROOT_SESSION_WEIGHT_KEYS = Object.freeze([
   "promotion_corridors",
   "series_reach",
   "useful_mobility",
+]);
+const DEEP_TEACHER_CONFIG_KEYS = Object.freeze([
+  "base_profile_id",
+  "coefficients",
+  "feature_count",
+  "fixed_point_scale",
+  "model_id",
+  "model_sha256",
+  "native_source_identity",
+  "schema",
+  "score_policy",
+  "variant_id",
+  "work_policy",
+]);
+const DEEP_TEACHER_MODEL_KEYS = Object.freeze([
+  "adverse_pair_weight",
+  "coefficients",
+  "feature_group",
+  "feature_names",
+  "feature_schema",
+  "fixed_point_scale",
+  "model_id",
+  "ridge",
+  "schema",
+  "teacher_corpus_id",
+  "teacher_corpus_raw_artifact_sha256",
+  "teacher_corpus_semantic_sha256",
+  "teacher_corpus_sha256",
+  "terminal_override",
+]);
+const DEEP_TEACHER_FEATURE_COUNTS = Object.freeze({
+  base7: 7,
+  phase14: 14,
+  cached19: 19,
+  positional38: 38,
+  direct44: 44,
+  all47: 47,
+});
+const BASE_TEACHER_FEATURE_NAMES = Object.freeze([
+  "material",
+  "king_space",
+  "series_reach",
+  "promotion_corridors",
+  "immediate_vulnerability",
+  "useful_mobility",
+  "boundary_check",
+]);
+const DEEP_TEACHER_FEATURE_NAMES = Object.freeze([
+  ...BASE_TEACHER_FEATURE_NAMES,
+  ...BASE_TEACHER_FEATURE_NAMES.map((name) => `${name}_x_centered_phase`),
+  "king_ring_attack_balance",
+  "promotable_next_series_balance",
+  "king_edge_safety_balance",
+  "check_route_balance",
+  "reach_complete",
+  "developed_minor_balance",
+  "center_occupancy_balance",
+  "center_control_balance",
+  "extended_center_control_balance",
+  "pawn_space_balance",
+  "passed_pawn_balance",
+  "passed_pawn_advance_balance",
+  "connected_passed_pawn_balance",
+  "isolated_pawn_liability_balance",
+  "doubled_pawn_liability_balance",
+  "pawn_island_liability_balance",
+  "bishop_pair_balance",
+  "rook_open_file_balance",
+  "rook_seventh_rank_balance",
+  "king_pawn_shelter_balance",
+  "attacked_material_balance",
+  "hanging_material_balance",
+  "pinned_material_balance",
+  "queen_exposure_balance",
+  "direct_capture_count_for_mover",
+  "direct_capture_value_for_mover",
+  "direct_max_capture_value_for_mover",
+  "direct_check_count_for_mover",
+  "direct_mate_count_for_mover",
+  "direct_promotion_count_for_mover",
+  "two_move_capture_value_for_mover",
+  "two_move_check_routes_for_mover",
+  "two_move_mate_routes_for_mover",
 ]);
 const ROOT_SESSION_IDENTITY_KEYS = Object.freeze([
   "certificate_id",
@@ -400,14 +492,88 @@ function validatePrefixCertificate(certificate, value, context) {
   return { certificate, contract, engine, memory };
 }
 
-function validateRootSessionConfig(value, contract) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+function validateDeepTeacherConfig(value, contract, engineProfileId, mateScore) {
+  const hard = contract?.hard_limits?.deep_teacher_value_model;
+  const featureCount = value?.feature_count;
+  const coefficients = value?.coefficients;
+  if (
+    !value
+    || typeof value !== "object"
+    || Array.isArray(value)
+    || !sameJson(Object.keys(value).sort(), DEEP_TEACHER_CONFIG_KEYS)
+    || contract?.capabilities?.deep_teacher_value_model !== true
+    || !hard
+    || typeof hard !== "object"
+    || Array.isArray(hard)
+    || hard.optional !== true
+    || hard.schema !== DEEP_TEACHER_OVERLAY_SCHEMA
+    || !sameJson(hard.feature_counts, [7, 14, 19, 38, 44, 47])
+    || hard.fixed_point_scale !== DEEP_TEACHER_FIXED_POINT_SCALE
+    || hard.mate_score !== 1_000_000
+    || hard.score_policy !== DEEP_TEACHER_SCORE_POLICY
+    || hard.work_policy !== DEEP_TEACHER_WORK_POLICY
+    || mateScore !== 1_000_000
+    || value.schema !== DEEP_TEACHER_OVERLAY_SCHEMA
+    || value.base_profile_id !== engineProfileId
+    || !/^spc-dtv-variant-[0-9a-f]{20}$/.test(String(value.variant_id || ""))
+    || !/^spc-dtv-[0-9a-f]{20}$/.test(String(value.model_id || ""))
+    || !SHA256.test(String(value.model_sha256 || ""))
+    || !SHA256.test(String(value.native_source_identity || ""))
+    || value.score_policy !== DEEP_TEACHER_SCORE_POLICY
+    || value.work_policy !== DEEP_TEACHER_WORK_POLICY
+    || ![7, 14, 19, 38, 44, 47].includes(featureCount)
+    || value.fixed_point_scale !== DEEP_TEACHER_FIXED_POINT_SCALE
+    || !Array.isArray(coefficients)
+    || coefficients.length !== featureCount
+    || coefficients.some((coefficient) => (
+      !Number.isSafeInteger(coefficient)
+      || Math.abs(coefficient) > DEEP_TEACHER_FIXED_POINT_SCALE
+    ))
+    || Math.max(...coefficients.map(Math.abs)) !== DEEP_TEACHER_FIXED_POINT_SCALE
+  ) return null;
+  return Object.freeze({
+    ...value,
+    coefficients: Object.freeze([...coefficients]),
+  });
+}
+
+function validateValueModelAssetDescriptor(value, configured) {
   const expectedKeys = [
+    "base_profile_id", "file", "model_id", "model_schema",
+    "native_source_identity", "schema", "sha256", "variant_id",
+  ];
+  if (
+    !value
+    || typeof value !== "object"
+    || Array.isArray(value)
+    || !configured
+    || !sameJson(Object.keys(value).sort(), expectedKeys)
+    || value.schema !== VALUE_MODEL_ASSET_SCHEMA
+    || value.model_schema !== DEEP_TEACHER_MODEL_SCHEMA
+    || value.sha256 !== configured.model_sha256
+    || value.model_id !== configured.model_id
+    || value.variant_id !== configured.variant_id
+    || value.base_profile_id !== configured.base_profile_id
+    || value.native_source_identity !== configured.native_source_identity
+  ) return null;
+  try {
+    return Object.freeze({ ...value, file: safeAssetName(value.file, ".json") });
+  } catch {
+    return null;
+  }
+}
+
+function validateRootSessionConfig(value, contract, engineProfileId) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const baselineKeys = [
     "external_cache_weight", "mate_score", "max_depth", "max_work",
     "root_contract_eval_capacity", "root_contract_tt_capacity",
     "root_tactical_protection", "series_cache_capacity", "weights",
     "width", "worker_threads",
   ];
+  const expectedKeys = value.deep_teacher_value_model === undefined
+    ? baselineKeys
+    : [...baselineKeys, "deep_teacher_value_model"].sort();
   const hard = contract?.hard_limits;
   if (
     !sameJson(Object.keys(value).sort(), expectedKeys)
@@ -457,9 +623,19 @@ function validateRootSessionConfig(value, contract) {
       !Number.isSafeInteger(weight) || weight < 25 || weight > 300
     ))
   ) return null;
+  const model = value.deep_teacher_value_model === undefined
+    ? null
+    : validateDeepTeacherConfig(
+      value.deep_teacher_value_model,
+      contract,
+      engineProfileId,
+      value.mate_score,
+    );
+  if (value.deep_teacher_value_model !== undefined && !model) return null;
   return Object.freeze({
     ...value,
     weights: Object.freeze({ ...value.weights }),
+    ...(model ? { deep_teacher_value_model: model } : {}),
   });
 }
 
@@ -518,7 +694,7 @@ function validateRootPlayLimits(value, config) {
   return Object.freeze({ ...value });
 }
 
-function validateRootGeometry(value, memory, contract) {
+function validateRootGeometry(value, memory, contract, engineProfileId) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const expectedKeys = [
     "aggregate_maximum_bytes",
@@ -529,7 +705,11 @@ function validateRootGeometry(value, memory, contract) {
     "supported_lower_geometries",
   ];
   if (!sameJson(Object.keys(value).sort(), expectedKeys)) return null;
-  const config = validateRootSessionConfig(value.session_config, contract);
+  const config = validateRootSessionConfig(
+    value.session_config,
+    contract,
+    engineProfileId,
+  );
   const playLimits = validateRootPlayLimits(value.play_limits, config);
   if (
     !Number.isInteger(value.desktop_workers)
@@ -580,7 +760,12 @@ function validateRootSessionCertificate(certificate, value, context) {
   const exportsList = certificate?.exports;
   const runtime = validateCombinedRuntimeIdentity(certificate);
   const geometry = memory && contract
-    ? validateRootGeometry(certificate?.geometry, memory, contract)
+    ? validateRootGeometry(
+      certificate?.geometry,
+      memory,
+      contract,
+      certificate?.engine?.profile_id,
+    )
     : null;
   const requiredEvidence = [
     "deterministic_node_smoke", "combined_artifact", "enumerate_import_search",
@@ -639,7 +824,40 @@ function validateRootSessionCertificate(certificate, value, context) {
       "browser-root-session-uncertified",
     );
   }
-  return { certificate, contract, engine, geometry, memory, runtime };
+  const configuredModel = geometry.session_config.deep_teacher_value_model ?? null;
+  const valueModelAsset = configuredModel
+    ? validateValueModelAssetDescriptor(certificate.value_model_asset, configuredModel)
+    : null;
+  if (
+    configuredModel
+    && (
+      !valueModelAsset
+      || evidence.value_model_asset_bound !== true
+      || evidence.value_model_native_python_wasm_parity !== true
+      || evidence.value_model_browser_worker_smoke !== true
+      || evidence.value_model_strength_gate !== true
+    )
+  ) {
+    throw new KernelAdapterError(
+      `The ${context.name} modeled root certificate lacks activation evidence.`,
+      "browser-value-model-uncertified",
+    );
+  }
+  if (!configuredModel && certificate.value_model_asset !== undefined) {
+    throw new KernelAdapterError(
+      `The ${context.name} baseline root certificate claims a model asset.`,
+      "browser-value-model-uncertified",
+    );
+  }
+  return {
+    certificate,
+    contract,
+    engine,
+    geometry,
+    memory,
+    runtime,
+    ...(valueModelAsset ? { value_model_asset: valueModelAsset } : {}),
+  };
 }
 
 function validateMateCertificate(certificate, value, context) {
@@ -683,6 +901,91 @@ function validateMateCertificate(certificate, value, context) {
     );
   }
   return { certificate, engine, memory, runtime };
+}
+
+function validateValueModelActivation(value, variant, context, baselineRoot) {
+  if (value === undefined || value === null) return null;
+  const fallback = (error) => Object.freeze({
+    status: "fallback",
+    failure_code: String(error?.code || "browser-value-model-uncertified"),
+  });
+  try {
+    if (!baselineRoot) {
+      throw new KernelAdapterError(
+        "The value model has no certified baseline fallback.",
+        "browser-value-model-no-baseline",
+      );
+    }
+    if (variant.safety_certificate !== undefined) {
+      throw new KernelAdapterError(
+        "A modeled root session cannot relabel the baseline analysis capability.",
+        "browser-value-model-capability-mismatch",
+      );
+    }
+    const expectedKeys = ["asset", "root_session_certificate", "schema", "status"];
+    if (
+      !value
+      || typeof value !== "object"
+      || Array.isArray(value)
+      || !sameJson(Object.keys(value).sort(), expectedKeys)
+      || value.schema !== VALUE_MODEL_ACTIVATION_SCHEMA
+      || value.status !== "certified"
+    ) {
+      throw new KernelAdapterError(
+        "The value-model activation envelope is invalid.",
+        "browser-value-model-uncertified",
+      );
+    }
+    const modeled = validateRootSessionCertificate(
+      value.root_session_certificate,
+      variant,
+      context,
+    );
+    const configured = modeled.geometry.session_config.deep_teacher_value_model;
+    const asset = validateValueModelAssetDescriptor(value.asset, configured);
+    if (
+      !configured
+      || !asset
+      || !sameJson(asset, modeled.value_model_asset)
+      || modeled.certificate.certificate_id === baselineRoot.certificate.certificate_id
+      || modeled.engine.profile_id !== baselineRoot.engine.profile_id
+      || modeled.engine.engine_version !== baselineRoot.engine.engine_version
+      || modeled.engine.ruleset_version !== baselineRoot.engine.ruleset_version
+      || modeled.certificate.kernel_sha256 !== baselineRoot.certificate.kernel_sha256
+      || !sameJson(modeled.memory, baselineRoot.memory)
+      || !sameJson(modeled.runtime, baselineRoot.runtime)
+      || !sameJson(modeled.contract, baselineRoot.contract)
+    ) {
+      throw new KernelAdapterError(
+        "The modeled root certificate differs from its baseline identity.",
+        "browser-value-model-identity-mismatch",
+      );
+    }
+    const baselineGeometry = { ...baselineRoot.geometry };
+    const modeledGeometry = { ...modeled.geometry };
+    const baselineConfig = { ...baselineGeometry.session_config };
+    const modeledConfig = { ...modeledGeometry.session_config };
+    delete baselineGeometry.session_config;
+    delete modeledGeometry.session_config;
+    delete modeledConfig.deep_teacher_value_model;
+    if (
+      !sameJson(baselineGeometry, modeledGeometry)
+      || !sameJson(baselineConfig, modeledConfig)
+    ) {
+      throw new KernelAdapterError(
+        "The value model changes non-model play geometry.",
+        "browser-value-model-geometry-mismatch",
+      );
+    }
+    return Object.freeze({
+      status: "candidate",
+      failure_code: null,
+      asset,
+      root_session_capability: modeled,
+    });
+  } catch (error) {
+    return fallback(error);
+  }
 }
 
 function validateVariant(name, value, sourceFingerprint) {
@@ -754,6 +1057,12 @@ function validateVariant(name, value, sourceFingerprint) {
       "browser-root-certificate-pair-invalid",
     );
   }
+  const valueModelActivation = validateValueModelActivation(
+    value.value_model_activation,
+    value,
+    context,
+    rootSession,
+  );
   if (!analysis && !prefix && !rootSession && !mate) {
     throw new KernelAdapterError(
       `The ${name} WebAssembly artifact has no certified capability.`,
@@ -792,6 +1101,7 @@ function validateVariant(name, value, sourceFingerprint) {
     analysis_certificate: analysis,
     prefix_capability: prefix,
     root_session_capability: rootSession,
+    ...(valueModelActivation ? { value_model_activation: valueModelActivation } : {}),
     mate_capability: mate,
     analysis_limits: analysis?.limits ?? null,
     prefix_contract: prefix?.contract ?? null,
@@ -1378,6 +1688,95 @@ function validateCertifiedRuntimeSupport(variant) {
   }
 }
 
+async function resolveValueModelActivation(activation, engineRoot, manifestOrigin) {
+  if (!activation) return Object.freeze({ status: "absent", failure_code: null });
+  if (activation.status !== "candidate") return activation;
+  const fallback = (error) => Object.freeze({
+    status: "fallback",
+    failure_code: String(error?.code || "browser-value-model-unavailable"),
+  });
+  try {
+    const configured = activation.root_session_capability
+      .geometry.session_config.deep_teacher_value_model;
+    const assetUrl = new URL(activation.asset.file, engineRoot);
+    assetUrl.searchParams.set("sha256", activation.asset.sha256);
+    if (assetUrl.origin !== manifestOrigin) {
+      throw new KernelAdapterError(
+        "The browser value model must be same-origin.",
+        "browser-value-model-origin-denied",
+      );
+    }
+    const response = await fetchRequired(assetUrl, "value model");
+    const bytes = await response.arrayBuffer();
+    if (bytes.byteLength > MAX_VALUE_MODEL_BYTES) {
+      throw new KernelAdapterError(
+        "The browser value model exceeds its certified size envelope.",
+        "browser-value-model-invalid",
+      );
+    }
+    if (await sha256Hex(bytes) !== activation.asset.sha256) {
+      throw new KernelAdapterError(
+        "The browser value model failed its SHA-256 identity check.",
+        "browser-value-model-hash-mismatch",
+      );
+    }
+    let payload;
+    try {
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      payload = JSON.parse(text);
+    } catch {
+      throw new KernelAdapterError(
+        "The browser value model is not strict UTF-8 JSON.",
+        "browser-value-model-invalid",
+      );
+    }
+    const featureCount = DEEP_TEACHER_FEATURE_COUNTS[payload?.feature_group];
+    if (
+      !payload
+      || typeof payload !== "object"
+      || Array.isArray(payload)
+      || !sameJson(Object.keys(payload).sort(), DEEP_TEACHER_MODEL_KEYS)
+      || payload.schema !== DEEP_TEACHER_MODEL_SCHEMA
+      || payload.feature_schema !== "spc-teacher-value-features-v3"
+      || payload.model_id !== configured.model_id
+      || payload.fixed_point_scale !== configured.fixed_point_scale
+      || featureCount !== configured.feature_count
+      || !Array.isArray(payload.feature_names)
+      || !sameJson(
+        payload.feature_names,
+        DEEP_TEACHER_FEATURE_NAMES.slice(0, featureCount),
+      )
+      || !sameJson(payload.coefficients, configured.coefficients)
+      || typeof payload.ridge !== "number"
+      || !Number.isFinite(payload.ridge)
+      || payload.ridge <= 0
+      || typeof payload.adverse_pair_weight !== "number"
+      || !Number.isFinite(payload.adverse_pair_weight)
+      || payload.adverse_pair_weight < 1
+      || payload.adverse_pair_weight > 1_000
+      || payload.terminal_override !== DEEP_TEACHER_TERMINAL_POLICY
+      || typeof payload.teacher_corpus_id !== "string"
+      || !payload.teacher_corpus_id.trim()
+      || payload.teacher_corpus_id.length > 256
+      || payload.teacher_corpus_sha256 !== payload.teacher_corpus_semantic_sha256
+      || !SHA256.test(String(payload.teacher_corpus_sha256 || ""))
+      || !SHA256.test(String(payload.teacher_corpus_raw_artifact_sha256 || ""))
+    ) {
+      throw new KernelAdapterError(
+        "The browser value model differs from its activation certificate.",
+        "browser-value-model-identity-mismatch",
+      );
+    }
+    return Object.freeze({
+      ...activation,
+      status: "active",
+      failure_code: null,
+    });
+  } catch (error) {
+    return fallback(error);
+  }
+}
+
 export async function loadCertifiedBrowserKernel({
   expectedSourceFingerprint,
   manifestUrl = new URL("./engine/browser-engine-manifest.json", import.meta.url),
@@ -1410,6 +1809,11 @@ export async function loadCertifiedBrowserKernel({
   const variant = manifest.variants[runtimeVariant];
   validateCertifiedRuntimeSupport(variant);
   const engineRoot = new URL(`./${runtimeVariant}/`, manifestUrl);
+  const valueModelPromise = resolveValueModelActivation(
+    variant.value_model_activation,
+    engineRoot,
+    manifestUrl.origin,
+  );
   const wasmUrl = new URL(variant.wasm, engineRoot);
   const moduleUrl = new URL(variant.module_js, engineRoot);
   wasmUrl.searchParams.set("sha256", variant.wasm_sha256);
@@ -1454,6 +1858,10 @@ export async function loadCertifiedBrowserKernel({
       "browser-artifact-hash-mismatch",
     );
   }
+  const valueModelActivation = await valueModelPromise;
+  const activeRootSessionCapability = valueModelActivation.status === "active"
+    ? valueModelActivation.root_session_capability
+    : variant.root_session_capability;
 
   if (typeof moduleImporter !== "function") {
     throw new KernelAdapterError(
@@ -1518,13 +1926,13 @@ export async function loadCertifiedBrowserKernel({
   if (variant.root_session_ready) {
     validateNativeRootSessionContract(
       module,
-      variant.root_session_capability.contract,
+      activeRootSessionCapability.contract,
     );
   }
 
   const safetyCertificate = variant.analysis_certificate?.certificate ?? null;
   const prefixCertificate = variant.prefix_capability?.certificate ?? null;
-  const rootSessionCertificate = variant.root_session_capability?.certificate ?? null;
+  const rootSessionCertificate = activeRootSessionCapability?.certificate ?? null;
   const mateCertificate = variant.mate_capability?.certificate ?? null;
   const engineIdentity = variant.engine_identity;
   const identity = Object.freeze({
@@ -1550,8 +1958,12 @@ export async function loadCertifiedBrowserKernel({
     kernel_sha256: rootSessionCertificate?.kernel_sha256
       ?? mateCertificate?.kernel_sha256
       ?? null,
-    engine_profile_id: safetyCertificate?.engine?.engine_profile_id ?? null,
-    engine_profile_name: safetyCertificate?.engine?.engine_profile_name ?? null,
+    engine_profile_id: valueModelActivation.status === "active"
+      ? valueModelActivation.asset.variant_id
+      : safetyCertificate?.engine?.engine_profile_id ?? null,
+    engine_profile_name: valueModelActivation.status === "active"
+      ? `Deep teacher ${valueModelActivation.asset.model_id}`
+      : safetyCertificate?.engine?.engine_profile_name ?? null,
     profile_id: rootSessionCertificate?.engine?.profile_id
       ?? mateCertificate?.engine?.profile_id
       ?? safetyCertificate?.engine?.engine_profile_id
@@ -1562,10 +1974,27 @@ export async function loadCertifiedBrowserKernel({
       ? Object.freeze({ ...variant.analysis_limits })
       : null,
     prefix_contract: variant.prefix_contract,
-    root_session_contract: variant.root_session_capability?.contract ?? null,
-    root_geometry: variant.root_session_capability?.geometry ?? null,
+    root_session_contract: activeRootSessionCapability?.contract ?? null,
+    root_geometry: activeRootSessionCapability?.geometry ?? null,
     memory_limits: Object.freeze({ ...variant.memory_limits }),
     initial_memory_bytes: initialMemoryBytes,
+    ...(valueModelActivation.status !== "absent" ? {
+      value_model_status: valueModelActivation.status,
+      value_model_active: valueModelActivation.status === "active",
+      value_model_failure_code: valueModelActivation.failure_code,
+      value_model_id: valueModelActivation.status === "active"
+        ? valueModelActivation.asset.model_id
+        : null,
+      value_model_sha256: valueModelActivation.status === "active"
+        ? valueModelActivation.asset.sha256
+        : null,
+      value_model_variant_id: valueModelActivation.status === "active"
+        ? valueModelActivation.asset.variant_id
+        : null,
+      value_model_native_source_identity: valueModelActivation.status === "active"
+        ? valueModelActivation.asset.native_source_identity
+        : null,
+    } : {}),
   });
   let rootSessionId = null;
   let rootSessionBoundary = null;
@@ -2326,6 +2755,7 @@ export {
   clampRootRemainingTime,
   importVerifiedModuleBytes,
   normalizeKernelResult,
+  resolveValueModelActivation,
   validatePrefixContract,
   validateManifest,
 };

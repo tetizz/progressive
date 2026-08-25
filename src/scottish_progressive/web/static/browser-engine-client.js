@@ -295,6 +295,31 @@
       && memoryLimits !== null
     );
     if (!commonIdentity) return false;
+    const valueModelPresent = identity.value_model_status !== undefined;
+    const validValueModel = !valueModelPresent || (
+      ["active", "fallback"].includes(identity.value_model_status)
+      && identity.value_model_active === (identity.value_model_status === "active")
+      && (identity.value_model_status === "active" ? (
+        /^spc-dtv-[0-9a-f]{20}$/.test(String(identity.value_model_id || ""))
+        && ARTIFACT_FINGERPRINT.test(String(identity.value_model_sha256 || ""))
+        && /^spc-dtv-variant-[0-9a-f]{20}$/.test(
+          String(identity.value_model_variant_id || ""),
+        )
+        && ARTIFACT_FINGERPRINT.test(
+          String(identity.value_model_native_source_identity || ""),
+        )
+        && identity.value_model_failure_code === null
+        && identity.engine_profile_id === identity.value_model_variant_id
+      ) : (
+        identity.value_model_id === null
+        && identity.value_model_sha256 === null
+        && identity.value_model_variant_id === null
+        && identity.value_model_native_source_identity === null
+        && typeof identity.value_model_failure_code === "string"
+        && Boolean(identity.value_model_failure_code)
+      ))
+    );
+    if (!validValueModel) return false;
     const analysisReady = identity.analysis_ready === true;
     const prefixReady = identity.prefix_ready === true;
     const rootReady = identity.root_iteration_ready === true;
@@ -1053,6 +1078,17 @@
               ? immutableJsonCopy(response.root_geometry)
               : null,
             memory_limits: Object.freeze(normalizedMemoryLimits(response.memory_limits)),
+            ...(response.value_model_status !== undefined ? {
+              value_model_status: response.value_model_status,
+              value_model_active: response.value_model_active === true,
+              value_model_failure_code: response.value_model_failure_code,
+              value_model_id: response.value_model_id,
+              value_model_sha256: response.value_model_sha256,
+              value_model_variant_id: response.value_model_variant_id,
+              value_model_native_source_identity: (
+                response.value_model_native_source_identity
+              ),
+            } : {}),
           });
           this.profile = Object.freeze({
             engine_profile_id: response.engine_profile_id || response.profile_id,
@@ -1180,6 +1216,19 @@
           root_scores_complete: false,
           requested_depth: requestedDepth,
           completed_depth: completedDepth,
+          ...(this.identity.value_model_status !== undefined ? {
+            deep_teacher_value_model: {
+              status: this.identity.value_model_status,
+              active: this.identity.value_model_active,
+              model_id: this.identity.value_model_id,
+              model_sha256: this.identity.value_model_sha256,
+              variant_id: this.identity.value_model_variant_id,
+              native_source_identity: (
+                this.identity.value_model_native_source_identity
+              ),
+              failure_code: this.identity.value_model_failure_code,
+            },
+          } : {}),
           runtime_receipt: {
             runtime: "browser-wasm",
             wall_time_seconds: wallTimeSeconds,
@@ -1201,6 +1250,12 @@
             certified_memory: { ...this.identity.memory_limits },
             legal_validation_runtime: "compiled-wasm",
             canonical_replay_certified: true,
+            ...(this.identity.value_model_status !== undefined ? {
+              value_model_status: this.identity.value_model_status,
+              value_model_id: this.identity.value_model_id,
+              value_model_sha256: this.identity.value_model_sha256,
+              value_model_variant_id: this.identity.value_model_variant_id,
+            } : {}),
           },
         };
       } finally {
@@ -1242,6 +1297,19 @@
           engine_profile_name: this.profile?.engine_profile_name,
           engine_version: this.profile?.engine_version,
           ruleset_version: this.profile?.ruleset_version,
+          ...(this.identity.value_model_status !== undefined ? {
+            deep_teacher_value_model: {
+              status: this.identity.value_model_status,
+              active: this.identity.value_model_active,
+              model_id: this.identity.value_model_id,
+              model_sha256: this.identity.value_model_sha256,
+              variant_id: this.identity.value_model_variant_id,
+              native_source_identity: (
+                this.identity.value_model_native_source_identity
+              ),
+              failure_code: this.identity.value_model_failure_code,
+            },
+          } : {}),
         };
       } catch (error) {
         if (error?.name === "AbortError") throw error;

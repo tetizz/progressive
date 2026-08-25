@@ -126,3 +126,46 @@ The second command creates an immutable directory containing:
 The output path must not already exist. A failed gate leaves no promoted output.
 The Pages build must consume `browser-engine/` from this directory directly;
 recompiling the kernel after promotion invalidates the release.
+
+## Optional deep-teacher browser activation
+
+The combined ordinary-Worker artifact can carry a deep-teacher value model, but
+the browser never treats the model as an ordinary mutable option. A modeled
+bundle must contain all three of these inputs in addition to the ordinary
+baseline root certificate:
+
+- the exact frozen `spc-deep-teacher-linear-value-v1` JSON asset;
+- a second root-session certificate whose `geometry.session_config` contains
+  the matching `deep_teacher_value_model` wire config; and
+- that modeled certificate's `value_model_asset` descriptor, binding the asset
+  SHA-256, model/variant IDs, base profile, and native source identity.
+
+The modeled certificate must explicitly pass asset binding, Python/native/WASM
+parity, real browser-Worker smoke, and the independent playing-strength gate.
+It must otherwise be identical to the baseline certificate: same source,
+kernel, wrapper, ABI contract, memory envelope, engine identity, worker
+geometry, time/work policy, and seven base weights. The bundle builder enforces
+those invariants and copies the model by exact bytes:
+
+```powershell
+python .\scripts\build_browser_wasm_bundle.py `
+  --single-wasm .\build\verified\spc-root-session.wasm `
+  --single-module-js .\build\verified\spc-engine.js `
+  --single-prefix-certificate .\build\certificates\prefix.json `
+  --single-root-session-certificate .\build\certificates\root-baseline.json `
+  --single-value-model-root-session-certificate .\build\certificates\root-modeled.json `
+  --single-value-model .\build\models\promoted-value-model.json `
+  --single-mate-certificate .\build\certificates\mate.json `
+  --output .\build\browser-engine-modeled
+```
+
+At runtime, every Worker verifies the model bytes before selecting the modeled
+root certificate. A missing, malformed, cross-origin, or digest-mismatched
+model selects the separately certified baseline root configuration and exposes
+the fallback reason. It never reports the model ID or variant as active. A
+bundle without `value_model_activation` keeps the previous baseline request and
+identity shape.
+
+The current release-promotion receipt schema remains baseline-only. It must not
+be widened until a real frozen model has the required parity, browser-Worker,
+and independent strength evidence; builder fixtures are not promotion evidence.

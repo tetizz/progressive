@@ -5640,7 +5640,9 @@
     state.play.healthReady = true;
     dom.engine_status.classList.add("is-online");
     dom.engine_status.classList.remove("is-offline");
-    dom.engine_status_text.textContent = "Engine on this device";
+    dom.engine_status_text.textContent = runtime.value_model_active === true
+      ? "Engine + value model on this device"
+      : "Engine on this device";
     dom.engine_status.title = [
       runtime.engine_profile_name,
       runtime.engine_version,
@@ -5648,6 +5650,11 @@
       `WASM ${runtime.runtime_variant}`,
       `${runtime.thread_count} thread${runtime.thread_count === 1 ? "" : "s"}`,
       `certificate ${runtime.root_session_certificate_id || runtime.certificate_id}`,
+      runtime.value_model_active === true
+        ? `value model ${runtime.value_model_id} · ${runtime.value_model_sha256}`
+        : runtime.value_model_status === "fallback"
+          ? `value model rejected (${runtime.value_model_failure_code}); certified baseline active`
+          : null,
     ].filter(Boolean).join(" · ");
     renderPlaySurface();
   }

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -298,6 +300,113 @@ def _root_session_certificate(
     }
 
 
+def _value_model_fixture(
+    builder,
+    directory: Path,
+) -> tuple[Path, dict[str, object], dict[str, object]]:
+    payload: dict[str, object] = {
+        "schema": builder.DEEP_TEACHER_MODEL_SCHEMA,
+        "feature_schema": builder.DEEP_TEACHER_FEATURE_SCHEMA,
+        "feature_group": "base7",
+        "feature_names": list(builder.DEEP_TEACHER_FEATURE_NAMES[:7]),
+        "fixed_point_scale": builder.DEEP_TEACHER_FIXED_POINT_SCALE,
+        "coefficients": [builder.DEEP_TEACHER_FIXED_POINT_SCALE, 0, 0, 0, 0, 0, 0],
+        "ridge": 0.1,
+        "adverse_pair_weight": 1.0,
+        "terminal_override": (
+            "replayed terminal checkmate and draw outcomes are authoritative"
+        ),
+        "teacher_corpus_id": "spc-browser-model-fixture",
+        "teacher_corpus_sha256": "a" * 64,
+        "teacher_corpus_semantic_sha256": "a" * 64,
+        "teacher_corpus_raw_artifact_sha256": "b" * 64,
+        "model_id": "pending",
+    }
+    core = {
+        key: payload[key]
+        for key in sorted(
+            builder.DEEP_TEACHER_MODEL_KEYS
+            - {"model_id", "teacher_corpus_raw_artifact_sha256"}
+        )
+    }
+    payload["model_id"] = "spc-dtv-" + builder._canonical_json_sha256(core)[:20]
+    path = directory / "deep-teacher-model.json"
+    raw = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
+    path.write_bytes(raw)
+    config: dict[str, object] = {
+        "schema": builder.DEEP_TEACHER_OVERLAY_SCHEMA,
+        "base_profile_id": "spc-browser-test",
+        "variant_id": "spc-dtv-variant-" + "c" * 20,
+        "model_id": payload["model_id"],
+        "model_sha256": hashlib.sha256(raw).hexdigest(),
+        "native_source_identity": "d" * 64,
+        "feature_count": 7,
+        "fixed_point_scale": builder.DEEP_TEACHER_FIXED_POINT_SCALE,
+        "coefficients": list(payload["coefficients"]),
+        "score_policy": builder.DEEP_TEACHER_SCORE_POLICY,
+        "work_policy": builder.DEEP_TEACHER_WORK_POLICY,
+    }
+    descriptor = {
+        "schema": builder.VALUE_MODEL_ASSET_SCHEMA,
+        "file": path.name,
+        "sha256": config["model_sha256"],
+        "model_schema": builder.DEEP_TEACHER_MODEL_SCHEMA,
+        "model_id": config["model_id"],
+        "variant_id": config["variant_id"],
+        "base_profile_id": config["base_profile_id"],
+        "native_source_identity": config["native_source_identity"],
+    }
+    return path, config, descriptor
+
+
+def _model_capable_root_certificates(
+    builder,
+    *,
+    source_package: Path,
+    wasm: Path,
+    module_js: Path,
+    directory: Path,
+) -> tuple[dict[str, object], dict[str, object], Path]:
+    for index, filename in enumerate(builder.NATIVE_SOURCE_FILES):
+        (source_package / filename).write_text(
+            f"// browser model native source fixture {index}\n",
+            encoding="utf-8",
+        )
+    baseline = _root_session_certificate(
+        builder,
+        source_package=source_package,
+        wasm=wasm,
+        module_js=module_js,
+    )
+    contract = baseline["root_session_contract"]
+    contract["capabilities"]["deep_teacher_value_model"] = True
+    contract["hard_limits"]["deep_teacher_value_model"] = {
+        "optional": True,
+        "schema": builder.DEEP_TEACHER_OVERLAY_SCHEMA,
+        "feature_counts": [7, 14, 19, 38, 44, 47],
+        "fixed_point_scale": builder.DEEP_TEACHER_FIXED_POINT_SCALE,
+        "mate_score": 1_000_000,
+        "score_policy": builder.DEEP_TEACHER_SCORE_POLICY,
+        "work_policy": builder.DEEP_TEACHER_WORK_POLICY,
+    }
+    model_path, config, descriptor = _value_model_fixture(builder, directory)
+    config["native_source_identity"] = builder.native_source_identity(source_package)
+    descriptor["native_source_identity"] = config["native_source_identity"]
+    modeled = copy.deepcopy(baseline)
+    modeled["certificate_id"] = "root-session-model-gate-20260825-single"
+    modeled["geometry"]["session_config"]["deep_teacher_value_model"] = config
+    modeled["value_model_asset"] = descriptor
+    modeled["evidence"].update(
+        {
+            "value_model_asset_bound": True,
+            "value_model_native_python_wasm_parity": True,
+            "value_model_browser_worker_smoke": True,
+            "value_model_strength_gate": True,
+        }
+    )
+    return baseline, modeled, model_path
+
+
 def _mate_certificate(
     builder,
     *,
@@ -533,6 +642,7 @@ def test_bundle_builder_stages_one_identity_bound_root_and_mate_artifact(
     )
 
     variant = manifest["variants"]["single"]
+    assert "value_model_activation" not in variant
     assert variant["kernel_sha256"] == "d" * 64
     assert variant["root_session_certificate"]["reply_mate_safety"] is False
     assert variant["mate_certificate"]["reply_mate_safety"] is True
@@ -550,6 +660,328 @@ def test_bundle_builder_stages_one_identity_bound_root_and_mate_artifact(
         == variant["mate_certificate"]["memory"]
     )
     builder.validate_existing_bundle(output, package)
+
+
+def test_bundle_builder_stages_exact_model_with_certified_baseline_fallback(
+    tmp_path: Path,
+) -> None:
+    builder = _load_bundle_builder()
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "core.cpp").write_text("int engine = 1;\n", encoding="utf-8")
+    wasm = tmp_path / "kernel.wasm"
+    module_js = tmp_path / "kernel.mjs"
+    wasm.write_bytes(b"\0asm\x01\0\0\0")
+    module_js.write_text(_module_wrapper(), encoding="utf-8")
+    baseline, modeled, model_path = _model_capable_root_certificates(
+        builder,
+        source_package=package,
+        wasm=wasm,
+        module_js=module_js,
+        directory=tmp_path,
+    )
+    root_path = tmp_path / "root-certificate.json"
+    modeled_path = tmp_path / "modeled-root-certificate.json"
+    mate_path = tmp_path / "mate-certificate.json"
+    root_path.write_text(json.dumps(baseline), encoding="utf-8")
+    modeled_path.write_text(json.dumps(modeled), encoding="utf-8")
+    mate_path.write_text(
+        json.dumps(
+            _mate_certificate(
+                builder,
+                source_package=package,
+                wasm=wasm,
+                module_js=module_js,
+            )
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "engine"
+
+    manifest = builder.build_bundle(
+        single_wasm=wasm,
+        single_module_js=module_js,
+        single_root_session_certificate_path=root_path,
+        single_value_model_root_session_certificate_path=modeled_path,
+        single_value_model_path=model_path,
+        single_mate_certificate_path=mate_path,
+        source_package=package,
+        output=output,
+    )
+
+    variant = manifest["variants"]["single"]
+    assert "deep_teacher_value_model" not in (
+        variant["root_session_certificate"]["geometry"]["session_config"]
+    )
+    activation = variant["value_model_activation"]
+    configured = activation["root_session_certificate"]["geometry"][
+        "session_config"
+    ]["deep_teacher_value_model"]
+    assert activation["status"] == "certified"
+    assert activation["asset"]["sha256"] == configured["model_sha256"]
+    assert (output / "single" / model_path.name).read_bytes() == model_path.read_bytes()
+    builder.validate_existing_bundle(output, package)
+
+
+def test_bundle_builder_rejects_model_without_strength_evidence(tmp_path: Path) -> None:
+    builder = _load_bundle_builder()
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "core.cpp").write_text("int engine = 1;\n", encoding="utf-8")
+    wasm = tmp_path / "kernel.wasm"
+    module_js = tmp_path / "kernel.mjs"
+    wasm.write_bytes(b"\0asm\x01\0\0\0")
+    module_js.write_text(_module_wrapper(), encoding="utf-8")
+    baseline, modeled, model_path = _model_capable_root_certificates(
+        builder,
+        source_package=package,
+        wasm=wasm,
+        module_js=module_js,
+        directory=tmp_path,
+    )
+    modeled["evidence"]["value_model_strength_gate"] = False
+    root_path = tmp_path / "root-certificate.json"
+    modeled_path = tmp_path / "modeled-root-certificate.json"
+    root_path.write_text(json.dumps(baseline), encoding="utf-8")
+    modeled_path.write_text(json.dumps(modeled), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="activation evidence"):
+        builder.build_bundle(
+            single_wasm=wasm,
+            single_module_js=module_js,
+            single_root_session_certificate_path=root_path,
+            single_value_model_root_session_certificate_path=modeled_path,
+            single_value_model_path=model_path,
+            source_package=package,
+            output=tmp_path / "engine",
+        )
+
+
+def test_bundle_builder_rejects_model_from_a_different_native_source(
+    tmp_path: Path,
+) -> None:
+    builder = _load_bundle_builder()
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "core.cpp").write_text("int engine = 1;\n", encoding="utf-8")
+    wasm = tmp_path / "kernel.wasm"
+    module_js = tmp_path / "kernel.mjs"
+    wasm.write_bytes(b"\0asm\x01\0\0\0")
+    module_js.write_text(_module_wrapper(), encoding="utf-8")
+    baseline, modeled, model_path = _model_capable_root_certificates(
+        builder,
+        source_package=package,
+        wasm=wasm,
+        module_js=module_js,
+        directory=tmp_path,
+    )
+    wrong_identity = "e" * 64
+    modeled["geometry"]["session_config"]["deep_teacher_value_model"][
+        "native_source_identity"
+    ] = wrong_identity
+    modeled["value_model_asset"]["native_source_identity"] = wrong_identity
+    root_path = tmp_path / "root-certificate.json"
+    modeled_path = tmp_path / "modeled-root-certificate.json"
+    root_path.write_text(json.dumps(baseline), encoding="utf-8")
+    modeled_path.write_text(json.dumps(modeled), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="native source identity"):
+        builder.build_bundle(
+            single_wasm=wasm,
+            single_module_js=module_js,
+            single_root_session_certificate_path=root_path,
+            single_value_model_root_session_certificate_path=modeled_path,
+            single_value_model_path=model_path,
+            source_package=package,
+            output=tmp_path / "engine",
+        )
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is required for browser contract tests")
+def test_browser_adapter_activates_exact_model_and_falls_back_on_hash_mismatch(
+    tmp_path: Path,
+) -> None:
+    builder = _load_bundle_builder()
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "core.cpp").write_text("int engine = 1;\n", encoding="utf-8")
+    wasm = tmp_path / "kernel.wasm"
+    module_js = tmp_path / "kernel.mjs"
+    wasm.write_bytes(b"\0asm\x01\0\0\0")
+    module_js.write_text(_module_wrapper(), encoding="utf-8")
+    baseline, modeled, model_path = _model_capable_root_certificates(
+        builder,
+        source_package=package,
+        wasm=wasm,
+        module_js=module_js,
+        directory=tmp_path,
+    )
+    root_path = tmp_path / "root-certificate.json"
+    modeled_path = tmp_path / "modeled-root-certificate.json"
+    mate_path = tmp_path / "mate-certificate.json"
+    root_path.write_text(json.dumps(baseline), encoding="utf-8")
+    modeled_path.write_text(json.dumps(modeled), encoding="utf-8")
+    mate_path.write_text(
+        json.dumps(
+            _mate_certificate(
+                builder,
+                source_package=package,
+                wasm=wasm,
+                module_js=module_js,
+            )
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "engine"
+    manifest = builder.build_bundle(
+        single_wasm=wasm,
+        single_module_js=module_js,
+        single_root_session_certificate_path=root_path,
+        single_value_model_root_session_certificate_path=modeled_path,
+        single_value_model_path=model_path,
+        single_mate_certificate_path=mate_path,
+        source_package=package,
+        output=output,
+    )
+    adapter = tmp_path / "wasm-kernel-adapter.mjs"
+    adapter.write_bytes((STATIC / "wasm-kernel-adapter.js").read_bytes())
+    script = r"""
+import fs from "node:fs";
+import { createHash, webcrypto } from "node:crypto";
+import { pathToFileURL } from "node:url";
+if (!globalThis.crypto) globalThis.crypto = webcrypto;
+const api = await import(pathToFileURL(process.argv[1]));
+const manifest = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const model = fs.readFileSync(process.argv[3]);
+const normalized = api.validateManifest(manifest, manifest.source_fingerprint);
+const candidate = normalized.variants.single.value_model_activation;
+const buffer = (bytes) => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+globalThis.fetch = async () => ({
+  ok: true,
+  status: 200,
+  arrayBuffer: async () => buffer(model),
+});
+const active = await api.resolveValueModelActivation(
+  candidate,
+  new URL("https://example.test/engine/single/"),
+  "https://example.test",
+);
+const corrupt = Buffer.concat([model, Buffer.from(" ")]);
+globalThis.fetch = async () => ({
+  ok: true,
+  status: 200,
+  arrayBuffer: async () => buffer(corrupt),
+});
+const fallback = await api.resolveValueModelActivation(
+  candidate,
+  new URL("https://example.test/engine/single/"),
+  "https://example.test",
+);
+const invalidPayload = JSON.parse(model.toString("utf8"));
+invalidPayload.feature_names[0] = "not_the_frozen_material_feature";
+const invalidModel = Buffer.from(JSON.stringify(invalidPayload));
+const invalidHash = createHash("sha256").update(invalidModel).digest("hex");
+const invalidCandidate = structuredClone(candidate);
+invalidCandidate.asset.sha256 = invalidHash;
+invalidCandidate.root_session_capability.geometry.session_config
+  .deep_teacher_value_model.model_sha256 = invalidHash;
+globalThis.fetch = async () => ({
+  ok: true,
+  status: 200,
+  arrayBuffer: async () => buffer(invalidModel),
+});
+const invalid = await api.resolveValueModelActivation(
+  invalidCandidate,
+  new URL("https://example.test/engine/single/"),
+  "https://example.test",
+);
+process.stdout.write(JSON.stringify({
+  candidateStatus: candidate.status,
+  activeStatus: active.status,
+  activeModelId: active.asset.model_id,
+  fallbackStatus: fallback.status,
+  fallbackCode: fallback.failure_code,
+  invalidStatus: invalid.status,
+  invalidCode: invalid.failure_code,
+}));
+"""
+    completed = subprocess.run(
+        [
+            str(NODE),
+            "--input-type=module",
+            "-e",
+            script,
+            str(adapter),
+            str(output / "browser-engine-manifest.json"),
+            str(output / "single" / model_path.name),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    result = json.loads(completed.stdout)
+    assert result == {
+        "candidateStatus": "candidate",
+        "activeStatus": "active",
+        "activeModelId": modeled["value_model_asset"]["model_id"],
+        "fallbackStatus": "fallback",
+        "fallbackCode": "browser-value-model-hash-mismatch",
+        "invalidStatus": "fallback",
+        "invalidCode": "browser-value-model-identity-mismatch",
+    }
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is required for browser contract tests")
+def test_browser_worker_probe_exposes_only_verified_model_identity(tmp_path: Path) -> None:
+    (tmp_path / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
+    worker = tmp_path / "browser-engine-worker.mjs"
+    worker.write_bytes((STATIC / "browser-engine-worker.js").read_bytes())
+    (tmp_path / "wasm-kernel-adapter.js").write_text(
+        """
+export async function loadCertifiedBrowserKernel() {
+  return { identity: {
+    source_fingerprint: "aaaaaaaaaaaaaaaa",
+    value_model_status: "active",
+    value_model_active: true,
+    value_model_id: "spc-dtv-11111111111111111111",
+    value_model_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    value_model_variant_id: "spc-dtv-variant-22222222222222222222",
+    value_model_native_source_identity: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    value_model_failure_code: null,
+  } };
+}
+""",
+        encoding="utf-8",
+    )
+    script = r"""
+import { pathToFileURL } from "node:url";
+let handler = null;
+let finish;
+const reply = new Promise((resolve) => { finish = resolve; });
+globalThis.self = {
+  addEventListener(type, callback) { if (type === "message") handler = callback; },
+  postMessage(message) { finish(message); },
+};
+await import(pathToFileURL(process.argv[1]));
+if (!handler) throw new Error("worker did not install its message handler");
+await handler({ data: {
+  id: 7,
+  type: "probe",
+  payload: { expected_source_fingerprint: "aaaaaaaaaaaaaaaa" },
+} });
+process.stdout.write(JSON.stringify(await reply));
+"""
+    completed = subprocess.run(
+        [str(NODE), "--input-type=module", "-e", script, str(worker)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    reply = json.loads(completed.stdout)
+    assert reply["ok"] is True
+    assert reply["payload"]["value_model_status"] == "active"
+    assert reply["payload"]["value_model_id"] == "spc-dtv-" + "1" * 20
+    assert reply["payload"]["value_model_failure_code"] is None
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js is required for browser contract tests")
@@ -622,6 +1054,8 @@ process.stdout.write(JSON.stringify({
   prefixReady: variant.prefix_ready,
   rootReady: variant.root_session_ready,
   mateReady: variant.mate_ready,
+  baselineShapeUnchanged: !Object.hasOwn(variant, "value_model_activation")
+    && !Object.hasOwn(variant.root_session_capability, "value_model_asset"),
   playLimits: variant.root_session_capability.geometry.play_limits,
   missingLimitsRejected,
 }));
@@ -646,6 +1080,7 @@ process.stdout.write(JSON.stringify({
         "prefixReady": True,
         "rootReady": True,
         "mateReady": True,
+        "baselineShapeUnchanged": True,
         "playLimits": {
             "maximum_seconds": 60,
             "default_seconds": 45,
