@@ -37,6 +37,13 @@ extension build recipe requests optimization, but the binary does not attest
 its compiler flags, so the report leaves debug-build status unknown instead of
 claiming it was independently proven.
 
+The harness puts this checkout's `src` directory first for the coordinator and
+every fresh worker process. It rejects a package, model, evaluation module, or
+compiled extension imported from another editable checkout. An extension built
+outside `src` is accepted only when `SPC_BENCHMARK_NATIVE_BUILD_ROOT` names an
+existing build directory inside this same checkout; the resolved paths are
+included in every artifact identity.
+
 ## Native D5 measurements
 
 A functional run while other work is using the machine must be labeled as

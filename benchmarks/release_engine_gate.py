@@ -18,6 +18,15 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
+CHECKOUT_SRC = (ROOT / "src").resolve()
+CHECKOUT_PACKAGE = CHECKOUT_SRC / "scottish_progressive"
+NATIVE_BUILD_ROOT_ENV = "SPC_BENCHMARK_NATIVE_BUILD_ROOT"
+
+# The benchmark may run through a shared virtual environment with an editable
+# install pointing at another worktree. Put this checkout ahead of site-packages
+# before any engine module can be imported.
+sys.path.insert(0, str(CHECKOUT_SRC))
+
 DEFAULT_BROWSER_MANIFEST = (
     ROOT
     / "src"
@@ -206,14 +215,54 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _checkout_module_path(module: Any, label: str) -> Path:
+    raw_path = getattr(module, "__file__", None)
+    _require(isinstance(raw_path, str) and bool(raw_path), f"{label} module has no file path")
+    path = Path(raw_path).resolve()
+    _require(path.is_file(), f"{label} module file is missing: {path}")
+    _require(
+        _path_is_within(path, CHECKOUT_PACKAGE),
+        f"{label} module is outside the benchmark checkout: {path}",
+    )
+    return path
+
+
+def _native_extension_roots() -> tuple[Path, ...]:
+    roots = [CHECKOUT_SRC]
+    raw_build_root = os.environ.get(NATIVE_BUILD_ROOT_ENV)
+    if raw_build_root:
+        build_root = Path(raw_build_root).resolve()
+        _require(build_root.is_dir(), f"{NATIVE_BUILD_ROOT_ENV} is not a directory")
+        _require(
+            _path_is_within(build_root, ROOT),
+            f"{NATIVE_BUILD_ROOT_ENV} must name a checkout-local build path",
+        )
+        roots.append(build_root)
+    return tuple(roots)
+
+
 def native_runtime_identity() -> dict[str, Any]:
     """Returns a source-matched CPython engine identity or fails closed."""
 
-    from scottish_progressive import evaluation
-    from scottish_progressive.model import (
-        ENGINE_SOURCE_FINGERPRINT,
-        ENGINE_VERSION,
-        RULESET_VERSION,
+    import scottish_progressive as package
+    from scottish_progressive import evaluation, model
+
+    package_path = _checkout_module_path(package, "package")
+    evaluation_path = _checkout_module_path(evaluation, "evaluation")
+    model_path = _checkout_module_path(model, "model")
+    package_search_paths = tuple(Path(value).resolve() for value in package.__path__)
+    _require(
+        bool(package_search_paths)
+        and all(_path_is_within(value, CHECKOUT_PACKAGE) for value in package_search_paths),
+        f"package search path is outside the benchmark checkout: {package_search_paths}",
     )
 
     native = evaluation._native_eval  # noqa: SLF001 - provenance gate
@@ -225,15 +274,28 @@ def native_runtime_identity() -> dict[str, Any]:
     module_path = Path(str(getattr(native, "__file__", ""))).resolve()
     _require(module_path.is_file(), "native engine module file is missing")
     _require(module_path.suffix.lower() in {".pyd", ".so"}, "native backend is not a compiled extension")
+    extension_roots = _native_extension_roots()
+    _require(
+        any(_path_is_within(module_path, root) for root in extension_roots),
+        f"compiled extension is outside the benchmark checkout: {module_path}",
+    )
     return {
         "backend": "native-cpython",
-        "engine_version": ENGINE_VERSION,
-        "ruleset_version": RULESET_VERSION,
-        "source_fingerprint": ENGINE_SOURCE_FINGERPRINT,
+        "engine_version": model.ENGINE_VERSION,
+        "ruleset_version": model.RULESET_VERSION,
+        "source_fingerprint": model.ENGINE_SOURCE_FINGERPRINT,
         "source_identity": actual,
         "expected_source_identity": expected,
+        "checkout_root": str(ROOT),
+        "checkout_src": str(CHECKOUT_SRC),
+        "package_file": str(package_path),
+        "package_search_paths": [str(value) for value in package_search_paths],
+        "evaluation_file": str(evaluation_path),
+        "model_file": str(model_path),
         "module_filename": module_path.name,
+        "module_path": str(module_path),
         "module_sha256": _file_sha256(module_path),
+        "allowed_extension_roots": [str(value) for value in extension_roots],
     }
 
 
@@ -440,6 +502,13 @@ def run_native_suite(
     for repetition in range(samples):
         order = ordered if repetition % 2 == 0 else tuple(reversed(ordered))
         for scenario, mode in order:
+            worker_environment = os.environ.copy()
+            inherited_python_path = worker_environment.get("PYTHONPATH")
+            worker_environment["PYTHONPATH"] = os.pathsep.join(
+                value
+                for value in (str(CHECKOUT_SRC), inherited_python_path)
+                if value
+            )
             completed = subprocess.run(
                 [
                     sys.executable,
@@ -455,7 +524,8 @@ def run_native_suite(
                 check=True,
                 capture_output=True,
                 text=True,
-                env=os.environ.copy(),
+                cwd=ROOT,
+                env=worker_environment,
             )
             sample = json.loads(completed.stdout)
             sample["repetition"] = repetition
