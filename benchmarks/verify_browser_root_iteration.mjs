@@ -1355,7 +1355,7 @@ async function testCheckedPvHorizonMateRejectsTheProvisionalWinner() {
     && receipt.status === "found"
   ));
   assert(horizonProof, "the selected checked D5 horizon must receive an exact S6 mate probe");
-  assert.equal(horizonProof.call_work_credit, 16_384);
+  assert.equal(horizonProof.call_work_credit, 262_144);
   assert.equal(horizonProof.override_score, -CONFIG.mate_score + 2);
   assert.equal(result.selection_policy_filtered, true);
   assert.equal(result.pv_horizon_line_rejections, 1);

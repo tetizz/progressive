@@ -8,7 +8,7 @@
   const UCI_MOVE = /^[a-h][1-8][a-h][1-8][qrbn]?$/;
   const MATE_SCORE = 1_000_000;
   const MAX_LOCAL_DEPTH = 5;
-  const PV_HORIZON_MATE_WORK_LIMIT = 16_384;
+  const PV_HORIZON_MATE_WORK_LIMIT = 262_144;
   const ASPIRATION_INITIAL_DELTA = 2_048;
   const MAX_ASPIRATION_ATTEMPTS = 4;
   const ROOT_TACTICAL_POLICY = "canonical-boundary-policy-v1";

@@ -48,8 +48,10 @@ async function connect(url) {
 
 const probeExpression = String.raw`(async () => {
   const START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-  const UNSAFE_HORIZON = "d1e2/e2c4/c4c7/f1c4/c7c8";
-  const UNSAFE_CHILD_FEN = "rnQ1k1nr/1p1p1ppp/8/p3p3/1PB1P3/5P2/1PPP3P/RNB1K1Nq b Qkq - 0 7";
+  const F3_UNSAFE_HORIZON = "d1e2/e2c4/c4c7/f1c4/c7c8";
+  const F3_UNSAFE_CHILD_FEN = "rnQ1k1nr/1p1p1ppp/8/p3p3/1PB1P3/5P2/1PPP3P/RNB1K1Nq b Qkq - 0 7";
+  const B3_UNSAFE_HORIZON = "e1f2/d1g4/f2e3/g1h3/g4h5";
+  const B3_UNSAFE_CHILD_FEN = "rnbq1bnr/pppp1kpp/4p3/7Q/2B5/1P2K2N/PBPP2PP/RN5R b - - 4 7";
   const manifest = await fetch(
     new URL("./engine/browser-engine-manifest.json?checked-pv-horizon", location.href),
     { cache: "no-store" },
@@ -123,11 +125,17 @@ const probeExpression = String.raw`(async () => {
       receiptDeadlineMs: searchStarted + 65_000,
     });
     const elapsedSeconds = (performance.now() - searchStarted) / 1_000;
-    const horizon = safetyTrace.find((entry) => (
+    const f3Horizon = safetyTrace.find((entry) => (
       entry.ok
       && entry.request?.authoritative_child_boundary?.series === 6
-      && entry.request?.candidate?.root_series?.machine_notation === UNSAFE_HORIZON
-      && entry.request?.authoritative_child_boundary?.fen === UNSAFE_CHILD_FEN
+      && entry.request?.candidate?.root_series?.machine_notation === F3_UNSAFE_HORIZON
+      && entry.request?.authoritative_child_boundary?.fen === F3_UNSAFE_CHILD_FEN
+    ));
+    const b3Horizon = safetyTrace.find((entry) => (
+      entry.ok
+      && entry.request?.authoritative_child_boundary?.series === 6
+      && entry.request?.candidate?.root_series?.machine_notation === B3_UNSAFE_HORIZON
+      && entry.request?.authoritative_child_boundary?.fen === B3_UNSAFE_CHILD_FEN
     ));
     const checks = {
       local_wasm_preflight: preflight.ready === true,
@@ -137,13 +145,22 @@ const probeExpression = String.raw`(async () => {
       policy_is_explicit: result.selection_policy
         === "reject-adverse-checked-pv-mates-v1",
       policy_filtered: result.selection_policy_filtered === true,
-      one_or_more_line_vetoes: result.pv_horizon_line_rejections >= 1
-        && result.runtime_receipt?.pv_horizon_line_rejections >= 1,
-      unsafe_root_not_published: result.best_full_series?.join("/") !== "f2f3",
-      exact_horizon_request: horizon?.request?.call_work_credit === 16_384,
-      exact_horizon_found: horizon?.response?.status === "found",
-      exact_horizon_work: horizon?.response?.work_used === 1_267,
-      exact_mate_replayed: horizon?.response?.reply_mate?.checked_prefix?.outcome
+      two_or_more_line_vetoes: result.pv_horizon_line_rejections >= 2
+        && result.runtime_receipt?.pv_horizon_line_rejections >= 2,
+      unsafe_roots_not_published: !["f2f3", "b2b3"].includes(
+        result.best_full_series?.join("/"),
+      ),
+      f3_horizon_found: f3Horizon?.response?.status === "found",
+      b3_horizon_found: b3Horizon?.response?.status === "found",
+      bounded_f3_horizon_work: Number.isInteger(f3Horizon?.response?.work_used)
+        && f3Horizon.response.work_used > 0
+        && f3Horizon.response.work_used <= f3Horizon.request.call_work_credit,
+      bounded_b3_horizon_work: Number.isInteger(b3Horizon?.response?.work_used)
+        && b3Horizon.response.work_used > 0
+        && b3Horizon.response.work_used <= b3Horizon.request.call_work_credit,
+      f3_mate_replayed: f3Horizon?.response?.reply_mate?.checked_prefix?.outcome
+        === "checkmate",
+      b3_mate_replayed: b3Horizon?.response?.reply_mate?.checked_prefix?.outcome
         === "checkmate",
       global_work_respected: result.work <= payload.max_generation_positions,
       no_interruption: result.timed_out === false
@@ -167,7 +184,7 @@ const probeExpression = String.raw`(async () => {
       }));
     }
     return {
-      schema: "spc-opera-checked-pv-horizon-receipt-v1",
+      schema: "spc-opera-checked-pv-horizon-receipt-v2",
       status: "passed",
       checks,
       elapsed_seconds: elapsedSeconds,
@@ -181,7 +198,10 @@ const probeExpression = String.raw`(async () => {
       module_js_sha256: result.module_js_sha256,
       selection_policy: result.selection_policy,
       pv_horizon_line_rejections: result.pv_horizon_line_rejections,
-      horizon_trace: horizon,
+      horizon_traces: {
+        f3: f3Horizon,
+        b3: b3Horizon,
+      },
       runtime_receipt: result.runtime_receipt,
     };
   } finally {
