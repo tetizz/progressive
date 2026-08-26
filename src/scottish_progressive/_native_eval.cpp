@@ -296,7 +296,15 @@ public:
         return data();
     }
 
+    [[nodiscard]] Move* begin() noexcept {
+        return data();
+    }
+
     [[nodiscard]] const Move* end() const noexcept {
+        return data() + size_;
+    }
+
+    [[nodiscard]] Move* end() noexcept {
         return data() + size_;
     }
 
@@ -305,6 +313,12 @@ public:
     }
 
 private:
+    [[nodiscard]] Move* data() noexcept {
+        return size_ <= INLINE_CAPACITY
+            ? inline_moves_.data()
+            : overflow_moves_.data();
+    }
+
     [[nodiscard]] const Move* data() const noexcept {
         return size_ <= INLINE_CAPACITY
             ? inline_moves_.data()
@@ -2929,11 +2943,27 @@ std::vector<ExpandedMove> expand_legal_move_variants(
     const std::vector<int>& ep_targets
 ) {
     std::vector<ExpandedMove> legal;
-    const MoveList moves = pseudo_moves(position, ep_targets);
+    MoveList moves = pseudo_moves(position, ep_targets);
+    const auto move_key = [](const Move& move) noexcept {
+        return legal_move_uci_key(LegalMove{
+            move.from,
+            move.to,
+            move.promotion,
+            move.required_ep_square,
+        });
+    };
+    std::sort(
+        moves.begin(),
+        moves.end(),
+        [&move_key](const Move& left, const Move& right) {
+            return move_key(left) < move_key(right);
+        }
+    );
     legal.reserve(moves.size());
     const bool mover = position.white_to_move;
     const Bitboard enemy = position.occupied[(!mover) ? 1 : 0];
     const Position evaluation = evaluation_position(position);
+    std::optional<std::uint16_t> previous_legal_key;
     for (const Move& move : moves) {
         BoardState child = apply_move(position, move);
         const Bitboard own_king = child.kings
@@ -2948,6 +2978,11 @@ std::vector<ExpandedMove> expand_legal_move_variants(
         ) {
             continue;
         }
+        const std::uint16_t key = move_key(move);
+        if (previous_legal_key == key) {
+            continue;
+        }
+        previous_legal_key = key;
         const int moving_piece = piece_type_at(evaluation, move.from);
         const bool en_passant = move.required_ep_square >= 0
             && moving_piece == PAWN
@@ -2976,25 +3011,6 @@ std::vector<ExpandedMove> expand_legal_move_variants(
             delivered_check,
         });
     }
-    std::sort(
-        legal.begin(),
-        legal.end(),
-        [](const ExpandedMove& left, const ExpandedMove& right) {
-            return legal_move_uci_key(left.move)
-                < legal_move_uci_key(right.move);
-        }
-    );
-    legal.erase(
-        std::unique(
-            legal.begin(),
-            legal.end(),
-            [](const ExpandedMove& left, const ExpandedMove& right) {
-                return legal_move_uci_key(left.move)
-                    == legal_move_uci_key(right.move);
-            }
-        ),
-        legal.end()
-    );
     return legal;
 }
 

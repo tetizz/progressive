@@ -269,6 +269,29 @@ def test_native_compact_move_path_preserves_inline_fallback_and_uci_order() -> N
     )
 
 
+def test_native_move_sort_preserves_overflow_legality_and_uci_order() -> None:
+    native = _require_native_complete_series()
+    state = ProgressiveState.from_fen(
+        "R6R/1P2rP2/3B4/1N1N4/3P4/4Q3/PPP1K3/k7 w - - 0 1",
+        1,
+    )
+    pseudo_legal = tuple(move.uci() for move in state.board.pseudo_legal_moves)
+    expected = tuple(sorted(move.uci() for move in state.board.legal_moves))
+
+    assert len(pseudo_legal) == 84
+    assert len(expected) == 70
+    assert "e3a3" in pseudo_legal
+    assert "e3a3" not in expected
+
+    status, message, _stats, raw_series = _direct_bulk_call(
+        native,
+        state,
+        max_frontier_states=None,
+    )
+    assert status == 0, message
+    assert tuple(item[0][0] for item in raw_series) == expected
+
+
 def test_bulk_complete_series_matches_python_rules_and_structured_ordering(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
