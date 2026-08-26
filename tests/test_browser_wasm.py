@@ -48,6 +48,20 @@ def test_engine_source_fingerprint_is_line_ending_stable(tmp_path: Path) -> None
     assert builder.engine_source_fingerprint(package) == lf_fingerprint
 
 
+def test_native_source_identity_is_line_ending_stable(tmp_path: Path) -> None:
+    builder = _load_bundle_builder()
+    package = tmp_path / "package"
+    package.mkdir()
+    for filename in builder.NATIVE_SOURCE_FILES:
+        (package / filename).write_bytes(b"first\nsecond\n")
+    lf_identity = builder.native_source_identity(package)
+
+    for filename in builder.NATIVE_SOURCE_FILES:
+        (package / filename).write_bytes(b"first\r\nsecond\r\n")
+
+    assert builder.native_source_identity(package) == lf_identity
+
+
 def _certificate(
     builder,
     *,

@@ -232,7 +232,12 @@ def native_source_identity(package: Path) -> str:
     try:
         for filename in NATIVE_SOURCE_FILES:
             digest.update(filename.encode("utf-8"))
-            digest.update((package / filename).read_bytes())
+            digest.update(
+                (package / filename)
+                .read_bytes()
+                .replace(b"\r\n", b"\n")
+                .replace(b"\r", b"\n")
+            )
     except OSError as error:
         raise ValueError(
             f"could not bind deep-teacher native source identity: {error}"

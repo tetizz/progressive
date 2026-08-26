@@ -26,7 +26,12 @@ def _native_mate_source_identity() -> str | None:
     try:
         for filename in _NATIVE_MATE_SOURCE_FILES:
             digest.update(filename.encode("utf-8"))
-            digest.update((package / filename).read_bytes())
+            digest.update(
+                (package / filename)
+                .read_bytes()
+                .replace(b"\r\n", b"\n")
+                .replace(b"\r", b"\n")
+            )
     except OSError:
         return None
     return digest.hexdigest()

@@ -25,7 +25,7 @@ NATIVE_SOURCE_HASHES = {
     "native_eval.hpp": "85b426f8f868def00dea0d7a7f6f9d048d9836cde1018dc1ae0d61e33c25ac5f",
 }
 NATIVE_IDENTITY = (
-    "515f49aa565b7dd634b2601f6dceb2cd3cf6507a488eb5e0aac72aed1df54259"
+    "a9f3db86eec9e618d7f3cc5c4c90cda6bd20a669c3cb3d0c05fc297e2941cbea"
 )
 NATIVE_SURFACE = {
     "SOURCE_IDENTITY",
@@ -59,6 +59,32 @@ NATIVE_SURFACE = {
     "teacher_value_features_v3",
     "teacher_value_features_v3_with_receipt",
 }
+
+
+def test_native_source_identities_are_line_ending_stable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = tmp_path / "scottish_progressive"
+    package.mkdir()
+    monkeypatch.setattr(evaluation, "__file__", str(package / "evaluation.py"))
+    monkeypatch.setattr(series_mate, "__file__", str(package / "series_mate.py"))
+    filenames = {
+        *evaluation._NATIVE_SOURCE_FILES,  # noqa: SLF001
+        *series_mate._NATIVE_MATE_SOURCE_FILES,  # noqa: SLF001
+    }
+    for filename in filenames:
+        (package / filename).write_bytes(b"first\nsecond\n")
+    lf_eval = evaluation._native_source_identity()  # noqa: SLF001
+    lf_mate = series_mate._native_mate_source_identity()  # noqa: SLF001
+
+    for filename in filenames:
+        (package / filename).write_bytes(b"first\r\nsecond\r\n")
+
+    assert evaluation._native_source_identity() == lf_eval  # noqa: SLF001
+    assert series_mate._native_mate_source_identity() == lf_mate  # noqa: SLF001
+
+
 LIVE_S5_HISTORY = (
     ("e2e4",),
     ("f7f6", "e8f7"),

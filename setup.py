@@ -26,10 +26,19 @@ NATIVE_SOURCE_FILES = (
 NATIVE_MATE_SOURCE_FILES = ("_native_mate.cpp",)
 
 
-def engine_source_fingerprint(package: Path) -> str:
-    digest = hashlib.sha256()
+def normalized_source_bytes(path: Path) -> bytes:
+    """Read text-like source bytes with platform line endings canonicalized."""
+
     carriage_return = bytes((13,))
     line_feed = bytes((10,))
+    return path.read_bytes().replace(
+        carriage_return + line_feed,
+        line_feed,
+    ).replace(carriage_return, line_feed)
+
+
+def engine_source_fingerprint(package: Path) -> str:
+    digest = hashlib.sha256()
     paths = (
         path
         for pattern in ("*.py", "*.cpp", "*.hpp", "*.h")
@@ -37,11 +46,7 @@ def engine_source_fingerprint(package: Path) -> str:
     )
     for path in sorted(paths, key=lambda item: item.relative_to(package).as_posix()):
         digest.update(path.relative_to(package).as_posix().encode("utf-8"))
-        normalized = path.read_bytes().replace(
-            carriage_return + line_feed,
-            line_feed,
-        ).replace(carriage_return, line_feed)
-        digest.update(normalized)
+        digest.update(normalized_source_bytes(path))
     return digest.hexdigest()[:16]
 
 
@@ -52,7 +57,7 @@ def native_source_identity(package: Path) -> str:
     for filename in NATIVE_SOURCE_FILES:
         path = package / filename
         digest.update(filename.encode("utf-8"))
-        digest.update(path.read_bytes())
+        digest.update(normalized_source_bytes(path))
     return digest.hexdigest()
 
 
@@ -63,7 +68,7 @@ def native_mate_source_identity(package: Path) -> str:
     for filename in NATIVE_MATE_SOURCE_FILES:
         path = package / filename
         digest.update(filename.encode("utf-8"))
-        digest.update(path.read_bytes())
+        digest.update(normalized_source_bytes(path))
     return digest.hexdigest()
 
 
