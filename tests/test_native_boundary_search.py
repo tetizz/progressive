@@ -569,7 +569,7 @@ def test_v08_wide_s5_screen_matches_n2_result_and_all_work_fields(
     assert accelerated == legacy
     assert legacy[0]
     assert legacy[1] == "c3d5/d3e4/d5f4/e4h7/h7g6"
-    assert legacy[2]["root_safety_screen_positions"] == 75_245
+    assert legacy[2]["root_safety_screen_positions"] == 71_587
 
 
 def test_v08_wide_s6_screen_matches_n2_result_and_all_work_fields(
@@ -591,7 +591,7 @@ def test_v08_wide_s6_screen_matches_n2_result_and_all_work_fields(
     assert accelerated == legacy
     assert legacy[0]
     assert legacy[1] == "a7a5/a5a4/e7e5/d8h4/f8c5/c5f2"
-    assert legacy[2]["root_safety_screen_positions"] == 118_763
+    assert legacy[2]["root_safety_screen_positions"] == 103_661
 
 
 def test_v08_wide_screen_with_deadline_does_not_run_untimed_fallback(

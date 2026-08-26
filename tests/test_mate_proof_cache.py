@@ -350,7 +350,7 @@ def test_live_s5_found_restarts_into_zero_solver_work(tmp_path: Path) -> None:
     assert first.stats.native_series_mate_calls == 1
     assert first.stats.native_series_mate_found == 1
     first_work = first.stats.work_positions
-    assert first_work == 14_909
+    assert first_work == 14_615
 
     restarted_cache = MateProofCache(path)
     second = SeriesSearcher(

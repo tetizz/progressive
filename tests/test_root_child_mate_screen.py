@@ -340,7 +340,7 @@ def test_adaptive_early_s5_screen_rejects_the_second_live_loss() -> None:
     assert searcher.stats.native_series_mate_positions == 207
     assert searcher.stats.native_series_mate_edges == 8_471
     assert searcher.stats.root_safety_screen_stages == 1
-    assert searcher.stats.work_positions == 14_909
+    assert searcher.stats.work_positions == 14_615
     assert searcher.stats.work_positions < 81_476 // 2
 
 
@@ -1387,7 +1387,7 @@ def test_hosted_depth_two_selects_a_screened_reply_to_the_second_live_loss() -> 
     assert result.best_series.moves != LIVE_LOSS_S4
     assert result.completed_depth == 2
     assert result.score == -673
-    assert result.stats.work_positions == 1_702_771
+    assert result.stats.work_positions == 1_697_471
     assert result.stats.root_safety_passes == 2
     assert result.stats.root_safety_retries == 0
     assert result.stats.root_safety_screen_calls == 2
@@ -1556,8 +1556,8 @@ def test_ordinary_opening_screen_is_staged_and_keeps_the_canonical_result(
             play_series(ProgressiveState.initial(), ("e2e4",)).final_state,
             ("d7d5", "d5e4"),
             530,
-            40_442,
-            16_560,
+            40_171,
+            16_552,
             15_978,
         ),
     ),
@@ -1649,7 +1649,7 @@ def test_root_tactical_protection_keeps_depth_three_opening_result() -> None:
     assert result.best_series.moves == ("e2e4",)
     assert result.score == 530
     assert result.completed_depth == 3
-    assert result.stats.work_positions == 161_605
+    assert result.stats.work_positions == 161_007
     assert result.stats.root_pvs_zero_window_searches > 0
     assert result.stats.native_series_mate_calls == 2
     assert result.stats.native_series_mate_exhausted == 2
@@ -1710,7 +1710,7 @@ def test_website_depth_four_selects_stronger_safe_root_tactical_line() -> None:
     assert not result.exact_width
     assert result.stats.tactical_frontier_states_retained > 0
     assert result.stats.tactical_frontier_reserve_drops > 0
-    assert result.stats.work_positions == 7_288_723
+    assert result.stats.work_positions == 6_716_498
 
     prior = analyze(
         root,
@@ -1847,11 +1847,11 @@ def test_s7_cap32_misses_terminal_mate_that_cap832_ranks_first() -> None:
     wide_retained = wide._ordered_generated(S7_STATE, ply_from_root=1)
 
     assert target not in {candidate.moves for candidate in narrow_retained}
-    assert narrow.stats.work_positions == 7_502
+    assert narrow.stats.work_positions == 7_198
     assert wide_retained[0].moves == target
     assert wide_retained[0].outcome == Outcome.CHECKMATE
     assert wide_retained[0].ended_by_check
-    assert wide.stats.work_positions == 41_923
+    assert wide.stats.work_positions == 38_462
 
 
 def test_hosted_s7_widens_all_mating_cap32_and_plays_the_root_mate() -> None:
@@ -1905,7 +1905,7 @@ def test_hosted_s7_widens_all_mating_cap32_and_plays_the_root_mate() -> None:
     assert result.stats.root_safety_screen_positions < 1_000_000
     assert result.stats.root_safety_all_mating_widenings == 1
     assert result.stats.root_safety_widened_candidates == 832
-    assert result.stats.root_safety_widening_positions == 41_923
+    assert result.stats.root_safety_widening_positions == 38_462
     assert result.stats.root_safety_widened_terminal_mates == 1
     assert result.stats.root_safety_widened_exact_children == 0
     assert result.stats.work_positions < 1_000_000

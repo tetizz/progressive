@@ -120,7 +120,7 @@ const probeExpression = String.raw`(async () => {
       staged_root_line: Array.isArray(result.best_full_series)
         && result.best_full_series.join("/")
           === "d2c3/e1e2/g1f3/f3g5/h1d1/g5e6/d1d8",
-      exact_accelerated_work: Number(rescue?.work_used) === 48_777,
+      exact_accelerated_work: Number(rescue?.work_used) === 45_694,
       total_work_matches_rescue: Number(result.work) === Number(rescue?.work_used),
       sub_ten_seconds: elapsedSeconds < 10,
       within_global_work: Number(result.work) <= payload.max_generation_positions,

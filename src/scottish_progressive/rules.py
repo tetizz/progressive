@@ -1708,11 +1708,11 @@ def generate_series(
             def inspect_frontier(
                 board: chess.Board,
             ) -> tuple[int, tuple[TacticalOpportunity, ...]]:
-                key = (
-                    _board_position_key(board),
-                    board.halfmove_clock,
-                    board.fullmove_number,
-                )
+                # Frontier inspection evaluates only board geometry: material,
+                # attacks, legal checks/mates, captures, and promotions. Move
+                # clocks affect boundary adjudication, but not this ordering
+                # score, so clock-distinct transpositions can share it exactly.
+                key = _board_position_key(board)
                 cached = cached_frontier_inspections.get(key)
                 if cached is not None:
                     return cached

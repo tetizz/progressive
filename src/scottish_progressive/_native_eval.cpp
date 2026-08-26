@@ -3167,8 +3167,6 @@ struct CompleteIdentity {
 
 struct FrontierScoreIdentity {
     BoardIdentity board;
-    std::int64_t halfmove_clock;
-    std::int64_t fullmove_number;
 
     bool operator==(const FrontierScoreIdentity&) const = default;
 };
@@ -3216,8 +3214,6 @@ struct FrontierScoreIdentityHash {
             hash_word(seed, word);
         }
         hash_word(seed, key.board.white_to_move ? 1 : 0);
-        hash_word(seed, static_cast<std::uint64_t>(key.halfmove_clock));
-        hash_word(seed, static_cast<std::uint64_t>(key.fullmove_number));
         return seed;
     }
 };
@@ -3686,8 +3682,6 @@ bool frontier_score(
     }
     const FrontierScoreIdentity key{
         board_identity(state.board),
-        state.halfmove_clock,
-        state.fullmove_number,
     };
     const auto cached = context.frontier_score_cache.find(key);
     if (cached != context.frontier_score_cache.end()) {
@@ -3758,8 +3752,6 @@ bool order_frontier(
             const auto& item = frontier[index];
             const FrontierScoreIdentity identity{
                 board_identity(item.board),
-                item.halfmove_clock,
-                item.fullmove_number,
             };
             const auto cached = context.frontier_score_cache.find(identity);
             if (cached != context.frontier_score_cache.end()) {
@@ -4397,8 +4389,6 @@ bool bound_frontier(
                 item.tactical_provenance;
             const FrontierScoreIdentity identity{
                 board_identity(item.board),
-                item.halfmove_clock,
-                item.fullmove_number,
             };
             const auto inspected = context.frontier_score_cache.find(identity);
             if (inspected == context.frontier_score_cache.end()) {

@@ -428,10 +428,10 @@ def test_bulk_complete_series_matches_python_rules_and_structured_ordering(
     assert black_clock_result.final_state.board.halfmove_clock == 9
     assert black_clock_result.final_state.board.fullmove_number == 13
     assert black_clock_result.final_state.quiet_series == 9
-    # This S4 frontier revisits board layouts at different move clocks. The
-    # Python FEN-keyed scorer treats those as distinct work, so the native
-    # cache must carry clocks rather than collapsing them by board identity.
-    assert generated_stats["clock-cache-revisit"].frontier_score_positions == 84
+    # This S4 frontier revisits identical board layouts at different move
+    # clocks. Frontier inspection depends only on board geometry, so Python
+    # and native must share those exact scores without re-inspecting clocks.
+    assert generated_stats["clock-cache-revisit"].frontier_score_positions == 60
 
 
 def test_bulk_forced_countercheck_and_required_prefix_merge(

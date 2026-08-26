@@ -590,7 +590,7 @@ def test_wide_frontier_scoring_cannot_overshoot_combined_work_cap() -> None:
         SearchLimits(
             depth_series=1,
             max_series_per_node=64,
-            max_generation_positions=1_697,
+            max_generation_positions=1_652,
         ),
     )
 
@@ -610,9 +610,9 @@ def test_wide_frontier_scoring_cannot_overshoot_combined_work_cap() -> None:
     assert not result.root_scores_complete
     assert result.stats.frontier_prunes > 0
     assert result.stats.peak_frontier_states > 64
-    assert result.stats.work_positions == 1_697
-    assert result.stats.series_generation_positions == 203
-    assert result.stats.frontier_score_positions == 1_493
+    assert result.stats.work_positions == 1_652
+    assert result.stats.series_generation_positions == 199
+    assert result.stats.frontier_score_positions == 1_452
     assert result.stats.static_evaluation_positions == 1
     assert result.stats.evaluation_reach_positions == 0
     assert result.stats.quiet_adjudication_positions == 0
@@ -652,10 +652,10 @@ def test_iterative_deepening_reuses_bounded_complete_series_frontier() -> None:
     # expensive series-four frontier. Generate it once, then reuse it twice.
     assert result.stats.series_generation_cache_hits == 2
     assert result.stats.series_generation_positions == 200
-    assert result.stats.frontier_score_positions == 1_493
+    assert result.stats.frontier_score_positions == 1_452
     assert result.stats.static_evaluation_positions == 1
     assert result.stats.evaluation_reach_positions == 0
-    assert result.stats.generation_positions == 1_694
+    assert result.stats.generation_positions == 1_653
     assert result.stats.series_generation_cache_peak <= (
         SERIES_GENERATION_CACHE_CAPACITY
     )

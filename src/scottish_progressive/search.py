@@ -65,8 +65,10 @@ QUIET_ADJUDICATION_POSITION_LIMIT = 4_096
 # Complete progressive series are far costlier to generate than orthodox
 # single moves. Iterative deepening revisits the same boundary frontiers, but
 # retaining every frontier would multiply memory across league workers. Bound
-# reuse by the number of retained SeriesResult objects, not by node count.
-SERIES_GENERATION_CACHE_CAPACITY = 16_384
+# reuse by the number of retained SeriesResult objects, not by node count. The
+# 65K ceiling matches the certified desktop browser geometry and removes D4
+# LRU churn without increasing the retained search width.
+SERIES_GENERATION_CACHE_CAPACITY = 65_536
 # Best-only play may otherwise accept a root series whose opponent reply mate
 # was discarded by the ordinary width-32 child beam. This second screen is
 # deliberately much wider and globally bounded. It is invoked only after a

@@ -1850,7 +1850,7 @@ def test_deep_losing_scout_stops_after_mover_mate_proves_upper_bound() -> None:
     assert scout.score == -MATE_SCORE + 4
     assert scout.child_principal_variation == ()
     assert scout.proof_bounds == (-1, 1)
-    assert scout.work.call_native_work == 16_273
+    assert scout.work.call_native_work == 15_316
     assert scout.tt_writes_rolled_back > 0
 
 
@@ -1897,7 +1897,7 @@ def test_proof_only_hint_cannot_escape_root_candidate_pv() -> None:
     assert seeded.principal_variation == deepened.principal_variation == (
         candidate.series,
     )
-    assert seeded.work.call_native_work == 16_273
+    assert seeded.work.call_native_work == 15_316
     assert deepened.work.call_native_work == 0
 
 
@@ -1911,7 +1911,7 @@ def test_proof_only_hint_cannot_escape_root_candidate_pv() -> None:
             1,
             MATE_SCORE - 1,
             (1, 1),
-            152,
+            134,
         ),
         (
             "6K1/1q6/8/8/8/3k4/8/8 b - - 0 1",
@@ -1920,7 +1920,7 @@ def test_proof_only_hint_cannot_escape_root_candidate_pv() -> None:
             0,
             -MATE_SCORE + 1,
             (-1, -1),
-            988,
+            789,
         ),
     ),
 )
@@ -2036,7 +2036,7 @@ def test_mover_mate_bound_reconstructs_canonical_full_window_pv() -> None:
             1,
             MATE_SCORE - 1,
             (1, 1),
-            152,
+            134,
         ),
         (
             "6K1/1q6/8/8/8/3k4/8/8 b - - 0 1",
@@ -2045,7 +2045,7 @@ def test_mover_mate_bound_reconstructs_canonical_full_window_pv() -> None:
             0,
             -MATE_SCORE + 1,
             (-1, -1),
-            988,
+            789,
         ),
     ),
 )
@@ -2203,7 +2203,7 @@ def test_mover_mate_exit_preserves_capped_parallel_search_result() -> None:
             _session(
                 width=8,
                 depth=5,
-                max_work=4_596,
+                max_work=4_523,
                 native_threads=native_threads,
                 root_tactical_protection=True,
             ).search(
@@ -2226,13 +2226,13 @@ def test_mover_mate_exit_preserves_capped_parallel_search_result() -> None:
     ) == ("c3f6", "f8g8/b5b3", "f6f5/f5c2/c2b3")
     assert not serial.evaluation_work_limit_reached
     stats = dict(zip(SUBTREE_STAT_FIELDS, serial.stats, strict=True))
-    assert stats["generation_positions"] == 4_596
+    assert stats["generation_positions"] == 4_523
     assert stats["generation_work_limit_hits"] == 0
 
     one_below = _session(
         width=8,
         depth=5,
-        max_work=4_595,
+        max_work=4_522,
         native_threads=1,
         root_tactical_protection=True,
     ).search(
@@ -2250,7 +2250,7 @@ def test_mover_mate_exit_preserves_capped_parallel_search_result() -> None:
     one_below_stats = dict(
         zip(SUBTREE_STAT_FIELDS, one_below.stats, strict=True)
     )
-    assert one_below_stats["generation_positions"] == 4_595
+    assert one_below_stats["generation_positions"] == 4_522
     assert one_below_stats["generation_work_limit_hits"] == 1
 
 

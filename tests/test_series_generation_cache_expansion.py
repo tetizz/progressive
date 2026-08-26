@@ -177,5 +177,5 @@ def test_interrupted_pvs_rolls_back_tt_but_keeps_only_complete_exact_cache(
     assert replayed.final_state.pfen == concrete.final_state.pfen
 
 
-def test_production_capacity_is_bounded_at_sixteen_thousand_series() -> None:
-    assert search_module.SERIES_GENERATION_CACHE_CAPACITY == 16_384
+def test_production_capacity_matches_desktop_browser_geometry() -> None:
+    assert search_module.SERIES_GENERATION_CACHE_CAPACITY == 65_536
