@@ -1,0 +1,135 @@
+{
+  "schema": "spc-cycle8-one-shot-result-v1",
+  "protocol": {
+    "path": "benchmarks/protocols/cycle8-one-shot-2026-08-26-v1.json",
+    "carrier_commit": "31a021fe4d6b306762b80b54caf93493c585305a",
+    "sha256": "d524352b3b5516e43a444961160115c164acefb3417c5dda1c3be6e565c8723d",
+    "engine_source_fingerprint": "e685c5a994c5d145"
+  },
+  "claim_scope": "One-shot state-disjoint teacher-ranking evidence only; no paired playing-strength or Stockfish-level claim.",
+  "corpora": {
+    "train_trajectory_sha256": "43b286b3120c928d6d1a4e6d0161da3b1e0e79210437b234d66e03c345011cf9",
+    "sealed_holdout_trajectory_sha256": "3dba2a9d229b8c2e91cb56ede9d12562f789e0c7dd9ad2b3de36f7647e951ef7",
+    "mixed_teacher_raw_sha256": "bec2fbc76dd707e1f0f9fff6c8c555552c5da7e547fc9306208cbfbf1e4b8281",
+    "mixed_teacher_semantic_sha256": "23e541fc08cffd75d26ad26c96d3576d49e318153d074e60d4aa170ec6929e78",
+    "train_artifact_raw_sha256": "4ba2b9805f4717b9f74d4dbf68c21d290cb4baf28e5d72022a278bd7a774e873",
+    "sealed_holdout_artifact_raw_sha256": "48e6d035f8b3376ac466eb12984ca487a0ef6d6a14af3eecc608442475acb2d7",
+    "train_labels": 128,
+    "holdout_labels": 64,
+    "semantic_overlap_counts": {
+      "train_root_to_holdout_root": 0,
+      "train_final_to_holdout_final": 0,
+      "train_final_to_holdout_root": 0,
+      "holdout_final_to_train_root": 0
+    },
+    "promotion_eligible_data_contract": true
+  },
+  "teacher_artifacts": {
+    "quiet_depth2_raw_sha256": "e991d17fedbb857dcb63ff15e514b001c987eff6643d5d01569afcf25b76d676",
+    "quiet_depth2_semantic_sha256": "182bbfed25f66a6efd68f7568d08bdc80ee064b594450766fd593fa160b2bef8",
+    "tactical_depth3_raw_sha256": "6c753fe00c02077267a6d13fec0684393cf7c15217c14c7c636690a79d30ef7f",
+    "tactical_depth3_semantic_sha256": "2219a130f8aa3c8239b7ceb7ac5736f87d7e07ea28b53f0db0494aea47dec80e"
+  },
+  "frozen_candidates": {
+    "primary_nonroute": {
+      "model_id": "spc-dtv-26bb95f2481b3859afdf",
+      "sha256": "2ce475e6f48826f3d18fa7280bf3a7432c2c00870eee6ebe6e95b9b847510183"
+    },
+    "route_ablation": {
+      "model_id": "spc-dtv-981c5bb8b323734d06ad",
+      "sha256": "30f98505068c40d6d878f443764f26b4138c615efb773b8813079ae4d2e5da80"
+    },
+    "distilled_seven_weight": {
+      "profile_id": "spc-14b82d09c72036a6",
+      "sha256": "2f060c849b16d46a313f2f6dc6b14ff5700bb13511709f4310815e8c7f5befd0",
+      "weights": [126, 104, 100, 75, 28, 73, 123]
+    }
+  },
+  "train_metrics": {
+    "baseline": {
+      "normalized_regret": 0.0823484375,
+      "gap_weighted_pairwise_accuracy": 0.7609546465099645,
+      "chosen_proven_adverse": 10
+    },
+    "rejected_development_leader": {
+      "normalized_regret": 0.1233515625,
+      "gap_weighted_pairwise_accuracy": 0.7506154121964914,
+      "chosen_proven_adverse": 15
+    },
+    "primary_nonroute": {
+      "normalized_regret": 0.086796875,
+      "gap_weighted_pairwise_accuracy": 0.7992979432264616,
+      "chosen_proven_adverse": 9
+    },
+    "route_ablation": {
+      "normalized_regret": 0.0762984375,
+      "gap_weighted_pairwise_accuracy": 0.7998491341457532,
+      "chosen_proven_adverse": 8
+    },
+    "distilled_seven_weight": {
+      "normalized_regret": 0.0556421875,
+      "gap_weighted_pairwise_accuracy": 0.7863506170502622,
+      "chosen_proven_adverse": 7
+    }
+  },
+  "one_shot_holdout_metrics": {
+    "baseline": {
+      "normalized_regret": 0.0908375,
+      "gap_weighted_pairwise_accuracy": 0.7401558088836789,
+      "chosen_proven_adverse": 5
+    },
+    "rejected_development_leader": {
+      "normalized_regret": 0.055578125,
+      "gap_weighted_pairwise_accuracy": 0.733769924646025,
+      "chosen_proven_adverse": 2
+    },
+    "primary_nonroute": {
+      "normalized_regret": 0.063103125,
+      "gap_weighted_pairwise_accuracy": 0.748352931991757,
+      "chosen_proven_adverse": 2
+    },
+    "route_ablation": {
+      "normalized_regret": 0.043521875,
+      "gap_weighted_pairwise_accuracy": 0.747891657448856,
+      "chosen_proven_adverse": 1
+    },
+    "distilled_seven_weight": {
+      "normalized_regret": 0.07069375,
+      "gap_weighted_pairwise_accuracy": 0.7591745182512653,
+      "chosen_proven_adverse": 3
+    }
+  },
+  "gates": {
+    "primary_nonroute": {
+      "pairwise_improved_over_both_references": true,
+      "regret_improved_over_both_references": false,
+      "zero_proven_adverse_gate_passed": false,
+      "white_regret_non_regression_passed": false,
+      "passed": false
+    },
+    "route_ablation": {
+      "regret_improved_over_nonroute": true,
+      "pairwise_improved_over_nonroute": false,
+      "zero_proven_adverse_gate_passed": false,
+      "passed": false
+    },
+    "distilled_seven_weight": {
+      "pairwise_improved_over_both_references": true,
+      "regret_improved_over_both_references": false,
+      "zero_proven_adverse_gate_passed": false,
+      "passed": false
+    }
+  },
+  "receipts": {
+    "fit_sha256": "42ec2a38e37cb4497a58df64e311b650a3cedf45c21610e2f39b0fd3ba365bf3",
+    "holdout_claim_sha256": "931b56415a5814834add1417e679d655d2db38ce62d3802b0493205b5fd53ced",
+    "holdout_evaluation_sha256": "75630b70b11af672a1c48b7d3f4a0fd653287aca91f733fca31dd6f6a00715e5"
+  },
+  "verdict": {
+    "promotion_recommended": false,
+    "match_run": false,
+    "deployed": false,
+    "reason": "Every candidate retained at least one proven-adverse holdout selection. The primary and distilled candidates also failed the strict regret gate, and the primary regressed the white-mover stratum.",
+    "next_cycle": "Use stronger exact targets and proof-safe selection with a newly preregistered independent holdout; never reuse this consumed holdout for tuning or a strength claim."
+  }
+}
