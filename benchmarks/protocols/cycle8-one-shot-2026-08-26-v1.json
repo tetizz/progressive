@@ -1,0 +1,186 @@
+{
+  "schema": "spc-cycle8-one-shot-protocol-v1",
+  "status": "pre-registered-before-generation",
+  "purpose": "Leakage-safe proof-aware teacher-ranking experiment; passing is not a Stockfish-level or broad playing-strength claim.",
+  "source": {
+    "base_deployed_commit": "9b58b00217b2c667463908c85ea8fa51130e07c6",
+    "integrated_engine_source_commit": "be1784206f9f34df3e196663886e91377dbc097b",
+    "carrier_commit_note": "The immutable carrier is the commit that first adds this manifest. That commit changes no engine, teacher, evaluator, or profile source.",
+    "engine_version": "spc-0.9.0",
+    "engine_source_fingerprint": "e685c5a994c5d145",
+    "native_eval_source_identity_sha256": "12ad0dcf9aa4b8c585171d1ca82aef0ea9b706ba5759c1cc8f8bc1887274b0f4",
+    "native_mate_source_identity_sha256": "a975a914af7a448785ec4ce3800e5b2c7c07b903af8b76b840a0b8b428062699"
+  },
+  "runtime": {
+    "platform": "Windows x86-64",
+    "python": "3.14",
+    "compiler": "MSVC 19.44.35207",
+    "native_eval_binary_sha256": "d3add515582175e379cfcb687c3aeb41fde2f9e86e346f35d663395c43715845",
+    "native_mate_binary_sha256": "0f821bfcb06ae87e967d687f3fc695e40ecf81ef29df98b415e45109d2246b58"
+  },
+  "frozen_implementation": {
+    "scripts/generate_native_corpus.py": "47f57b7dc52ffa02763b7ac99c28e398f3dd1fa05342cb934fa658fd3bf9a220",
+    "scripts/build_native_teacher_corpus.py": "11a7ff3e543c5785560efe52f654eda3c6ba76cfa440c0721fa89819ae2b5797",
+    "scripts/augment_native_teacher_semantics.py": "a6c180642ab2be4717b58fb91ebaf82fb5b4c1c3a497c1ba41209ec041d24b2e",
+    "scripts/merge_native_teacher_tiers.py": "a4262d95978a2acc46b5c35d1afe812c51ebd93208a28b2c6203c0ccf2e28f54",
+    "scripts/fit_deep_teacher_value.py": "fe80b25a8edeffef3bfb6c309abd0e516531e5ec57af9c788929cbcbbd94ee3f",
+    "src/scottish_progressive/native_teacher.py": "232c2b4fe9be39b6d703400ce75e28c328eb7b87254618901a34c89cac82ce35",
+    "src/scottish_progressive/teacher_value_features.py": "11aa2b09ff57e395f39953d32b35134177488011adb6e9de63cf8b6a4620a056",
+    "feature_contract_sha256": "8038bc6afce04a9a675c72c66e9baa573244acfd1779709b4198c421dcc8a5bd",
+    "selection_contract_sha256": "4e46c835c8b9fc5dab277ec8bdc3790c70942920464b7e2993066ae6b7b113b3",
+    "holdout_gate_ast_sha256": "3c6e16f5130b58289fb0d376519933fe53555abd7ed5071999cb1b32e25353f9"
+  },
+  "profiles": {
+    "ordered_source_schedule": [
+      {
+        "path": "profiles/training/teacher-source-schedule/0-spc-68942034c41b4cc4.json",
+        "profile_id": "spc-68942034c41b4cc4",
+        "sha256": "3b451cb069e1472d7798a7576af514d4a96153ebbcb9362fa61e8ecab68d3ae3"
+      },
+      {
+        "path": "profiles/training/teacher-source-schedule/1-spc-49aa573617f48331.json",
+        "profile_id": "spc-49aa573617f48331",
+        "sha256": "7f0f15837adb0198192603c1270ad76c04444417814d30b94772dd63597cd569"
+      },
+      {
+        "path": "profiles/training/teacher-source-schedule/2-spc-b9e49ec3fadb9b00.json",
+        "profile_id": "spc-b9e49ec3fadb9b00",
+        "sha256": "4b5a4648de7d8d77f185811c87b64ea3cfd6f8829597dda50b203c1da16042d2"
+      },
+      {
+        "path": "profiles/training/teacher-source-schedule/3-spc-71ba893f3efe214e.json",
+        "profile_id": "spc-71ba893f3efe214e",
+        "sha256": "066049a0274a5d412c1bc7174a917411324b5b3f3acc60fe68ab7381fc31932e"
+      }
+    ],
+    "rejected_development_leader": {
+      "path": "profiles/training/native-corpus-development-leader.json",
+      "profile_id": "spc-3a3d3c40405f2d0b",
+      "sha256": "53542074c40b70a286b681288a73d731fc9b8d386f16f9a87c955b31c8539d1b"
+    }
+  },
+  "trajectory_corpora": {
+    "train": {
+      "seed": 20260826081,
+      "attempts": 8192
+    },
+    "sealed_holdout": {
+      "seed": 20260826082,
+      "attempts": 4096,
+      "one_shot": true
+    },
+    "shared_config": {
+      "first_attempt": 0,
+      "shard_size": 1024,
+      "batch_size": 256,
+      "workers": 8,
+      "max_attempt_series": 64,
+      "max_frontier_states": 32,
+      "candidate_count": 16,
+      "max_positions_per_series": 250000,
+      "max_positions_per_game": 10000000,
+      "policy": "uniform",
+      "profile_schedule": "ordered-pair-round-robin"
+    }
+  },
+  "teacher": {
+    "selection_seed": 20260826083,
+    "minimum_series": 4,
+    "maximum_series": 9,
+    "branch_cap": 32,
+    "max_work": 10000000,
+    "hard_negatives": 4,
+    "workers": 8,
+    "prior_receipt_cache_reuse": false,
+    "tiers": {
+      "quiet_depth2": {
+        "target_roots": 144,
+        "train_roots": 96,
+        "holdout_roots": 48,
+        "selection_mode": "quiet-nonterminal",
+        "tactical_gate": "skipped-for-quiet-tier"
+      },
+      "tactical_depth3": {
+        "target_roots": 48,
+        "train_roots": 32,
+        "holdout_roots": 16,
+        "selection_mode": "tactical-low-complexity",
+        "tactical_gate": "required"
+      }
+    },
+    "expected_merged_roots": 192,
+    "expected_merged_train_roots": 128,
+    "expected_merged_holdout_roots": 64
+  },
+  "integrity": {
+    "quarantined_holdout_corpus_sha256": "c889078ca4e54780123b74c4b747cde2e74c2eb7bb12be61e786e3307aabef7f",
+    "quarantine_reason": "Exclusion marker only: an exploratory Stockfish correlation inspected 14 labels from this Cycle 3 artifact. It is not the Cycle 8 holdout and must not be used as one.",
+    "holdout_output_must_not_be_manually_inspected_before_gate": true,
+    "holdout_informed_filtering_forbidden": true,
+    "semantic_key": "progressive_state_dedup_key",
+    "teacher_semantic_hash_contract": "canonical-json-sha256-without-runtime-created-or-raw-artifact-hashes-v1",
+    "required_zero_intersections": [
+      "train roots vs holdout roots",
+      "train option finals vs holdout option finals",
+      "train option finals vs holdout roots",
+      "holdout option finals vs train roots"
+    ],
+    "seed_burn_rule": "Any overlap, source drift, or post-claim failure permanently consumes holdout seed 20260826082."
+  },
+  "one_shot_gates": {
+    "candidate_roles": [
+      "primary_nonroute",
+      "distilled_seven_weight"
+    ],
+    "each_candidate_must": [
+      "have strictly lower normalized regret than baseline and rejected development leader",
+      "have strictly higher gap-weighted pairwise accuracy than baseline and rejected development leader",
+      "select zero proven-adverse options",
+      "not regress white, black, quiet-depth2, or tactical-depth3 regret versus baseline"
+    ],
+    "route_ablation_must": [
+      "strictly lower regret than primary_nonroute",
+      "strictly improve pairwise accuracy over primary_nonroute",
+      "select zero proven-adverse options"
+    ],
+    "post_holdout_required_before_promotion": [
+      "tactical and mate safety",
+      "color symmetry",
+      "Python/native/WASM evaluator parity",
+      "runtime overhead gate",
+      "independent paired match or SPRT against deployed 37937e0 or newer champion"
+    ]
+  },
+  "independent_match": {
+    "claim_scope": "Fixed-suite non-regression only; passing does not establish that the candidate is stronger.",
+    "seed": 20260826084,
+    "opening_suite_version": "spc-league-boundaries-v4",
+    "opening_case_ids": [
+      "after-1-e3",
+      "after-1-g4",
+      "after-1-b4",
+      "after-1-d3",
+      "after-1-d4",
+      "initial",
+      "published-central-pressure",
+      "published-bishop-pressure",
+      "after-1-h3",
+      "after-b1c3-a6-b6"
+    ],
+    "pairs": 10,
+    "depth": 2,
+    "branch_cap": 32,
+    "max_work_positions_per_search": 250000,
+    "max_game_work_positions": 5000000,
+    "workers": 8,
+    "minimum_game_score_rate": 0.5,
+    "minimum_pair_score_rate": 0.5,
+    "zero_incomplete_games": true,
+    "zero_incomplete_pairs": true,
+    "zero_technical_failures": true
+  },
+  "preflight": {
+    "holdout_consumed": false,
+    "generation_started": false
+  }
+}
