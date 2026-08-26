@@ -26,6 +26,9 @@ constexpr std::array<int, 2> UNKNOWN_PROOF_BOUNDS{-1, 1};
 constexpr std::int64_t TACTICAL_DESCENDANT_PROMOTION_MAX_PLY = 2;
 constexpr std::int64_t ROOT_TACTICAL_PROTECTION_MIN_SERIES = 5;
 constexpr std::uint64_t MAX_TERMINAL_MATE_SCAN_WIDTH = 832;
+constexpr std::size_t MAX_HORIZON_PROOF_SETS = 256;
+static_assert(MAX_HORIZON_PROOF_SETS <= 256);
+static_assert(RETAINED_ROOT_MAX_HORIZON_PROOFS <= 16);
 constexpr std::int64_t DEEP_TEACHER_MATE_SCORE = 1'000'000;
 constexpr std::int64_t DEEP_TEACHER_SCORE_LIMIT =
     DEEP_TEACHER_MATE_SCORE - 10'000 - 1;
@@ -380,6 +383,33 @@ void append_text_field(std::string& target, const std::string& value) {
     return result;
 }
 
+[[nodiscard]] std::string horizon_proof_identity_impl(
+    const RetainedRootHorizonProof& proof
+) {
+    std::string result = "spc-horizon-proof-v1|path";
+    result += std::to_string(proof.rooted_path.size());
+    result.push_back(':');
+    for (const CompleteSeriesCandidate& series : proof.rooted_path) {
+        append_text_field(result, candidate_identity_impl(series));
+    }
+    result += "|mate";
+    append_text_field(result, candidate_identity_impl(proof.mate_reply));
+    return result;
+}
+
+[[nodiscard]] std::string horizon_proof_set_identity_impl(
+    std::string_view candidate_identity,
+    const std::vector<std::string>& proof_identities
+) {
+    std::string result = "spc-horizon-proof-set-v1|candidate";
+    append_text_field(result, std::string{candidate_identity});
+    result += "|proofs" + std::to_string(proof_identities.size()) + ":";
+    for (const std::string& identity : proof_identities) {
+        append_text_field(result, identity);
+    }
+    return result;
+}
+
 void append_weights(std::string& result, const SubtreeSearchConfig& config) {
     const std::array<std::int64_t, 12> weights = {
         config.fast_weights.material,
@@ -609,6 +639,36 @@ struct ExactStateKey {
     bool operator==(const ExactStateKey&) const = default;
 };
 
+struct ValidatedHorizonProof {
+    ExactStateKey horizon_state;
+    std::int64_t horizon_ply_from_root = 0;
+    std::size_t request_index = 0;
+    CompleteSeriesCandidate mate_reply;
+    std::int64_t score = 0;
+    std::array<int, 2> proof_bounds = UNKNOWN_PROOF_BOUNDS;
+    std::string identity;
+};
+
+struct ValidatedHorizonProofSet {
+    std::uint64_t namespace_id = 0;
+    std::string identity;
+    std::vector<ValidatedHorizonProof> proofs;
+};
+
+[[nodiscard]] bool same_validated_horizon_proof(
+    const ValidatedHorizonProof& left,
+    const ValidatedHorizonProof& right
+) noexcept {
+    return left.horizon_state == right.horizon_state
+        && left.horizon_ply_from_root == right.horizon_ply_from_root
+        && left.score == right.score
+        && left.proof_bounds == right.proof_bounds
+        && left.identity == right.identity
+        && left.mate_reply.path.transposition_count
+            == right.mate_reply.path.transposition_count
+        && same_replayed_candidate(left.mate_reply, right.mate_reply);
+}
+
 struct TTKey {
     ExactStateKey state;
     // Selective frontier policy and mate-distance scores are root-ply
@@ -654,6 +714,26 @@ static_assert(sizeof(TTKey) == 144);
         | static_cast<std::uint64_t>(root_tactical_protection);
 }
 
+[[nodiscard]] constexpr std::uint64_t pack_tt_context(
+    std::int64_t ply_from_root,
+    bool root_tactical_protection,
+    std::uint64_t proof_set_namespace
+) noexcept {
+    const std::uint64_t ordinary = pack_tt_ply_and_tactical(
+        ply_from_root,
+        root_tactical_protection
+    );
+    if (proof_set_namespace == 0) {
+        // Namespace zero preserves the original context bits exactly.
+        return ordinary;
+    }
+    constexpr std::uint64_t PROOF_MARKER = std::uint64_t{1} << 63;
+    constexpr int PROOF_NAMESPACE_SHIFT = 55;
+    return PROOF_MARKER
+        | ((proof_set_namespace - 1) << PROOF_NAMESPACE_SHIFT)
+        | ordinary;
+}
+
 struct PositionKeyHash {
     std::size_t operator()(const PositionKey& key) const noexcept {
         std::size_t seed = 0;
@@ -681,18 +761,23 @@ struct ExactStateKeyHash {
 [[nodiscard]] TTKey tt_key(
     ExactStateKey state,
     std::int64_t ply_from_root,
-    bool root_tactical_protection
+    bool root_tactical_protection,
+    std::uint64_t proof_set_namespace = 0
 ) noexcept {
     std::size_t seed = ExactStateKeyHash{}(state);
     // Preserve the original hash sequence exactly so bucket and direct-map
     // placement do not change.
     hash_word(seed, static_cast<std::uint64_t>(ply_from_root));
     hash_word(seed, root_tactical_protection ? 1 : 0);
+    if (proof_set_namespace != 0) {
+        hash_word(seed, proof_set_namespace);
+    }
     return TTKey{
         std::move(state),
-        pack_tt_ply_and_tactical(
+        pack_tt_context(
             ply_from_root,
-            root_tactical_protection
+            root_tactical_protection,
+            proof_set_namespace
         ),
         seed,
     };
@@ -1051,6 +1136,10 @@ public:
     std::uint64_t root_call_work_start = 0;
     std::uint64_t tt_entries_peak = 0;
     std::uint64_t eval_entries_peak = 0;
+    std::vector<ValidatedHorizonProofSet> horizon_proof_sets;
+    const ValidatedHorizonProofSet* active_horizon_proof_set = nullptr;
+    std::uint64_t active_horizon_proof_hits = 0;
+    std::uint16_t active_horizon_proof_hit_mask = 0;
 
     std::unordered_map<TTKey, TTEntry, TTKeyHash> tt;
     // Transactional PVS probes roll their TT writes back, but a legal series
@@ -1332,6 +1421,9 @@ public:
         retained_root_candidates.clear();
         retained_width_complete = false;
         retained_root_tactical_protection.reset();
+        active_horizon_proof_set = nullptr;
+        active_horizon_proof_hits = 0;
+        active_horizon_proof_hit_mask = 0;
     }
 
     [[nodiscard]] RetainedRootCandidate make_root_candidate(
@@ -1717,6 +1809,270 @@ public:
             );
         }
         return std::move(response.series.front());
+    }
+
+    [[nodiscard]] const ValidatedHorizonProofSet*
+    validate_and_intern_horizon_proof_set(
+        const RetainedRootCandidateRequest& request,
+        const RetainedRootCandidate& retained_candidate
+    ) {
+        if (request.horizon_proofs.empty()) {
+            return nullptr;
+        }
+        if (
+            !retained_root_state.has_value()
+            || request.horizon_proofs.size()
+                > RETAINED_ROOT_MAX_HORIZON_PROOFS
+            || request.tt_persistence != SubtreeTTPersistence::Commit
+            || request.alpha != -config.mate_score * 2
+            || request.beta != config.mate_score * 2
+            || retained_candidate.terminal_score.has_value()
+        ) {
+            throw StopSearch(
+                SubtreeSearchStatus::Unsupported,
+                "native horizon proof re-search request is invalid"
+            );
+        }
+
+        std::vector<ValidatedHorizonProof> validated;
+        validated.reserve(request.horizon_proofs.size());
+        for (std::size_t proof_index = 0;
+             proof_index < request.horizon_proofs.size();
+             ++proof_index) {
+            const RetainedRootHorizonProof& supplied =
+                request.horizon_proofs[proof_index];
+            check_deadline();
+            if (
+                supplied.rooted_path.size()
+                    != static_cast<std::size_t>(request.child_depth + 1)
+                || supplied.rooted_path.empty()
+                || supplied.rooted_path.size()
+                    > RETAINED_ROOT_MAX_HORIZON_PROOF_PATH
+                || supplied.mate_reply.path.transposition_count != 1
+            ) {
+                throw StopSearch(
+                    SubtreeSearchStatus::Unsupported,
+                    "native horizon proof path depth is invalid"
+                );
+            }
+
+            SubtreeState cursor = *retained_root_state;
+            RetainedRootHorizonProof canonical;
+            canonical.rooted_path.reserve(supplied.rooted_path.size());
+            for (std::size_t index = 0;
+                 index < supplied.rooted_path.size();
+                 ++index) {
+                const CompleteSeriesCandidate& path_series =
+                    supplied.rooted_path[index];
+                CompleteSeriesCandidate replayed = replay_imported_candidate(
+                    cursor,
+                    path_series
+                );
+                replayed.path.transposition_count =
+                    path_series.path.transposition_count;
+                if (
+                    replayed.outcome != CompleteSeriesOutcome::None
+                    || (
+                        index == 0
+                        && (
+                            !same_replayed_candidate(
+                                replayed,
+                                retained_candidate.series
+                            )
+                            || replayed.path.transposition_count
+                                != retained_candidate.series.path
+                                    .transposition_count
+                        )
+                    )
+                ) {
+                    throw StopSearch(
+                        SubtreeSearchStatus::Unsupported,
+                        "native horizon proof is not rooted at the selected candidate"
+                    );
+                }
+                cursor = child_state(replayed);
+                canonical.rooted_path.push_back(std::move(replayed));
+            }
+
+            const std::int64_t horizon_ply = static_cast<std::int64_t>(
+                canonical.rooted_path.size()
+            );
+            const std::int64_t mate_ply = horizon_ply + 1;
+            if (
+                !canonical.rooted_path.back().ended_by_check
+                || !is_in_check(cursor.board)
+                || cursor.board.white_to_move
+                    == retained_root_state->board.white_to_move
+                || mate_ply % 2 != 0
+            ) {
+                throw StopSearch(
+                    SubtreeSearchStatus::Unsupported,
+                    "native horizon proof boundary is not an adverse checked horizon"
+                );
+            }
+
+            canonical.mate_reply = replay_imported_candidate(
+                cursor,
+                supplied.mate_reply
+            );
+            // Mate search proves one exact reply path; unlike full series
+            // enumeration it has no transposition multiplicity to preserve.
+            canonical.mate_reply.path.transposition_count = 1;
+            if (
+                canonical.mate_reply.outcome
+                    != CompleteSeriesOutcome::Checkmate
+                || !canonical.mate_reply.ended_by_check
+            ) {
+                throw StopSearch(
+                    SubtreeSearchStatus::Unsupported,
+                    "native horizon proof reply is not checkmate"
+                );
+            }
+            const auto score = terminal_score(
+                canonical.mate_reply,
+                cursor.board.white_to_move,
+                mate_ply,
+                config.mate_score
+            );
+            const bool root_mover = retained_root_state->board.white_to_move;
+            if (
+                !score.has_value()
+                || (root_mover == WHITE ? *score >= 0 : *score <= 0)
+            ) {
+                throw StopSearch(
+                    SubtreeSearchStatus::Unsupported,
+                    "native horizon proof mate is not adverse to the root mover"
+                );
+            }
+
+            const std::string identity = horizon_proof_identity_impl(canonical);
+            const ExactStateKey horizon_state = exact_key(cursor);
+            const std::array<int, 2> proof_bounds = terminal_proof_bounds(
+                canonical.mate_reply,
+                cursor.board.white_to_move
+            );
+            validated.push_back(ValidatedHorizonProof{
+                horizon_state,
+                horizon_ply,
+                proof_index,
+                std::move(canonical.mate_reply),
+                *score,
+                proof_bounds,
+                identity,
+            });
+        }
+
+        std::sort(
+            validated.begin(),
+            validated.end(),
+            [](const ValidatedHorizonProof& left,
+               const ValidatedHorizonProof& right) {
+                return left.identity < right.identity;
+            }
+        );
+        std::vector<std::string> identities;
+        identities.reserve(validated.size());
+        for (std::size_t index = 0; index < validated.size(); ++index) {
+            const ValidatedHorizonProof& proof = validated[index];
+            if (index > 0 && validated[index - 1].identity == proof.identity) {
+                throw StopSearch(
+                    SubtreeSearchStatus::Unsupported,
+                    "native horizon proofs duplicate an identity"
+                );
+            }
+            if (std::any_of(
+                    validated.begin(),
+                    validated.begin() + static_cast<std::ptrdiff_t>(index),
+                    [&proof](const ValidatedHorizonProof& prior) {
+                        return prior.horizon_ply_from_root
+                                == proof.horizon_ply_from_root
+                            && prior.horizon_state == proof.horizon_state;
+                    }
+                )) {
+                throw StopSearch(
+                    SubtreeSearchStatus::Unsupported,
+                    "native horizon proofs duplicate an exact leaf"
+                );
+            }
+            identities.push_back(proof.identity);
+        }
+
+        const std::string set_identity = horizon_proof_set_identity_impl(
+            retained_candidate.candidate_identity,
+            identities
+        );
+        const auto existing = std::find_if(
+            horizon_proof_sets.begin(),
+            horizon_proof_sets.end(),
+            [&set_identity](const ValidatedHorizonProofSet& item) {
+                return item.identity == set_identity;
+            }
+        );
+        if (existing != horizon_proof_sets.end()) {
+            const bool exact_match = existing->proofs.size() == validated.size()
+                && std::equal(
+                    existing->proofs.begin(),
+                    existing->proofs.end(),
+                    validated.begin(),
+                    same_validated_horizon_proof
+                );
+            if (!exact_match) {
+                throw std::logic_error(
+                    "native horizon proof identity collision"
+                );
+            }
+            for (std::size_t index = 0; index < validated.size(); ++index) {
+                existing->proofs[index].request_index =
+                    validated[index].request_index;
+            }
+            return &*existing;
+        }
+        if (horizon_proof_sets.size() >= MAX_HORIZON_PROOF_SETS) {
+            throw StopSearch(
+                SubtreeSearchStatus::Unsupported,
+                "native horizon proof-set capacity reached"
+            );
+        }
+        horizon_proof_sets.push_back(ValidatedHorizonProofSet{
+            static_cast<std::uint64_t>(horizon_proof_sets.size() + 1),
+            set_identity,
+            std::move(validated),
+        });
+        return &horizon_proof_sets.back();
+    }
+
+    void activate_horizon_proof_set(
+        const ValidatedHorizonProofSet* proof_set
+    ) noexcept {
+        active_horizon_proof_set = proof_set;
+        active_horizon_proof_hits = 0;
+        active_horizon_proof_hit_mask = 0;
+    }
+
+    [[nodiscard]] const ValidatedHorizonProof* active_horizon_proof(
+        const SubtreeState& state,
+        std::int64_t ply_from_root
+    ) noexcept {
+        if (active_horizon_proof_set == nullptr) {
+            return nullptr;
+        }
+        const ExactStateKey state_key = exact_key(state);
+        const auto found = std::find_if(
+            active_horizon_proof_set->proofs.begin(),
+            active_horizon_proof_set->proofs.end(),
+            [&state_key, ply_from_root](const ValidatedHorizonProof& proof) {
+                return proof.horizon_ply_from_root == ply_from_root
+                    && proof.horizon_state == state_key;
+            }
+        );
+        if (found == active_horizon_proof_set->proofs.end()) {
+            return nullptr;
+        }
+        ++active_horizon_proof_hits;
+        active_horizon_proof_hit_mask |= static_cast<std::uint16_t>(
+            std::uint16_t{1} << found->request_index
+        );
+        return &*found;
     }
 
     [[nodiscard]] static std::optional<std::size_t> preferred_index(
@@ -2139,6 +2495,17 @@ public:
             );
         }
         if (depth == 0) {
+            if (const auto* proof = active_horizon_proof(
+                    state,
+                    ply_from_root
+                )) {
+                return NodeResult{
+                    proof->score,
+                    {proof->mate_reply},
+                    proof->proof_bounds,
+                    true,
+                };
+            }
             const LeafEvaluation leaf = evaluate(state);
             if (leaf.tactical_unstable) {
                 return tactical_leaf_extension(
@@ -2155,7 +2522,10 @@ public:
         const TTKey key = tt_key(
             exact_key(state),
             ply_from_root,
-            descendant_tactical_protection()
+            descendant_tactical_protection(),
+            active_horizon_proof_set == nullptr
+                ? 0
+                : active_horizon_proof_set->namespace_id
         );
         auto entry = tt.find(key);
         const bool had_entry = entry != tt.end();
@@ -2556,6 +2926,7 @@ SubtreeSearchResult SubtreeSearchSession::search(
             || depth > impl_->config.requested_depth
             || alpha >= beta
             || ply_from_root < 0
+            || ply_from_root > impl_->config.requested_depth + 1
         ) {
             throw StopSearch(
                 SubtreeSearchStatus::Unsupported,
@@ -2905,6 +3276,7 @@ SubtreeSearchSession::search_retained_root_candidate(
     result.enumeration_identity = request.enumeration_identity;
     result.candidate_identity = request.candidate_identity;
     bool transaction_open = false;
+    impl_->activate_horizon_proof_set(nullptr);
     try {
         impl_->configure_root_contract_call(
             request.external_work,
@@ -2947,6 +3319,8 @@ SubtreeSearchSession::search_retained_root_candidate(
         }
         result.order_index = found->order_index;
         result.root_series = found->series;
+        const ValidatedHorizonProofSet* horizon_proof_set =
+            impl_->validate_and_intern_horizon_proof_set(request, *found);
         if (found->terminal_score.has_value()) {
             result.terminal = true;
             result.bound = SubtreeBoundKind::Exact;
@@ -2959,6 +3333,7 @@ SubtreeSearchSession::search_retained_root_candidate(
             }
             NodeResult node;
             try {
+                impl_->activate_horizon_proof_set(horizon_proof_set);
                 node = impl_->minimax(
                     child_state(found->series),
                     request.child_depth,
@@ -2967,6 +3342,7 @@ SubtreeSearchSession::search_retained_root_candidate(
                     1
                 );
             } catch (...) {
+                impl_->activate_horizon_proof_set(nullptr);
                 if (transaction_open) {
                     result.tt_writes_rolled_back =
                         impl_->rollback_transaction();
@@ -2974,6 +3350,11 @@ SubtreeSearchSession::search_retained_root_candidate(
                 }
                 throw;
             }
+            const std::uint64_t horizon_proof_hits =
+                impl_->active_horizon_proof_hits;
+            const std::uint16_t horizon_proof_hit_mask =
+                impl_->active_horizon_proof_hit_mask;
+            impl_->activate_horizon_proof_set(nullptr);
             if (transaction_open) {
                 result.tt_writes_rolled_back = impl_->rollback_transaction();
                 transaction_open = false;
@@ -2981,6 +3362,15 @@ SubtreeSearchSession::search_retained_root_candidate(
             result.score = node.score;
             result.child_principal_variation = std::move(node.pv);
             result.proof_bounds = node.proof_bounds;
+            if (horizon_proof_set != nullptr) {
+                result.horizon_proof_set_identity =
+                    horizon_proof_set->identity;
+                result.horizon_proofs_validated = static_cast<std::uint64_t>(
+                    horizon_proof_set->proofs.size()
+                );
+                result.horizon_proof_hits = horizon_proof_hits;
+                result.horizon_proof_hit_mask = horizon_proof_hit_mask;
+            }
             result.bound = node.score <= request.alpha
                 ? SubtreeBoundKind::Upper
                 : node.score >= request.beta
@@ -2988,6 +3378,7 @@ SubtreeSearchSession::search_retained_root_candidate(
                     : SubtreeBoundKind::Exact;
         }
     } catch (const StopSearch& stopped) {
+        impl_->activate_horizon_proof_set(nullptr);
         if (transaction_open) {
             result.tt_writes_rolled_back = impl_->rollback_transaction();
         }
@@ -2995,6 +3386,10 @@ SubtreeSearchSession::search_retained_root_candidate(
         result.message = stopped.message;
         result.bound = SubtreeBoundKind::Unknown;
         result.child_principal_variation.clear();
+        result.horizon_proof_set_identity.clear();
+        result.horizon_proofs_validated = 0;
+        result.horizon_proof_hits = 0;
+        result.horizon_proof_hit_mask = 0;
     }
     result.work = work_receipt(
         before,

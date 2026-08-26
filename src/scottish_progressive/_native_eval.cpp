@@ -8646,6 +8646,235 @@ bool parse_retained_root_candidates(
     return true;
 }
 
+bool parse_horizon_proof_series(
+    PyObject* object,
+    spc::native::CompleteSeriesCandidate& candidate
+) {
+    if (!PyTuple_CheckExact(object)) {
+        PyErr_SetString(
+            PyExc_TypeError,
+            "horizon proof series must be an exact tuple"
+        );
+        return false;
+    }
+    PyObject* sequence = PySequence_Fast(
+        object,
+        "horizon proof series must contain five fields"
+    );
+    if (sequence == nullptr) {
+        return false;
+    }
+    if (PySequence_Fast_GET_SIZE(sequence) != 5) {
+        Py_DECREF(sequence);
+        PyErr_SetString(
+            PyExc_ValueError,
+            "horizon proof series must contain five fields"
+        );
+        return false;
+    }
+    PyObject* moves_object = PySequence_Fast_GET_ITEM(sequence, 0);
+    PyObject* state_object = PySequence_Fast_GET_ITEM(sequence, 2);
+    if (!PyTuple_CheckExact(moves_object) || !PyTuple_CheckExact(state_object)) {
+        Py_DECREF(sequence);
+        PyErr_SetString(
+            PyExc_TypeError,
+            "horizon proof moves and state must be exact tuples"
+        );
+        return false;
+    }
+    std::vector<std::string> moves;
+    const bool parsed_moves = parse_string_sequence(
+        moves_object,
+        moves,
+        "horizon proof moves must be strings"
+    );
+    const unsigned long long count = PyLong_AsUnsignedLongLong(
+        PySequence_Fast_GET_ITEM(sequence, 1)
+    );
+    spc::native::SubtreeState state;
+    const bool parsed_state = parse_subtree_state(
+        state_object,
+        state
+    );
+    const long outcome = PyLong_AsLong(PySequence_Fast_GET_ITEM(sequence, 3));
+    const int ended = PyObject_IsTrue(PySequence_Fast_GET_ITEM(sequence, 4));
+    if (
+        !parsed_moves
+        || !parsed_state
+        || ended < 0
+        || (count == static_cast<unsigned long long>(-1) && PyErr_Occurred())
+        || (outcome == -1 && PyErr_Occurred())
+    ) {
+        Py_DECREF(sequence);
+        return false;
+    }
+    if (
+        moves.empty()
+        || count == 0
+        || outcome < 0
+        || outcome > static_cast<long>(
+            spc::native::CompleteSeriesOutcome::TenSeriesDraw
+        )
+    ) {
+        Py_DECREF(sequence);
+        PyErr_SetString(PyExc_ValueError, "horizon proof series is invalid");
+        return false;
+    }
+    try {
+        candidate = spc::native::CompleteSeriesCandidate{
+            {std::move(moves), static_cast<std::uint64_t>(count)},
+            state.board,
+            state.halfmove_clock,
+            state.fullmove_number,
+            state.series_number,
+            state.quiet_series,
+            std::move(state.ep_targets),
+            static_cast<spc::native::CompleteSeriesOutcome>(outcome),
+            ended != 0,
+        };
+    } catch (const std::bad_alloc&) {
+        Py_DECREF(sequence);
+        PyErr_NoMemory();
+        return false;
+    }
+    Py_DECREF(sequence);
+    return true;
+}
+
+bool parse_horizon_proofs(
+    PyObject* object,
+    std::vector<spc::native::RetainedRootHorizonProof>& proofs
+) {
+    if (!PyTuple_CheckExact(object)) {
+        PyErr_SetString(
+            PyExc_TypeError,
+            "horizon proofs must be an exact tuple"
+        );
+        return false;
+    }
+    PyObject* sequence = PySequence_Fast(
+        object,
+        "horizon proofs must be an iterable"
+    );
+    if (sequence == nullptr) {
+        return false;
+    }
+    try {
+        proofs.clear();
+        const Py_ssize_t size = PySequence_Fast_GET_SIZE(sequence);
+        if (
+            size > static_cast<Py_ssize_t>(
+                spc::native::RETAINED_ROOT_MAX_HORIZON_PROOFS
+            )
+        ) {
+            Py_DECREF(sequence);
+            PyErr_SetString(
+                PyExc_ValueError,
+                "horizon proof count exceeds sixteen"
+            );
+            return false;
+        }
+        proofs.reserve(static_cast<std::size_t>(size));
+        for (Py_ssize_t index = 0; index < size; ++index) {
+            PyObject* proof_object = PySequence_Fast_GET_ITEM(sequence, index);
+            if (!PyTuple_CheckExact(proof_object)) {
+                Py_DECREF(sequence);
+                PyErr_SetString(
+                    PyExc_TypeError,
+                    "horizon proof must be an exact tuple"
+                );
+                return false;
+            }
+            PyObject* proof_sequence = PySequence_Fast(
+                proof_object,
+                "horizon proof must contain a rooted path and mate reply"
+            );
+            if (proof_sequence == nullptr) {
+                Py_DECREF(sequence);
+                return false;
+            }
+            if (PySequence_Fast_GET_SIZE(proof_sequence) != 2) {
+                Py_DECREF(proof_sequence);
+                Py_DECREF(sequence);
+                PyErr_SetString(
+                    PyExc_ValueError,
+                    "horizon proof must contain two fields"
+                );
+                return false;
+            }
+            PyObject* path_object = PySequence_Fast_GET_ITEM(proof_sequence, 0);
+            if (!PyTuple_CheckExact(path_object)) {
+                Py_DECREF(proof_sequence);
+                Py_DECREF(sequence);
+                PyErr_SetString(
+                    PyExc_TypeError,
+                    "horizon proof path must be an exact tuple"
+                );
+                return false;
+            }
+            PyObject* path_sequence = PySequence_Fast(
+                path_object,
+                "horizon proof path must be an iterable"
+            );
+            if (path_sequence == nullptr) {
+                Py_DECREF(proof_sequence);
+                Py_DECREF(sequence);
+                return false;
+            }
+            spc::native::RetainedRootHorizonProof proof;
+            const Py_ssize_t path_size = PySequence_Fast_GET_SIZE(path_sequence);
+            if (
+                path_size < 1
+                || path_size > static_cast<Py_ssize_t>(
+                    spc::native::RETAINED_ROOT_MAX_HORIZON_PROOF_PATH
+                )
+            ) {
+                Py_DECREF(path_sequence);
+                Py_DECREF(proof_sequence);
+                Py_DECREF(sequence);
+                PyErr_SetString(
+                    PyExc_ValueError,
+                    "horizon proof path length is outside [1, 8]"
+                );
+                return false;
+            }
+            proof.rooted_path.reserve(static_cast<std::size_t>(path_size));
+            for (Py_ssize_t path_index = 0;
+                 path_index < path_size;
+                 ++path_index) {
+                spc::native::CompleteSeriesCandidate series;
+                if (!parse_horizon_proof_series(
+                        PySequence_Fast_GET_ITEM(path_sequence, path_index),
+                        series
+                    )) {
+                    Py_DECREF(path_sequence);
+                    Py_DECREF(proof_sequence);
+                    Py_DECREF(sequence);
+                    return false;
+                }
+                proof.rooted_path.push_back(std::move(series));
+            }
+            Py_DECREF(path_sequence);
+            if (!parse_horizon_proof_series(
+                    PySequence_Fast_GET_ITEM(proof_sequence, 1),
+                    proof.mate_reply
+                )) {
+                Py_DECREF(proof_sequence);
+                Py_DECREF(sequence);
+                return false;
+            }
+            Py_DECREF(proof_sequence);
+            proofs.push_back(std::move(proof));
+        }
+    } catch (const std::bad_alloc&) {
+        Py_DECREF(sequence);
+        PyErr_NoMemory();
+        return false;
+    }
+    Py_DECREF(sequence);
+    return true;
+}
+
 PyObject* retained_root_candidate_result_tuple(
     const spc::native::RetainedRootCandidateResult& response
 ) {
@@ -8700,7 +8929,19 @@ PyObject* retained_root_candidate_result_tuple(
     PyObject* rolled_back = PyLong_FromUnsignedLongLong(
         response.tt_writes_rolled_back
     );
-    const std::array<PyObject*, 15> objects = {
+    PyObject* horizon_identity = PyUnicode_FromString(
+        response.horizon_proof_set_identity.c_str()
+    );
+    PyObject* horizon_validated = PyLong_FromUnsignedLongLong(
+        response.horizon_proofs_validated
+    );
+    PyObject* horizon_hits = PyLong_FromUnsignedLongLong(
+        response.horizon_proof_hits
+    );
+    PyObject* horizon_hit_mask = PyLong_FromUnsignedLong(
+        response.horizon_proof_hit_mask
+    );
+    const std::array<PyObject*, 19> objects = {
         status,
         message,
         enumeration,
@@ -8716,6 +8957,10 @@ PyObject* retained_root_candidate_result_tuple(
         selective,
         evaluation_limit,
         rolled_back,
+        horizon_identity,
+        horizon_validated,
+        horizon_hits,
+        horizon_hit_mask,
     };
     if (std::any_of(objects.begin(), objects.end(), [](PyObject* object) {
             return object == nullptr;
@@ -9160,9 +9405,10 @@ PyObject* py_subtree_search_root_candidate(PyObject*, PyObject* arguments) {
     PyObject* credit_object = nullptr;
     PyObject* remaining_object = nullptr;
     int rollback = 0;
+    PyObject* horizon_proofs_object = nullptr;
     if (!PyArg_ParseTuple(
             arguments,
-            "OOOLLLKOOp:subtree_search_root_candidate",
+            "OOOLLLKOOpO:subtree_search_root_candidate",
             &capsule,
             &enumeration_object,
             &candidate_object,
@@ -9172,7 +9418,8 @@ PyObject* py_subtree_search_root_candidate(PyObject*, PyObject* arguments) {
             &external_work,
             &credit_object,
             &remaining_object,
-            &rollback
+            &rollback,
+            &horizon_proofs_object
         )) {
         return nullptr;
     }
@@ -9196,7 +9443,8 @@ PyObject* py_subtree_search_root_candidate(PyObject*, PyObject* arguments) {
         ? spc::native::SubtreeTTPersistence::Rollback
         : spc::native::SubtreeTTPersistence::Commit;
     if (
-        !parse_optional_u64_credit(
+        !parse_horizon_proofs(horizon_proofs_object, request.horizon_proofs)
+        || !parse_optional_u64_credit(
             credit_object,
             request.call_work_credit
         )

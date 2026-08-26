@@ -24,6 +24,9 @@ _REQUIRED_SYMBOLS = (
     "subtree_search_root_candidate",
 )
 
+NATIVE_MAX_HORIZON_PROOFS = 16
+NATIVE_MAX_HORIZON_PROOF_PATH = 8
+
 SUBTREE_STAT_FIELDS = (
     "nodes",
     "leaf_evaluations",
@@ -215,6 +218,30 @@ class NativeRetainedRootCandidate:
 
 
 @dataclass(frozen=True, slots=True)
+class NativeHorizonProof:
+    """Exact checked-horizon path plus its opponent's mating reply series."""
+
+    rooted_path: tuple[SeriesResult, ...]
+    mate_reply: SeriesResult
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.rooted_path) is not tuple
+            or not self.rooted_path
+            or len(self.rooted_path) > NATIVE_MAX_HORIZON_PROOF_PATH
+            or any(type(item) is not SeriesResult for item in self.rooted_path)
+            or type(self.mate_reply) is not SeriesResult
+        ):
+            raise TypeError("native horizon proof has an invalid series payload")
+
+    def transport(self) -> tuple[object, ...]:
+        return (
+            tuple(_horizon_series_transport(item) for item in self.rooted_path),
+            _horizon_series_transport(self.mate_reply, transposition_count=1),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class NativeRootEnumerationResult:
     status: int
     message: str
@@ -248,6 +275,10 @@ class NativeRootCandidateResult:
     selective: bool
     evaluation_work_limit_reached: bool
     tt_writes_rolled_back: int
+    horizon_proof_set_identity: str
+    horizon_proofs_validated: int
+    horizon_proof_hits: int
+    horizon_proof_hit_mask: int
 
     @property
     def principal_variation(self) -> tuple[SeriesResult, ...]:
@@ -334,6 +365,23 @@ _OUTCOME_BY_CODE = {
     2: Outcome.STALEMATE,
     3: Outcome.TEN_SERIES_DRAW,
 }
+_OUTCOME_CODE = {value: key for key, value in _OUTCOME_BY_CODE.items()}
+
+
+def _horizon_series_transport(
+    series: SeriesResult,
+    *,
+    transposition_count: int | None = None,
+) -> tuple[object, ...]:
+    return (
+        series.moves,
+        series.transposition_count
+        if transposition_count is None
+        else transposition_count,
+        _state_tuple(series.final_state),
+        _OUTCOME_CODE[series.outcome],
+        series.ended_by_check,
+    )
 
 
 def _work_receipt(raw: object) -> NativeSubtreeWorkReceipt:
@@ -677,7 +725,14 @@ class NativeSubtreeSession:
         remaining_nanoseconds: int | None,
         rollback_tt: bool,
         call_work_credit: int | None = None,
+        horizon_proofs: tuple[NativeHorizonProof, ...] = (),
     ) -> NativeRootCandidateResult:
+        if (
+            type(horizon_proofs) is not tuple
+            or len(horizon_proofs) > NATIVE_MAX_HORIZON_PROOFS
+            or any(type(item) is not NativeHorizonProof for item in horizon_proofs)
+        ):
+            raise TypeError("native horizon proofs must be an exact tuple")
         raw = tuple(
             self._native.subtree_search_root_candidate(
                 self._capsule,
@@ -690,9 +745,10 @@ class NativeSubtreeSession:
                 call_work_credit,
                 remaining_nanoseconds,
                 rollback_tt,
+                tuple(item.transport() for item in horizon_proofs),
             )
         )
-        if len(raw) != 15:
+        if len(raw) != 19:
             raise RuntimeError("native retained-root search shape mismatch")
         status = int(raw[0])
         root_state = self._root_states.get(enumeration_identity)
@@ -743,6 +799,10 @@ class NativeSubtreeSession:
             selective=bool(raw[12]),
             evaluation_work_limit_reached=bool(raw[13]),
             tt_writes_rolled_back=int(raw[14]),
+            horizon_proof_set_identity=str(raw[15]),
+            horizon_proofs_validated=int(raw[16]),
+            horizon_proof_hits=int(raw[17]),
+            horizon_proof_hit_mask=int(raw[18]),
         )
         if status == 0 and (
             result.bound is NativeSubtreeBound.UNKNOWN
@@ -753,6 +813,39 @@ class NativeSubtreeSession:
             raise RuntimeError("native retained-root completed result is invalid")
         if status != 0 and result.bound is not NativeSubtreeBound.UNKNOWN:
             raise RuntimeError("failed native retained-root search returned a bound")
+        if (
+            result.horizon_proofs_validated < 0
+            or result.horizon_proof_hits < 0
+            or result.horizon_proof_hit_mask < 0
+            or result.horizon_proof_hit_mask.bit_count()
+                > result.horizon_proof_hits
+            or bool(result.horizon_proof_hit_mask)
+                != bool(result.horizon_proof_hits)
+            or (
+                result.horizon_proof_hit_mask
+                    >= (1 << result.horizon_proofs_validated)
+                if result.horizon_proofs_validated
+                else result.horizon_proof_hit_mask != 0
+            )
+            or (
+                status == 0
+                and (
+                    result.horizon_proofs_validated != len(horizon_proofs)
+                    or bool(result.horizon_proof_set_identity)
+                        != bool(horizon_proofs)
+                )
+            )
+            or (
+                status != 0
+                and (
+                    result.horizon_proof_set_identity
+                    or result.horizon_proofs_validated
+                    or result.horizon_proof_hits
+                    or result.horizon_proof_hit_mask
+                )
+            )
+        ):
+            raise RuntimeError("native retained-root horizon proof receipt is invalid")
         return result
 
     def begin_transaction(self) -> None:

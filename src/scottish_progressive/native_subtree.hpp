@@ -3,6 +3,7 @@
 #include "native_eval.hpp"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -10,6 +11,9 @@
 #include <vector>
 
 namespace spc::native {
+
+inline constexpr std::size_t RETAINED_ROOT_MAX_HORIZON_PROOFS = 16;
+inline constexpr std::size_t RETAINED_ROOT_MAX_HORIZON_PROOF_PATH = 8;
 
 enum class SubtreeSearchStatus : std::uint8_t {
     Complete = 0,
@@ -207,6 +211,14 @@ struct RetainedRootImportRequest {
     std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt;
 };
 
+struct RetainedRootHorizonProof {
+    // The path is rooted at the retained boundary and includes the retained
+    // root series. Its final boundary must be a nonterminal check. mate_reply
+    // is the exact next complete series and must end in checkmate.
+    std::vector<CompleteSeriesCandidate> rooted_path;
+    CompleteSeriesCandidate mate_reply;
+};
+
 struct RetainedRootCandidateRequest {
     std::string enumeration_identity;
     std::string candidate_identity;
@@ -221,6 +233,11 @@ struct RetainedRootCandidateRequest {
     // Rollback makes a scout's TT writes transactional. Generation/evaluation
     // memoization and all work/stat counters remain cumulative and receipted.
     SubtreeTTPersistence tt_persistence = SubtreeTTPersistence::Commit;
+    // Empty preserves the ordinary retained-root search namespace exactly.
+    // Non-empty payloads are authoritatively replayed before a same-depth,
+    // full-window re-search and may substitute only their exact depth-zero
+    // checked boundaries.
+    std::vector<RetainedRootHorizonProof> horizon_proofs;
 };
 
 struct RetainedRootCandidateResult {
@@ -239,6 +256,13 @@ struct RetainedRootCandidateResult {
     bool selective = false;
     bool evaluation_work_limit_reached = false;
     std::uint64_t tt_writes_rolled_back = 0;
+    std::string horizon_proof_set_identity;
+    std::uint64_t horizon_proofs_validated = 0;
+    std::uint64_t horizon_proof_hits = 0;
+    // Bits align to the request's horizon_proofs order even though native
+    // canonicalizes the proof-set identity internally. A warm exact TT reuse
+    // may return zero because no depth-zero proof was revisited.
+    std::uint16_t horizon_proof_hit_mask = 0;
 };
 
 // Returns a collision-free, versioned identity over every field in
