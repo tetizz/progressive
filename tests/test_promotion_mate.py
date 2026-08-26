@@ -121,6 +121,7 @@ def test_promotion_mate_lane_is_deterministic_and_replay_proven(
             + result.stats.promotion_mate_positions
             + result.stats.static_evaluation_positions
             + result.stats.evaluation_reach_positions
+            + result.stats.evaluation_capture_positions
             + result.stats.quiet_adjudication_positions
         )
         search_signatures.append(

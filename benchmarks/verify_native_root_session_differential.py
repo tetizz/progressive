@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 import subprocess
-import sys
 from typing import Any
 
 import chess
@@ -151,16 +151,16 @@ def _session(
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        raise SystemExit(
-            "usage: python verify_native_root_session_differential.py <module.js>"
-        )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("module", type=Path)
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args()
     if not native_subtree_available():
         raise RuntimeError(
             "source-matched Python native extension is unavailable; run "
             "`python setup.py build_ext --inplace` first"
         )
-    module = Path(sys.argv[1]).resolve()
+    module = args.module.resolve()
     completed = subprocess.run(
         [
             "node",
@@ -412,7 +412,11 @@ def main() -> int:
             "depth_2_work": neural_depth_two.work.call_native_work,
         },
     }
-    print(json.dumps(receipt, sort_keys=True))
+    payload = json.dumps(receipt, indent=2, sort_keys=True) + "\n"
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(payload, encoding="utf-8")
+    print(payload, end="")
     return 0
 
 

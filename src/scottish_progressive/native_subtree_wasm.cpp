@@ -1300,8 +1300,12 @@ void write_stats(
            << stats.static_evaluation_positions
            << ",\"evaluation_reach_positions\":"
            << stats.evaluation_reach_positions
+           << ",\"evaluation_capture_positions\":"
+           << stats.evaluation_capture_positions
            << ",\"incomplete_reach_evaluations\":"
            << stats.incomplete_reach_evaluations
+           << ",\"tactical_leaf_extensions\":"
+           << stats.tactical_leaf_extensions
            << ",\"generation_positions\":" << stats.generation_positions
            << ",\"frontier_prunes\":" << stats.frontier_prunes
            << ",\"frontier_states_pruned\":"

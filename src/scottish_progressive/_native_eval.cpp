@@ -56,6 +56,7 @@ constexpr int BISHOP = 3;
 constexpr int ROOK = 4;
 constexpr int QUEEN = 5;
 constexpr int KING = 6;
+constexpr std::uint64_t CAPTURE_REACH_POSITION_LIMIT = 256;
 
 #ifdef SPC_NATIVE_SERIAL_POOL
 class BoundedNativePool {
@@ -1893,7 +1894,14 @@ struct ReachIdentityHash {
     return useful;
 }
 
-[[nodiscard]] int immediately_capturable_material_native(
+struct CaptureReach {
+    int value = 0;
+    Bitboard targets = 0;
+    std::uint64_t positions = 0;
+    bool complete = true;
+};
+
+[[nodiscard]] CaptureReach immediate_capture_reach_native(
     const BoardState& boundary,
     const std::vector<int>& boundary_ep_targets,
     const Position& position
@@ -1939,12 +1947,118 @@ struct ReachIdentityHash {
         }
     }
     int value = 0;
-    while (captured != 0) {
-        const int target = static_cast<int>(std::countr_zero(captured));
-        captured &= captured - 1;
+    Bitboard remaining = captured;
+    while (remaining != 0) {
+        const int target = static_cast<int>(std::countr_zero(remaining));
+        remaining &= remaining - 1;
         value += PIECE_VALUES[piece_type_at(position, target)];
     }
-    return value;
+    return CaptureReach{value, captured, 0, true};
+}
+
+[[nodiscard]] int expanded_capture_target(
+    const BoardState& board,
+    const ExpandedMove& expanded
+) noexcept {
+    if (!expanded.is_capture) {
+        return -1;
+    }
+    const int target = expanded.move.to_square;
+    const Bitboard occupancy = board.occupied[0] | board.occupied[1];
+    if (
+        expanded.move.required_ep_square >= 0
+        && (occupancy & bit(target)) == 0
+    ) {
+        return target + (board.white_to_move == WHITE ? -8 : 8);
+    }
+    return target;
+}
+
+[[nodiscard]] int expanded_capture_value(
+    const BoardState& board,
+    const ExpandedMove& expanded
+) noexcept {
+    const int target = expanded_capture_target(board, expanded);
+    if (target < 0 || target >= 64) {
+        return 0;
+    }
+    return PIECE_VALUES[static_cast<std::size_t>(piece_type_at(
+        evaluation_position(board),
+        target
+    ))];
+}
+
+[[nodiscard]] CaptureReach two_move_capture_reach_native(
+    const BoardState& boundary,
+    const std::vector<int>& ep_targets,
+    std::int64_t series_number,
+    std::uint64_t position_limit
+) {
+    if (series_number < 2) {
+        return {};
+    }
+    const bool mover = boundary.white_to_move;
+    int best = 0;
+    Bitboard targets = 0;
+    const auto first_variants = expand_legal_move_variants(
+        boundary,
+        ep_targets
+    );
+    const std::uint64_t first_count = first_variants.size();
+    if (first_count > position_limit) {
+        return CaptureReach{0, 0, position_limit, false};
+    }
+    std::uint64_t positions = first_count;
+    for (const ExpandedMove& first : first_variants) {
+        if (first.delivered_check) {
+            continue;
+        }
+        BoardState same_mover = first.child;
+        same_mover.white_to_move = mover;
+        const Position child_position = evaluation_position(same_mover);
+        Bitboard child_targets = direct_capture_targets(
+            child_position,
+            same_mover,
+            true
+        );
+        targets |= child_targets;
+        while (child_targets != 0) {
+            const int target = static_cast<int>(
+                std::countr_zero(child_targets)
+            );
+            child_targets &= child_targets - 1;
+            best = std::max(
+                best,
+                PIECE_VALUES[static_cast<std::size_t>(piece_type_at(
+                    child_position,
+                    target
+                ))]
+            );
+        }
+    }
+    return CaptureReach{best, targets, positions, true};
+}
+
+[[nodiscard]] bool promotable_pawn_is_reachable(
+    const Position& position,
+    const BoardState& board,
+    Bitboard targets,
+    std::int64_t series_number
+) noexcept {
+    const bool victim = !board.white_to_move;
+    const Bitboard victim_pawns = position.pawns
+        & position.occupied[victim ? 1 : 0];
+    targets &= victim_pawns;
+    const std::int64_t next_budget = series_number + 1;
+    while (targets != 0) {
+        const int target = static_cast<int>(std::countr_zero(targets));
+        targets &= targets - 1;
+        const int distance = promotion_distance(position, target, victim);
+        if (distance >= 0 && distance <= next_budget) {
+            return true;
+        }
+    }
+    return false;
 }
 
 [[nodiscard]] int reach_value_native(
@@ -2065,6 +2179,34 @@ std::optional<FullEvaluation> full_evaluate(
             return std::nullopt;
         }
     }
+    const CaptureReach immediate_capture = immediate_capture_reach_native(
+        board,
+        ep_targets,
+        position
+    );
+    const bool low_material = std::popcount(
+        position.occupied[0] | position.occupied[1]
+    ) <= 10;
+    const std::uint64_t check_reach_positions = std::min<std::uint64_t>(
+        max_reach_positions,
+        white_reach.nodes + black_reach.nodes
+    );
+    const std::uint64_t capture_remaining = max_reach_positions
+        - check_reach_positions;
+    const std::uint64_t capture_limit =
+        low_material && capture_remaining >= CAPTURE_REACH_POSITION_LIMIT
+            ? CAPTURE_REACH_POSITION_LIMIT
+            : 0;
+    const CaptureReach two_move_capture = low_material
+        ? two_move_capture_reach_native(
+            board,
+            ep_targets,
+            series_number,
+            capture_limit
+        )
+        : CaptureReach{};
+    result.capture_reach_positions = two_move_capture.positions;
+    result.capture_reach_complete = two_move_capture.complete;
     const auto white_promotion = promotion_score(
         position,
         WHITE
@@ -2090,10 +2232,9 @@ std::optional<FullEvaluation> full_evaluate(
     ) {
         return std::nullopt;
     }
-    const int capturable_material = immediately_capturable_material_native(
-        board,
-        ep_targets,
-        position
+    const int capturable_material = std::max(
+        immediate_capture.value,
+        two_move_capture.complete ? two_move_capture.value : 0
     );
     const std::int64_t vulnerability_raw = board.white_to_move == WHITE
         ? capturable_material
@@ -2125,6 +2266,20 @@ std::optional<FullEvaluation> full_evaluate(
     ) {
         return std::nullopt;
     }
+    const Bitboard capture_targets = immediate_capture.targets
+        | two_move_capture.targets;
+    // The two-move vulnerability term already prices ordinary capture
+    // swings. Extend only when a capture route competes with a promotion
+    // corridor, which cannot be combined safely in one static score. Exact
+    // continuation stays in low-material promotion races so ordinary
+    // middlegame leaves do not widen.
+    result.tactical_unstable = low_material
+        && promotable_pawn_is_reachable(
+            position,
+            board,
+            capture_targets,
+            series_number
+        );
 
     const std::array<std::int64_t, 7> terms = {
         result.material,
@@ -2454,27 +2609,6 @@ struct TeacherAttackMaterial {
     return result;
 }
 
-[[nodiscard]] int teacher_capture_value(
-    const BoardState& board,
-    const ExpandedMove& expanded
-) noexcept {
-    if (!expanded.is_capture) {
-        return 0;
-    }
-    const int target = expanded.move.to_square;
-    const Bitboard occupancy = board.occupied[0] | board.occupied[1];
-    if (
-        expanded.move.required_ep_square >= 0
-        && (occupancy & bit(target)) == 0
-    ) {
-        return PIECE_VALUES[PAWN];
-    }
-    return PIECE_VALUES[static_cast<std::size_t>(piece_type_at(
-        evaluation_position(board),
-        target
-    ))];
-}
-
 [[nodiscard]] std::vector<int> teacher_ep_after_move(
     const ExpandedMove& expanded
 ) {
@@ -2514,7 +2648,7 @@ struct TeacherAttackMaterial {
     const auto direct = expand_legal_move_variants(boundary, ep_targets);
     direct_work = direct.size();
     for (const ExpandedMove& first : direct) {
-        const int capture_value = teacher_capture_value(boundary, first);
+        const int capture_value = expanded_capture_value(boundary, first);
         if (capture_value != 0) {
             ++values[0];
             values[1] += capture_value;
@@ -2537,7 +2671,7 @@ struct TeacherAttackMaterial {
         for (const ExpandedMove& reply : second) {
             route_capture = std::max(
                 route_capture,
-                teacher_capture_value(same_mover, reply)
+                expanded_capture_value(same_mover, reply)
             );
             route_has_check = route_has_check || reply.delivered_check;
             route_has_mate = route_has_mate || teacher_delivered_mate(reply);
@@ -7345,7 +7479,7 @@ PyObject* py_full_evaluate(PyObject*, PyObject* arguments) {
         return nullptr;
     }
 
-    PyObject* result = PyTuple_New(13);
+    PyObject* result = PyTuple_New(16);
     if (result == nullptr) {
         return nullptr;
     }
@@ -7382,18 +7516,33 @@ PyObject* py_full_evaluate(PyObject*, PyObject* arguments) {
     PyObject* black_nodes = PyLong_FromUnsignedLongLong(
         evaluated->black_reach.nodes
     );
+    PyObject* capture_positions = PyLong_FromUnsignedLongLong(
+        evaluated->capture_reach_positions
+    );
+    PyObject* capture_complete = PyBool_FromLong(
+        evaluated->capture_reach_complete
+    );
+    PyObject* tactical_unstable = PyBool_FromLong(
+        evaluated->tactical_unstable
+    );
     if (
         white_distance == nullptr
         || black_distance == nullptr
         || reach_complete == nullptr
         || white_nodes == nullptr
         || black_nodes == nullptr
+        || capture_positions == nullptr
+        || capture_complete == nullptr
+        || tactical_unstable == nullptr
     ) {
         Py_XDECREF(white_distance);
         Py_XDECREF(black_distance);
         Py_XDECREF(reach_complete);
         Py_XDECREF(white_nodes);
         Py_XDECREF(black_nodes);
+        Py_XDECREF(capture_positions);
+        Py_XDECREF(capture_complete);
+        Py_XDECREF(tactical_unstable);
         Py_DECREF(result);
         return nullptr;
     }
@@ -7402,6 +7551,9 @@ PyObject* py_full_evaluate(PyObject*, PyObject* arguments) {
     PyTuple_SET_ITEM(result, 10, reach_complete);
     PyTuple_SET_ITEM(result, 11, white_nodes);
     PyTuple_SET_ITEM(result, 12, black_nodes);
+    PyTuple_SET_ITEM(result, 13, capture_positions);
+    PyTuple_SET_ITEM(result, 14, capture_complete);
+    PyTuple_SET_ITEM(result, 15, tactical_unstable);
     return result;
 }
 
@@ -8081,7 +8233,7 @@ PyObject* subtree_state_tuple(const spc::native::SubtreeState& state) {
 }
 
 PyObject* subtree_stats_tuple(const spc::native::SubtreeSearchStats& stats) {
-    const std::array<std::uint64_t, 34> values = {
+    const std::array<std::uint64_t, 36> values = {
         stats.nodes,
         stats.leaf_evaluations,
         stats.generated_raw_series,
@@ -8097,7 +8249,9 @@ PyObject* subtree_stats_tuple(const spc::native::SubtreeSearchStats& stats) {
         stats.frontier_score_positions,
         stats.static_evaluation_positions,
         stats.evaluation_reach_positions,
+        stats.evaluation_capture_positions,
         stats.incomplete_reach_evaluations,
+        stats.tactical_leaf_extensions,
         stats.overlay_evaluations,
         stats.overlay_reach_positions,
         stats.overlay_direct_move_variants,

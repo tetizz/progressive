@@ -628,7 +628,7 @@ def test_native_subtree_high_series_path_counts_preserve_frozen_python_oracle(
     # Frozen pristine-Python receipt (SPC_DISABLE_NATIVE=1), deterministic 3/3:
     # work=75_658. The optimized native frontier has its own deterministic
     # work receipt; its chess result above is the Python oracle signature.
-    assert result.stats.generation_positions == 39_924
+    assert result.stats.generation_positions == 40_647
     assert tuple(item.machine_notation for item in result.principal_variation) == (
         result.best_series.machine_notation,
         (

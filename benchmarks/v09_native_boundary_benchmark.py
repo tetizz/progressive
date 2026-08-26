@@ -165,6 +165,8 @@ POOL_ACCOUNTING_TRACE_FIELDS = {
     "promotion_mate_limit_hits",
     "promotion_mate_replay_rejects",
     "evaluation_reach_positions",
+    "evaluation_capture_positions",
+    "tactical_leaf_extensions",
     "quiet_adjudication_positions",
     "game_work_positions",
     "search_work_limit",

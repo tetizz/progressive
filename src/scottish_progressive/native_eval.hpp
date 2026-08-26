@@ -97,6 +97,9 @@ struct FullEvaluation {
     std::int64_t boundary_check = 0;
     ReachProbe white_reach;
     ReachProbe black_reach;
+    std::uint64_t capture_reach_positions = 0;
+    bool capture_reach_complete = true;
+    bool tactical_unstable = false;
 };
 
 // Frozen Python contract in teacher_value_features.py.  Every supported

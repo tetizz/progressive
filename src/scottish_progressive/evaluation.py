@@ -70,12 +70,25 @@ _NATIVE_INT64_MAX = (1 << 63) - 1
 _NATIVE_EXACT_FLOAT_INTEGER_MAX = 1 << 53
 _NATIVE_WEIGHT_MIN = 25
 _NATIVE_WEIGHT_MAX = 300
+_CHECK_REACH_POSITION_LIMIT = 256
+_CAPTURE_REACH_POSITION_LIMIT = 256
+_EVALUATION_PROBE_POSITION_LIMIT = (
+    _CHECK_REACH_POSITION_LIMIT + _CAPTURE_REACH_POSITION_LIMIT
+)
 
 
 @dataclass(frozen=True, slots=True)
 class ReachProbe:
     distance: int | None
     nodes: int
+    complete: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _CaptureReach:
+    value: int
+    targets: frozenset[int]
+    positions: int
     complete: bool
 
 
@@ -94,6 +107,9 @@ class EvaluationBreakdown:
     reach_complete: bool
     white_reach_nodes: int = 0
     black_reach_nodes: int = 0
+    capture_reach_positions: int = 0
+    capture_reach_complete: bool = True
+    tactical_unstable: bool = False
 
     def as_dict(self) -> dict[str, int | bool | None]:
         return asdict(self)
@@ -334,8 +350,8 @@ def _attacked_material(board: chess.Board, victim: chess.Color) -> int:
     )
 
 
-def _immediately_capturable_material(state: ProgressiveState) -> int:
-    """Values distinct pieces the actual mover can legally capture now."""
+def _immediate_capture_reach(state: ProgressiveState) -> _CaptureReach:
+    """Finds distinct pieces the actual mover can legally capture now."""
 
     board = state.board.copy(stack=False)
     captured = _direct_capture_targets(
@@ -347,11 +363,88 @@ def _immediately_capturable_material(state: ProgressiveState) -> int:
         board.ep_square = ep_target
         if any(board.generate_legal_ep()):
             captured.add(ep_target + (-8 if board.turn == chess.WHITE else 8))
-    return sum(
+    value = sum(
         PIECE_VALUES[piece.piece_type]
         for square in captured
         if (piece := state.board.piece_at(square)) is not None
     )
+    return _CaptureReach(value, frozenset(captured), 0, True)
+
+
+def _immediately_capturable_material(state: ProgressiveState) -> int:
+    """Values distinct pieces the actual mover can legally capture now."""
+
+    return _immediate_capture_reach(state).value
+
+
+def _two_move_capture_reach(
+    state: ProgressiveState,
+    *,
+    position_limit: int = _CAPTURE_REACH_POSITION_LIMIT,
+) -> _CaptureReach:
+    """Finds captures reachable on move two of the current series.
+
+    A Scottish player can use a quiet first micro-move (including a forced
+    king evasion) to expose a capture that an orthodox one-move attack map
+    cannot see. A checking first move is excluded because it ends the series.
+    """
+
+    if state.moves_available < 2:
+        return _CaptureReach(0, frozenset(), 0, True)
+    position_limit = max(0, position_limit)
+    board = state.board.copy(stack=False)
+    mover = board.turn
+    best = 0
+    targets: set[int] = set()
+    first_variants = _legal_move_variants(board, state.ep_targets)
+    first_count = len(first_variants)
+    if first_count > position_limit:
+        return _CaptureReach(0, frozenset(), position_limit, False)
+    # Each legal first-move child is one metered probe position.  Capture
+    # targets in that child come from the legal attack map directly; there is
+    # no reason to enumerate every quiet second move merely to find captures.
+    positions = first_count
+    for first, required_ep in first_variants:
+        board.ep_square = required_ep
+        if board.gives_check(first):
+            continue
+        child = board.copy(stack=False)
+        child.push(first)
+        child.turn = mover
+        child.ep_square = None
+        child_targets = _direct_capture_targets(
+            child,
+            not mover,
+            validate_check_evasions=True,
+        )
+        targets.update(child_targets)
+        for target in child_targets:
+            victim = child.piece_at(target)
+            if victim is not None:
+                best = max(best, PIECE_VALUES[victim.piece_type])
+    return _CaptureReach(best, frozenset(targets), positions, True)
+
+
+def _two_move_capture_value(state: ProgressiveState) -> int:
+    """Returns the best capture reachable on move two of the current series."""
+
+    return _two_move_capture_reach(state).value
+
+
+def _promotable_pawn_is_reachable(
+    state: ProgressiveState,
+    targets: frozenset[int],
+) -> bool:
+    victim = not state.board.turn
+    next_budget = state.series_number + 1
+    for square in targets:
+        piece = state.board.piece_at(square)
+        if piece is None or piece.color != victim or piece.piece_type != chess.PAWN:
+            continue
+        distance = _promotion_distance(state.board, square, victim)
+        if distance is not None and distance <= next_budget:
+            return True
+    return False
 
 
 def _first_move_mobility(state: ProgressiveState, color: chess.Color) -> int:
@@ -403,8 +496,10 @@ def _python_evaluate(
 
     white_budget = state.series_number if board.turn == chess.WHITE else state.series_number + 1
     black_budget = state.series_number if board.turn == chess.BLACK else state.series_number + 1
-    reach_remaining = (
-        256 if max_reach_positions is None else max(0, max_reach_positions)
+    probe_remaining = (
+        _EVALUATION_PROBE_POSITION_LIMIT
+        if max_reach_positions is None
+        else max(0, max_reach_positions)
     )
     if board.is_check():
         # The checked side must evade before either color can execute an
@@ -426,15 +521,16 @@ def _python_evaluate(
             state,
             chess.WHITE,
             max_moves=min(2, white_budget),
-            node_limit=min(128, reach_remaining),
+            node_limit=min(128, probe_remaining),
         )
-        reach_remaining -= white_reach.nodes
+        probe_remaining = max(0, probe_remaining - white_reach.nodes)
         black_reach = probe_series_reach(
             state,
             chess.BLACK,
             max_moves=min(2, black_budget),
-            node_limit=min(128, reach_remaining),
+            node_limit=min(128, probe_remaining),
         )
+        probe_remaining = max(0, probe_remaining - black_reach.nodes)
     # A failed bounded probe is unknown, not proof that a checking route does
     # not exist. Scoring one side's found route against the other side's
     # incomplete search created large move-order artifacts (notably 1.Na3 over
@@ -452,6 +548,21 @@ def _python_evaluate(
     else:
         series_reach = 0
 
+    immediate_capture = _immediate_capture_reach(state)
+    low_material = chess.popcount(board.occupied) <= 10
+    capture_limit = (
+        _CAPTURE_REACH_POSITION_LIMIT
+        if low_material and probe_remaining >= _CAPTURE_REACH_POSITION_LIMIT
+        else 0
+    )
+    two_move_capture = (
+        _two_move_capture_reach(
+            state,
+            position_limit=capture_limit,
+        )
+        if low_material
+        else _CaptureReach(0, frozenset(), 0, True)
+    )
     promotion_corridors = weights.scale(
         "promotion_corridors",
         _promotion_score(
@@ -463,7 +574,13 @@ def _python_evaluate(
             chess.BLACK,
         ),
     )
-    capturable_material = _immediately_capturable_material(state)
+    # In low-material positions, value the strongest capture available in the
+    # mover's first two micro-moves. ``max`` preserves the established direct
+    # attacked-material signal without perturbing ordinary opening ordering.
+    capturable_material = max(
+        immediate_capture.value,
+        two_move_capture.value if two_move_capture.complete else 0,
+    )
     vulnerability_raw = (
         capturable_material if board.turn == chess.WHITE else -capturable_material
     )
@@ -485,6 +602,17 @@ def _python_evaluate(
         boundary_check = weights.scale(
             "boundary_check", 170 if board.turn == chess.BLACK else -170
         )
+
+    capture_targets = immediate_capture.targets | two_move_capture.targets
+    # Ordinary capture swings are already represented by the bounded
+    # two-move vulnerability term above.  Extend only when a capture route and
+    # a promotion corridor are mutually exclusive: a single static score
+    # cannot safely combine those alternatives.  Full-series continuation is
+    # confined to low-material promotion races, where branching is bounded;
+    # ordinary middlegames retain the metered static signal.
+    tactical_unstable = (
+        low_material and _promotable_pawn_is_reachable(state, capture_targets)
+    )
 
     total = (
         material
@@ -509,6 +637,9 @@ def _python_evaluate(
         reach_complete=white_reach.complete and black_reach.complete,
         white_reach_nodes=white_reach.nodes,
         black_reach_nodes=black_reach.nodes,
+        capture_reach_positions=two_move_capture.positions,
+        capture_reach_complete=two_move_capture.complete,
+        tactical_unstable=tactical_unstable,
     )
 
 
@@ -560,7 +691,11 @@ def evaluate(
         )
 
     board = state.board
-    reach_limit = 256 if max_reach_positions is None else max(0, max_reach_positions)
+    reach_limit = (
+        _EVALUATION_PROBE_POSITION_LIMIT
+        if max_reach_positions is None
+        else max(0, max_reach_positions)
+    )
     try:
         raw = tuple(
             _native_eval.full_evaluate(

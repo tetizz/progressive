@@ -21,11 +21,11 @@ from scottish_progressive.series_mate import (
 
 
 NATIVE_SOURCE_HASHES = {
-    "_native_eval.cpp": "800876bfdbd1924a705aafa621374db6ed7698b119d46b12315591af43c5a6f2",
-    "native_eval.hpp": "238b37ecf5288c9816ffb96088ca7546d45ca825e4f7bf833a7573641fdf8fc0",
+    "_native_eval.cpp": "60cebe86a174bb63216fcb1b4c44dceeaf7b6f9c2ea92d31c9ce0e33a9b0742b",
+    "native_eval.hpp": "85b426f8f868def00dea0d7a7f6f9d048d9836cde1018dc1ae0d61e33c25ac5f",
 }
 NATIVE_IDENTITY = (
-    "fdfe60a2b1da70d66a721296b00c1aa28d53ae2014acbdd89e5ffbbd357daaf4"
+    "12ad0dcf9aa4b8c585171d1ca82aef0ea9b706ba5759c1cc8f8bc1887274b0f4"
 )
 NATIVE_SURFACE = {
     "SOURCE_IDENTITY",

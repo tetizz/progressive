@@ -756,6 +756,12 @@ def _play_game(job: GameJob) -> GameRecord:
             "evaluation_reach_positions": int(
                 getattr(stats, "evaluation_reach_positions", 0)
             ),
+            "evaluation_capture_positions": int(
+                getattr(stats, "evaluation_capture_positions", 0)
+            ),
+            "tactical_leaf_extensions": int(
+                getattr(stats, "tactical_leaf_extensions", 0)
+            ),
             "quiet_adjudication_positions": int(
                 getattr(stats, "quiet_adjudication_positions", 0)
             ),

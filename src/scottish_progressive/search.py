@@ -295,7 +295,9 @@ class SearchStats:
     frontier_score_positions: int = 0
     static_evaluation_positions: int = 0
     evaluation_reach_positions: int = 0
+    evaluation_capture_positions: int = 0
     incomplete_reach_evaluations: int = 0
+    tactical_leaf_extensions: int = 0
     overlay_evaluations: int = 0
     overlay_reach_positions: int = 0
     overlay_direct_move_variants: int = 0
@@ -906,14 +908,16 @@ class SeriesSearcher:
             reach_positions = (
                 cached.white_reach_nodes + cached.black_reach_nodes
             )
+            tactical_positions = cached.capture_reach_positions
+            probe_positions = reach_positions + tactical_positions
             self.stats.evaluation_reach_positions += reach_positions
-            self.stats.generation_positions += reach_positions
+            self.stats.evaluation_capture_positions += tactical_positions
+            self.stats.generation_positions += probe_positions
             if not cached.reach_complete:
                 self.stats.incomplete_reach_evaluations += 1
                 if (
                     remaining is not None
-                    and remaining < 256
-                    and reach_positions >= remaining
+                    and probe_positions >= remaining
                 ):
                     if not self._evaluation_work_limit_reached:
                         self.stats.generation_work_limit_hits += 1
@@ -2372,6 +2376,63 @@ class SeriesSearcher:
             and depth == self.limits.depth_series
         )
 
+    def _tactical_leaf_extension(
+        self,
+        state: ProgressiveState,
+        alpha: int,
+        beta: int,
+        ply_from_root: int,
+        static_score: int,
+    ) -> tuple[int, tuple[SeriesResult, ...], tuple[int, int]]:
+        """Searches one complete series at an unstable nominal leaf.
+
+        The extension deliberately has no stand-pat and does not write a TT
+        entry or claim proof. Its children are evaluated statically, which is
+        the one-token bound that prevents recursive quiescence explosions.
+        """
+
+        self.stats.tactical_leaf_extensions += 1
+        mover = state.board.turn
+        series = self._ordered_generated(
+            state,
+            ply_from_root=ply_from_root + 1,
+        )
+        if not series:
+            return static_score, (), UNKNOWN_PROOF_BOUNDS
+
+        best_score = -MATE_SCORE * 2 if mover == chess.WHITE else MATE_SCORE * 2
+        for result in series:
+            self._check_deadline()
+            self.stats.nodes += 1
+            terminal = self._terminal_score(result, mover, ply_from_root + 1)
+            if terminal is not None:
+                score = terminal
+            else:
+                adjudication = self._quiet_adjudication(result.final_state)
+                if adjudication == "proven-draw-no-mating-material":
+                    score = 0
+                elif adjudication == "manual-proof-required":
+                    raise _AdjudicationPending
+                else:
+                    score = self._evaluate(result.final_state).total
+            if (
+                mover == chess.WHITE
+                and score > best_score
+                or mover == chess.BLACK
+                and score < best_score
+            ):
+                best_score = score
+
+            if mover == chess.WHITE:
+                alpha = max(alpha, best_score)
+            else:
+                beta = min(beta, best_score)
+            if alpha >= beta:
+                self.stats.alpha_beta_cutoffs += 1
+                break
+
+        return best_score, (), UNKNOWN_PROOF_BOUNDS
+
     def _minimax(
         self,
         state: ProgressiveState,
@@ -2396,7 +2457,16 @@ class SeriesSearcher:
         if adjudication == "manual-proof-required":
             raise _AdjudicationPending
         if depth == 0:
-            return self._evaluate(state).total, (), UNKNOWN_PROOF_BOUNDS
+            leaf = self._evaluate(state)
+            if leaf.tactical_unstable:
+                return self._tactical_leaf_extension(
+                    state,
+                    alpha,
+                    beta,
+                    ply_from_root,
+                    leaf.total,
+                )
+            return leaf.total, (), UNKNOWN_PROOF_BOUNDS
 
         key = self._tt_key(state)
         entry = self._tt.get(key)

@@ -40,7 +40,9 @@ SUBTREE_STAT_FIELDS = (
     "frontier_score_positions",
     "static_evaluation_positions",
     "evaluation_reach_positions",
+    "evaluation_capture_positions",
     "incomplete_reach_evaluations",
+    "tactical_leaf_extensions",
     "overlay_evaluations",
     "overlay_reach_positions",
     "overlay_direct_move_variants",
@@ -287,8 +289,10 @@ def native_subtree_eligible(
         # The C++ slice intentionally does not implement the proof search used
         # by the ten-quiet-series exception. Keep the whole native horizon below
         # that boundary so unsupported can never be reached after work begins.
-        or state.quiet_series + requested_depth >= 10
-        or state.series_number + requested_depth >= (1 << 63) - 1
+        # The selective tactical leaf may consume one additional complete
+        # series beyond the nominal depth, so include that bounded token.
+        or state.quiet_series + requested_depth + 1 >= 10
+        or state.series_number + requested_depth + 1 >= (1 << 63) - 1
     ):
         return False
     if max_work is not None and (

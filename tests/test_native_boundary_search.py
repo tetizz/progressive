@@ -17,6 +17,7 @@ import scottish_progressive.rules as rules_module
 import scottish_progressive.search as search_module
 from scottish_progressive.model import Outcome, ProgressiveState
 from scottish_progressive.move_quality import AnalysisEvidence
+from scottish_progressive.native_subtree import native_subtree_eligible
 from scottish_progressive.profiles import EvaluationWeights, baseline_profile
 from scottish_progressive.rules import (
     NativeFinalSeriesScoreConfig,
@@ -110,6 +111,9 @@ def _evaluation_tuple(result: object) -> tuple[object, ...]:
         values["reach_complete"],
         values["white_reach_nodes"],
         values["black_reach_nodes"],
+        values["capture_reach_positions"],
+        values["capture_reach_complete"],
+        values["tactical_unstable"],
     )
 
 
@@ -169,6 +173,48 @@ def test_direct_native_full_evaluation_matches_every_python_field(
         ) == expected_tuple
     finally:
         evaluation._native_eval = prior
+
+
+def test_direct_native_full_evaluation_matches_two_move_capture_probe() -> None:
+    native = _require_n2_native()
+    state = ProgressiveState.from_fen(
+        "3kr3/P5n1/8/7P/8/8/8/1K6 b - - 0 1",
+        2,
+    )
+    weights = EvaluationWeights()
+    expected = evaluation._python_evaluate(
+        state,
+        weights,
+        max_reach_positions=512,
+    )
+
+    assert expected.capture_reach_positions > 0
+    assert expected.capture_reach_complete
+    assert expected.tactical_unstable
+    assert _native_full(native, state, weights, 512) == _evaluation_tuple(expected)
+
+
+def test_native_subtree_gate_reserves_the_tactical_extension_token() -> None:
+    profile = baseline_profile()
+    near_quiet_boundary = ProgressiveState.from_fen(
+        chess.STARTING_FEN,
+        1,
+        quiet_series=8,
+    )
+    near_signed_boundary = ProgressiveState.from_fen(
+        chess.STARTING_FEN.replace(" w ", " b "),
+        (1 << 63) - 2,
+    )
+
+    for state in (near_quiet_boundary, near_signed_boundary):
+        assert not native_subtree_eligible(
+            state,
+            requested_depth=1,
+            max_series_per_node=32,
+            max_work=250_000,
+            profile=profile,
+            has_overlay=False,
+        )
 
 
 def _batch_arguments(state: ProgressiveState) -> tuple[object, ...]:

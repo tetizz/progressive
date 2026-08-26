@@ -94,7 +94,9 @@ struct SubtreeSearchStats {
     std::uint64_t frontier_score_positions = 0;
     std::uint64_t static_evaluation_positions = 0;
     std::uint64_t evaluation_reach_positions = 0;
+    std::uint64_t evaluation_capture_positions = 0;
     std::uint64_t incomplete_reach_evaluations = 0;
+    std::uint64_t tactical_leaf_extensions = 0;
     std::uint64_t overlay_evaluations = 0;
     std::uint64_t overlay_reach_positions = 0;
     std::uint64_t overlay_direct_move_variants = 0;

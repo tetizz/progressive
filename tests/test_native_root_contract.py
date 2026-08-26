@@ -2203,7 +2203,7 @@ def test_mover_mate_exit_preserves_capped_parallel_search_result() -> None:
             _session(
                 width=8,
                 depth=5,
-                max_work=4_523,
+                max_work=5_231,
                 native_threads=native_threads,
                 root_tactical_protection=True,
             ).search(
@@ -2226,13 +2226,13 @@ def test_mover_mate_exit_preserves_capped_parallel_search_result() -> None:
     ) == ("c3f6", "f8g8/b5b3", "f6f5/f5c2/c2b3")
     assert not serial.evaluation_work_limit_reached
     stats = dict(zip(SUBTREE_STAT_FIELDS, serial.stats, strict=True))
-    assert stats["generation_positions"] == 4_523
+    assert stats["generation_positions"] == 5_231
     assert stats["generation_work_limit_hits"] == 0
 
     one_below = _session(
         width=8,
         depth=5,
-        max_work=4_522,
+        max_work=5_230,
         native_threads=1,
         root_tactical_protection=True,
     ).search(
@@ -2250,7 +2250,7 @@ def test_mover_mate_exit_preserves_capped_parallel_search_result() -> None:
     one_below_stats = dict(
         zip(SUBTREE_STAT_FIELDS, one_below.stats, strict=True)
     )
-    assert one_below_stats["generation_positions"] == 4_522
+    assert one_below_stats["generation_positions"] == 5_230
     assert one_below_stats["generation_work_limit_hits"] == 1
 
 

@@ -517,7 +517,9 @@ void append_deep_teacher_model(
     SPC_SUBTREE_DELTA(frontier_score_positions);
     SPC_SUBTREE_DELTA(static_evaluation_positions);
     SPC_SUBTREE_DELTA(evaluation_reach_positions);
+    SPC_SUBTREE_DELTA(evaluation_capture_positions);
     SPC_SUBTREE_DELTA(incomplete_reach_evaluations);
+    SPC_SUBTREE_DELTA(tactical_leaf_extensions);
     SPC_SUBTREE_DELTA(overlay_evaluations);
     SPC_SUBTREE_DELTA(overlay_reach_positions);
     SPC_SUBTREE_DELTA(overlay_direct_move_variants);
@@ -800,6 +802,11 @@ struct NodeResult {
     bool canonical_pv = true;
 };
 
+struct LeafEvaluation {
+    std::int64_t score = 0;
+    bool tactical_unstable = false;
+};
+
 struct TTEntry {
     std::int64_t depth = 0;
     std::int64_t score = 0;
@@ -1061,7 +1068,7 @@ public:
     std::vector<std::optional<TransactionalBound>> transactional_bounds;
     std::vector<std::vector<std::pair<TTKey, std::optional<TTEntry>>>>
         tt_transactions;
-    std::unordered_map<PositionKey, std::int64_t, PositionKeyHash> eval_cache;
+    std::unordered_map<PositionKey, LeafEvaluation, PositionKeyHash> eval_cache;
     std::unordered_map<GenerationKey, CacheEntry, GenerationKeyHash>
         generation_cache;
     std::list<GenerationKey> generation_recency;
@@ -1746,7 +1753,7 @@ public:
         return ordinal <= *preferred ? ordinal - 1 : ordinal;
     }
 
-    [[nodiscard]] std::int64_t evaluate(const SubtreeState& state) {
+    [[nodiscard]] LeafEvaluation evaluate(const SubtreeState& state) {
         const PositionKey key = position_key(state);
         const auto cached = eval_cache.find(key);
         if (cached != eval_cache.end()) {
@@ -1778,7 +1785,7 @@ public:
         ++stats.static_evaluation_positions;
         ++stats.generation_positions;
         const auto after = remaining_work();
-        const std::uint64_t reach_limit = after.has_value() ? *after : 256;
+        const std::uint64_t reach_limit = after.has_value() ? *after : 512;
         std::optional<FullEvaluation> evaluated = full_evaluate(
             state.board,
             state.ep_targets,
@@ -1792,18 +1799,31 @@ public:
                 "native subtree full evaluation overflowed"
             );
         }
-        const std::uint64_t reach_positions = evaluated->white_reach.nodes
+        const std::uint64_t check_reach_positions = evaluated->white_reach.nodes
             + evaluated->black_reach.nodes;
-        stats.evaluation_reach_positions += reach_positions;
-        stats.generation_positions += reach_positions;
+        const std::uint64_t probe_positions = saturating_add(
+            check_reach_positions,
+            evaluated->capture_reach_positions
+        );
+        stats.evaluation_reach_positions = saturating_add(
+            stats.evaluation_reach_positions,
+            check_reach_positions
+        );
+        stats.evaluation_capture_positions = saturating_add(
+            stats.evaluation_capture_positions,
+            evaluated->capture_reach_positions
+        );
+        stats.generation_positions = saturating_add(
+            stats.generation_positions,
+            probe_positions
+        );
         const bool reach_complete = evaluated->white_reach.complete
             && evaluated->black_reach.complete;
         if (!reach_complete) {
             ++stats.incomplete_reach_evaluations;
             const bool constrained_by_remaining_work =
                 after.has_value()
-                && *after < 256
-                && reach_positions >= *after;
+                && probe_positions >= *after;
             if (constrained_by_remaining_work) {
                 if (!evaluation_work_limit_reached) {
                     ++stats.generation_work_limit_hits;
@@ -1940,13 +1960,77 @@ public:
                 DEEP_TEACHER_SCORE_LIMIT
             );
         }
-        eval_cache.emplace(key, total);
+        const LeafEvaluation leaf{total, evaluated->tactical_unstable};
+        eval_cache.emplace(key, leaf);
         eval_entries_peak = std::max<std::uint64_t>(
             eval_entries_peak,
             static_cast<std::uint64_t>(eval_cache.size())
         );
         ++stats.leaf_evaluations;
-        return total;
+        return leaf;
+    }
+
+    [[nodiscard]] NodeResult tactical_leaf_extension(
+        const SubtreeState& state,
+        std::int64_t alpha,
+        std::int64_t beta,
+        std::int64_t ply_from_root,
+        std::int64_t static_score
+    ) {
+        ++stats.tactical_leaf_extensions;
+        const bool mover = state.board.white_to_move;
+        GeneratedSeries generated = generate(
+            state,
+            ply_from_root + 1,
+            nullptr
+        );
+        if (generated.series->empty()) {
+            return NodeResult{static_score, {}, UNKNOWN_PROOF_BOUNDS};
+        }
+
+        std::int64_t best_score = mover == WHITE
+            ? -config.mate_score * 2
+            : config.mate_score * 2;
+        for (const CompleteSeriesCandidate& candidate : *generated.series) {
+            check_deadline();
+            ++stats.nodes;
+            const auto terminal = terminal_score(
+                candidate,
+                mover,
+                ply_from_root + 1,
+                config.mate_score
+            );
+            std::int64_t score = 0;
+            if (terminal.has_value()) {
+                score = *terminal;
+            } else {
+                const SubtreeState child = child_state(candidate);
+                if (child.quiet_series >= 10) {
+                    throw StopSearch(
+                        SubtreeSearchStatus::AdjudicationPending,
+                        "native tactical extension reached quiet adjudication"
+                    );
+                }
+                score = evaluate(child).score;
+            }
+            if (
+                (mover == WHITE && score > best_score)
+                || (mover != WHITE && score < best_score)
+            ) {
+                best_score = score;
+            }
+
+            if (mover == WHITE) {
+                alpha = std::max(alpha, best_score);
+            } else {
+                beta = std::min(beta, best_score);
+            }
+            if (alpha >= beta) {
+                ++stats.alpha_beta_cutoffs;
+                break;
+            }
+        }
+        return NodeResult{best_score, {}, UNKNOWN_PROOF_BOUNDS};
     }
 
     void begin_transaction() {
@@ -2055,7 +2139,17 @@ public:
             );
         }
         if (depth == 0) {
-            return NodeResult{evaluate(state), {}, UNKNOWN_PROOF_BOUNDS};
+            const LeafEvaluation leaf = evaluate(state);
+            if (leaf.tactical_unstable) {
+                return tactical_leaf_extension(
+                    state,
+                    alpha,
+                    beta,
+                    ply_from_root,
+                    leaf.score
+                );
+            }
+            return NodeResult{leaf.score, {}, UNKNOWN_PROOF_BOUNDS};
         }
 
         const TTKey key = tt_key(
