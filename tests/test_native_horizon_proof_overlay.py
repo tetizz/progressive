@@ -53,6 +53,30 @@ DEEP_PROOF = NativeHorizonProof(
     mate_reply=_deep_results[3],
 )
 
+
+def _deep_root_and_proof(
+    fullmove_number: int,
+) -> tuple[ProgressiveState, NativeHorizonProof]:
+    root = ProgressiveState.from_fen(
+        f"2k5/4pr2/8/8/3K3N/7R/2qP2b1/1B6 w - - 0 {fullmove_number}",
+        1,
+    )
+    cursor = root
+    results = []
+    for moves in (
+        ("h4g2",),
+        ("c2c7", "e7e5"),
+        ("d4e4", "b1a2", "a2e6"),
+        ("c7d7", "d7e6", "e6d6", "d6d4"),
+    ):
+        result = play_series(cursor, moves)
+        results.append(result)
+        cursor = result.final_state
+    return root, NativeHorizonProof(
+        rooted_path=tuple(results[:3]),
+        mate_reply=results[3],
+    )
+
 _alternate_cursor = _deep_results[0].final_state
 _alternate_results = [_deep_results[0]]
 for _alternate_moves, _alternate_count in (
@@ -88,12 +112,12 @@ def _session() -> NativeSubtreeSession:
     )
 
 
-def _deep_session() -> NativeSubtreeSession:
+def _deep_session(*, max_work: int = 2_000_000) -> NativeSubtreeSession:
     if not native_subtree_available():
         pytest.skip("source-matched native retained-root contract is unavailable")
     return NativeSubtreeSession(
         max_series_per_node=4,
-        max_work=2_000_000,
+        max_work=max_work,
         requested_depth=3,
         mate_score=MATE_SCORE,
         cache_capacity=16_384,
@@ -124,6 +148,8 @@ def _deep_search(
     *,
     external_work: int,
     proofs: tuple[NativeHorizonProof, ...] = (),
+    rollback_tt: bool = False,
+    call_work_credit: int | None = None,
 ) -> object:
     return session.search_root_candidate(
         enumeration_identity=manifest.enumeration_identity,
@@ -133,7 +159,8 @@ def _deep_search(
         beta=2 * MATE_SCORE,
         external_work=external_work,
         remaining_nanoseconds=None,
-        rollback_tt=False,
+        rollback_tt=rollback_tt,
+        call_work_credit=call_work_credit,
         horizon_proofs=proofs,
     )
 
@@ -216,6 +243,21 @@ def test_no_proof_search_preserves_the_pre_overlay_result_and_work() -> None:
     assert result.horizon_proofs_validated == 0
     assert result.horizon_proof_hits == 0
     assert result.horizon_proof_hit_mask == 0
+
+
+def test_ordinary_search_keeps_realistic_large_root_relative_ply_compatible() -> None:
+    session = _session()
+    result = session.search(
+        ROOT,
+        depth=0,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        ply_from_root=32,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+
+    assert result.status == 0
 
 
 def test_forged_proof_fails_before_proof_or_tt_state_is_installed() -> None:
@@ -421,6 +463,215 @@ def test_proof_validation_obeys_call_credit_and_can_retry_cleanly() -> None:
     assert retry.status == 0
     assert retry.work.call_native_work == 3
     assert retry.horizon_proof_hit_mask == 0b1
+
+
+def test_interrupted_proof_search_cannot_poison_an_exact_retry() -> None:
+    session = _deep_session()
+    manifest, candidate = _deep_manifest_and_candidate(session)
+    stopped = _deep_search(
+        session,
+        manifest,
+        candidate,
+        external_work=manifest.work.native_work_after,
+        proofs=(DEEP_PROOF,),
+        call_work_credit=300,
+    )
+
+    assert stopped.status == 1
+    assert stopped.work.call_native_work == 300
+    assert stopped.work.tt_entries == 0
+    assert stopped.tt_writes_rolled_back > 0
+    assert stopped.horizon_proof_set_identity == ""
+
+    retry = _deep_search(
+        session,
+        manifest,
+        candidate,
+        external_work=stopped.work.native_work_after,
+        proofs=(DEEP_PROOF,),
+    )
+    assert retry.status == 0
+    assert retry.bound is NativeSubtreeBound.EXACT
+    assert retry.score == 179
+    assert tuple(item.machine_notation for item in retry.principal_variation) == (
+        "h4g2",
+        "c2c7/e7e5",
+        "d4d3/d3e2/h3h8",
+    )
+    assert retry.horizon_proof_hits == 1
+    assert retry.horizon_proof_hit_mask == 0b1
+
+
+@pytest.mark.parametrize("rollback_tt", [False, True])
+def test_interrupted_ordinary_search_cannot_poison_an_exact_retry(
+    rollback_tt: bool,
+) -> None:
+    session = _deep_session()
+    manifest, candidate = _deep_manifest_and_candidate(session)
+    stopped = _deep_search(
+        session,
+        manifest,
+        candidate,
+        external_work=manifest.work.native_work_after,
+        rollback_tt=rollback_tt,
+        call_work_credit=300,
+    )
+
+    assert stopped.status == 1
+    assert stopped.work.call_native_work == 300
+    assert stopped.work.tt_entries == 0
+    assert stopped.tt_writes_rolled_back > 0
+
+    retry = _deep_search(
+        session,
+        manifest,
+        candidate,
+        external_work=stopped.work.native_work_after,
+    )
+    assert retry.status == 0
+    assert retry.bound is NativeSubtreeBound.EXACT
+    assert retry.score == 336
+    assert tuple(item.machine_notation for item in retry.principal_variation) == (
+        "h4g2",
+        "c2c7/e7e5",
+        "d4e4/b1a2/a2e6",
+    )
+
+
+def test_failed_distinct_proof_sets_do_not_exhaust_session_capacity() -> None:
+    session = _deep_session()
+    manifest, candidate = _deep_manifest_and_candidate(session)
+    external_work = manifest.work.native_work_after
+
+    for index in range(300):
+        rooted_path = list(DEEP_PROOF.rooted_path)
+        rooted_path[1] = rooted_path[1].with_transposition_count(1_000 + index)
+        stopped = _deep_search(
+            session,
+            manifest,
+            candidate,
+            external_work=external_work,
+            proofs=(
+                NativeHorizonProof(
+                    rooted_path=tuple(rooted_path),
+                    mate_reply=DEEP_PROOF.mate_reply,
+                ),
+            ),
+            call_work_credit=10,
+        )
+        assert stopped.status == 1
+        assert stopped.work.call_native_work == 10
+        assert stopped.horizon_proof_set_identity == ""
+        external_work = stopped.work.native_work_after
+
+    retry = _deep_search(
+        session,
+        manifest,
+        candidate,
+        external_work=external_work,
+        proofs=(DEEP_PROOF,),
+    )
+    assert retry.status == 0
+    assert retry.score == 179
+    assert retry.horizon_proof_hit_mask == 0b1
+
+
+def test_descendant_path_counts_cannot_manufacture_proof_namespaces() -> None:
+    session = _deep_session()
+    manifest, candidate = _deep_manifest_and_candidate(session)
+    external_work = manifest.work.native_work_after
+    expected_identity = ""
+    expected_tt_entries = 0
+
+    for index in range(300):
+        rooted_path = list(DEEP_PROOF.rooted_path)
+        rooted_path[1] = rooted_path[1].with_transposition_count(10_000 + index)
+        result = _deep_search(
+            session,
+            manifest,
+            candidate,
+            external_work=external_work,
+            proofs=(
+                NativeHorizonProof(
+                    rooted_path=tuple(rooted_path),
+                    mate_reply=DEEP_PROOF.mate_reply,
+                ),
+            ),
+        )
+        assert result.status == 0
+        assert result.score == 179
+        if index == 0:
+            expected_identity = result.horizon_proof_set_identity
+            expected_tt_entries = result.work.tt_entries
+        else:
+            assert result.horizon_proof_set_identity == expected_identity
+            assert result.work.tt_entries == expected_tt_entries
+        external_work = result.work.native_work_after
+
+
+def test_genuine_257th_proof_set_reclaims_a_namespace_without_aliasing() -> None:
+    session = _deep_session(max_work=1_000_000_000)
+    external_work = 0
+    first_identity = ""
+    first_root: ProgressiveState | None = None
+    first_proof: NativeHorizonProof | None = None
+
+    for fullmove_number in range(1, 258):
+        root, proof = _deep_root_and_proof(fullmove_number)
+        manifest = session.enumerate_root(
+            root,
+            preferred_series="h4g2",
+            external_work=external_work,
+            remaining_nanoseconds=None,
+        )
+        assert manifest.status == 0, (
+            fullmove_number,
+            manifest.status,
+            manifest.message,
+        )
+        candidate = next(
+            item for item in manifest.candidates if item.order_key == "h4g2"
+        )
+        result = _deep_search(
+            session,
+            manifest,
+            candidate,
+            external_work=manifest.work.native_work_after,
+            proofs=(proof,),
+        )
+        assert result.status == 0
+        assert result.score == 179
+        assert result.horizon_proof_hits == 1
+        external_work = result.work.native_work_after
+        if fullmove_number == 1:
+            first_identity = result.horizon_proof_set_identity
+            first_root = root
+            first_proof = proof
+
+    assert first_root is not None
+    assert first_proof is not None
+    revisit_manifest = session.enumerate_root(
+        first_root,
+        preferred_series="h4g2",
+        external_work=external_work,
+        remaining_nanoseconds=None,
+    )
+    revisit_candidate = next(
+        item
+        for item in revisit_manifest.candidates
+        if item.order_key == "h4g2"
+    )
+    revisit = _deep_search(
+        session,
+        revisit_manifest,
+        revisit_candidate,
+        external_work=revisit_manifest.work.native_work_after,
+        proofs=(first_proof,),
+    )
+    assert revisit.status == 0
+    assert revisit.score == 179
+    assert revisit.horizon_proof_hits == 1
+    assert revisit.horizon_proof_set_identity == first_identity
 
 
 def test_black_root_proof_uses_white_relative_mate_score_and_bounds() -> None:

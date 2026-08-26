@@ -8838,7 +8838,17 @@ bool parse_horizon_proofs(
                 );
                 return false;
             }
-            proof.rooted_path.reserve(static_cast<std::size_t>(path_size));
+            try {
+                proof.rooted_path.reserve(
+                    static_cast<std::size_t>(path_size)
+                );
+            } catch (const std::bad_alloc&) {
+                Py_DECREF(path_sequence);
+                Py_DECREF(proof_sequence);
+                Py_DECREF(sequence);
+                PyErr_NoMemory();
+                return false;
+            }
             for (Py_ssize_t path_index = 0;
                  path_index < path_size;
                  ++path_index) {

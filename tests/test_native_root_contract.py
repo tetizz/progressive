@@ -1508,7 +1508,10 @@ def test_root_contract_deadline_work_and_adjudication_fail_closed() -> None:
     )
     assert capped.status == 4
     assert capped.bound is NativeSubtreeBound.UNKNOWN
-    assert capped.work.eval_entries == capped.work.eval_entries_peak == 1
+    # Failed root calls discard partial fast-path state but preserve the peak
+    # receipt so capacity enforcement remains auditable.
+    assert capped.work.eval_entries == 0
+    assert capped.work.eval_entries_peak == 1
     assert capped.work.eval_capacity == 1
     assert capped.work.tt_entries <= capped.work.tt_entries_peak
     assert capped.work.tt_entries_peak <= capped.work.tt_capacity
@@ -1532,7 +1535,9 @@ def test_root_contract_deadline_work_and_adjudication_fail_closed() -> None:
     )
     assert tt_capped.status == 4
     assert tt_capped.bound is NativeSubtreeBound.UNKNOWN
-    assert tt_capped.work.tt_entries == tt_capped.work.tt_entries_peak == 1
+    assert tt_capped.work.tt_entries == 0
+    assert tt_capped.work.tt_entries_peak == 1
+    assert tt_capped.tt_writes_rolled_back == 1
     assert tt_capped.work.tt_capacity == 1
 
 

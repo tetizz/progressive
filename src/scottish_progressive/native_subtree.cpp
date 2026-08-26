@@ -27,6 +27,14 @@ constexpr std::int64_t TACTICAL_DESCENDANT_PROMOTION_MAX_PLY = 2;
 constexpr std::int64_t ROOT_TACTICAL_PROTECTION_MIN_SERIES = 5;
 constexpr std::uint64_t MAX_TERMINAL_MATE_SCAN_WIDTH = 832;
 constexpr std::size_t MAX_HORIZON_PROOF_SETS = 256;
+// Proof namespaces occupy bits 55-63 in TTKey::ply_and_tactical. Preserve
+// every realistic public root-relative ply while keeping ordinary keys out
+// of that tagged range, including the deepest recursive child of a call.
+constexpr std::int64_t MAX_ORDINARY_TT_PLY =
+    (std::int64_t{1} << 54) - 1;
+constexpr std::uint64_t TT_PROOF_MARKER = std::uint64_t{1} << 63;
+constexpr int TT_PROOF_NAMESPACE_SHIFT = 55;
+constexpr std::uint64_t TT_PROOF_NAMESPACE_MASK = 0xff;
 static_assert(MAX_HORIZON_PROOF_SETS <= 256);
 static_assert(RETAINED_ROOT_MAX_HORIZON_PROOFS <= 16);
 constexpr std::int64_t DEEP_TEACHER_MATE_SCORE = 1'000'000;
@@ -727,11 +735,21 @@ static_assert(sizeof(TTKey) == 144);
         // Namespace zero preserves the original context bits exactly.
         return ordinary;
     }
-    constexpr std::uint64_t PROOF_MARKER = std::uint64_t{1} << 63;
-    constexpr int PROOF_NAMESPACE_SHIFT = 55;
-    return PROOF_MARKER
-        | ((proof_set_namespace - 1) << PROOF_NAMESPACE_SHIFT)
+    return TT_PROOF_MARKER
+        | ((proof_set_namespace - 1) << TT_PROOF_NAMESPACE_SHIFT)
         | ordinary;
+}
+
+[[nodiscard]] constexpr std::uint64_t tt_proof_namespace(
+    const TTKey& key
+) noexcept {
+    if ((key.ply_and_tactical & TT_PROOF_MARKER) == 0) {
+        return 0;
+    }
+    return (
+        (key.ply_and_tactical >> TT_PROOF_NAMESPACE_SHIFT)
+        & TT_PROOF_NAMESPACE_MASK
+    ) + 1;
 }
 
 struct PositionKeyHash {
@@ -1814,8 +1832,10 @@ public:
     [[nodiscard]] const ValidatedHorizonProofSet*
     validate_and_intern_horizon_proof_set(
         const RetainedRootCandidateRequest& request,
-        const RetainedRootCandidate& retained_candidate
+        const RetainedRootCandidate& retained_candidate,
+        bool& interned_new
     ) {
+        interned_new = false;
         if (request.horizon_proofs.empty()) {
             return nullptr;
         }
@@ -1868,8 +1888,13 @@ public:
                     cursor,
                     path_series
                 );
-                replayed.path.transposition_count =
-                    path_series.path.transposition_count;
+                // Only the selected root series carries an independently
+                // certified enumeration multiplicity.  Descendant proof
+                // series are exact paths, so caller-supplied multiplicities
+                // are non-semantic and must not manufacture new namespaces.
+                replayed.path.transposition_count = index == 0
+                    ? path_series.path.transposition_count
+                    : 1;
                 if (
                     replayed.outcome != CompleteSeriesOutcome::None
                     || (
@@ -2027,17 +2052,35 @@ public:
             }
             return &*existing;
         }
-        if (horizon_proof_sets.size() >= MAX_HORIZON_PROOF_SETS) {
-            throw StopSearch(
-                SubtreeSearchStatus::Unsupported,
-                "native horizon proof-set capacity reached"
-            );
+        std::uint64_t namespace_id = 0;
+        for (std::uint64_t candidate = 1;
+             candidate <= MAX_HORIZON_PROOF_SETS;
+             ++candidate) {
+            if (std::none_of(
+                    horizon_proof_sets.begin(),
+                    horizon_proof_sets.end(),
+                    [candidate](const ValidatedHorizonProofSet& item) {
+                        return item.namespace_id == candidate;
+                    }
+                )) {
+                namespace_id = candidate;
+                break;
+            }
+        }
+        if (namespace_id == 0) {
+            // Sessions are intentionally long-lived.  Reclaim the oldest
+            // proof namespace instead of turning a valid 257th proof into a
+            // permanent availability failure.
+            namespace_id = horizon_proof_sets.front().namespace_id;
+            (void)clear_tt_namespace(namespace_id);
+            horizon_proof_sets.erase(horizon_proof_sets.begin());
         }
         horizon_proof_sets.push_back(ValidatedHorizonProofSet{
-            static_cast<std::uint64_t>(horizon_proof_sets.size() + 1),
+            namespace_id,
             set_identity,
             std::move(validated),
         });
+        interned_new = true;
         return &horizon_proof_sets.back();
     }
 
@@ -2413,6 +2456,69 @@ public:
             }
         }
         return static_cast<std::uint64_t>(journal.size());
+    }
+
+    void clear_tt_namespace_hints(std::uint64_t proof_namespace) noexcept {
+        for (auto& slot : cutoff_hints) {
+            if (
+                slot.has_value()
+                && tt_proof_namespace(slot->key) == proof_namespace
+            ) {
+                slot.reset();
+            }
+        }
+        for (auto& slot : transactional_bounds) {
+            if (
+                slot.has_value()
+                && tt_proof_namespace(slot->key) == proof_namespace
+            ) {
+                slot.reset();
+            }
+        }
+    }
+
+    [[nodiscard]] std::uint64_t clear_tt_namespace(
+        std::uint64_t proof_namespace
+    ) noexcept {
+        std::uint64_t erased = 0;
+        for (auto item = tt.begin(); item != tt.end();) {
+            if (tt_proof_namespace(item->first) == proof_namespace) {
+                item = tt.erase(item);
+                ++erased;
+            } else {
+                ++item;
+            }
+        }
+        clear_tt_namespace_hints(proof_namespace);
+        return erased;
+    }
+
+    void discard_tail_horizon_proof_set(
+        std::uint64_t proof_namespace
+    ) noexcept {
+        if (
+            !horizon_proof_sets.empty()
+            && horizon_proof_sets.back().namespace_id == proof_namespace
+        ) {
+            horizon_proof_sets.pop_back();
+        }
+    }
+
+    void clear_generation_and_evaluation_caches_after_failure() noexcept {
+        eval_cache.clear();
+        for (auto item = generation_recency.begin();
+             item != generation_recency.end();) {
+            if (*item == external_cache_key) {
+                ++item;
+                continue;
+            }
+            const auto found = generation_cache.find(*item);
+            if (found != generation_cache.end()) {
+                generation_cache_weight -= found->second.weight;
+                generation_cache.erase(found);
+            }
+            item = generation_recency.erase(item);
+        }
     }
 
     void write_tt(const TTKey& key, TTEntry entry) {
@@ -2926,7 +3032,8 @@ SubtreeSearchResult SubtreeSearchSession::search(
             || depth > impl_->config.requested_depth
             || alpha >= beta
             || ply_from_root < 0
-            || ply_from_root > impl_->config.requested_depth + 1
+            || ply_from_root > MAX_ORDINARY_TT_PLY
+                - impl_->config.requested_depth
         ) {
             throw StopSearch(
                 SubtreeSearchStatus::Unsupported,
@@ -3276,7 +3383,39 @@ SubtreeSearchSession::search_retained_root_candidate(
     result.enumeration_identity = request.enumeration_identity;
     result.candidate_identity = request.candidate_identity;
     bool transaction_open = false;
+    bool committed_search_started = false;
+    bool new_horizon_proof_set = false;
+    std::uint64_t search_tt_namespace = 0;
+    const ValidatedHorizonProofSet* horizon_proof_set = nullptr;
     impl_->activate_horizon_proof_set(nullptr);
+    const auto abandon_search = [&]() {
+        impl_->activate_horizon_proof_set(nullptr);
+        if (transaction_open) {
+            result.tt_writes_rolled_back = impl_->rollback_transaction();
+            transaction_open = false;
+            // Transaction rollback restores the score table, but its ordering
+            // witnesses intentionally outlive successful scouts.  They are not
+            // valid after an interrupted root search.
+            impl_->clear_tt_namespace_hints(search_tt_namespace);
+        } else if (committed_search_started) {
+            // A stopped committed search has not proved its root result.  Even
+            // individually complete descendant entries can form an unsound
+            // retry when only a prefix of the root was searched, so invalidate
+            // the complete ordinary/proof namespace on failure.
+            result.tt_writes_rolled_back =
+                impl_->clear_tt_namespace(search_tt_namespace);
+        }
+        if (new_horizon_proof_set) {
+            impl_->discard_tail_horizon_proof_set(search_tt_namespace);
+            new_horizon_proof_set = false;
+        }
+        if (committed_search_started || result.tt_writes_rolled_back != 0) {
+            // Reusing only the subset of generations and evaluations assembled
+            // before interruption changes later traversal fast paths.  Retry
+            // from a clean deterministic cache context.
+            impl_->clear_generation_and_evaluation_caches_after_failure();
+        }
+    };
     try {
         impl_->configure_root_contract_call(
             request.external_work,
@@ -3319,8 +3458,15 @@ SubtreeSearchSession::search_retained_root_candidate(
         }
         result.order_index = found->order_index;
         result.root_series = found->series;
-        const ValidatedHorizonProofSet* horizon_proof_set =
-            impl_->validate_and_intern_horizon_proof_set(request, *found);
+        horizon_proof_set =
+            impl_->validate_and_intern_horizon_proof_set(
+                request,
+                *found,
+                new_horizon_proof_set
+            );
+        search_tt_namespace = horizon_proof_set == nullptr
+            ? 0
+            : horizon_proof_set->namespace_id;
         if (found->terminal_score.has_value()) {
             result.terminal = true;
             result.bound = SubtreeBoundKind::Exact;
@@ -3332,24 +3478,16 @@ SubtreeSearchSession::search_retained_root_candidate(
                 transaction_open = true;
             }
             NodeResult node;
-            try {
-                impl_->activate_horizon_proof_set(horizon_proof_set);
-                node = impl_->minimax(
-                    child_state(found->series),
-                    request.child_depth,
-                    request.alpha,
-                    request.beta,
-                    1
-                );
-            } catch (...) {
-                impl_->activate_horizon_proof_set(nullptr);
-                if (transaction_open) {
-                    result.tt_writes_rolled_back =
-                        impl_->rollback_transaction();
-                    transaction_open = false;
-                }
-                throw;
-            }
+            impl_->activate_horizon_proof_set(horizon_proof_set);
+            committed_search_started =
+                request.tt_persistence == SubtreeTTPersistence::Commit;
+            node = impl_->minimax(
+                child_state(found->series),
+                request.child_depth,
+                request.alpha,
+                request.beta,
+                1
+            );
             const std::uint64_t horizon_proof_hits =
                 impl_->active_horizon_proof_hits;
             const std::uint16_t horizon_proof_hit_mask =
@@ -3378,10 +3516,7 @@ SubtreeSearchSession::search_retained_root_candidate(
                     : SubtreeBoundKind::Exact;
         }
     } catch (const StopSearch& stopped) {
-        impl_->activate_horizon_proof_set(nullptr);
-        if (transaction_open) {
-            result.tt_writes_rolled_back = impl_->rollback_transaction();
-        }
+        abandon_search();
         result.status = stopped.status;
         result.message = stopped.message;
         result.bound = SubtreeBoundKind::Unknown;
@@ -3390,6 +3525,9 @@ SubtreeSearchSession::search_retained_root_candidate(
         result.horizon_proofs_validated = 0;
         result.horizon_proof_hits = 0;
         result.horizon_proof_hit_mask = 0;
+    } catch (...) {
+        abandon_search();
+        throw;
     }
     result.work = work_receipt(
         before,
