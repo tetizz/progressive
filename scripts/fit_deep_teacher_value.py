@@ -5,6 +5,7 @@ import ast
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+from importlib import metadata as importlib_metadata
 import inspect
 import json
 import math
@@ -62,6 +63,26 @@ TEACHER_SEMANTIC_HASH_CONTRACT = (
 FIXED_POINT_SCALE = 1_000_000_000
 MATE_SCORE = 1_000_000
 DEFAULT_ADVERSE_PAIR_WEIGHT = 8.0
+CYCLE8_PROTOCOL_MODE = "cycle8-all-nonterminal-pairs-v1"
+CYCLE9_PROTOCOL_MODE = "cycle9-best-safe-root-ranking-v1"
+CYCLE9_PREREGISTRATION_SCHEMA = "spc-cycle9-one-shot-protocol-v2"
+CYCLE9_PRIMARY_ROLE = "primary_all47"
+CYCLE9_DIAGNOSTIC_ROLE = "direct44_diagnostic"
+CYCLE9_LOSS_CONTRACT = (
+    "root-normalized-best-safe-vs-rest-plus-safe-adverse-v1"
+)
+CYCLE9_REFERENCE_HARD_WEIGHT = 4.0
+CYCLE9_REFERENCE_HARD_REGRET_THRESHOLD = 0.05
+CYCLE9_ADVERSE_PAIR_WEIGHTS = (32.0, 128.0, 512.0)
+CYCLE9_RIDGES = (0.003, 0.01, 0.03, 0.1, 0.3, 1.0)
+CYCLE9_CV_FOLDS = 5
+CYCLE9_BOOTSTRAP_SAMPLES = 100_000
+CYCLE9_BOOTSTRAP_CONFIDENCE = 0.95
+CYCLE9_PAIRWISE_POINT_NONINFERIORITY_MARGIN = -0.001
+CYCLE9_PAIRWISE_LOWER_CONFIDENCE_MARGIN = -0.005
+CYCLE9_DIAGNOSTIC_MINIMUM_REGRET_GAIN = 0.003
+CYCLE9_DIAGNOSTIC_MAXIMUM_PAIRWISE_LOSS = 0.002
+CYCLE9_GATE_ABSOLUTE_TOLERANCE = 1e-12
 BASELINE_WEIGHTS = (100,) * len(FEATURE_NAMES)
 DEVELOPMENT_PROFILE_WEIGHTS = (238, 188, 203, 223, 28, 164, 294)
 NONROUTE_GROUPS = (
@@ -121,6 +142,17 @@ REQUIRED_POST_HOLDOUT_GATES = [
     "runtime overhead gate",
     "independent paired match or SPRT against deployed 37937e0 or newer champion",
 ]
+CYCLE9_REQUIRED_PRIMARY_GATES = [
+    "select zero proven-adverse and zero avoidable proven-adverse options overall and in every mover and teacher-tier stratum",
+    "have strictly lower normalized regret than baseline and rejected development leader overall and for white, black, quiet-depth2, and frozen reference-hard roots",
+    "have zero tactical-depth3 normalized regret and zero tactical proven-adverse selections",
+    "have a one-sided 95% paired stratified bootstrap upper confidence bound below zero for normalized-regret difference versus baseline and rejected development leader",
+    "have gap-weighted pairwise-accuracy point difference at least -0.001 and one-sided 95% paired stratified bootstrap lower confidence bound at least -0.005 versus baseline and rejected development leader",
+]
+CYCLE9_REQUIRED_DIAGNOSTIC_GATES = [
+    "primary_all47 normalized regret improves over direct44_diagnostic by at least 0.003",
+    "primary_all47 gap-weighted pairwise accuracy is no more than 0.002 below direct44_diagnostic",
+]
 SHARED_TRAJECTORY_FIELDS = {
     "first_attempt",
     "shard_size",
@@ -155,6 +187,66 @@ TEACHER_TIER_FIELDS = {
     "selection_mode",
     "tactical_gate",
 }
+
+
+def _cycle9_fit_protocol_contract(*, statistics_seed: int) -> dict[str, Any]:
+    if type(statistics_seed) is not int or statistics_seed <= 0:
+        raise ValueError("Cycle 9 statistics seed must be a positive integer")
+    return {
+        "mode": CYCLE9_PROTOCOL_MODE,
+        "feature_roles": {
+            CYCLE9_PRIMARY_ROLE: "all47",
+            CYCLE9_DIAGNOSTIC_ROLE: "direct44",
+        },
+        "loss": CYCLE9_LOSS_CONTRACT,
+        "reference_hard": {
+            "roles": ["baseline", "rejected_leader"],
+            "definition": (
+                "move-disagreement-or-adverse-or-normalized-regret-at-least-threshold"
+            ),
+            "normalized_regret_threshold": (
+                CYCLE9_REFERENCE_HARD_REGRET_THRESHOLD
+            ),
+            "weight": CYCLE9_REFERENCE_HARD_WEIGHT,
+        },
+        "adverse_pair_weights": list(CYCLE9_ADVERSE_PAIR_WEIGHTS),
+        "ridges": list(CYCLE9_RIDGES),
+        "cross_validation": {
+            "folds": CYCLE9_CV_FOLDS,
+            "assignment": "semantic-component-disjoint-stratified-v1",
+            "objective": [
+                "chosen_avoidable_proven_adverse",
+                "chosen_proven_adverse",
+                "worst_mover_normalized_regret",
+                "reference_hard_normalized_regret",
+                "normalized_regret",
+                "negative_gap_weighted_pairwise_accuracy",
+                "ridge",
+                "adverse_pair_weight",
+            ],
+        },
+        "statistics": {
+            "seed": statistics_seed,
+            "bootstrap_samples": CYCLE9_BOOTSTRAP_SAMPLES,
+            "confidence": CYCLE9_BOOTSTRAP_CONFIDENCE,
+            "stratification": ["mover", "teacher_tier"],
+        },
+        "gates": {
+            "absolute_tolerance": CYCLE9_GATE_ABSOLUTE_TOLERANCE,
+            "pairwise_point_noninferiority_margin": (
+                CYCLE9_PAIRWISE_POINT_NONINFERIORITY_MARGIN
+            ),
+            "pairwise_lower_confidence_margin": (
+                CYCLE9_PAIRWISE_LOWER_CONFIDENCE_MARGIN
+            ),
+            "diagnostic_minimum_regret_gain": (
+                CYCLE9_DIAGNOSTIC_MINIMUM_REGRET_GAIN
+            ),
+            "diagnostic_maximum_pairwise_loss": (
+                CYCLE9_DIAGNOSTIC_MAXIMUM_PAIRWISE_LOSS
+            ),
+        },
+    }
 
 
 def _canonical_json(value: Mapping[str, Any]) -> bytes:
@@ -204,6 +296,18 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _numpy_distribution_record_sha256() -> str:
+    distribution = importlib_metadata.distribution("numpy")
+    records = [
+        item
+        for item in (distribution.files or ())
+        if item.name == "RECORD" and ".dist-info" in item.as_posix()
+    ]
+    if len(records) != 1:
+        raise RuntimeError("installed NumPy distribution RECORD is unavailable")
+    return _sha256(Path(distribution.locate_file(records[0])).resolve())
 
 
 def _implementation_hashes() -> dict[str, str]:
@@ -333,6 +437,39 @@ class Preregistration:
     manifest: Mapping[str, Any]
 
 
+def _protocol_mode(value: Preregistration | str) -> str:
+    schema = value.schema if isinstance(value, Preregistration) else str(value)
+    if schema == CYCLE9_PREREGISTRATION_SCHEMA:
+        return CYCLE9_PROTOCOL_MODE
+    if PREREGISTRATION_SCHEMA.fullmatch(schema) is not None:
+        return CYCLE8_PROTOCOL_MODE
+    raise ValueError(f"unsupported preregistration schema: {schema!r}")
+
+
+def _validate_cycle9_fit_protocol(
+    value: object,
+    *,
+    train_seed: int,
+    holdout_seed: int,
+    teacher_seed: int,
+) -> None:
+    if not isinstance(value, Mapping):
+        raise ValueError("Cycle 9 fit protocol differs: contract is malformed")
+    statistics = value.get("statistics")
+    if not isinstance(statistics, Mapping):
+        raise ValueError("Cycle 9 fit protocol differs: statistics are malformed")
+    statistics_seed = statistics.get("seed")
+    if type(statistics_seed) is not int or statistics_seed <= 0:
+        raise ValueError("Cycle 9 fit protocol differs: statistics seed is invalid")
+    if statistics_seed in {train_seed, holdout_seed, teacher_seed}:
+        raise ValueError(
+            "Cycle 9 fit protocol differs: statistics seed is not independent"
+        )
+    expected = _cycle9_fit_protocol_contract(statistics_seed=statistics_seed)
+    if dict(value) != expected:
+        raise ValueError("Cycle 9 fit protocol differs from the frozen contract")
+
+
 def _repository_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -400,6 +537,17 @@ def _holdout_claim_path(preregistration: Preregistration) -> Path:
 
 
 def _protocol_contract_hashes() -> dict[str, str]:
+    def ast_sha256(*functions: Callable[..., Any]) -> str:
+        payload = b"\0".join(
+            ast.dump(
+                ast.parse(inspect.getsource(function)),
+                annotate_fields=True,
+                include_attributes=False,
+            ).encode("utf-8")
+            for function in functions
+        )
+        return hashlib.sha256(payload).hexdigest()
+
     feature_contract = {
         "feature_schema": TEACHER_VALUE_FEATURE_SCHEMA,
         "feature_names": list(TEACHER_VALUE_FEATURE_NAMES),
@@ -426,6 +574,45 @@ def _protocol_contract_hashes() -> dict[str, str]:
         annotate_fields=True,
         include_attributes=False,
     ).encode("utf-8")
+    cycle9_contract = _cycle9_fit_protocol_contract(statistics_seed=1)
+    cycle9_contract["statistics"]["seed"] = "preregistered-positive-int"
+    cycle9_constants = {
+        "cycle8_protocol_mode": CYCLE8_PROTOCOL_MODE,
+        "cycle9_protocol_mode": CYCLE9_PROTOCOL_MODE,
+        "cycle9_preregistration_schema": CYCLE9_PREREGISTRATION_SCHEMA,
+        "primary_role": CYCLE9_PRIMARY_ROLE,
+        "diagnostic_role": CYCLE9_DIAGNOSTIC_ROLE,
+        "loss_contract": CYCLE9_LOSS_CONTRACT,
+        "reference_hard_weight": CYCLE9_REFERENCE_HARD_WEIGHT,
+        "reference_hard_regret_threshold": (
+            CYCLE9_REFERENCE_HARD_REGRET_THRESHOLD
+        ),
+        "adverse_pair_weights": list(CYCLE9_ADVERSE_PAIR_WEIGHTS),
+        "ridges": list(CYCLE9_RIDGES),
+        "cross_validation_folds": CYCLE9_CV_FOLDS,
+        "bootstrap_samples": CYCLE9_BOOTSTRAP_SAMPLES,
+        "bootstrap_confidence": CYCLE9_BOOTSTRAP_CONFIDENCE,
+        "pairwise_point_noninferiority_margin": (
+            CYCLE9_PAIRWISE_POINT_NONINFERIORITY_MARGIN
+        ),
+        "pairwise_lower_confidence_margin": (
+            CYCLE9_PAIRWISE_LOWER_CONFIDENCE_MARGIN
+        ),
+        "diagnostic_minimum_regret_gain": (
+            CYCLE9_DIAGNOSTIC_MINIMUM_REGRET_GAIN
+        ),
+        "diagnostic_maximum_pairwise_loss": (
+            CYCLE9_DIAGNOSTIC_MAXIMUM_PAIRWISE_LOSS
+        ),
+        "gate_absolute_tolerance": CYCLE9_GATE_ABSOLUTE_TOLERANCE,
+        "required_primary_gates": list(CYCLE9_REQUIRED_PRIMARY_GATES),
+        "required_diagnostic_gates": list(CYCLE9_REQUIRED_DIAGNOSTIC_GATES),
+        "required_post_holdout_gates": list(REQUIRED_POST_HOLDOUT_GATES),
+        "numpy_runtime_fields": [
+            "numpy_version",
+            "numpy_distribution_record_sha256",
+        ],
+    }
     return {
         "feature_contract_sha256": hashlib.sha256(
             _canonical_json(feature_contract)
@@ -434,6 +621,46 @@ def _protocol_contract_hashes() -> dict[str, str]:
             _canonical_json(selection_contract)
         ).hexdigest(),
         "holdout_gate_ast_sha256": hashlib.sha256(holdout_gate_ast).hexdigest(),
+        "cycle9_mode_contract_sha256": hashlib.sha256(
+            _canonical_json(cycle9_contract)
+        ).hexdigest(),
+        "cycle9_mode_constants_sha256": hashlib.sha256(
+            _canonical_json(cycle9_constants)
+        ).hexdigest(),
+        "cycle9_loss_ast_sha256": ast_sha256(_cycle9_pairwise_rows),
+        "cycle9_fold_ast_sha256": ast_sha256(
+            _cycle9_strata,
+            _assign_cycle9_stratified_components,
+            _folds,
+        ),
+        "cycle9_cv_objective_ast_sha256": ast_sha256(
+            _reference_hard_keys,
+            _metrics_from_rows,
+            _cycle9_metrics_from_rows,
+            _cross_validate,
+            _cycle9_metric_objective,
+            _cycle9_selection_key,
+        ),
+        "cycle9_bootstrap_ast_sha256": ast_sha256(
+            _aligned_paired_rows,
+            _paired_stratified_bootstrap,
+            _cycle9_derived_statistics_seed,
+            _cycle9_paired_evidence,
+        ),
+        "cycle9_holdout_gate_ast_sha256": ast_sha256(
+            _cycle9_at_least,
+            _cycle9_at_most,
+            _cycle9_holdout_gate,
+            _cycle9_holdout_status,
+            _cycle9_aggregate_analysis,
+        ),
+        "cycle9_aggregate_guard_ast_sha256": ast_sha256(
+            _assert_cycle9_aggregate_only
+        ),
+        "cycle9_numpy_runtime_ast_sha256": ast_sha256(
+            _numpy_distribution_record_sha256,
+            _validate_cycle9_fit_receipt_runtime,
+        ),
     }
 
 
@@ -447,16 +674,23 @@ def _current_frozen_implementation() -> dict[str, str]:
     }
 
 
-def _validate_preregistered_runtime(runtime: object) -> None:
+def _validate_preregistered_runtime(
+    runtime: object, *, protocol_mode: str = CYCLE8_PROTOCOL_MODE
+) -> None:
+    expected_fields = {
+        "platform",
+        "python",
+        "compiler",
+        "native_eval_binary_sha256",
+        "native_mate_binary_sha256",
+    }
+    if protocol_mode == CYCLE9_PROTOCOL_MODE:
+        expected_fields.update(
+            {"numpy_version", "numpy_distribution_record_sha256"}
+        )
     runtime = _require_exact_fields(
         runtime,
-        {
-            "platform",
-            "python",
-            "compiler",
-            "native_eval_binary_sha256",
-            "native_mate_binary_sha256",
-        },
+        expected_fields,
         "runtime contract",
     )
     expected_python = runtime.get("python")
@@ -471,6 +705,16 @@ def _validate_preregistered_runtime(runtime: object) -> None:
         raise ValueError(
             f"preregistration platform drifted: {expected_platform!r} != {actual_platform!r}"
         )
+    if protocol_mode == CYCLE9_PROTOCOL_MODE:
+        if runtime.get("numpy_version") != np.__version__:
+            raise ValueError("preregistration NumPy version drifted")
+        expected_record = runtime.get("numpy_distribution_record_sha256")
+        if (
+            not isinstance(expected_record, str)
+            or HEX_SHA256.fullmatch(expected_record) is None
+            or expected_record != _numpy_distribution_record_sha256()
+        ):
+            raise ValueError("preregistration NumPy distribution RECORD drifted")
     expected_compiler = runtime.get("compiler")
     actual_compiler = platform.python_compiler()
     compiler_match = re.search(r"MSC v\.(\d{2})(\d{2})", actual_compiler)
@@ -557,8 +801,7 @@ def _load_preregistration(path: Path) -> Preregistration:
     path = path.expanduser().resolve()
     manifest, manifest_raw_sha = _read_json_artifact(path)
     schema = str(manifest.get("schema", ""))
-    if PREREGISTRATION_SCHEMA.fullmatch(schema) is None:
-        raise ValueError(f"unsupported preregistration schema: {schema!r}")
+    protocol_mode = _protocol_mode(schema)
     if manifest.get("status") != "pre-registered-before-generation":
         raise ValueError("preregistration was not frozen before generation")
 
@@ -716,6 +959,14 @@ def _load_preregistration(path: Path) -> Preregistration:
     ):
         raise ValueError("preregistration merged teacher counts differ from tiers")
 
+    if protocol_mode == CYCLE9_PROTOCOL_MODE:
+        _validate_cycle9_fit_protocol(
+            manifest.get("fit_protocol"),
+            train_seed=train_seed,
+            holdout_seed=holdout_seed,
+            teacher_seed=int(teacher["selection_seed"]),
+        )
+
     integrity = _require_exact_fields(
         manifest.get("integrity"),
         {
@@ -751,25 +1002,54 @@ def _load_preregistration(path: Path) -> Preregistration:
     ):
         raise ValueError("preregistration teacher semantic-hash contract differs")
 
-    gates = _require_exact_fields(
-        manifest.get("one_shot_gates"),
-        {
-            "candidate_roles",
-            "each_candidate_must",
-            "route_ablation_must",
-            "post_holdout_required_before_promotion",
-        },
-        "one-shot gates",
-    )
-    roles = gates.get("candidate_roles")
-    if roles != ["primary_nonroute", "distilled_seven_weight"]:
-        raise ValueError("preregistration candidate roles differ")
-    if gates.get("each_candidate_must") != REQUIRED_CANDIDATE_GATES:
-        raise ValueError("preregistration candidate holdout gates differ")
-    if gates.get("route_ablation_must") != REQUIRED_ROUTE_ABLATION_GATES:
-        raise ValueError("preregistration route-ablation holdout gates differ")
-    if gates.get("post_holdout_required_before_promotion") != REQUIRED_POST_HOLDOUT_GATES:
-        raise ValueError("preregistration post-holdout gates differ")
+    if protocol_mode == CYCLE9_PROTOCOL_MODE:
+        gates = _require_exact_fields(
+            manifest.get("one_shot_gates"),
+            {
+                "promotable_candidate_roles",
+                "diagnostic_roles",
+                "primary_candidate_must",
+                "diagnostic_must",
+                "post_holdout_required_before_promotion",
+            },
+            "Cycle 9 one-shot gates",
+        )
+        if gates.get("promotable_candidate_roles") != [CYCLE9_PRIMARY_ROLE]:
+            raise ValueError("Cycle 9 promotable candidate roles differ")
+        if gates.get("diagnostic_roles") != [CYCLE9_DIAGNOSTIC_ROLE]:
+            raise ValueError("Cycle 9 diagnostic roles differ")
+        if gates.get("primary_candidate_must") != CYCLE9_REQUIRED_PRIMARY_GATES:
+            raise ValueError("Cycle 9 primary holdout gates differ")
+        if gates.get("diagnostic_must") != CYCLE9_REQUIRED_DIAGNOSTIC_GATES:
+            raise ValueError("Cycle 9 diagnostic holdout gates differ")
+        if (
+            gates.get("post_holdout_required_before_promotion")
+            != REQUIRED_POST_HOLDOUT_GATES
+        ):
+            raise ValueError("preregistration post-holdout gates differ")
+    else:
+        gates = _require_exact_fields(
+            manifest.get("one_shot_gates"),
+            {
+                "candidate_roles",
+                "each_candidate_must",
+                "route_ablation_must",
+                "post_holdout_required_before_promotion",
+            },
+            "one-shot gates",
+        )
+        roles = gates.get("candidate_roles")
+        if roles != ["primary_nonroute", "distilled_seven_weight"]:
+            raise ValueError("preregistration candidate roles differ")
+        if gates.get("each_candidate_must") != REQUIRED_CANDIDATE_GATES:
+            raise ValueError("preregistration candidate holdout gates differ")
+        if gates.get("route_ablation_must") != REQUIRED_ROUTE_ABLATION_GATES:
+            raise ValueError("preregistration route-ablation holdout gates differ")
+        if (
+            gates.get("post_holdout_required_before_promotion")
+            != REQUIRED_POST_HOLDOUT_GATES
+        ):
+            raise ValueError("preregistration post-holdout gates differ")
 
     preflight = _require_exact_fields(
         manifest.get("preflight"),
@@ -832,7 +1112,9 @@ def _load_preregistration(path: Path) -> Preregistration:
 
     if "runtime" not in manifest:
         raise ValueError("preregistration runtime contract is missing")
-    _validate_preregistered_runtime(manifest["runtime"])
+    _validate_preregistered_runtime(
+        manifest["runtime"], protocol_mode=protocol_mode
+    )
     return Preregistration(
         path=path,
         sha256=manifest_raw_sha,
@@ -2299,8 +2581,20 @@ def _pairwise_rows(
     labels: Sequence[TeacherLabel],
     group: str,
     adverse_pair_weight: float = DEFAULT_ADVERSE_PAIR_WEIGHT,
+    *,
+    training_mode: str = CYCLE8_PROTOCOL_MODE,
+    reference_hard_keys: Iterable[str] = (),
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     adverse_pair_weight = _validate_adverse_pair_weight(adverse_pair_weight)
+    if training_mode == CYCLE9_PROTOCOL_MODE:
+        return _cycle9_pairwise_rows(
+            labels,
+            group,
+            adverse_pair_weight=adverse_pair_weight,
+            reference_hard_keys=reference_hard_keys,
+        )
+    if training_mode != CYCLE8_PROTOCOL_MODE:
+        raise ValueError(f"unsupported teacher training mode: {training_mode}")
     rows: list[tuple[int, ...]] = []
     outcomes: list[float] = []
     weights: list[float] = []
@@ -2344,15 +2638,102 @@ def _pairwise_rows(
     )
 
 
+def _cycle9_pairwise_rows(
+    labels: Sequence[TeacherLabel],
+    group: str,
+    *,
+    adverse_pair_weight: float,
+    reference_hard_keys: Iterable[str],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    hard_keys = frozenset(str(key) for key in reference_hard_keys)
+    rows: list[tuple[int, ...]] = []
+    outcomes: list[float] = []
+    weights: list[float] = []
+    for label in labels:
+        rankable = tuple(option for option in label.options if option.outcome is None)
+        if len(rankable) < 2:
+            continue
+        safe = tuple(
+            option for option in rankable if not _option_is_mover_adverse(label, option)
+        )
+        target_pool = safe or rankable
+        target = max(
+            target_pool,
+            key=lambda option: label.mover_sign * option.score_white,
+        )
+        challengers = tuple(option for option in rankable if option is not target)
+        base_rows = tuple(
+            (
+                challenger,
+                min(1.0, abs(target.score_white - challenger.score_white) / 1000.0),
+            )
+            for challenger in challengers
+            if target.score_white != challenger.score_white
+        )
+        root_multiplier = (
+            CYCLE9_REFERENCE_HARD_WEIGHT if label.state_key in hard_keys else 1.0
+        )
+        total_gap_weight = sum(weight for _challenger, weight in base_rows)
+        if total_gap_weight:
+            target_features = _selected_features(target, group)
+            for challenger, gap_weight in base_rows:
+                challenger_features = _selected_features(challenger, group)
+                rows.append(
+                    tuple(
+                        target_value - challenger_value
+                        for target_value, challenger_value in zip(
+                            target_features, challenger_features, strict=True
+                        )
+                    )
+                )
+                outcomes.append(float(label.mover_sign))
+                weights.append(root_multiplier * gap_weight / total_gap_weight)
+
+        adverse = tuple(
+            option for option in challengers if _option_is_mover_adverse(label, option)
+        )
+        if safe and adverse:
+            target_features = _selected_features(target, group)
+            safety_weight = (
+                root_multiplier * adverse_pair_weight / len(adverse)
+            )
+            for challenger in adverse:
+                challenger_features = _selected_features(challenger, group)
+                rows.append(
+                    tuple(
+                        target_value - challenger_value
+                        for target_value, challenger_value in zip(
+                            target_features, challenger_features, strict=True
+                        )
+                    )
+                )
+                outcomes.append(float(label.mover_sign))
+                weights.append(safety_weight)
+    if not rows:
+        raise ValueError("teacher train split has no nonterminal ranking pairs")
+    return (
+        np.asarray(rows, dtype=np.float64),
+        np.asarray(outcomes, dtype=np.float64),
+        np.asarray(weights, dtype=np.float64),
+    )
+
+
 def _fit_pairwise(
     labels: Sequence[TeacherLabel],
     group: str,
     ridge: float,
     adverse_pair_weight: float = DEFAULT_ADVERSE_PAIR_WEIGHT,
+    *,
+    training_mode: str = CYCLE8_PROTOCOL_MODE,
+    reference_hard_keys: Iterable[str] = (),
 ) -> tuple[np.ndarray, dict[str, Any]]:
     adverse_pair_weight = _validate_adverse_pair_weight(adverse_pair_weight)
     rows, outcomes, sample_weights = _pairwise_rows(
-        labels, group, adverse_pair_weight
+        labels,
+        group,
+        adverse_pair_weight,
+        training_mode=training_mode,
+        reference_hard_keys=reference_hard_keys,
     )
     deviations = np.sqrt(np.average(rows * rows, axis=0, weights=sample_weights))
     deviations[deviations < 1e-9] = 1.0
@@ -2408,13 +2789,22 @@ def _fit_pairwise(
         if float(np.max(np.abs(rate * step))) < 1e-8:
             break
     raw = parameters / deviations
-    return raw, {
+    fit = {
         "group": group,
         "ridge": ridge,
         "pairs": len(outcomes),
         "iterations": iterations,
         "adverse_pair_weight": adverse_pair_weight,
     }
+    if training_mode == CYCLE9_PROTOCOL_MODE:
+        fit.update(
+            {
+                "training_mode": training_mode,
+                "loss_contract": CYCLE9_LOSS_CONTRACT,
+                "reference_hard_weight": CYCLE9_REFERENCE_HARD_WEIGHT,
+            }
+        )
+    return raw, fit
 
 
 def _terminal_score(label: TeacherLabel, option: TeacherOption) -> int | None:
@@ -2543,6 +2933,42 @@ def _metric_rows(
     return rows
 
 
+def _reference_hard_keys(
+    labels: Sequence[TeacherLabel],
+    scorers: Mapping[
+        str, Callable[[TeacherLabel, TeacherOption], float]
+    ],
+) -> frozenset[str]:
+    if set(scorers) != {"baseline", "rejected_leader"}:
+        raise ValueError(
+            "Cycle 9 reference-hard roles must be baseline and rejected_leader"
+        )
+    by_reference = {
+        name: {
+            str(row["state_key"]): row
+            for row in _metric_rows(labels, scorer)
+        }
+        for name, scorer in scorers.items()
+    }
+    hard: set[str] = set()
+    for label in labels:
+        rows = [
+            by_reference[name][label.state_key]
+            for name in ("baseline", "rejected_leader")
+        ]
+        if (
+            rows[0]["chosen_series"] != rows[1]["chosen_series"]
+            or any(bool(row["chosen_proven_adverse"]) for row in rows)
+            or any(
+                float(row["normalized_regret"])
+                >= CYCLE9_REFERENCE_HARD_REGRET_THRESHOLD
+                for row in rows
+            )
+        ):
+            hard.add(label.state_key)
+    return frozenset(hard)
+
+
 def _summarize_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     if not rows:
         return {
@@ -2575,8 +3001,22 @@ def _metrics(
     scorer: Callable[[TeacherLabel, TeacherOption], float],
     *,
     include_rows: bool = False,
+    reference_hard_keys: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     rows = _metric_rows(labels, scorer)
+    result = _metrics_from_rows(
+        rows, reference_hard_keys=reference_hard_keys
+    )
+    if include_rows:
+        result["rows"] = rows
+    return result
+
+
+def _metrics_from_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    reference_hard_keys: Iterable[str] | None = None,
+) -> dict[str, Any]:
     strata: dict[str, dict[str, Any]] = {}
     partitions: dict[str, Callable[[Mapping[str, Any]], str]] = {
         "mover": lambda row: str(row["mover"]),
@@ -2594,13 +3034,35 @@ def _metrics(
             name: _summarize_rows(bucket)
             for name, bucket in sorted(buckets.items())
         }
+    if reference_hard_keys is not None:
+        hard_keys = frozenset(str(key) for key in reference_hard_keys)
+        strata["reference_hard"] = {
+            "hard": _summarize_rows(
+                [row for row in rows if row["state_key"] in hard_keys]
+            )
+        }
     result = {
         "overall": _summarize_rows(rows),
         "strata": strata,
     }
-    if include_rows:
-        result["rows"] = rows
     return result
+
+
+def _cycle9_metrics_from_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    reference_hard_keys: Iterable[str],
+) -> dict[str, Any]:
+    metrics = _metrics_from_rows(
+        rows, reference_hard_keys=reference_hard_keys
+    )
+    return {
+        "overall": metrics["overall"],
+        "strata": {
+            name: metrics["strata"][name]
+            for name in ("mover", "teacher_tier", "reference_hard")
+        },
+    }
 
 
 def _label_semantic_keys(label: TeacherLabel) -> frozenset[str]:
@@ -2610,7 +3072,11 @@ def _label_semantic_keys(label: TeacherLabel) -> frozenset[str]:
 
 
 def _folds(
-    labels: Sequence[TeacherLabel], count: int = 5
+    labels: Sequence[TeacherLabel],
+    count: int = 5,
+    *,
+    training_mode: str = CYCLE8_PROTOCOL_MODE,
+    seed: int = 0,
 ) -> tuple[tuple[TeacherLabel, ...], ...]:
     # Root-disjoint folds are insufficient when two teacher roots transpose to
     # the same retained option state.  Union every label connected by either a
@@ -2643,6 +3109,10 @@ def _folds(
         raise ValueError(
             "teacher train split has fewer than two semantic-state components"
         )
+    if type(count) is not int or count <= 0:
+        raise ValueError("cross-validation fold count must be a positive integer")
+    if type(seed) is not int or seed < 0:
+        raise ValueError("cross-validation seed must be a nonnegative integer")
 
     def component_key(component: Sequence[TeacherLabel]) -> tuple[Any, ...]:
         keys = sorted(
@@ -2653,18 +3123,130 @@ def _folds(
         ).digest()
         return (-len(component), digest, tuple(label.state_key for label in component))
 
-    buckets: list[list[TeacherLabel]] = [
-        [] for _ in range(min(count, len(grouped)))
-    ]
-    for component in sorted(grouped, key=component_key):
-        bucket_index = min(
-            range(len(buckets)), key=lambda index: (len(buckets[index]), index)
-        )
-        buckets[bucket_index].extend(component)
+    if training_mode == CYCLE8_PROTOCOL_MODE:
+        buckets: list[list[TeacherLabel]] = [
+            [] for _ in range(min(count, len(grouped)))
+        ]
+        for component in sorted(grouped, key=component_key):
+            bucket_index = min(
+                range(len(buckets)), key=lambda index: (len(buckets[index]), index)
+            )
+            buckets[bucket_index].extend(component)
+    elif training_mode == CYCLE9_PROTOCOL_MODE:
+        if count != CYCLE9_CV_FOLDS:
+            raise ValueError("Cycle 9 requires exactly five cross-validation folds")
+        if len(grouped) < CYCLE9_CV_FOLDS:
+            raise ValueError(
+                "Cycle 9 requires at least five semantic-state components"
+            )
+        buckets = [[] for _ in range(CYCLE9_CV_FOLDS)]
+        _assign_cycle9_stratified_components(grouped, buckets, seed=seed)
+        if any(not bucket for bucket in buckets):
+            raise AssertionError("Cycle 9 stratification produced an empty fold")
+    else:
+        raise ValueError(f"unsupported teacher training mode: {training_mode}")
     return tuple(
         tuple(sorted(bucket, key=lambda label: label.state_key))
         for bucket in buckets
     )
+
+
+def _cycle9_strata(label: TeacherLabel) -> tuple[str, ...]:
+    mover = "white" if label.mover_sign == 1 else "black"
+    return (
+        f"mover_tier:{mover}|{label.teacher_tier}",
+        f"mover:{mover}",
+        f"teacher_tier:{label.teacher_tier}",
+        f"series:{label.series_number}",
+        f"source_profile:{label.source_profile_id}",
+    )
+
+
+def _assign_cycle9_stratified_components(
+    components: Sequence[Sequence[TeacherLabel]],
+    buckets: list[list[TeacherLabel]],
+    *,
+    seed: int,
+) -> None:
+    component_counts: list[dict[str, int]] = []
+    totals: dict[str, int] = {}
+    component_digests: list[str] = []
+    for component in components:
+        counts: dict[str, int] = {}
+        semantic_keys = sorted(
+            key for label in component for key in _label_semantic_keys(label)
+        )
+        for label in component:
+            for stratum in _cycle9_strata(label):
+                counts[stratum] = counts.get(stratum, 0) + 1
+                totals[stratum] = totals.get(stratum, 0) + 1
+        component_counts.append(counts)
+        component_digests.append(
+            hashlib.sha256(
+                (
+                    f"cycle9-cv-component|{seed}|" + "|".join(semantic_keys)
+                ).encode("utf-8")
+            ).hexdigest()
+        )
+
+    fold_counts: list[dict[str, int]] = [{} for _ in buckets]
+    targets = {
+        stratum: total / len(buckets) for stratum, total in totals.items()
+    }
+
+    def category_weight(stratum: str) -> float:
+        if stratum.startswith(("mover_tier:", "series:")):
+            return 100.0
+        if stratum.startswith(("mover:", "teacher_tier:")):
+            return 10.0
+        return 1.0
+
+    def ordering(index: int) -> tuple[Any, ...]:
+        counts = component_counts[index]
+        rarity = sum(
+            category_weight(stratum) * count / totals[stratum]
+            for stratum, count in counts.items()
+        )
+        return (-len(components[index]), -rarity, component_digests[index])
+
+    for component_index in sorted(range(len(components)), key=ordering):
+        counts = component_counts[component_index]
+
+        def placement_score(bucket_index: int) -> tuple[Any, ...]:
+            current = fold_counts[bucket_index]
+
+            def delta(stratum: str, count: int) -> float:
+                before = current.get(stratum, 0) - targets[stratum]
+                after = before + count
+                return after * after - before * before
+
+            total_deviation = sum(
+                category_weight(stratum) * delta(stratum, count)
+                for stratum, count in counts.items()
+            )
+            size_target = sum(map(len, components)) / len(buckets)
+            before_size = len(buckets[bucket_index]) - size_target
+            after_size = before_size + len(components[component_index])
+            size_deviation = after_size * after_size - before_size * before_size
+            tie = hashlib.sha256(
+                (
+                    f"cycle9-cv-placement|{seed}|"
+                    f"{component_digests[component_index]}|{bucket_index}"
+                ).encode("utf-8")
+            ).digest()
+            return (
+                total_deviation,
+                size_deviation,
+                tie,
+                bucket_index,
+            )
+
+        selected = min(range(len(buckets)), key=placement_score)
+        buckets[selected].extend(components[component_index])
+        for stratum, count in counts.items():
+            fold_counts[selected][stratum] = (
+                fold_counts[selected].get(stratum, 0) + count
+            )
 
 
 def _cross_validate(
@@ -2672,9 +3254,18 @@ def _cross_validate(
     group: str,
     ridge: float,
     adverse_pair_weight: float = DEFAULT_ADVERSE_PAIR_WEIGHT,
+    *,
+    training_mode: str = CYCLE8_PROTOCOL_MODE,
+    reference_hard_keys: Iterable[str] = (),
+    fold_seed: int = 0,
 ) -> dict[str, Any]:
     adverse_pair_weight = _validate_adverse_pair_weight(adverse_pair_weight)
-    folds = _folds(labels)
+    hard_keys = frozenset(str(key) for key in reference_hard_keys)
+    folds = _folds(
+        labels,
+        training_mode=training_mode,
+        seed=fold_seed,
+    )
     all_rows: list[dict[str, Any]] = []
     fold_rows: list[dict[str, Any]] = []
     for index, validation in enumerate(folds):
@@ -2694,10 +3285,22 @@ def _cross_validate(
                 f"cross-validation semantic-state leakage: {len(semantic_overlap)}"
             )
         coefficients, fit = _fit_pairwise(
-            training, group, ridge, adverse_pair_weight
+            training,
+            group,
+            ridge,
+            adverse_pair_weight,
+            training_mode=training_mode,
+            reference_hard_keys=hard_keys,
         )
         rows = _metric_rows(validation, _linear_scorer(coefficients, group))
         all_rows.extend(rows)
+        fold_metrics: dict[str, Any]
+        if training_mode == CYCLE9_PROTOCOL_MODE:
+            fold_metrics = _cycle9_metrics_from_rows(
+                rows, reference_hard_keys=hard_keys
+            )
+        else:
+            fold_metrics = _summarize_rows(rows)
         fold_rows.append(
             {
                 "fold": index,
@@ -2707,16 +3310,26 @@ def _cross_validate(
                 "validation_semantic_keys": len(validation_semantic_keys),
                 "semantic_key_overlap": 0,
                 "fit": fit,
-                "metrics": _summarize_rows(rows),
+                "metrics": fold_metrics,
             }
         )
-    return {
+    result = {
         "group": group,
         "ridge": ridge,
         "adverse_pair_weight": adverse_pair_weight,
-        "out_of_fold": _summarize_rows(all_rows),
+        "out_of_fold": (
+            _cycle9_metrics_from_rows(all_rows, reference_hard_keys=hard_keys)
+            if training_mode == CYCLE9_PROTOCOL_MODE
+            else _summarize_rows(all_rows)
+        ),
         "folds": fold_rows,
     }
+    if training_mode == CYCLE9_PROTOCOL_MODE:
+        result["training_mode"] = training_mode
+        result["selection_objective"] = list(
+            _cycle9_metric_objective(result["out_of_fold"])
+        )
+    return result
 
 
 def _metric_objective(metrics: Mapping[str, Any]) -> tuple[int, float, float, float]:
@@ -2725,6 +3338,29 @@ def _metric_objective(metrics: Mapping[str, Any]) -> tuple[int, float, float, fl
         float(metrics["normalized_regret"]),
         -float(metrics["gap_weighted_pairwise_accuracy"]),
         -float(metrics["agreement"]),
+    )
+
+
+def _cycle9_metric_objective(
+    metrics: Mapping[str, Any],
+) -> tuple[int, int, float, float, float, float]:
+    overall = metrics["overall"]
+    mover = metrics["strata"]["mover"]
+    hard = metrics["strata"]["reference_hard"]["hard"]
+    mover_regrets = [
+        float(row["normalized_regret"])
+        for row in mover.values()
+        if row.get("normalized_regret") is not None
+    ]
+    worst_mover_regret = max(mover_regrets) if mover_regrets else math.inf
+    hard_regret = hard.get("normalized_regret")
+    return (
+        int(overall["chosen_avoidable_proven_adverse"]),
+        int(overall["chosen_proven_adverse"]),
+        worst_mover_regret,
+        float(hard_regret) if hard_regret is not None else math.inf,
+        float(overall["normalized_regret"]),
+        -float(overall["gap_weighted_pairwise_accuracy"]),
     )
 
 
@@ -2753,6 +3389,7 @@ def _model_payload(
     corpus_id: str,
     corpus_semantic_sha256: str,
     corpus_raw_artifact_sha256: str,
+    training_mode: str = CYCLE8_PROTOCOL_MODE,
 ) -> dict[str, Any]:
     feature_names = [
         TEACHER_VALUE_FEATURE_NAMES[index] for index in _indices(group)
@@ -2773,6 +3410,19 @@ def _model_payload(
         "teacher_corpus_sha256": corpus_semantic_sha256,
         "teacher_corpus_semantic_sha256": corpus_semantic_sha256,
     }
+    if training_mode == CYCLE9_PROTOCOL_MODE:
+        core.update(
+            {
+                "training_mode": training_mode,
+                "loss_contract": CYCLE9_LOSS_CONTRACT,
+                "reference_hard_weight": CYCLE9_REFERENCE_HARD_WEIGHT,
+                "reference_hard_regret_threshold": (
+                    CYCLE9_REFERENCE_HARD_REGRET_THRESHOLD
+                ),
+            }
+        )
+    elif training_mode != CYCLE8_PROTOCOL_MODE:
+        raise ValueError(f"unsupported teacher training mode: {training_mode}")
     return {
         **core,
         "teacher_corpus_raw_artifact_sha256": corpus_raw_artifact_sha256,
@@ -2802,6 +3452,19 @@ def _validate_model_payload(model: dict[str, Any], path: Path) -> dict[str, Any]
     ]
     if model["feature_names"] != expected_names:
         raise ValueError(f"model feature order mismatch: {path}")
+    training_mode = model.get("training_mode", CYCLE8_PROTOCOL_MODE)
+    if training_mode == CYCLE9_PROTOCOL_MODE:
+        if (
+            group not in {"all47", "direct44"}
+            or model.get("loss_contract") != CYCLE9_LOSS_CONTRACT
+            or model.get("reference_hard_weight")
+            != CYCLE9_REFERENCE_HARD_WEIGHT
+            or model.get("reference_hard_regret_threshold")
+            != CYCLE9_REFERENCE_HARD_REGRET_THRESHOLD
+        ):
+            raise ValueError(f"Cycle 9 model contract differs: {path}")
+    elif training_mode != CYCLE8_PROTOCOL_MODE:
+        raise ValueError(f"unsupported model training mode: {path}")
     return model
 
 
@@ -2874,6 +3537,274 @@ def _profile_payload(
     return profile.as_dict()
 
 
+def _fit_receipt_base(
+    *,
+    preregistration: Preregistration,
+    corpus_path: Path,
+    corpus_id: str,
+    corpus_raw_sha: str,
+    corpus_semantic_sha: str,
+    split_integrity: Mapping[str, Any],
+    leakage: Mapping[str, Any],
+    leader: EngineProfile,
+    leader_path: Path,
+    leader_raw_sha: str,
+    holdout_claim_path: Path,
+    claim_scope: str,
+    feature_contract: Mapping[str, Any],
+    runtime_extra: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    feature_module = Path(
+        sys.modules[TeacherValueFeaturesV3.__module__].__file__
+    ).resolve()
+    return {
+        "schema": FIT_RECEIPT_SCHEMA,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "claim_scope": claim_scope,
+        "one_shot_holdout": {
+            "schema": HOLDOUT_CLAIM_BINDING_SCHEMA,
+            "claim_path": str(holdout_claim_path),
+        },
+        "inputs": {
+            "preregistration": str(preregistration.path),
+            "preregistration_schema": preregistration.schema,
+            "preregistration_sha256": preregistration.sha256,
+            "artifact_split": "train",
+            "train_artifact": str(corpus_path),
+            "train_artifact_raw_sha256": corpus_raw_sha,
+            "train_artifact_semantic_sha256": corpus_semantic_sha,
+            "teacher_corpus": str(corpus_path),
+            "teacher_corpus_id": corpus_id,
+            "teacher_corpus_sha256": corpus_semantic_sha,
+            "teacher_corpus_raw_artifact_sha256": corpus_raw_sha,
+            "leader_profile": str(leader_path),
+            "leader_profile_id": leader.profile_id,
+            "leader_profile_sha256": leader_raw_sha,
+        },
+        "split_integrity": {
+            "schema": SPLIT_INTEGRITY_SCHEMA,
+            **split_integrity,
+        },
+        "leakage_audit": leakage,
+        "feature_contract": {
+            "schema": TEACHER_VALUE_FEATURE_SCHEMA,
+            "feature_names": list(TEACHER_VALUE_FEATURE_NAMES),
+            "feature_module": str(feature_module),
+            "feature_module_sha256": _sha256(feature_module),
+            "expensive_two_move_route_indices": [44, 45, 46],
+            **feature_contract,
+        },
+        "runtime": {
+            "python": sys.version,
+            "numpy": np.__version__,
+            "argv": list(sys.argv),
+            "script_sha256": _sha256(Path(__file__).resolve()),
+            "implementation_sha256": _implementation_hashes(),
+            **(runtime_extra or {}),
+        },
+    }
+
+
+def _validate_cycle9_fit_receipt_runtime(runtime: object) -> None:
+    if not isinstance(runtime, Mapping):
+        raise ValueError("Cycle 9 fit receipt runtime is malformed")
+    if runtime.get("numpy") != np.__version__:
+        raise ValueError("Cycle 9 fit receipt NumPy version drifted")
+    if (
+        runtime.get("numpy_distribution_record_sha256")
+        != _numpy_distribution_record_sha256()
+    ):
+        raise ValueError("Cycle 9 fit receipt NumPy distribution RECORD drifted")
+
+
+def _fit_cycle9(
+    *,
+    preregistration: Preregistration,
+    train: Sequence[TeacherLabel],
+    corpus_path: Path,
+    corpus_id: str,
+    corpus_raw_sha: str,
+    corpus_semantic_sha: str,
+    split_integrity: Mapping[str, Any],
+    leakage: Mapping[str, Any],
+    leader: EngineProfile,
+    leader_path: Path,
+    leader_raw_sha: str,
+    output: Path,
+    receipt_path: Path,
+    holdout_claim_path: Path,
+) -> None:
+    protocol = preregistration.manifest["fit_protocol"]
+    statistics_seed = int(protocol["statistics"]["seed"])
+    baseline = baseline_profile()
+    baseline_weights = tuple(
+        int(getattr(baseline.weights, name)) for name in FEATURE_NAMES
+    )
+    leader_weights = tuple(
+        int(getattr(leader.weights, name)) for name in FEATURE_NAMES
+    )
+    reference_scorers = {
+        "baseline": _profile_scorer(baseline_weights),
+        "rejected_leader": _profile_scorer(leader_weights),
+    }
+    reference_hard_keys = _reference_hard_keys(train, reference_scorers)
+    if not reference_hard_keys:
+        raise ValueError(
+            "Cycle 9 train split has no frozen reference-hard roots"
+        )
+    cv_rows = [
+        _cross_validate(
+            train,
+            group,
+            ridge,
+            adverse_pair_weight,
+            training_mode=CYCLE9_PROTOCOL_MODE,
+            reference_hard_keys=reference_hard_keys,
+            fold_seed=statistics_seed,
+        )
+        for group in ("all47", "direct44")
+        for adverse_pair_weight in CYCLE9_ADVERSE_PAIR_WEIGHTS
+        for ridge in CYCLE9_RIDGES
+    ]
+    selections = {
+        CYCLE9_PRIMARY_ROLE: min(
+            (row for row in cv_rows if row["group"] == "all47"),
+            key=_cycle9_selection_key,
+        ),
+        CYCLE9_DIAGNOSTIC_ROLE: min(
+            (row for row in cv_rows if row["group"] == "direct44"),
+            key=_cycle9_selection_key,
+        ),
+    }
+    models: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+    for role in (CYCLE9_PRIMARY_ROLE, CYCLE9_DIAGNOSTIC_ROLE):
+        selection = selections[role]
+        group = str(selection["group"])
+        raw, fit = _fit_pairwise(
+            train,
+            group,
+            float(selection["ridge"]),
+            float(selection["adverse_pair_weight"]),
+            training_mode=CYCLE9_PROTOCOL_MODE,
+            reference_hard_keys=reference_hard_keys,
+        )
+        quantized = _quantize(raw)
+        model = _model_payload(
+            group=group,
+            ridge=float(selection["ridge"]),
+            coefficients=quantized,
+            adverse_pair_weight=float(selection["adverse_pair_weight"]),
+            corpus_id=corpus_id,
+            corpus_semantic_sha256=corpus_semantic_sha,
+            corpus_raw_artifact_sha256=corpus_raw_sha,
+            training_mode=CYCLE9_PROTOCOL_MODE,
+        )
+        model_path = output / f"{role}-{model['model_id']}.json"
+        _atomic_json(model_path, model)
+        models.append(
+            (
+                role,
+                model,
+                {
+                    "path": str(model_path),
+                    "sha256": _sha256(model_path),
+                    "fit": fit,
+                    "cross_validation": selection,
+                    "train_metrics": _metrics(
+                        train,
+                        _linear_scorer(quantized, group),
+                        reference_hard_keys=reference_hard_keys,
+                    ),
+                },
+            )
+        )
+
+    hard_digest = hashlib.sha256(
+        _canonical_json({"state_keys": sorted(reference_hard_keys)})
+    ).hexdigest()
+    receipt = {
+        **_fit_receipt_base(
+            preregistration=preregistration,
+            corpus_path=corpus_path,
+            corpus_id=corpus_id,
+            corpus_raw_sha=corpus_raw_sha,
+            corpus_semantic_sha=corpus_semantic_sha,
+            split_integrity=split_integrity,
+            leakage=leakage,
+            leader=leader,
+            leader_path=leader_path,
+            leader_raw_sha=leader_raw_sha,
+            holdout_claim_path=holdout_claim_path,
+            claim_scope=(
+                "Cycle 9 train-only isolated evaluation experiment; holdout "
+                "labels are not scored or used for selection; no live "
+                "evaluator or release changed"
+            ),
+            feature_contract={
+                "promotable_feature_group": "all47",
+                "diagnostic_feature_group": "direct44",
+            },
+            runtime_extra={
+                "numpy_distribution_record_sha256": (
+                    _numpy_distribution_record_sha256()
+                )
+            },
+        ),
+        "protocol_mode": CYCLE9_PROTOCOL_MODE,
+        "selection": {
+            "method": CYCLE9_LOSS_CONTRACT,
+            "cross_validation": (
+                "five-fold semantic-component-disjoint stratified-v1"
+            ),
+            "objective": list(
+                protocol["cross_validation"]["objective"]
+            ),
+            "ridges": list(CYCLE9_RIDGES),
+            "adverse_pair_weights": list(CYCLE9_ADVERSE_PAIR_WEIGHTS),
+            "reference_hard": {
+                "roles": ["baseline", "rejected_leader"],
+                "definition": protocol["reference_hard"]["definition"],
+                "normalized_regret_threshold": (
+                    CYCLE9_REFERENCE_HARD_REGRET_THRESHOLD
+                ),
+                "weight": CYCLE9_REFERENCE_HARD_WEIGHT,
+                "train_labels": len(reference_hard_keys),
+                "state_keys_sha256": hard_digest,
+            },
+            "statistics_seed": statistics_seed,
+            "rows": cv_rows,
+        },
+        "models": {
+            role: {
+                "model_id": model["model_id"],
+                **evidence,
+            }
+            for role, model, evidence in models
+        },
+        "references_train": {
+            name: _metrics(
+                train,
+                scorer,
+                reference_hard_keys=reference_hard_keys,
+            )
+            for name, scorer in reference_scorers.items()
+        },
+    }
+    _atomic_json(receipt_path, receipt)
+    print(
+        json.dumps(
+            {
+                "receipt": str(receipt_path),
+                "protocol_mode": CYCLE9_PROTOCOL_MODE,
+                "promotable_model": receipt["models"][CYCLE9_PRIMARY_ROLE],
+                "diagnostic_model": receipt["models"][CYCLE9_DIAGNOSTIC_ROLE],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
 def _fit_command(args: argparse.Namespace) -> None:
     preregistration = _load_preregistration(args.preregistration)
     corpus_path = args.teacher_corpus.expanduser().resolve()
@@ -2906,6 +3837,25 @@ def _fit_command(args: argparse.Namespace) -> None:
     if not train:
         raise ValueError("teacher corpus has no train labels")
     leader, leader_raw_sha = _read_profile_artifact(leader_path)
+
+    if _protocol_mode(preregistration) == CYCLE9_PROTOCOL_MODE:
+        _fit_cycle9(
+            preregistration=preregistration,
+            train=train,
+            corpus_path=corpus_path,
+            corpus_id=corpus_id,
+            corpus_raw_sha=corpus_raw_sha,
+            corpus_semantic_sha=corpus_semantic_sha,
+            split_integrity=split_integrity,
+            leakage=leakage,
+            leader=leader,
+            leader_path=leader_path,
+            leader_raw_sha=leader_raw_sha,
+            output=output,
+            receipt_path=receipt_path,
+            holdout_claim_path=holdout_claim_path,
+        )
+        return
 
     cv_rows = [
         _cross_validate(train, group, ridge, adverse_pair_weight)
@@ -2985,45 +3935,27 @@ def _fit_command(args: argparse.Namespace) -> None:
     _atomic_json(profile_path, profile)
 
     receipt = {
-        "schema": FIT_RECEIPT_SCHEMA,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "claim_scope": (
-            "train-only isolated evaluation experiment; holdout labels are not "
-            "scored or used for selection; no live evaluator or release changed"
+        **_fit_receipt_base(
+            preregistration=preregistration,
+            corpus_path=corpus_path,
+            corpus_id=corpus_id,
+            corpus_raw_sha=corpus_raw_sha,
+            corpus_semantic_sha=corpus_semantic_sha,
+            split_integrity=split_integrity,
+            leakage=leakage,
+            leader=leader,
+            leader_path=leader_path,
+            leader_raw_sha=leader_raw_sha,
+            holdout_claim_path=holdout_claim_path,
+            claim_scope=(
+                "train-only isolated evaluation experiment; holdout labels are "
+                "not scored or used for selection; no live evaluator or "
+                "release changed"
+            ),
+            feature_contract={
+                "primary_candidate_excludes_expensive_routes": True
+            },
         ),
-        "one_shot_holdout": {
-            "schema": HOLDOUT_CLAIM_BINDING_SCHEMA,
-            "claim_path": str(holdout_claim_path),
-        },
-        "inputs": {
-            "preregistration": str(preregistration.path),
-            "preregistration_schema": preregistration.schema,
-            "preregistration_sha256": preregistration.sha256,
-            "artifact_split": "train",
-            "train_artifact": str(corpus_path),
-            "train_artifact_raw_sha256": corpus_raw_sha,
-            "train_artifact_semantic_sha256": corpus_semantic_sha,
-            "teacher_corpus": str(corpus_path),
-            "teacher_corpus_id": corpus_id,
-            "teacher_corpus_sha256": corpus_semantic_sha,
-            "teacher_corpus_raw_artifact_sha256": corpus_raw_sha,
-            "leader_profile": str(leader_path),
-            "leader_profile_id": leader.profile_id,
-            "leader_profile_sha256": leader_raw_sha,
-        },
-        "split_integrity": {
-            "schema": SPLIT_INTEGRITY_SCHEMA,
-            **split_integrity,
-        },
-        "leakage_audit": leakage,
-        "feature_contract": {
-            "schema": TEACHER_VALUE_FEATURE_SCHEMA,
-            "feature_names": list(TEACHER_VALUE_FEATURE_NAMES),
-            "feature_module": str(Path(sys.modules[TeacherValueFeaturesV3.__module__].__file__).resolve()),
-            "feature_module_sha256": _sha256(Path(sys.modules[TeacherValueFeaturesV3.__module__].__file__).resolve()),
-            "expensive_two_move_route_indices": [44, 45, 46],
-            "primary_candidate_excludes_expensive_routes": True,
-        },
         "selection": {
             "method": (
                 "five-fold semantic-component-disjoint all-nonterminal-pairs "
@@ -3065,13 +3997,6 @@ def _fit_command(args: argparse.Namespace) -> None:
                 ),
             ),
         },
-        "runtime": {
-            "python": sys.version,
-            "numpy": np.__version__,
-            "argv": list(sys.argv),
-            "script_sha256": _sha256(Path(__file__).resolve()),
-            "implementation_sha256": _implementation_hashes(),
-        },
     }
     _atomic_json(receipt_path, receipt)
     print(
@@ -3086,6 +4011,505 @@ def _fit_command(args: argparse.Namespace) -> None:
             sort_keys=True,
         )
     )
+
+
+def _cycle9_selection_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
+    objective = row.get("selection_objective")
+    if not isinstance(objective, list) or len(objective) != 6:
+        raise ValueError("Cycle 9 cross-validation objective is malformed")
+    return (
+        *objective,
+        float(row["ridge"]),
+        float(row["adverse_pair_weight"]),
+    )
+
+
+def _aligned_paired_rows(
+    candidate_rows: Sequence[Mapping[str, Any]],
+    reference_rows: Sequence[Mapping[str, Any]],
+) -> tuple[tuple[Mapping[str, Any], Mapping[str, Any]], ...]:
+    def indexed(
+        rows: Sequence[Mapping[str, Any]], label: str
+    ) -> dict[str, Mapping[str, Any]]:
+        result: dict[str, Mapping[str, Any]] = {}
+        for row in rows:
+            key = str(row.get("state_key", ""))
+            if not key or key in result:
+                raise ValueError(
+                    f"Cycle 9 paired {label} rows have missing or duplicate state keys"
+                )
+            result[key] = row
+        return result
+
+    candidate_by_key = indexed(candidate_rows, "candidate")
+    reference_by_key = indexed(reference_rows, "reference")
+    if not candidate_by_key or set(candidate_by_key) != set(reference_by_key):
+        raise ValueError("Cycle 9 paired rows are not state-key aligned")
+    aligned = tuple(
+        (candidate_by_key[key], reference_by_key[key])
+        for key in sorted(candidate_by_key)
+    )
+    for candidate, reference in aligned:
+        if any(
+            candidate.get(name) != reference.get(name)
+            for name in ("mover", "teacher_tier", "pair_weight")
+        ):
+            raise ValueError("Cycle 9 paired row strata or teacher weights differ")
+    return aligned
+
+
+def _paired_stratified_bootstrap(
+    candidate_rows: Sequence[Mapping[str, Any]],
+    reference_rows: Sequence[Mapping[str, Any]],
+    *,
+    seed: int,
+    samples: int = CYCLE9_BOOTSTRAP_SAMPLES,
+    confidence: float = CYCLE9_BOOTSTRAP_CONFIDENCE,
+) -> dict[str, Any]:
+    if type(seed) is not int or seed <= 0:
+        raise ValueError("Cycle 9 bootstrap seed must be a positive integer")
+    if type(samples) is not int or samples <= 0:
+        raise ValueError("Cycle 9 bootstrap sample count must be positive")
+    if not math.isfinite(confidence) or not 0.5 < confidence < 1.0:
+        raise ValueError("Cycle 9 bootstrap confidence must be between .5 and 1")
+    aligned = _aligned_paired_rows(candidate_rows, reference_rows)
+    candidate = [row[0] for row in aligned]
+    reference = [row[1] for row in aligned]
+    strata: dict[tuple[str, str], list[int]] = {}
+    for index, row in enumerate(candidate):
+        key = (str(row["mover"]), str(row["teacher_tier"]))
+        strata.setdefault(key, []).append(index)
+
+    candidate_regret = np.asarray(
+        [float(row["normalized_regret"]) for row in candidate],
+        dtype=np.float64,
+    )
+    reference_regret = np.asarray(
+        [float(row["normalized_regret"]) for row in reference],
+        dtype=np.float64,
+    )
+    candidate_correct = np.asarray(
+        [float(row["pair_correct"]) for row in candidate],
+        dtype=np.float64,
+    )
+    reference_correct = np.asarray(
+        [float(row["pair_correct"]) for row in reference],
+        dtype=np.float64,
+    )
+    pair_weight = np.asarray(
+        [float(row["pair_weight"]) for row in candidate],
+        dtype=np.float64,
+    )
+    if any(
+        not np.all(np.isfinite(values))
+        for values in (
+            candidate_regret,
+            reference_regret,
+            candidate_correct,
+            reference_correct,
+            pair_weight,
+        )
+    ) or np.any(pair_weight < 0.0):
+        raise ValueError("Cycle 9 paired rows contain invalid aggregate values")
+
+    def pairwise_accuracy(correct: np.ndarray, weights: np.ndarray) -> float:
+        denominator = float(weights.sum())
+        return float(correct.sum() / denominator) if denominator else 1.0
+
+    point_regret = float(candidate_regret.mean() - reference_regret.mean())
+    point_pairwise = pairwise_accuracy(
+        candidate_correct, pair_weight
+    ) - pairwise_accuracy(reference_correct, pair_weight)
+    regret_samples = np.empty(samples, dtype=np.float64)
+    pairwise_samples = np.empty(samples, dtype=np.float64)
+    generator = np.random.Generator(np.random.PCG64(seed))
+    batch_size = min(2_048, samples)
+    stratum_indices = [
+        np.asarray(strata[key], dtype=np.int64) for key in sorted(strata)
+    ]
+    for start in range(0, samples, batch_size):
+        stop = min(samples, start + batch_size)
+        width = stop - start
+        candidate_regret_sum = np.zeros(width, dtype=np.float64)
+        reference_regret_sum = np.zeros(width, dtype=np.float64)
+        candidate_correct_sum = np.zeros(width, dtype=np.float64)
+        reference_correct_sum = np.zeros(width, dtype=np.float64)
+        weight_sum = np.zeros(width, dtype=np.float64)
+        for indices in stratum_indices:
+            draws = indices[
+                generator.integers(
+                    0,
+                    len(indices),
+                    size=(width, len(indices)),
+                    endpoint=False,
+                )
+            ]
+            candidate_regret_sum += candidate_regret[draws].sum(axis=1)
+            reference_regret_sum += reference_regret[draws].sum(axis=1)
+            candidate_correct_sum += candidate_correct[draws].sum(axis=1)
+            reference_correct_sum += reference_correct[draws].sum(axis=1)
+            weight_sum += pair_weight[draws].sum(axis=1)
+        regret_samples[start:stop] = (
+            candidate_regret_sum - reference_regret_sum
+        ) / len(aligned)
+        candidate_accuracy = np.divide(
+            candidate_correct_sum,
+            weight_sum,
+            out=np.ones(width, dtype=np.float64),
+            where=weight_sum != 0.0,
+        )
+        reference_accuracy = np.divide(
+            reference_correct_sum,
+            weight_sum,
+            out=np.ones(width, dtype=np.float64),
+            where=weight_sum != 0.0,
+        )
+        pairwise_samples[start:stop] = candidate_accuracy - reference_accuracy
+
+    return {
+        "schema": "spc-cycle9-paired-stratified-bootstrap-aggregate-v1",
+        "labels": len(aligned),
+        "samples": samples,
+        "confidence": confidence,
+        "stratification": ["mover", "teacher_tier"],
+        "strata_counts": {
+            f"{mover}|{tier}": len(indices)
+            for (mover, tier), indices in sorted(strata.items())
+        },
+        "normalized_regret_difference": {
+            "direction": "candidate-minus-reference",
+            "point": point_regret,
+            "one_sided_upper": float(
+                np.quantile(regret_samples, confidence, method="linear")
+            ),
+        },
+        "gap_weighted_pairwise_accuracy_difference": {
+            "direction": "candidate-minus-reference",
+            "point": point_pairwise,
+            "one_sided_lower": float(
+                np.quantile(pairwise_samples, 1.0 - confidence, method="linear")
+            ),
+        },
+    }
+
+
+def _cycle9_derived_statistics_seed(seed: int, *parts: str) -> int:
+    digest = hashlib.sha256(
+        "|".join(("cycle9-statistics", str(seed), *parts)).encode("utf-8")
+    ).digest()
+    return int.from_bytes(digest[:8], "big") or 1
+
+
+def _cycle9_paired_evidence(
+    candidate_rows: Sequence[Mapping[str, Any]],
+    reference_rows: Sequence[Mapping[str, Any]],
+    *,
+    reference_hard_keys: Iterable[str],
+    statistics_seed: int,
+    reference_name: str,
+    bootstrap_samples: int = CYCLE9_BOOTSTRAP_SAMPLES,
+) -> dict[str, Any]:
+    aligned = _aligned_paired_rows(candidate_rows, reference_rows)
+    candidate_by_key = {str(row["state_key"]): row for row, _ in aligned}
+    reference_by_key = {str(row["state_key"]): row for _, row in aligned}
+    hard_keys = frozenset(str(key) for key in reference_hard_keys)
+
+    def evidence_for(keys: Sequence[str], partition: str) -> dict[str, Any]:
+        return _paired_stratified_bootstrap(
+            [candidate_by_key[key] for key in keys],
+            [reference_by_key[key] for key in keys],
+            seed=_cycle9_derived_statistics_seed(
+                statistics_seed, reference_name, partition
+            ),
+            samples=bootstrap_samples,
+        )
+
+    all_keys = sorted(candidate_by_key)
+    strata: dict[str, dict[str, Any]] = {
+        "mover": {},
+        "teacher_tier": {},
+        "reference_hard": {},
+    }
+    for partition, values in (
+        ("mover", ("white", "black")),
+        ("teacher_tier", ("quiet_d2", "tactical_d3")),
+    ):
+        for value in values:
+            keys = [
+                key
+                for key in all_keys
+                if str(candidate_by_key[key][partition]) == value
+            ]
+            if keys:
+                strata[partition][value] = evidence_for(
+                    keys, f"{partition}:{value}"
+                )
+    selected_hard = [key for key in all_keys if key in hard_keys]
+    if selected_hard:
+        strata["reference_hard"]["hard"] = evidence_for(
+            selected_hard, "reference_hard:hard"
+        )
+    return {
+        "overall": evidence_for(all_keys, "overall"),
+        "strata": strata,
+    }
+
+
+def _cycle9_at_least(value: float, threshold: float) -> bool:
+    return value >= threshold - CYCLE9_GATE_ABSOLUTE_TOLERANCE
+
+
+def _cycle9_at_most(value: float, threshold: float) -> bool:
+    return value <= threshold + CYCLE9_GATE_ABSOLUTE_TOLERANCE
+
+
+def _cycle9_holdout_gate(
+    primary: Mapping[str, Any],
+    diagnostic: Mapping[str, Any],
+    references: Mapping[str, Mapping[str, Any]],
+    paired: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    required_references = ("baseline", "rejected_leader")
+    if set(references) != set(required_references) or set(paired) != set(
+        required_references
+    ):
+        raise ValueError("Cycle 9 holdout references differ from the frozen roles")
+
+    def stratum(
+        metrics: Mapping[str, Any], partition: str, value: str
+    ) -> Mapping[str, Any] | None:
+        rows = metrics.get("strata", {}).get(partition, {})
+        row = rows.get(value) if isinstance(rows, Mapping) else None
+        return row if isinstance(row, Mapping) else None
+
+    def lower_than_every_reference(partition: str, value: str) -> bool:
+        candidate = stratum(primary, partition, value)
+        reference_rows = [
+            stratum(references[name], partition, value)
+            for name in required_references
+        ]
+        return bool(
+            candidate is not None
+            and candidate.get("normalized_regret") is not None
+            and all(
+                row is not None
+                and row.get("normalized_regret") is not None
+                and float(candidate["normalized_regret"])
+                < float(row["normalized_regret"])
+                for row in reference_rows
+            )
+        )
+
+    safety_rows = [primary["overall"]]
+    for partition in ("mover", "teacher_tier"):
+        rows = primary["strata"].get(partition, {})
+        safety_rows.extend(rows.values())
+    no_adverse = all(
+        int(row["chosen_proven_adverse"]) == 0
+        and int(row["chosen_avoidable_proven_adverse"]) == 0
+        for row in safety_rows
+    )
+    tactical = stratum(primary, "teacher_tier", "tactical_d3")
+    paired_regret_pass = all(
+        float(
+            paired[name]["overall"]["normalized_regret_difference"][
+                "one_sided_upper"
+            ]
+        )
+        < 0.0
+        for name in required_references
+    )
+    paired_point_pass = all(
+        _cycle9_at_least(
+            float(
+                paired[name]["overall"][
+                    "gap_weighted_pairwise_accuracy_difference"
+                ]["point"]
+            ),
+            CYCLE9_PAIRWISE_POINT_NONINFERIORITY_MARGIN,
+        )
+        for name in required_references
+    )
+    paired_lower_pass = all(
+        _cycle9_at_least(
+            float(
+                paired[name]["overall"][
+                    "gap_weighted_pairwise_accuracy_difference"
+                ]["one_sided_lower"]
+            ),
+            CYCLE9_PAIRWISE_LOWER_CONFIDENCE_MARGIN,
+        )
+        for name in required_references
+    )
+    primary_checks = {
+        "lower_overall_regret_than_each_reference": all(
+            float(primary["overall"]["normalized_regret"])
+            < float(references[name]["overall"]["normalized_regret"])
+            for name in required_references
+        ),
+        "zero_adverse_overall_mover_and_tier": no_adverse,
+        "white_regret_below_each_reference": lower_than_every_reference(
+            "mover", "white"
+        ),
+        "black_regret_below_each_reference": lower_than_every_reference(
+            "mover", "black"
+        ),
+        "quiet_regret_below_each_reference": lower_than_every_reference(
+            "teacher_tier", "quiet_d2"
+        ),
+        "reference_hard_regret_below_each_reference": (
+            lower_than_every_reference("reference_hard", "hard")
+        ),
+        "tactical_zero_regret_and_adverse": bool(
+            tactical is not None
+            and float(tactical["normalized_regret"]) == 0.0
+            and int(tactical["chosen_proven_adverse"]) == 0
+            and int(tactical["chosen_avoidable_proven_adverse"]) == 0
+        ),
+        "paired_regret_upper_below_zero_each_reference": paired_regret_pass,
+        "pairwise_point_noninferior_each_reference": paired_point_pass,
+        "pairwise_lower_confidence_noninferior_each_reference": (
+            paired_lower_pass
+        ),
+    }
+    primary_gate = {
+        "checks": primary_checks,
+        "passed": all(primary_checks.values()),
+    }
+    regret_gain = float(
+        diagnostic["overall"]["normalized_regret"]
+    ) - float(primary["overall"]["normalized_regret"])
+    pairwise_loss = float(
+        diagnostic["overall"]["gap_weighted_pairwise_accuracy"]
+    ) - float(primary["overall"]["gap_weighted_pairwise_accuracy"])
+    diagnostic_checks = {
+        "all47_regret_gain_at_least_0_003": (
+            _cycle9_at_least(
+                regret_gain, CYCLE9_DIAGNOSTIC_MINIMUM_REGRET_GAIN
+            )
+        ),
+        "all47_pairwise_loss_at_most_0_002": (
+            _cycle9_at_most(
+                pairwise_loss, CYCLE9_DIAGNOSTIC_MAXIMUM_PAIRWISE_LOSS
+            )
+        ),
+    }
+    diagnostic_gate = {
+        "comparison": {
+            "all47_normalized_regret_gain": regret_gain,
+            "all47_gap_weighted_pairwise_accuracy_loss": pairwise_loss,
+        },
+        "checks": diagnostic_checks,
+        "passed": all(diagnostic_checks.values()),
+    }
+    return {
+        "promotable_candidate_roles": [CYCLE9_PRIMARY_ROLE],
+        "diagnostic_roles": [CYCLE9_DIAGNOSTIC_ROLE],
+        CYCLE9_PRIMARY_ROLE: primary_gate,
+        CYCLE9_DIAGNOSTIC_ROLE: diagnostic_gate,
+        "passed": bool(primary_gate["passed"] and diagnostic_gate["passed"]),
+    }
+
+
+def _cycle9_holdout_status(
+    *,
+    corpus_promotion_eligible: bool,
+    holdout_gate_passed: bool,
+) -> dict[str, Any]:
+    if not corpus_promotion_eligible:
+        promotion_status = "ineligible-corpus"
+    elif not holdout_gate_passed:
+        promotion_status = "rejected-at-holdout"
+    else:
+        promotion_status = "pending-post-holdout-validation"
+    return {
+        "promotion_status": promotion_status,
+        "holdout_gate_passed": bool(holdout_gate_passed),
+        "advance_to_post_holdout_validation": bool(
+            corpus_promotion_eligible and holdout_gate_passed
+        ),
+    }
+
+
+def _assert_cycle9_aggregate_only(value: Any, *, path: str = "receipt") -> None:
+    if isinstance(value, Mapping):
+        forbidden = {"rows", "state_key", "chosen_series", "teacher_best_series"}
+        exposed = forbidden & {str(key) for key in value}
+        if exposed:
+            raise AssertionError(
+                f"Cycle 9 aggregate-only output exposes {sorted(exposed)} at {path}"
+            )
+        for key, item in value.items():
+            _assert_cycle9_aggregate_only(item, path=f"{path}.{key}")
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _assert_cycle9_aggregate_only(item, path=f"{path}[{index}]")
+
+
+def _cycle9_aggregate_analysis(
+    labels: Sequence[TeacherLabel],
+    model_scorers: Mapping[
+        str, Callable[[TeacherLabel, TeacherOption], float]
+    ],
+    reference_scorers: Mapping[
+        str, Callable[[TeacherLabel, TeacherOption], float]
+    ],
+    *,
+    statistics_seed: int,
+    bootstrap_samples: int = CYCLE9_BOOTSTRAP_SAMPLES,
+) -> dict[str, Any]:
+    if set(model_scorers) != {CYCLE9_PRIMARY_ROLE, CYCLE9_DIAGNOSTIC_ROLE}:
+        raise ValueError("Cycle 9 model roles differ from the frozen contract")
+    hard_keys = _reference_hard_keys(labels, reference_scorers)
+    model_rows = {
+        role: _metric_rows(labels, scorer)
+        for role, scorer in model_scorers.items()
+    }
+    reference_rows = {
+        role: _metric_rows(labels, scorer)
+        for role, scorer in reference_scorers.items()
+    }
+    model_metrics = {
+        role: _cycle9_metrics_from_rows(rows, reference_hard_keys=hard_keys)
+        for role, rows in model_rows.items()
+    }
+    reference_metrics = {
+        role: _cycle9_metrics_from_rows(rows, reference_hard_keys=hard_keys)
+        for role, rows in reference_rows.items()
+    }
+    paired = {
+        name: _cycle9_paired_evidence(
+            model_rows[CYCLE9_PRIMARY_ROLE],
+            rows,
+            reference_hard_keys=hard_keys,
+            statistics_seed=statistics_seed,
+            reference_name=name,
+            bootstrap_samples=bootstrap_samples,
+        )
+        for name, rows in reference_rows.items()
+    }
+    result = {
+        "models": model_metrics,
+        "references": reference_metrics,
+        "paired_statistics": paired,
+        "reference_hard": {
+            "definition": (
+                "move-disagreement-or-adverse-or-normalized-regret-at-least-threshold"
+            ),
+            "normalized_regret_threshold": (
+                CYCLE9_REFERENCE_HARD_REGRET_THRESHOLD
+            ),
+            "labels": len(hard_keys),
+        },
+        "gates": _cycle9_holdout_gate(
+            model_metrics[CYCLE9_PRIMARY_ROLE],
+            model_metrics[CYCLE9_DIAGNOSTIC_ROLE],
+            reference_metrics,
+            paired,
+        ),
+    }
+    _assert_cycle9_aggregate_only(result)
+    return result
 
 
 def _holdout_gate(
@@ -3176,8 +4600,93 @@ def _holdout_gate(
     }
 
 
+def _holdout_receipt_base(
+    *,
+    preregistration: Preregistration,
+    corpus: Mapping[str, Any],
+    corpus_path: Path,
+    corpus_raw_sha: str,
+    corpus_semantic_sha: str,
+    fit_receipt_path: Path,
+    fit_receipt_raw_sha: str,
+    holdout_claim_path: Path,
+    leader: EngineProfile,
+    leader_path: Path,
+    leader_raw_sha: str,
+    holdout_integrity: Mapping[str, Any],
+    pairing_checks: Mapping[str, bool],
+    leakage: Mapping[str, Any],
+    cross_artifact_leakage: Mapping[str, set[str]],
+    claim_scope: str,
+    runtime_extra: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], bool]:
+    corpus_contract = corpus["contract"]
+    promotion_eligible = bool(
+        corpus_contract.get("promotion_eligible", True)
+        and not corpus_contract.get("exploratory_only", False)
+    )
+    return {
+        "schema": HOLDOUT_RECEIPT_SCHEMA,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "claim_scope": claim_scope,
+        "inputs": {
+            "preregistration": str(preregistration.path),
+            "preregistration_schema": preregistration.schema,
+            "preregistration_sha256": preregistration.sha256,
+            "artifact_split": "sealed_holdout",
+            "sealed_holdout_artifact": str(corpus_path),
+            "sealed_holdout_artifact_raw_sha256": corpus_raw_sha,
+            "sealed_holdout_artifact_semantic_sha256": corpus_semantic_sha,
+            "teacher_corpus": str(corpus_path),
+            "teacher_corpus_id": corpus["corpus_id"],
+            "teacher_corpus_sha256": corpus_semantic_sha,
+            "teacher_corpus_raw_artifact_sha256": corpus_raw_sha,
+            "fit_receipt": str(fit_receipt_path),
+            "fit_receipt_sha256": fit_receipt_raw_sha,
+            "holdout_claim": str(holdout_claim_path),
+            "holdout_claim_sha256": _sha256(holdout_claim_path),
+            "leader_profile": str(leader_path),
+            "leader_profile_id": leader.profile_id,
+            "leader_profile_sha256": leader_raw_sha,
+        },
+        "split_integrity": {
+            "schema": SPLIT_INTEGRITY_SCHEMA,
+            **holdout_integrity,
+            "pairing_checks": dict(pairing_checks),
+        },
+        "leakage_audit": {
+            "within_holdout_artifact": leakage,
+            "cross_artifact": {
+                name: len(values)
+                for name, values in cross_artifact_leakage.items()
+            },
+        },
+        "corpus_promotion_contract": {
+            "exploratory_only": bool(
+                corpus_contract.get("exploratory_only", False)
+            ),
+            "promotion_eligible": promotion_eligible,
+            "promotion_ineligible_reasons": list(
+                corpus_contract.get("promotion_ineligible_reasons", ())
+            ),
+            "missing_positional_series": list(
+                corpus_contract.get("missing_positional_series", ())
+            ),
+        },
+        "runtime": {
+            "python": sys.version,
+            "numpy": np.__version__,
+            "argv": list(sys.argv),
+            "script_sha256": _sha256(Path(__file__).resolve()),
+            "implementation_sha256": _implementation_hashes(),
+            **(runtime_extra or {}),
+        },
+    }, promotion_eligible
+
+
 def _evaluate_holdout_command(args: argparse.Namespace) -> None:
     preregistration = _load_preregistration(args.preregistration)
+    protocol_mode = _protocol_mode(preregistration)
     sealed_holdout_argument = args.teacher_corpus
     sealed_holdout_display = os.fspath(sealed_holdout_argument)
     leader_path = args.leader_profile.expanduser().resolve()
@@ -3195,6 +4704,10 @@ def _evaluate_holdout_command(args: argparse.Namespace) -> None:
     fit_receipt, fit_receipt_raw_sha = _read_json_artifact(fit_receipt_path)
     if fit_receipt.get("schema") != FIT_RECEIPT_SCHEMA:
         raise ValueError("fit receipt schema mismatch")
+    if protocol_mode == CYCLE9_PROTOCOL_MODE:
+        if fit_receipt.get("protocol_mode") != CYCLE9_PROTOCOL_MODE:
+            raise ValueError("Cycle 9 fit receipt protocol mode differs")
+        _validate_cycle9_fit_receipt_runtime(fit_receipt.get("runtime"))
     fit_inputs = fit_receipt.get("inputs")
     if not isinstance(fit_inputs, Mapping) or any(
         fit_inputs.get(name) != value
@@ -3253,7 +4766,12 @@ def _evaluate_holdout_command(args: argparse.Namespace) -> None:
         raise ValueError("rejected leader profile changed after fitting")
     models: dict[str, dict[str, Any]] = {}
     train_semantic_sha = str(fit_inputs["train_artifact_semantic_sha256"])
-    for role in ("primary_nonroute", "route_ablation"):
+    model_roles = (
+        (CYCLE9_PRIMARY_ROLE, CYCLE9_DIAGNOSTIC_ROLE)
+        if protocol_mode == CYCLE9_PROTOCOL_MODE
+        else ("primary_nonroute", "route_ablation")
+    )
+    for role in model_roles:
         model_path = Path(fit_receipt["models"][role]["path"])
         model, model_raw_sha = _read_model_artifact(model_path)
         if model_raw_sha != fit_receipt["models"][role]["sha256"]:
@@ -3263,11 +4781,22 @@ def _evaluate_holdout_command(args: argparse.Namespace) -> None:
             or model.get("teacher_corpus_raw_artifact_sha256") != train_raw_sha
         ):
             raise ValueError(f"model train-artifact binding differs: {role}")
+        if protocol_mode == CYCLE9_PROTOCOL_MODE:
+            expected_group = (
+                "all47" if role == CYCLE9_PRIMARY_ROLE else "direct44"
+            )
+            if (
+                model.get("training_mode") != CYCLE9_PROTOCOL_MODE
+                or model.get("feature_group") != expected_group
+            ):
+                raise ValueError(f"Cycle 9 model role binding differs: {role}")
         models[role] = model
-    profile_path = Path(fit_receipt["profile"]["path"])
-    profile, profile_raw_sha = _read_profile_artifact(profile_path)
-    if profile_raw_sha != fit_receipt["profile"]["sha256"]:
-        raise ValueError("frozen distilled profile changed")
+    profile: EngineProfile | None = None
+    if protocol_mode == CYCLE8_PROTOCOL_MODE:
+        profile_path = Path(fit_receipt["profile"]["path"])
+        profile, profile_raw_sha = _read_profile_artifact(profile_path)
+        if profile_raw_sha != fit_receipt["profile"]["sha256"]:
+            raise ValueError("frozen distilled profile changed")
 
     claim_binding = fit_receipt.get("one_shot_holdout")
     if (
@@ -3357,6 +4886,109 @@ def _evaluate_holdout_command(args: argparse.Namespace) -> None:
         holdout_finals=holdout_finals,
     )
 
+    if protocol_mode == CYCLE9_PROTOCOL_MODE:
+        model_scorers = {
+            role: _linear_scorer(
+                tuple(int(value) for value in model["coefficients"]),
+                str(model["feature_group"]),
+            )
+            for role, model in models.items()
+        }
+        baseline = baseline_profile()
+        baseline_weights = tuple(
+            int(getattr(baseline.weights, name)) for name in FEATURE_NAMES
+        )
+        leader_weights = tuple(
+            int(getattr(leader.weights, name)) for name in FEATURE_NAMES
+        )
+        statistics_seed = int(
+            preregistration.manifest["fit_protocol"]["statistics"]["seed"]
+        )
+        analysis = _cycle9_aggregate_analysis(
+            holdout,
+            model_scorers,
+            {
+                "baseline": _profile_scorer(baseline_weights),
+                "rejected_leader": _profile_scorer(leader_weights),
+            },
+            statistics_seed=statistics_seed,
+        )
+        public_holdout_integrity = {
+            name: value
+            for name, value in holdout_integrity.items()
+            if name not in {"root_state_keys", "option_final_state_keys"}
+        }
+        common_receipt, corpus_promotion_eligible = _holdout_receipt_base(
+            preregistration=preregistration,
+            corpus=corpus,
+            corpus_path=corpus_path,
+            corpus_raw_sha=corpus_raw_sha,
+            corpus_semantic_sha=corpus_semantic_sha,
+            fit_receipt_path=fit_receipt_path,
+            fit_receipt_raw_sha=fit_receipt_raw_sha,
+            holdout_claim_path=holdout_claim_path,
+            leader=leader,
+            leader_path=leader_path,
+            leader_raw_sha=leader_raw_sha,
+            holdout_integrity=public_holdout_integrity,
+            pairing_checks=pairing_checks,
+            leakage=leakage,
+            cross_artifact_leakage=cross_artifact_leakage,
+            claim_scope=(
+                "aggregate-only one-shot state-disjoint teacher holdout ranking "
+                "evidence; no individual holdout row, game strength, Elo, live "
+                "evaluator, or release claim"
+            ),
+            runtime_extra={
+                "statistics_seed": statistics_seed,
+                "bootstrap_samples": CYCLE9_BOOTSTRAP_SAMPLES,
+                "numpy_distribution_record_sha256": (
+                    _numpy_distribution_record_sha256()
+                ),
+            },
+        )
+        receipt = {
+            **common_receipt,
+            "protocol_mode": CYCLE9_PROTOCOL_MODE,
+            "aggregate_only": {
+                "individual_rows_serialized": False,
+                "individual_state_keys_serialized": False,
+                "paired_bootstrap": (
+                    "mover-and-teacher-tier-stratified paired aggregate-v1"
+                ),
+            },
+            **analysis,
+            **_cycle9_holdout_status(
+                corpus_promotion_eligible=corpus_promotion_eligible,
+                holdout_gate_passed=bool(analysis["gates"]["passed"]),
+            ),
+        }
+        _assert_cycle9_aggregate_only(receipt)
+        _atomic_json(receipt_path, receipt)
+        print(
+            json.dumps(
+                {
+                    "receipt": str(receipt_path),
+                    "gates": analysis["gates"],
+                    "promotion_status": receipt["promotion_status"],
+                    "holdout_gate_passed": receipt["holdout_gate_passed"],
+                    "advance_to_post_holdout_validation": receipt[
+                        "advance_to_post_holdout_validation"
+                    ],
+                    "primary_holdout": analysis["models"][
+                        CYCLE9_PRIMARY_ROLE
+                    ]["overall"],
+                    "references": {
+                        name: metrics["overall"]
+                        for name, metrics in analysis["references"].items()
+                    },
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
+
     model_metrics: dict[str, dict[str, Any]] = {}
     for role, model in models.items():
         model_metrics[role] = _metrics(
@@ -3368,6 +5000,7 @@ def _evaluate_holdout_command(args: argparse.Namespace) -> None:
             include_rows=True,
         )
 
+    assert profile is not None
     profile_weights = tuple(
         int(getattr(profile.weights, name)) for name in FEATURE_NAMES
     )
@@ -3394,50 +5027,29 @@ def _evaluate_holdout_command(args: argparse.Namespace) -> None:
         references["baseline"],
         references["rejected_leader"],
     )
-    corpus_contract = corpus["contract"]
-    corpus_promotion_eligible = bool(
-        corpus_contract.get("promotion_eligible", True)
-        and not corpus_contract.get("exploratory_only", False)
-    )
-    receipt = {
-        "schema": HOLDOUT_RECEIPT_SCHEMA,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "claim_scope": (
+    common_receipt, corpus_promotion_eligible = _holdout_receipt_base(
+        preregistration=preregistration,
+        corpus=corpus,
+        corpus_path=corpus_path,
+        corpus_raw_sha=corpus_raw_sha,
+        corpus_semantic_sha=corpus_semantic_sha,
+        fit_receipt_path=fit_receipt_path,
+        fit_receipt_raw_sha=fit_receipt_raw_sha,
+        holdout_claim_path=holdout_claim_path,
+        leader=leader,
+        leader_path=leader_path,
+        leader_raw_sha=leader_raw_sha,
+        holdout_integrity=holdout_integrity,
+        pairing_checks=pairing_checks,
+        leakage=leakage,
+        cross_artifact_leakage=cross_artifact_leakage,
+        claim_scope=(
             "one-shot state-disjoint teacher holdout ranking evidence; no game "
             "strength, Elo, live evaluator, or release claim"
         ),
-        "inputs": {
-            "preregistration": str(preregistration.path),
-            "preregistration_schema": preregistration.schema,
-            "preregistration_sha256": preregistration.sha256,
-            "artifact_split": "sealed_holdout",
-            "sealed_holdout_artifact": str(corpus_path),
-            "sealed_holdout_artifact_raw_sha256": corpus_raw_sha,
-            "sealed_holdout_artifact_semantic_sha256": corpus_semantic_sha,
-            "teacher_corpus": str(corpus_path),
-            "teacher_corpus_id": corpus["corpus_id"],
-            "teacher_corpus_sha256": corpus_semantic_sha,
-            "teacher_corpus_raw_artifact_sha256": corpus_raw_sha,
-            "fit_receipt": str(fit_receipt_path),
-            "fit_receipt_sha256": fit_receipt_raw_sha,
-            "holdout_claim": str(holdout_claim_path),
-            "holdout_claim_sha256": _sha256(holdout_claim_path),
-            "leader_profile": str(leader_path),
-            "leader_profile_id": leader.profile_id,
-            "leader_profile_sha256": leader_raw_sha,
-        },
-        "split_integrity": {
-            "schema": SPLIT_INTEGRITY_SCHEMA,
-            **holdout_integrity,
-            "pairing_checks": pairing_checks,
-        },
-        "leakage_audit": {
-            "within_holdout_artifact": leakage,
-            "cross_artifact": {
-                name: len(values)
-                for name, values in cross_artifact_leakage.items()
-            },
-        },
+    )
+    receipt = {
+        **common_receipt,
         "models": {
             role: {
                 "model_id": models[role]["model_id"],
@@ -3453,18 +5065,6 @@ def _evaluate_holdout_command(args: argparse.Namespace) -> None:
         },
         "references": references,
         "gates": gates,
-        "corpus_promotion_contract": {
-            "exploratory_only": bool(
-                corpus_contract.get("exploratory_only", False)
-            ),
-            "promotion_eligible": corpus_promotion_eligible,
-            "promotion_ineligible_reasons": list(
-                corpus_contract.get("promotion_ineligible_reasons", ())
-            ),
-            "missing_positional_series": list(
-                corpus_contract.get("missing_positional_series", ())
-            ),
-        },
         "promotion_recommendation": bool(
             corpus_promotion_eligible
             and gates["primary_nonroute"]["passed"]
@@ -3473,13 +5073,6 @@ def _evaluate_holdout_command(args: argparse.Namespace) -> None:
         "route_features_deserve_live_consideration": bool(
             gates["route_ablation"]["passed"]
         ),
-        "runtime": {
-            "python": sys.version,
-            "numpy": np.__version__,
-            "argv": list(sys.argv),
-            "script_sha256": _sha256(Path(__file__).resolve()),
-            "implementation_sha256": _implementation_hashes(),
-        },
     }
     _atomic_json(receipt_path, receipt)
     print(

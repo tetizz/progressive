@@ -221,6 +221,47 @@ def test_mover_adverse_proof_contrast_gets_configured_pair_weight() -> None:
     assert weighted[0] == pytest.approx(unweighted[0] * 7.0)
 
 
+def test_cycle9_loss_is_root_normalized_best_safe_with_explicit_adverse_rows() -> None:
+    safe = _proof_option("safe", score=20, proof=None, feature=2, is_best=True)
+    ordinary = _proof_option("ordinary", score=0, proof=None, feature=0)
+    adverse = _proof_option("adverse", score=-20, proof="black", feature=-2)
+    label = _proof_label(safe, ordinary, adverse)
+
+    rows, outcomes, weights = _pairwise_rows(
+        (label,),
+        "base7",
+        adverse_pair_weight=32.0,
+        training_mode=fitter.CYCLE9_PROTOCOL_MODE,
+        reference_hard_keys={label.state_key},
+    )
+
+    assert rows.shape == (3, 7)
+    assert tuple(outcomes) == (1.0, 1.0, 1.0)
+    assert tuple(weights) == pytest.approx((4 / 3, 8 / 3, 128.0))
+    assert tuple(rows[0]) == (2,) * 7
+    assert tuple(rows[1]) == tuple(rows[2]) == (4,) * 7
+
+
+def test_cycle9_loss_never_uses_a_proven_adverse_teacher_best_as_target() -> None:
+    adverse = _proof_option(
+        "adverse", score=30, proof="black", feature=3, is_best=True
+    )
+    safe = _proof_option("safe", score=20, proof=None, feature=2)
+    label = _proof_label(adverse, safe)
+
+    rows, outcomes, weights = _pairwise_rows(
+        (label,),
+        "base7",
+        adverse_pair_weight=32.0,
+        training_mode=fitter.CYCLE9_PROTOCOL_MODE,
+    )
+
+    assert rows.shape == (2, 7)
+    assert tuple(rows[0]) == tuple(rows[1]) == (-1,) * 7
+    assert tuple(outcomes) == (1.0, 1.0)
+    assert tuple(weights) == (1.0, 32.0)
+
+
 def test_raw_metrics_count_avoidable_and_unavoidable_adverse_choices() -> None:
     safe = _proof_option("safe", score=20, proof=None, feature=0, is_best=True)
     adverse = _proof_option("adverse", score=-20, proof="black", feature=1)
@@ -344,6 +385,508 @@ def test_cross_validation_keeps_transposed_option_states_in_one_fold() -> None:
                 for key in _label_semantic_keys(item)
             }
             assert left_keys.isdisjoint(right_keys)
+
+
+def _cv_label(
+    root: str,
+    *,
+    mover_sign: int,
+    teacher_tier: str,
+    source_profile_id: str,
+    series_number: int | None = None,
+) -> TeacherLabel:
+    better = _proof_option(
+        f"{root}-better", score=20 * mover_sign, proof=None, feature=1
+    )
+    worse = _proof_option(
+        f"{root}-worse", score=-20 * mover_sign, proof=None, feature=-1
+    )
+    return TeacherLabel(
+        split="train",
+        state_key=root,
+        position_hash=root,
+        pfen=root,
+        series_number=(
+            series_number
+            if series_number is not None
+            else (4 if teacher_tier == "quiet_d2" else 7)
+        ),
+        mover_sign=mover_sign,
+        source_profile_id=source_profile_id,
+        teacher_tier=teacher_tier,
+        teacher_depth_series=2 if teacher_tier == "quiet_d2" else 3,
+        teacher_best_series=better.series,
+        teacher_score_white=better.score_white,
+        teacher_proof=None,
+        teacher_signed_mate_distance=None,
+        options=(better, worse),
+    )
+
+
+def test_cycle9_folds_are_seeded_component_disjoint_and_stratified() -> None:
+    labels = tuple(
+        _cv_label(
+            f"root-{mover}-{tier}-{repeat}",
+            mover_sign=mover,
+            teacher_tier=tier,
+            source_profile_id=f"source-{repeat % 2}",
+        )
+        for mover in (-1, 1)
+        for tier in ("quiet_d2", "tactical_d3")
+        for repeat in range(5)
+    )
+
+    first = _folds(
+        labels,
+        count=5,
+        training_mode=fitter.CYCLE9_PROTOCOL_MODE,
+        seed=707,
+    )
+    second = _folds(
+        tuple(reversed(labels)),
+        count=5,
+        training_mode=fitter.CYCLE9_PROTOCOL_MODE,
+        seed=707,
+    )
+
+    assert tuple(
+        tuple(label.state_key for label in fold) for fold in first
+    ) == tuple(tuple(label.state_key for label in fold) for fold in second)
+    assert all(len(fold) == 4 for fold in first)
+    for fold in first:
+        assert {(label.mover_sign, label.teacher_tier) for label in fold} == {
+            (-1, "quiet_d2"),
+            (-1, "tactical_d3"),
+            (1, "quiet_d2"),
+            (1, "tactical_d3"),
+        }
+
+
+def test_cycle9_folds_do_not_collapse_identical_strata_into_empty_folds() -> None:
+    labels = tuple(
+        _cv_label(
+            f"adversarial-{index}",
+            mover_sign=1,
+            teacher_tier="quiet_d2",
+            source_profile_id="single-source",
+        )
+        for index in range(20)
+    )
+
+    folds = _folds(
+        labels,
+        count=5,
+        training_mode=fitter.CYCLE9_PROTOCOL_MODE,
+        seed=707,
+    )
+
+    assert [len(fold) for fold in folds] == [4, 4, 4, 4, 4]
+
+
+def test_cycle9_folds_balance_the_observed_cycle8_train_distribution_shape() -> None:
+    # Frozen from the unsealed Cycle 8 train artifact: 128 roots, 96 quiet / 32
+    # tactical, 65 white / 63 black, and series 4..9 counts 21/22.
+    tiers = ["quiet_d2"] * 96 + ["tactical_d3"] * 32
+    movers = [1] * 65 + [-1] * 63
+    series = [4] * 21 + [5] * 22 + [6] * 21 + [7] * 22 + [8] * 21 + [9] * 21
+    labels = tuple(
+        _cv_label(
+            f"observed-shape-{index}",
+            mover_sign=movers[index],
+            teacher_tier=tiers[(index * 37) % len(tiers)],
+            source_profile_id=f"source-{index % 4}",
+            series_number=series[(index * 53) % len(series)],
+        )
+        for index in range(128)
+    )
+
+    folds = _folds(
+        labels,
+        count=5,
+        training_mode=fitter.CYCLE9_PROTOCOL_MODE,
+        seed=707,
+    )
+
+    assert all(folds)
+    assert max(map(len, folds)) - min(map(len, folds)) <= 1
+    for attribute in ("mover_sign", "teacher_tier", "series_number"):
+        maximum_spread = 2 if attribute == "series_number" else 1
+        values = {getattr(label, attribute) for label in labels}
+        for value in values:
+            counts = [
+                sum(getattr(label, attribute) == value for label in fold)
+                for fold in folds
+            ]
+            assert max(counts) - min(counts) <= maximum_spread
+
+
+def test_cycle9_folds_require_all_five_nonempty_semantic_components() -> None:
+    labels = tuple(
+        _cv_label(
+            f"too-small-{index}",
+            mover_sign=1,
+            teacher_tier="quiet_d2",
+            source_profile_id="source",
+        )
+        for index in range(4)
+    )
+
+    with pytest.raises(ValueError, match="at least five semantic-state components"):
+        _folds(
+            labels,
+            count=5,
+            training_mode=fitter.CYCLE9_PROTOCOL_MODE,
+            seed=707,
+        )
+
+
+def test_cycle9_cv_objective_is_lexicographic_safety_then_color_regret() -> None:
+    safer = {
+        "overall": {
+            "chosen_avoidable_proven_adverse": 0,
+            "chosen_proven_adverse": 0,
+            "normalized_regret": 0.2,
+            "gap_weighted_pairwise_accuracy": 0.5,
+        },
+        "strata": {
+            "mover": {
+                "white": {"normalized_regret": 0.3},
+                "black": {"normalized_regret": 0.1},
+            },
+            "reference_hard": {"hard": {"normalized_regret": 0.25}},
+        },
+    }
+    lower_average_but_adverse = {
+        "overall": {
+            "chosen_avoidable_proven_adverse": 1,
+            "chosen_proven_adverse": 1,
+            "normalized_regret": 0.0,
+            "gap_weighted_pairwise_accuracy": 1.0,
+        },
+        "strata": {
+            "mover": {
+                "white": {"normalized_regret": 0.0},
+                "black": {"normalized_regret": 0.0},
+            },
+            "reference_hard": {"hard": {"normalized_regret": 0.0}},
+        },
+    }
+
+    assert fitter._cycle9_metric_objective(safer) < (
+        fitter._cycle9_metric_objective(lower_average_but_adverse)
+    )
+
+
+def test_cycle9_reference_hard_roots_are_frozen_from_both_references() -> None:
+    labels = (
+        _cv_label(
+            "disagreement",
+            mover_sign=1,
+            teacher_tier="quiet_d2",
+            source_profile_id="source-a",
+        ),
+        _cv_label(
+            "easy",
+            mover_sign=1,
+            teacher_tier="quiet_d2",
+            source_profile_id="source-a",
+        ),
+    )
+    scorers = {
+        "baseline": lambda _label, option: (
+            1.0 if option.series.endswith("better") else 0.0
+        ),
+        "rejected_leader": lambda label, option: (
+            1.0
+            if (
+                label.state_key == "disagreement"
+                and option.series.endswith("worse")
+            )
+            or (
+                label.state_key != "disagreement"
+                and option.series.endswith("better")
+            )
+            else 0.0
+        ),
+    }
+
+    hard = fitter._reference_hard_keys(labels, scorers)
+
+    assert hard == frozenset({"disagreement"})
+
+
+def test_cycle9_cross_validation_reports_hard_strata_without_changing_legacy_shape() -> None:
+    labels = tuple(
+        _cv_label(
+            f"root-{index}",
+            mover_sign=1 if index % 2 == 0 else -1,
+            teacher_tier="quiet_d2" if index % 3 else "tactical_d3",
+            source_profile_id=f"source-{index % 2}",
+        )
+        for index in range(10)
+    )
+    hard = frozenset(label.state_key for label in labels[:3])
+
+    cycle9 = fitter._cross_validate(
+        labels,
+        "base7",
+        0.01,
+        32.0,
+        training_mode=fitter.CYCLE9_PROTOCOL_MODE,
+        reference_hard_keys=hard,
+        fold_seed=707,
+    )
+    legacy = fitter._cross_validate(labels, "base7", 0.01)
+
+    assert cycle9["out_of_fold"]["strata"]["reference_hard"]["hard"][
+        "labels"
+    ] == 3
+    assert "overall" in cycle9["out_of_fold"]
+    assert "overall" not in legacy["out_of_fold"]
+    assert cycle9["selection_objective"] == list(
+        fitter._cycle9_metric_objective(cycle9["out_of_fold"])
+    )
+
+
+def _aggregate_row(
+    state_key: str,
+    *,
+    mover: str,
+    teacher_tier: str,
+    regret: float,
+    pairwise: float,
+) -> dict[str, object]:
+    return {
+        "state_key": state_key,
+        "mover": mover,
+        "series_number": 5,
+        "source_profile_id": "source",
+        "teacher_tier": teacher_tier,
+        "teacher_depth_series": 2 if teacher_tier == "quiet_d2" else 3,
+        "tactical": teacher_tier == "tactical_d3",
+        "agreement": regret == 0.0,
+        "normalized_regret": regret,
+        "pair_correct": pairwise,
+        "pair_weight": 1.0,
+        "chosen_series": "chosen",
+        "teacher_best_series": "best",
+        "chosen_proven_adverse": False,
+        "chosen_avoidable_proven_adverse": False,
+    }
+
+
+def test_cycle9_paired_bootstrap_is_deterministic_stratified_and_aggregate_only() -> None:
+    candidate = tuple(
+        _aggregate_row(
+            f"root-{index}",
+            mover="white" if index % 2 == 0 else "black",
+            teacher_tier="quiet_d2" if index < 4 else "tactical_d3",
+            regret=0.01,
+            pairwise=0.9,
+        )
+        for index in range(8)
+    )
+    reference = tuple(
+        {
+            **row,
+            "normalized_regret": 0.02,
+            "pair_correct": 0.8,
+        }
+        for row in candidate
+    )
+
+    first = fitter._paired_stratified_bootstrap(
+        candidate,
+        reference,
+        seed=808,
+        samples=2_000,
+    )
+    second = fitter._paired_stratified_bootstrap(
+        candidate,
+        reference,
+        seed=808,
+        samples=2_000,
+    )
+
+    assert first == second
+    assert first["stratification"] == ["mover", "teacher_tier"]
+    assert first["normalized_regret_difference"]["point"] == pytest.approx(
+        -0.01
+    )
+    assert first["normalized_regret_difference"]["one_sided_upper"] < 0.0
+    assert first["gap_weighted_pairwise_accuracy_difference"][
+        "one_sided_lower"
+    ] > 0.0
+    assert "rows" not in json.dumps(first)
+
+
+def test_cycle9_aggregate_gate_promotes_only_all47_on_exact_frozen_margins() -> None:
+    candidate_rows = tuple(
+        _aggregate_row(
+            f"root-{index}",
+            mover="white" if index % 2 == 0 else "black",
+            teacher_tier="quiet_d2" if index < 4 else "tactical_d3",
+            regret=0.01 if index < 4 else 0.0,
+            pairwise=0.900,
+        )
+        for index in range(8)
+    )
+    diagnostic_rows = tuple(
+        {
+            **row,
+            "normalized_regret": float(row["normalized_regret"]) + 0.003,
+            "pair_correct": 0.902,
+        }
+        for row in candidate_rows
+    )
+    reference_rows = tuple(
+        {
+            **row,
+            "normalized_regret": 0.02,
+            "pair_correct": 0.901,
+        }
+        for row in candidate_rows
+    )
+    hard = frozenset(row["state_key"] for row in candidate_rows)
+    candidate = fitter._metrics_from_rows(
+        candidate_rows, reference_hard_keys=hard
+    )
+    diagnostic = fitter._metrics_from_rows(
+        diagnostic_rows, reference_hard_keys=hard
+    )
+    references = {
+        name: fitter._metrics_from_rows(
+            reference_rows, reference_hard_keys=hard
+        )
+        for name in ("baseline", "rejected_leader")
+    }
+    paired = {
+        name: fitter._cycle9_paired_evidence(
+            candidate_rows,
+            reference_rows,
+            reference_hard_keys=hard,
+            statistics_seed=909,
+            reference_name=name,
+            bootstrap_samples=2_000,
+        )
+        for name in references
+    }
+    for evidence in paired.values():
+        evidence["overall"]["gap_weighted_pairwise_accuracy_difference"][
+            "one_sided_lower"
+        ] = fitter.CYCLE9_PAIRWISE_LOWER_CONFIDENCE_MARGIN
+
+    gates = fitter._cycle9_holdout_gate(
+        candidate,
+        diagnostic,
+        references,
+        paired,
+    )
+
+    assert gates["promotable_candidate_roles"] == ["primary_all47"]
+    assert gates["diagnostic_roles"] == ["direct44_diagnostic"]
+    assert gates["primary_all47"]["passed"] is True
+    assert gates["direct44_diagnostic"]["passed"] is True
+    assert gates["passed"] is True
+    assert "rows" not in json.dumps({"metrics": candidate, "paired": paired})
+
+    outside_paired = json.loads(json.dumps(paired))
+    outside_paired["baseline"]["overall"][
+        "gap_weighted_pairwise_accuracy_difference"
+    ]["point"] = (
+        fitter.CYCLE9_PAIRWISE_POINT_NONINFERIORITY_MARGIN
+        - 10 * fitter.CYCLE9_GATE_ABSOLUTE_TOLERANCE
+    )
+    outside = fitter._cycle9_holdout_gate(
+        candidate, diagnostic, references, outside_paired
+    )
+    assert outside["primary_all47"]["passed"] is False
+
+    outside_diagnostic = json.loads(json.dumps(diagnostic))
+    outside_diagnostic["overall"]["normalized_regret"] = (
+        candidate["overall"]["normalized_regret"]
+        + fitter.CYCLE9_DIAGNOSTIC_MINIMUM_REGRET_GAIN
+        - 10 * fitter.CYCLE9_GATE_ABSOLUTE_TOLERANCE
+    )
+    outside_diagnostic["overall"]["gap_weighted_pairwise_accuracy"] = (
+        candidate["overall"]["gap_weighted_pairwise_accuracy"]
+        + fitter.CYCLE9_DIAGNOSTIC_MAXIMUM_PAIRWISE_LOSS
+        + 10 * fitter.CYCLE9_GATE_ABSOLUTE_TOLERANCE
+    )
+    outside = fitter._cycle9_holdout_gate(
+        candidate, outside_diagnostic, references, paired
+    )
+    assert outside["direct44_diagnostic"]["passed"] is False
+
+
+def test_cycle9_holdout_success_only_advances_to_post_holdout_validation() -> None:
+    status = fitter._cycle9_holdout_status(
+        corpus_promotion_eligible=True,
+        holdout_gate_passed=True,
+    )
+
+    assert status == {
+        "promotion_status": "pending-post-holdout-validation",
+        "holdout_gate_passed": True,
+        "advance_to_post_holdout_validation": True,
+    }
+    assert "promotion_recommendation" not in status
+
+    ineligible = fitter._cycle9_holdout_status(
+        corpus_promotion_eligible=False,
+        holdout_gate_passed=True,
+    )
+    assert ineligible == {
+        "promotion_status": "ineligible-corpus",
+        "holdout_gate_passed": True,
+        "advance_to_post_holdout_validation": False,
+    }
+
+    rejected = fitter._cycle9_holdout_status(
+        corpus_promotion_eligible=True,
+        holdout_gate_passed=False,
+    )
+    assert rejected == {
+        "promotion_status": "rejected-at-holdout",
+        "holdout_gate_passed": False,
+        "advance_to_post_holdout_validation": False,
+    }
+
+
+def test_cycle9_holdout_analysis_cannot_serialize_individual_examples() -> None:
+    labels = tuple(
+        _cv_label(
+            f"sealed-{index}",
+            mover_sign=1 if index % 2 == 0 else -1,
+            teacher_tier="quiet_d2" if index < 4 else "tactical_d3",
+            source_profile_id=f"source-{index % 2}",
+        )
+        for index in range(8)
+    )
+
+    def better(_label: TeacherLabel, option: TeacherOption) -> float:
+        return 1.0 if option.series.endswith("better") else 0.0
+
+    def one_disagreement(label: TeacherLabel, option: TeacherOption) -> float:
+        choose_worse = label.state_key == "sealed-0"
+        return 1.0 if option.series.endswith("worse" if choose_worse else "better") else 0.0
+
+    aggregate = fitter._cycle9_aggregate_analysis(
+        labels,
+        {
+            "primary_all47": better,
+            "direct44_diagnostic": one_disagreement,
+        },
+        {"baseline": better, "rejected_leader": one_disagreement},
+        statistics_seed=1_010,
+        bootstrap_samples=200,
+    )
+
+    fitter._assert_cycle9_aggregate_only(aggregate)
+    serialized = json.dumps(aggregate)
+    assert "sealed-0" not in serialized
+    assert '"rows"' not in serialized
+    assert aggregate["reference_hard"]["labels"] == 1
 
 
 def test_holdout_claim_is_exclusive_across_output_paths(tmp_path: Path) -> None:
@@ -563,6 +1106,122 @@ def _write_preregistration(
     }
     path.write_text(json.dumps(manifest), encoding="utf-8")
     return _load_preregistration(path)
+
+
+def _write_cycle9_preregistration(path: Path) -> Preregistration:
+    _write_preregistration(path)
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["schema"] = "spc-cycle9-one-shot-protocol-v2"
+    manifest["runtime"].update(
+        {
+            "numpy_version": fitter.np.__version__,
+            "numpy_distribution_record_sha256": (
+                fitter._numpy_distribution_record_sha256()
+            ),
+        }
+    )
+    manifest["fit_protocol"] = fitter._cycle9_fit_protocol_contract(
+        statistics_seed=404
+    )
+    manifest["one_shot_gates"] = {
+        "promotable_candidate_roles": ["primary_all47"],
+        "diagnostic_roles": ["direct44_diagnostic"],
+        "primary_candidate_must": fitter.CYCLE9_REQUIRED_PRIMARY_GATES,
+        "diagnostic_must": fitter.CYCLE9_REQUIRED_DIAGNOSTIC_GATES,
+        "post_holdout_required_before_promotion": (
+            fitter.REQUIRED_POST_HOLDOUT_GATES
+        ),
+    }
+    manifest["frozen_implementation"] = fitter._current_frozen_implementation()
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    return _load_preregistration(path)
+
+
+def test_cycle9_protocol_is_explicit_exact_and_frozen(tmp_path: Path) -> None:
+    path = tmp_path / "cycle9-protocol.json"
+    preregistration = _write_cycle9_preregistration(path)
+
+    assert fitter._protocol_mode(preregistration) == fitter.CYCLE9_PROTOCOL_MODE
+    contract = preregistration.manifest["fit_protocol"]
+    assert contract["feature_roles"] == {
+        "primary_all47": "all47",
+        "direct44_diagnostic": "direct44",
+    }
+    assert contract["adverse_pair_weights"] == [32.0, 128.0, 512.0]
+    assert contract["ridges"] == [0.003, 0.01, 0.03, 0.1, 0.3, 1.0]
+    assert contract["reference_hard"]["weight"] == 4.0
+    assert contract["cross_validation"]["folds"] == 5
+    assert contract["cross_validation"]["objective"][:3] == [
+        "chosen_avoidable_proven_adverse",
+        "chosen_proven_adverse",
+        "worst_mover_normalized_regret",
+    ]
+    frozen = preregistration.manifest["frozen_implementation"]
+    cycle9_hashes = {
+        "cycle9_mode_constants_sha256",
+        "cycle9_mode_contract_sha256",
+        "cycle9_loss_ast_sha256",
+        "cycle9_fold_ast_sha256",
+        "cycle9_cv_objective_ast_sha256",
+        "cycle9_bootstrap_ast_sha256",
+        "cycle9_holdout_gate_ast_sha256",
+        "cycle9_aggregate_guard_ast_sha256",
+        "cycle9_numpy_runtime_ast_sha256",
+    }
+    assert cycle9_hashes.issubset(frozen)
+    assert all(
+        fitter.HEX_SHA256.fullmatch(frozen[name])
+        for name in cycle9_hashes
+    )
+    assert preregistration.manifest["runtime"]["numpy_version"] == (
+        fitter.np.__version__
+    )
+    assert fitter.HEX_SHA256.fullmatch(
+        preregistration.manifest["runtime"][
+            "numpy_distribution_record_sha256"
+        ]
+    )
+
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["fit_protocol"]["reference_hard"]["weight"] = 3.0
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="Cycle 9 fit protocol differs"):
+        _load_preregistration(path)
+
+
+def test_cycle9_numpy_version_and_installed_record_are_frozen(tmp_path: Path) -> None:
+    path = tmp_path / "cycle9-protocol.json"
+    _write_cycle9_preregistration(path)
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["runtime"]["numpy_version"] = "0.0.0"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="NumPy version drifted"):
+        _load_preregistration(path)
+
+    _write_cycle9_preregistration(path)
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["runtime"]["numpy_distribution_record_sha256"] = "0" * 64
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="NumPy distribution RECORD drifted"):
+        _load_preregistration(path)
+
+    runtime = {
+        "numpy": fitter.np.__version__,
+        "numpy_distribution_record_sha256": (
+            fitter._numpy_distribution_record_sha256()
+        ),
+    }
+    fitter._validate_cycle9_fit_receipt_runtime(runtime)
+    runtime["numpy"] = "0.0.0"
+    with pytest.raises(ValueError, match="fit receipt NumPy version drifted"):
+        fitter._validate_cycle9_fit_receipt_runtime(runtime)
+
+
+def test_cycle8_protocol_remains_legacy_default(tmp_path: Path) -> None:
+    preregistration = _write_preregistration(tmp_path / "cycle8-protocol.json")
+
+    assert fitter._protocol_mode(preregistration) == fitter.CYCLE8_PROTOCOL_MODE
+    assert "fit_protocol" not in preregistration.manifest
 
 
 def _split_artifact(
@@ -914,6 +1573,31 @@ def test_model_identity_uses_semantic_hash_but_records_raw_artifact_hash() -> No
         first["teacher_corpus_raw_artifact_sha256"]
         != replay["teacher_corpus_raw_artifact_sha256"]
     )
+
+
+def test_cycle9_model_metadata_binds_loss_and_hard_weight_without_legacy_drift() -> None:
+    shared = {
+        "group": "all47",
+        "ridge": 0.03,
+        "coefficients": (1,) * 47,
+        "adverse_pair_weight": 128.0,
+        "corpus_id": "spc-native-mixed-teacher-example",
+        "corpus_semantic_sha256": "1" * 64,
+        "corpus_raw_artifact_sha256": "2" * 64,
+    }
+
+    legacy = _model_payload(**shared)
+    cycle9 = _model_payload(
+        **shared,
+        training_mode=fitter.CYCLE9_PROTOCOL_MODE,
+    )
+
+    assert "training_mode" not in legacy
+    assert "loss_contract" not in legacy
+    assert cycle9["training_mode"] == fitter.CYCLE9_PROTOCOL_MODE
+    assert cycle9["loss_contract"] == fitter.CYCLE9_LOSS_CONTRACT
+    assert cycle9["reference_hard_weight"] == 4.0
+    assert cycle9["model_id"] != legacy["model_id"]
 
 
 def test_label_payload_commitment_rejects_changed_score_with_same_keys(
