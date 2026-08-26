@@ -57,6 +57,30 @@ This larger microbenchmark result explains the direction of the whole-search
 gain; it is not a prediction that a full browser search becomes 19% faster.
 Legal expansion is only one part of complete progressive-series search.
 
+## Certified Opera GX release evidence
+
+The promoted single-thread WASM bundle was also exercised end to end in Opera
+GX 134 (Chromium 150) from a real browser worker. All three D5 runs completed
+with the same result: `f2f3`, score `+617`, 20 retained root bounds, a complete
+PV, and the reply-mate safety gate passing.
+
+| Browser run | Previous bundle | Candidate bundle | Speed change |
+| --- | ---: | ---: | ---: |
+| Warm, wave 8 | 33.567 s | 33.143 s | **+1.26%** |
+| Warm, wave 4 | 36.988 s | 36.088 s | **+2.43%** |
+| Cold, wave 8 | 32.947 s | 33.262 s | **-0.96%** |
+
+The candidate passed the D1-D5 root-session oracle, the 14-case native/WASM
+prefix differential, browser prefix-contract checks, and mate parity. It was
+promoted as release `spc-browser-wasm-release-2f3281196de38ef9`, backed by root
+session certificate `spc-root-session-5f603e5f10ce6b81`, prefix certificate
+`spc-prefix-52ec6301a141b4b5`, and mate certificate
+`spc-mate-b335d6effde48a90`.
+
+The warm measurements moved in the expected direction, but the cold result did
+not. Browser scheduling noise is large enough that this checkpoint does not
+claim a consistent end-to-end D5 speedup.
+
 ## Rejected experiment
 
 A legality-mask/frontier-reuse candidate preserved the exact semantic and work
@@ -89,9 +113,11 @@ charged work differs.
 ## Limits of this checkpoint
 
 - The full-search comparison covers native CPython, one thread, D4/width 32,
-  and two opening boundaries. It does not establish a D5 or timed-browser gain.
-- The Emscripten result isolates legal expansion under Node; it is not an Opera
-  end-to-end receipt and does not include worker scheduling or UI overhead.
+  and two opening boundaries. The separate Opera D5 measurements are mixed and
+  do not establish a statistically stable timed-browser gain.
+- The Emscripten microbenchmark isolates legal expansion under Node. The Opera
+  receipts include the browser worker, but three runs are not enough to separate
+  this small search-path gain reliably from scheduling and thermal noise.
 - The accepted change preserves the search tree, evaluation, pruning, proof,
   and work counters. It is a modest speed optimization, not demonstrated
   playing-strength improvement.
