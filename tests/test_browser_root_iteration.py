@@ -54,6 +54,8 @@ def test_browser_root_worker_pool_contract() -> None:
         "mismatched_worker_time_origin_clamped": True,
         "unknown_memory_uses_lower_geometry": True,
         "checked_pv_horizon_mate_rejected": True,
+        "checked_pv_horizon_native_repaired": True,
+        "checked_pv_horizon_dedicated_schema": True,
         "checked_pv_horizon_root_chain_fail_closed": True,
         "stale_horizon_safety_reply_fail_closed": True,
         "favorable_checked_horizon_not_vetoed": True,

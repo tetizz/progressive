@@ -18,6 +18,13 @@
   const BLACK = "black";
   const CHECKED_PV_SELECTION_POLICY = "reject-adverse-checked-pv-mates-v1";
   const PROOF_AWARE_SELECTION_POLICY = "exclude-proven-opponent-wins-unless-forced-v1";
+  const ROOT_CANDIDATE_TASK_SCHEMA = "spc-root-candidate-task-v1";
+  const ROOT_CANDIDATE_RESULT_SCHEMA = "spc-root-candidate-result-v1";
+  const ROOT_HORIZON_RESEARCH_TASK_SCHEMA = "spc-root-horizon-research-task-v1";
+  const ROOT_HORIZON_RESEARCH_RESULT_SCHEMA = "spc-root-horizon-research-result-v1";
+  const RETAINED_ROOT_HORIZON_PROOF_SCHEMA = "spc-retained-root-horizon-proof-v1";
+  const MAX_RETAINED_ROOT_HORIZON_PROOFS = 16;
+  const MAX_RETAINED_ROOT_HORIZON_PROOF_PATH = 8;
   const MIN_ASPIRATION_INITIAL_DELTA = 2_048;
   const MAX_ASPIRATION_ATTEMPTS = 4;
 
@@ -60,6 +67,34 @@
       && Array.isArray(right)
       && left.length === right.length
       && left.every((item, index) => item === right[index]);
+  }
+
+  function sameJsonValue(left, right) {
+    if (left === right) return true;
+    if (Array.isArray(left) || Array.isArray(right)) {
+      return Array.isArray(left)
+        && Array.isArray(right)
+        && left.length === right.length
+        && left.every((item, index) => sameJsonValue(item, right[index]));
+    }
+    if (
+      !left || typeof left !== "object"
+      || !right || typeof right !== "object"
+    ) return false;
+    const leftKeys = Object.keys(left).sort();
+    const rightKeys = Object.keys(right).sort();
+    return sameArray(leftKeys, rightKeys)
+      && leftKeys.every((key) => sameJsonValue(left[key], right[key]));
+  }
+
+  function bitCount16(value) {
+    let remaining = value;
+    let count = 0;
+    while (remaining !== 0) {
+      count += remaining & 1;
+      remaining >>>= 1;
+    }
+    return count;
   }
 
   function normalizeBoundary(value) {
@@ -338,6 +373,138 @@
       }),
       outcome,
       ended_by_check: value.ended_by_check,
+    });
+  }
+
+  function normalizeHorizonSeries(value, actingSeries, { mate = false } = {}) {
+    const expectedSeriesKeys = [
+      "child_boundary", "ended_by_check", "machine_notation", "moves",
+      "outcome", "transposition_count",
+    ];
+    const expectedBoundaryKeys = [
+      "board_fen", "chess960", "ep_targets", "fen", "progressive_ep",
+      "promoted_hex", "quiet_draw_pending", "quiet_series", "series",
+      "series_number", "side_to_move",
+    ];
+    const child = value?.child_boundary;
+    const moves = value?.moves;
+    const epTargets = child?.ep_targets;
+    const progressiveEp = child?.progressive_ep;
+    const fen = child?.fen;
+    const fields = typeof fen === "string" ? fen.split(" ") : [];
+    const nextWhite = actingSeries % 2 === 0;
+    if (
+      !value
+      || typeof value !== "object"
+      || Array.isArray(value)
+      || !exactInteger(actingSeries, 1, 264)
+      || !sameArray(Object.keys(value).sort(), expectedSeriesKeys)
+      || !Array.isArray(moves)
+      || moves.length < 1
+      || moves.length > actingSeries
+      || moves.some((move) => typeof move !== "string" || !UCI_MOVE.test(move))
+      || value.machine_notation !== moves.join("/")
+      || !exactInteger(value.transposition_count, 1)
+      || (mate && value.transposition_count !== 1)
+      || value.outcome !== (mate ? "checkmate" : null)
+      || typeof value.ended_by_check !== "boolean"
+      || (mate && value.ended_by_check !== true)
+      || (!mate && value.ended_by_check !== true && moves.length !== actingSeries)
+      || !child
+      || typeof child !== "object"
+      || Array.isArray(child)
+      || !sameArray(Object.keys(child).sort(), expectedBoundaryKeys)
+      || fields.length !== 6
+      || fields.some((field) => !field)
+      || fields[0].split("/").length !== 8
+      || !/^[wb]$/.test(fields[1])
+      || !/^\d+$/.test(fields[4])
+      || !/^[1-9]\d*$/.test(fields[5])
+      || /[\0\r\n]/.test(fen)
+      || fen !== fen.trim()
+      || utf8Length(fen) > 512
+      || child.board_fen !== fen
+      || child.series !== actingSeries + 1
+      || child.series_number !== child.series
+      || child.side_to_move !== (nextWhite ? WHITE : BLACK)
+      || fields[1] !== (nextWhite ? "w" : "b")
+      || !exactInteger(child.quiet_series, 0, 1_000_000)
+      || typeof child.quiet_draw_pending !== "boolean"
+      || child.quiet_draw_pending !== (child.quiet_series >= 10)
+      || !Array.isArray(epTargets)
+      || !Array.isArray(progressiveEp)
+      || epTargets.length > 8
+      || epTargets.some((square) => typeof square !== "string" || !SQUARE.test(square))
+      || new Set(epTargets).size !== epTargets.length
+      || !sameArray(epTargets, [...epTargets].sort())
+      || !sameArray(epTargets, progressiveEp)
+      || canonicalPromotedHex(child.promoted_hex) === null
+      || child.promoted_hex !== canonicalPromotedHex(child.promoted_hex)
+      || child.chess960 !== false
+    ) {
+      throw new RootCoordinatorError(
+        "A checked-horizon proof series is malformed or non-canonical.",
+        "root-safety-result-invalid",
+      );
+    }
+    return Object.freeze({
+      moves: Object.freeze([...moves]),
+      machine_notation: value.machine_notation,
+      transposition_count: value.transposition_count,
+      child_boundary: Object.freeze({
+        ...child,
+        ep_targets: Object.freeze([...epTargets]),
+        progressive_ep: Object.freeze([...progressiveEp]),
+      }),
+      outcome: value.outcome,
+      ended_by_check: value.ended_by_check,
+    });
+  }
+
+  function normalizeHorizonProof(value, record, request, safety) {
+    const rootedPath = value?.rooted_path;
+    const expectedPath = [record.candidate.root_series, ...record.childPv];
+    if (
+      !value
+      || typeof value !== "object"
+      || Array.isArray(value)
+      || !sameArray(Object.keys(value).sort(), ["mate_reply", "rooted_path", "schema"])
+      || value.schema !== RETAINED_ROOT_HORIZON_PROOF_SCHEMA
+      || !Array.isArray(rootedPath)
+      || rootedPath.length < 1
+      || rootedPath.length > MAX_RETAINED_ROOT_HORIZON_PROOF_PATH
+      || rootedPath.length !== expectedPath.length
+      || safety.line_rejection?.mate_ply !== rootedPath.length + 1
+    ) {
+      throw new RootCoordinatorError(
+        "A checked-PV line rejection omitted its exact retained-root proof.",
+        "root-safety-result-invalid",
+      );
+    }
+    const normalizedPath = rootedPath.map((series, index) => (
+      normalizeHorizonSeries(series, request.boundary.series + index)
+    ));
+    const mateReply = normalizeHorizonSeries(
+      value.mate_reply,
+      request.boundary.series + rootedPath.length,
+      { mate: true },
+    );
+    if (
+      normalizedPath.at(-1).ended_by_check !== true
+      || normalizedPath.at(-1).machine_notation
+        !== safety.line_rejection.horizon_series
+      || !sameJsonValue(normalizedPath, expectedPath)
+      || !sameJsonValue(mateReply, safety.reply_mate)
+    ) {
+      throw new RootCoordinatorError(
+        "A checked-horizon proof does not match the exact searched PV and mate replay.",
+        "root-safety-result-invalid",
+      );
+    }
+    return Object.freeze({
+      schema: RETAINED_ROOT_HORIZON_PROOF_SCHEMA,
+      rooted_path: Object.freeze(normalizedPath),
+      mate_reply: mateReply,
     });
   }
 
@@ -667,10 +834,15 @@
 
   function validateSearchReply(reply, task, worker) {
     const work = reply?.work;
+    const horizonResearch = task.schema === ROOT_HORIZON_RESEARCH_TASK_SCHEMA;
+    const fallbackStatus = horizonResearch
+      && ["work_limit", "unsupported"].includes(reply?.status);
     if (
       !reply
       || typeof reply !== "object"
       || Array.isArray(reply)
+      || (!horizonResearch && reply.schema !== ROOT_CANDIDATE_RESULT_SCHEMA)
+      || (horizonResearch && reply.schema !== ROOT_HORIZON_RESEARCH_RESULT_SCHEMA)
       || reply.request_id !== task.request_id
       || reply.iteration_id !== task.iteration_id
       || reply.source_fingerprint !== task.source_fingerprint
@@ -693,7 +865,7 @@
       || reply.alpha !== task.alpha
       || reply.beta !== task.beta
       || reply.child_depth !== task.child_depth
-      || reply.status !== COMPLETE
+      || (!fallbackStatus && reply.status !== COMPLETE)
       || ![EXACT, UPPER, LOWER, UNKNOWN].includes(reply.bound)
       || !Number.isSafeInteger(reply.score)
       || Math.abs(reply.score) >= 2 * task.mate_score
@@ -714,6 +886,49 @@
         "A root Worker returned a malformed, stale, or mismatched result.",
         "root-worker-result-invalid",
       );
+    }
+    if (horizonResearch) {
+      const proofCount = task.horizon_proofs.length;
+      const proofMaskLimit = 2 ** proofCount;
+      if (
+        !exactInteger(proofCount, 1, MAX_RETAINED_ROOT_HORIZON_PROOFS)
+        || typeof reply.horizon_proof_set_identity !== "string"
+        || !exactInteger(
+          reply.horizon_proofs_validated,
+          0,
+          MAX_RETAINED_ROOT_HORIZON_PROOFS,
+        )
+        || !exactInteger(reply.horizon_proof_hits, 0)
+        || reply.horizon_proof_hits > reply.horizon_proofs_validated
+        || !exactInteger(reply.horizon_proof_hit_mask, 0, 0xffff)
+        || reply.horizon_proof_hit_mask >= proofMaskLimit
+        || bitCount16(reply.horizon_proof_hit_mask) !== reply.horizon_proof_hits
+        || (
+          fallbackStatus
+          && (
+            reply.bound !== UNKNOWN
+            || reply.horizon_proof_set_identity !== ""
+            || reply.horizon_proofs_validated !== 0
+            || reply.horizon_proof_hits !== 0
+            || reply.horizon_proof_hit_mask !== 0
+          )
+        )
+        || (
+          !fallbackStatus
+          && (
+            !reply.horizon_proof_set_identity
+            || reply.horizon_proofs_validated !== proofCount
+            || (reply.horizon_proof_hits === 0)
+              !== (reply.horizon_proof_hit_mask === 0)
+          )
+        )
+      ) {
+        throw new RootCoordinatorError(
+          "A checked-horizon re-search returned an invalid proof receipt.",
+          "root-worker-result-invalid",
+        );
+      }
+      if (fallbackStatus) return reply;
     }
     if (reply.bound === UNKNOWN) {
       throw new RootCoordinatorError(
@@ -828,6 +1043,9 @@
         bound: null,
         override: false,
         policyRejected: false,
+        horizonProofs: [],
+        horizonProofSetIdentity: null,
+        horizonNativeRepairs: 0,
         safetyStatus: candidate.terminal_score !== null ? "terminal" : null,
         aspirationEnabled: aspirationCandidateIds.has(candidate.candidate_identity),
         aspirationCenter: request.aspiration?.center_score ?? null,
@@ -844,6 +1062,8 @@
     let incumbentEpoch = 0;
     let safetyRevision = 0;
     let pvHorizonLineRejections = 0;
+    let pvHorizonNativeRepairs = 0;
+    let pvHorizonCandidateVetoes = 0;
     let incumbent = null;
     let incumbentSignature = null;
     let invalidated = false;
@@ -1003,6 +1223,8 @@
           proof_aware_selection: true,
           selection_policy_filtered: false,
           pv_horizon_line_rejections: 0,
+          pv_horizon_native_repairs: 0,
+          pv_horizon_candidate_vetoes: 0,
           coverage_scope: "all-retained-candidates",
           unfiltered_score_winner_selected: true,
           coverage_complete: true,
@@ -1031,7 +1253,7 @@
         worker,
         record,
         purpose,
-        { aspirationFallback = false } = {},
+        { aspirationFallback = false, horizonProofs = null } = {},
       ) => {
         if (now() >= request.deadline_monotonic_ms) {
           throw new RootCoordinatorError(
@@ -1051,6 +1273,21 @@
           throw new RootCoordinatorError(
             "The root scheduler attempted to reuse a busy or lost Worker.",
             "root-worker-state-invalid",
+          );
+        }
+        const horizonResearch = horizonProofs !== null;
+        if (
+          horizonResearch
+          && (
+            purpose !== "horizon-research"
+            || !Array.isArray(horizonProofs)
+            || horizonProofs.length < 1
+            || horizonProofs.length > MAX_RETAINED_ROOT_HORIZON_PROOFS
+          )
+        ) {
+          throw new RootCoordinatorError(
+            "The checked-horizon re-search task is not an exact retained proof set.",
+            "root-horizon-research-invalid",
           );
         }
         const full = purpose !== "scout" && purpose !== "aspiration";
@@ -1116,8 +1353,8 @@
           );
         }
         taskSequence += 1;
-        const task = Object.freeze({
-          schema: "spc-root-candidate-task-v1",
+        const ordinaryTask = {
+          schema: ROOT_CANDIDATE_TASK_SCHEMA,
           request_id: request.request_id,
           iteration_id: request.iteration_id,
           source_fingerprint: request.source_fingerprint,
@@ -1148,7 +1385,12 @@
           call_work_credit: reservation.credit,
           deadline_monotonic_ms: request.deadline_monotonic_ms,
           mover: whiteToMove ? WHITE : BLACK,
-        });
+        };
+        const task = Object.freeze(horizonResearch ? {
+          ...ordinaryTask,
+          schema: ROOT_HORIZON_RESEARCH_TASK_SCHEMA,
+          horizon_proofs: Object.freeze([...horizonProofs]),
+        } : ordinaryTask);
         worker.busy = true;
         const promise = Promise.resolve()
           .then(() => worker.adapter.search(task, { signal: internalAbort.signal }))
@@ -1178,6 +1420,10 @@
           alpha,
           beta,
           call_work_credit: reservation.credit,
+          ...(horizonResearch ? {
+            task_schema: ROOT_HORIZON_RESEARCH_TASK_SCHEMA,
+            horizon_proof_count: horizonProofs.length,
+          } : {}),
         }));
       };
 
@@ -1420,7 +1666,7 @@
       };
 
       const certifySelectedOnOwner = async () => {
-        if (incumbent.terminal) return;
+        if (incumbent.terminal) return true;
         const owner = workers.find((worker) => worker.id === incumbent.ownerId);
         if (!owner || !owner.alive || owner.busy) {
           throw new RootCoordinatorError(
@@ -1430,13 +1676,38 @@
         }
         const expectedScore = incumbent.score;
         const expectedId = incumbent.candidate.candidate_identity;
-        dispatch(owner, incumbent, "selected-certification");
+        const horizonProofs = incumbent.horizonProofs.length > 0
+          ? incumbent.horizonProofs
+          : null;
+        try {
+          dispatch(
+            owner,
+            incumbent,
+            horizonProofs === null ? "selected-certification" : "horizon-research",
+            horizonProofs === null ? {} : { horizonProofs },
+          );
+        } catch (error) {
+          if (horizonProofs === null || error?.code !== "root-work-limit") throw error;
+          return false;
+        }
         const outcome = await consumeOne();
+        if (
+          horizonProofs !== null
+          && ["work_limit", "unsupported"].includes(outcome.reply.status)
+        ) return false;
         if (
           outcome.worker.id !== owner.id
           || outcome.record.candidate.candidate_identity !== expectedId
           || outcome.reply.score !== expectedScore
           || outcome.reply.bound !== EXACT
+          || (
+            horizonProofs !== null
+            && (
+              outcome.task.schema !== ROOT_HORIZON_RESEARCH_TASK_SCHEMA
+              || outcome.reply.horizon_proof_set_identity
+                !== incumbent.horizonProofSetIdentity
+            )
+          )
         ) {
           throw new RootCoordinatorError(
             "The warm selected-owner certification diverged from reduction.",
@@ -1444,6 +1715,7 @@
           );
         }
         makeExact(incumbent, outcome.reply, owner.id);
+        return true;
       };
 
       await ensureFinalCoverage();
@@ -1461,7 +1733,28 @@
             { work: ledger.snapshot() },
           );
         }
-        await certifySelectedOnOwner();
+        const ownerCertified = await certifySelectedOnOwner();
+        if (!ownerCertified) {
+          if (
+            !Number.isSafeInteger(incumbent.horizonNativeRepairs)
+            || incumbent.horizonNativeRepairs < 1
+            || pvHorizonNativeRepairs < 1
+          ) {
+            throw new RootCoordinatorError(
+              "A failed checked-horizon owner re-certification has no repair to reclassify.",
+              "root-horizon-accounting-invalid",
+              { work: ledger.snapshot() },
+            );
+          }
+          incumbent.policyRejected = true;
+          incumbent.safetyStatus = "line-rejected";
+          incumbent.horizonNativeRepairs -= 1;
+          pvHorizonNativeRepairs -= 1;
+          pvHorizonCandidateVetoes += 1;
+          safetyRevision += 1;
+          await ensureFinalCoverage();
+          continue;
+        }
         if (incumbent.terminal) {
           safetyStatus = "terminal";
           break;
@@ -1589,10 +1882,75 @@
               { work: ledger.snapshot() },
             );
           }
-          incumbent.policyRejected = true;
-          incumbent.safetyStatus = "line-rejected";
           pvHorizonLineRejections += 1;
           safetyRevision += 1;
+          const rejectCandidate = async () => {
+            incumbent.policyRejected = true;
+            incumbent.safetyStatus = "line-rejected";
+            pvHorizonCandidateVetoes += 1;
+            await ensureFinalCoverage();
+          };
+          if (safety.horizon_proof === undefined) {
+            await rejectCandidate();
+            continue;
+          }
+          const proof = normalizeHorizonProof(
+            safety.horizon_proof,
+            incumbent,
+            request,
+            safety,
+          );
+          if (
+            incumbent.horizonProofs.length >= MAX_RETAINED_ROOT_HORIZON_PROOFS
+            || incumbent.horizonProofs.some((item) => sameJsonValue(item, proof))
+          ) {
+            await rejectCandidate();
+            continue;
+          }
+          incumbent.horizonProofs.push(proof);
+          const owner = workers.find((worker) => worker.id === incumbent.ownerId);
+          if (!owner || !owner.alive || owner.busy) {
+            throw new RootCoordinatorError(
+              "The checked-horizon candidate's warm owning Worker is unavailable.",
+              "root-selected-owner-unavailable",
+              { work: ledger.snapshot() },
+            );
+          }
+          try {
+            dispatch(owner, incumbent, "horizon-research", {
+              horizonProofs: incumbent.horizonProofs,
+            });
+          } catch (error) {
+            if (error?.code !== "root-work-limit") throw error;
+            await rejectCandidate();
+            continue;
+          }
+          const repair = await consumeOne();
+          if (
+            repair.worker.id !== owner.id
+            || repair.record !== incumbent
+            || repair.task.schema !== ROOT_HORIZON_RESEARCH_TASK_SCHEMA
+          ) {
+            throw new RootCoordinatorError(
+              "The checked-horizon re-search was not bound to its warm candidate owner.",
+              "root-worker-result-invalid",
+              { work: ledger.snapshot() },
+            );
+          }
+          const newestProofBit = 2 ** (incumbent.horizonProofs.length - 1);
+          if (
+            ["work_limit", "unsupported"].includes(repair.reply.status)
+            || (repair.reply.horizon_proof_hit_mask & newestProofBit) === 0
+          ) {
+            await rejectCandidate();
+            continue;
+          }
+          makeExact(incumbent, repair.reply, owner.id);
+          incumbent.horizonProofSetIdentity = repair.reply.horizon_proof_set_identity;
+          incumbent.safetyStatus = null;
+          incumbent.horizonNativeRepairs += 1;
+          pvHorizonNativeRepairs += 1;
+          recomputeIncumbent();
           await ensureFinalCoverage();
           continue;
         }
@@ -1650,6 +2008,16 @@
       ).length;
       const proofPolicyFiltered = provenAdverseCandidates > 0
         && provenAdverseCandidates < proofEligibleRecords.length;
+      if (
+        pvHorizonNativeRepairs + pvHorizonCandidateVetoes
+        !== pvHorizonLineRejections
+      ) {
+        throw new RootCoordinatorError(
+          "Checked-horizon terminal dispositions do not balance their line rejections.",
+          "root-horizon-accounting-invalid",
+          { work: ledger.snapshot() },
+        );
+      }
       return Object.freeze({
         schema: RESULT_SCHEMA,
         status: COMPLETE,
@@ -1676,9 +2044,11 @@
         proof_aware_selection: true,
         proof_policy_filtered: proofPolicyFiltered,
         proven_adverse_candidates: provenAdverseCandidates,
-        selection_policy_filtered: pvHorizonLineRejections > 0,
+        selection_policy_filtered: pvHorizonCandidateVetoes > 0,
         pv_horizon_line_rejections: pvHorizonLineRejections,
-        coverage_scope: pvHorizonLineRejections > 0
+        pv_horizon_native_repairs: pvHorizonNativeRepairs,
+        pv_horizon_candidate_vetoes: pvHorizonCandidateVetoes,
+        coverage_scope: pvHorizonCandidateVetoes > 0
           ? "selection-eligible-candidates"
           : "all-retained-candidates",
         unfiltered_score_winner_selected: pvHorizonLineRejections === 0,

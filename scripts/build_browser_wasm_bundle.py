@@ -17,6 +17,22 @@ PREFIX_RESULT_SCHEMA = "spc-boundary-prefix-v1"
 ROOT_SESSION_CERTIFICATE_SCHEMA = "spc-root-session-certificate-v1"
 ROOT_SESSION_CONTRACT_SCHEMA = "spc-root-session-contract-v1"
 MATE_CERTIFICATE_SCHEMA = "spc-series-mate-certificate-v1"
+CHECKED_HORIZON_EVIDENCE_SCHEMA = "spc-checked-horizon-wasm-evidence-v1"
+WHITE_HORIZON_CANDIDATE_SHA256 = (
+    "d050d64ee2388a82969a0953fdc1aa937455951d762ec9b7d16c3f9fee7b5c94"
+)
+WHITE_HORIZON_PROOF_SET_SHA256 = (
+    "5b7dda6a22771961e77b0bcd107f7cb14a04390886199c1e955148aa12b455bb"
+)
+WHITE_HORIZON_ROOT_PV_SHA256 = (
+    "2b391d9f78869648bbb89bf23ce4233f16ccb57ac930d0c724815226008743d4"
+)
+BLACK_HORIZON_CANDIDATE_SHA256 = (
+    "0dabf1be2fd78c5065515628fe556d9b750f3623e9ba583c13984066f5cbe2a9"
+)
+BLACK_HORIZON_PROOF_SET_SHA256 = (
+    "9dd5bade7dafab271411fe3bddfd0e8fd86c35daea56fc11629f4aae5b17c961"
+)
 MIN_PREFIX_DIFFERENTIAL_CASES = 14
 MIN_MATE_DIFFERENTIAL_CASES = 5
 PREFIX_HARD_LIMITS = {
@@ -228,6 +244,255 @@ def _require_mapping(value: object, label: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError(f"{label} must be a JSON object")
     return value
+
+
+def _validate_checked_horizon_case(
+    value: object,
+    *,
+    label: str,
+    root_side: str,
+    root_order_key: str,
+    proof_order: list[str],
+    proof_path_lengths: list[int],
+    child_depth: int,
+    score: int,
+    prior_score: int,
+    prior_schema: str,
+    hits: int,
+    hit_mask: int,
+    exact_tt_hits: int,
+    disposition: str,
+    candidate_sha256: str,
+    proof_set_sha256: str,
+    root_pv_sha256: str | None = None,
+) -> dict[str, Any]:
+    case = dict(_require_mapping(value, label))
+    expected_keys = {
+        "root_side",
+        "root_order_key",
+        "request_proof_count",
+        "request_proof_order",
+        "request_proof_path_lengths",
+        "newest_proof_anchor",
+        "child_depth",
+        "schema",
+        "status",
+        "bound",
+        "score",
+        "horizon_proofs_validated",
+        "horizon_proof_hits",
+        "horizon_proof_hit_mask",
+        "horizon_proof_set_identity_sha256",
+        "candidate_identity_sha256",
+        "exact_tt_hits",
+        "prior_same_root_schema",
+        "prior_same_root_status",
+        "prior_same_root_bound",
+        "prior_same_root_score",
+        "prior_same_root_candidate_identity_sha256",
+        "disposition",
+    }
+    if root_pv_sha256 is not None:
+        expected_keys.update(
+            {"root_pv_sha256", "prior_same_root_root_pv_sha256"}
+        )
+    if set(case) != expected_keys:
+        raise ValueError(f"{label} fields do not match the exact evidence schema")
+    proof_count = len(proof_order)
+    actual_order = case.get("request_proof_order")
+    actual_lengths = case.get("request_proof_path_lengths")
+    if (
+        not isinstance(actual_order, list)
+        or any(not isinstance(item, str) for item in actual_order)
+        or not isinstance(actual_lengths, list)
+        or any(
+            isinstance(item, bool) or not isinstance(item, int)
+            for item in actual_lengths
+        )
+    ):
+        raise ValueError(f"{label} proof order/path anchors are not exact")
+    expected = {
+        "root_side": root_side,
+        "root_order_key": root_order_key,
+        "request_proof_count": proof_count,
+        "request_proof_order": proof_order,
+        "request_proof_path_lengths": proof_path_lengths,
+        "newest_proof_anchor": proof_order[-1],
+        "child_depth": child_depth,
+        "schema": "spc-root-horizon-research-result-v1",
+        "status": "complete",
+        "bound": "exact",
+        "score": score,
+        "horizon_proofs_validated": proof_count,
+        "horizon_proof_hits": hits,
+        "horizon_proof_hit_mask": hit_mask,
+        "horizon_proof_set_identity_sha256": proof_set_sha256,
+        "candidate_identity_sha256": candidate_sha256,
+        "exact_tt_hits": exact_tt_hits,
+        "prior_same_root_schema": prior_schema,
+        "prior_same_root_status": "complete",
+        "prior_same_root_bound": "exact",
+        "prior_same_root_score": prior_score,
+        "prior_same_root_candidate_identity_sha256": candidate_sha256,
+        "disposition": disposition,
+    }
+    if root_pv_sha256 is not None:
+        expected.update(
+            {
+                "root_pv_sha256": root_pv_sha256,
+                "prior_same_root_root_pv_sha256": root_pv_sha256,
+            }
+        )
+    for key in (
+        "request_proof_count",
+        "child_depth",
+        "score",
+        "horizon_proofs_validated",
+        "horizon_proof_hits",
+        "horizon_proof_hit_mask",
+        "exact_tt_hits",
+        "prior_same_root_score",
+    ):
+        if isinstance(case.get(key), bool) or not isinstance(case.get(key), int):
+            raise ValueError(f"{label} field {key!r} must be an exact integer")
+    for key, expected_value in expected.items():
+        if case.get(key) != expected_value:
+            raise ValueError(
+                f"{label} field {key!r} is not exact checked-horizon evidence"
+            )
+    for key in (
+        "horizon_proof_set_identity_sha256",
+        "candidate_identity_sha256",
+        "prior_same_root_candidate_identity_sha256",
+    ):
+        digest = case.get(key)
+        if not isinstance(digest, str) or HEX_64.fullmatch(digest) is None:
+            raise ValueError(f"{label} {key} is not a SHA-256 commitment")
+    if root_pv_sha256 is not None:
+        for key in ("root_pv_sha256", "prior_same_root_root_pv_sha256"):
+            digest = case.get(key)
+            if not isinstance(digest, str) or HEX_64.fullmatch(digest) is None:
+                raise ValueError(f"{label} {key} is not a SHA-256 commitment")
+    newest_bit = 1 << (proof_count - 1)
+    newest_hit = hit_mask & newest_bit != 0
+    if hits == 0 and hit_mask == 0 and exact_tt_hits > 0:
+        expected_disposition = "warm-exact-recertified"
+    else:
+        expected_disposition = (
+            "same-root-repaired" if newest_hit else "newest-proof-not-hit"
+        )
+    if disposition != expected_disposition:
+        raise ValueError(f"{label} disposition does not follow request-order hits")
+    if disposition == "same-root-repaired" and score == prior_score:
+        raise ValueError(f"{label} did not change the same-root result")
+    return case
+
+
+def _validate_checked_horizon_evidence(
+    value: object,
+    *,
+    label: str,
+) -> dict[str, Any]:
+    evidence = dict(_require_mapping(value, label))
+    expected_keys = {
+        "schema",
+        "white_deep_two_proof",
+        "white_deep_warm_exact",
+        "white_deep_reversed_order",
+        "black_parity",
+    }
+    if (
+        set(evidence) != expected_keys
+        or evidence.get("schema") != CHECKED_HORIZON_EVIDENCE_SCHEMA
+    ):
+        raise ValueError(f"{label} does not match the exact evidence schema")
+    white = _validate_checked_horizon_case(
+        evidence["white_deep_two_proof"],
+        label=f"{label} white deep two-proof",
+        root_side="white",
+        root_order_key="h4g2",
+        proof_order=["alternate", "deep"],
+        proof_path_lengths=[3, 3],
+        child_depth=2,
+        score=179,
+        prior_score=336,
+        prior_schema="spc-root-candidate-result-v1",
+        hits=1,
+        hit_mask=0b10,
+        exact_tt_hits=0,
+        disposition="same-root-repaired",
+        candidate_sha256=WHITE_HORIZON_CANDIDATE_SHA256,
+        proof_set_sha256=WHITE_HORIZON_PROOF_SET_SHA256,
+    )
+    warm = _validate_checked_horizon_case(
+        evidence["white_deep_warm_exact"],
+        label=f"{label} white deep warm exact",
+        root_side="white",
+        root_order_key="h4g2",
+        proof_order=["alternate", "deep"],
+        proof_path_lengths=[3, 3],
+        child_depth=2,
+        score=179,
+        prior_score=179,
+        prior_schema="spc-root-horizon-research-result-v1",
+        hits=0,
+        hit_mask=0,
+        exact_tt_hits=1,
+        disposition="warm-exact-recertified",
+        candidate_sha256=WHITE_HORIZON_CANDIDATE_SHA256,
+        proof_set_sha256=WHITE_HORIZON_PROOF_SET_SHA256,
+        root_pv_sha256=WHITE_HORIZON_ROOT_PV_SHA256,
+    )
+    reversed_case = _validate_checked_horizon_case(
+        evidence["white_deep_reversed_order"],
+        label=f"{label} white deep reversed-order",
+        root_side="white",
+        root_order_key="h4g2",
+        proof_order=["deep", "alternate"],
+        proof_path_lengths=[3, 3],
+        child_depth=2,
+        score=179,
+        prior_score=336,
+        prior_schema="spc-root-candidate-result-v1",
+        hits=1,
+        hit_mask=0b01,
+        exact_tt_hits=0,
+        disposition="newest-proof-not-hit",
+        candidate_sha256=WHITE_HORIZON_CANDIDATE_SHA256,
+        proof_set_sha256=WHITE_HORIZON_PROOF_SET_SHA256,
+    )
+    _validate_checked_horizon_case(
+        evidence["black_parity"],
+        label=f"{label} Black parity",
+        root_side="black",
+        root_order_key="f7f5/b8b1",
+        proof_order=["black-mate"],
+        proof_path_lengths=[1],
+        child_depth=0,
+        score=1_000_000 - 2,
+        prior_score=-235,
+        prior_schema="spc-root-candidate-result-v1",
+        hits=1,
+        hit_mask=0b1,
+        exact_tt_hits=0,
+        disposition="same-root-repaired",
+        candidate_sha256=BLACK_HORIZON_CANDIDATE_SHA256,
+        proof_set_sha256=BLACK_HORIZON_PROOF_SET_SHA256,
+    )
+    if (
+        white["horizon_proof_set_identity_sha256"]
+        != reversed_case["horizon_proof_set_identity_sha256"]
+        or white["candidate_identity_sha256"]
+        != reversed_case["candidate_identity_sha256"]
+        or warm["horizon_proof_set_identity_sha256"]
+        != white["horizon_proof_set_identity_sha256"]
+        or warm["candidate_identity_sha256"]
+        != white["candidate_identity_sha256"]
+    ):
+        raise ValueError(
+            f"{label} reversed order changed the proof set or retained root identity"
+        )
+    return evidence
 
 
 def load_certificate(path: Path) -> Mapping[str, Any]:
@@ -1024,18 +1289,57 @@ def validate_root_session_certificate(
             "aspiration_windows",
             "selected_owner_certification",
             "canonical_root_tactical_policy",
+            "checked_horizon_proof_research",
         )
     ):
         raise ValueError("root-session contract lacks coordinator capabilities")
+    request_schemas = _require_mapping(
+        contract.get("request_schemas"),
+        "root-session contract request schemas",
+    )
+    result_schemas = _require_mapping(
+        contract.get("result_schemas"),
+        "root-session contract result schemas",
+    )
     hard_limits = _require_mapping(
         contract.get("hard_limits"),
         "root-session contract hard limits",
+    )
+    horizon_research = _require_mapping(
+        contract.get("horizon_research"),
+        "root-session checked-horizon policy",
     )
     if (
         hard_limits.get("minimum_aspiration_initial_delta") != 2_048
         or hard_limits.get("maximum_aspiration_attempts") != 4
     ):
         raise ValueError("root-session contract lacks certified aspiration limits")
+    if (
+        request_schemas.get("search") != "spc-root-candidate-task-v1"
+        or result_schemas.get("search") != "spc-root-candidate-result-v1"
+        or request_schemas.get("horizon_research")
+        != "spc-root-horizon-research-task-v1"
+        or result_schemas.get("horizon_research")
+        != "spc-root-horizon-research-result-v1"
+        or hard_limits.get("maximum_horizon_proofs") != 16
+        or hard_limits.get("maximum_horizon_proof_path") != 8
+        or horizon_research
+        != {
+            "task_schema": "spc-root-horizon-research-task-v1",
+            "result_schema": "spc-root-horizon-research-result-v1",
+            "proof_schema": "spc-retained-root-horizon-proof-v1",
+            "purpose": "horizon-research",
+            "full_window": True,
+            "tt_persistence": "commit",
+            "hit_mask_order": "request-order",
+            "warm_exact_zero_hit_allowed": True,
+        }
+    ):
+        raise ValueError("root-session contract lacks checked-horizon re-search policy")
+    _validate_checked_horizon_evidence(
+        certificate.get("checked_horizon_proof_research"),
+        label="root-session checked-horizon evidence",
+    )
     evidence = _require_mapping(certificate.get("evidence"), "root-session evidence")
     required_true = (
         "deterministic_node_smoke",
@@ -1049,6 +1353,8 @@ def validate_root_session_certificate(
         "configured_max_depth_rejected",
         "per_call_work_credit",
         "selected_owner_warm_exact_certification",
+        "checked_horizon_proof_research",
+        "checked_horizon_newest_proof_hit",
         "deadline_fail_closed",
         "work_limit_fail_closed",
         "browser_worker_smoke",
@@ -1810,6 +2116,12 @@ def _build_variant(
             "memory": root_memory,
             "engine": root_engine,
             "root_session_contract": root_contract,
+            "checked_horizon_proof_research": dict(
+                _require_mapping(
+                    root_session_certificate["checked_horizon_proof_research"],
+                    "root checked-horizon evidence",
+                )
+            ),
             "geometry": root_geometry,
             "evidence": dict(
                 _require_mapping(root_session_certificate["evidence"], "root evidence")
@@ -1852,6 +2164,14 @@ def _build_variant(
             "memory": value_model_memory,
             "engine": value_model_engine,
             "root_session_contract": value_model_contract,
+            "checked_horizon_proof_research": dict(
+                _require_mapping(
+                    value_model_root_session_certificate[
+                        "checked_horizon_proof_research"
+                    ],
+                    "modeled root checked-horizon evidence",
+                )
+            ),
             "geometry": value_model_geometry,
             "value_model_asset": value_model_asset,
             "evidence": dict(

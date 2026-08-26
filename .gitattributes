@@ -1,3 +1,4 @@
 src/scottish_progressive/web/static/engine/** -text -diff
+release/browser-wasm/** -text -diff
 experiments/neural-ordering-s3-network.json -text -diff
 reports/neural-ordering-s3-final-fair-seeded20-seed730194821.json -text -diff

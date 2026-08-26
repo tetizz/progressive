@@ -818,7 +818,7 @@ class NativeSubtreeSession:
             or result.horizon_proof_hits < 0
             or result.horizon_proof_hit_mask < 0
             or result.horizon_proof_hit_mask.bit_count()
-                > result.horizon_proof_hits
+                != result.horizon_proof_hits
             or bool(result.horizon_proof_hit_mask)
                 != bool(result.horizon_proof_hits)
             or (

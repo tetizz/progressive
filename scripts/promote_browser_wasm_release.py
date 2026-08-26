@@ -36,6 +36,25 @@ BROWSER_PREFIX_SCHEMA = "spc-browser-prefix-contract-receipt-v1"
 MATE_PARITY_SCHEMA = "spc-mate-wasm-receipt-v2"
 OPERA_CDP_SCHEMA = "spc-opera-root-session-cdp-receipt-v1"
 OPERA_WORKER_SCHEMA = "spc-opera-root-d5-benchmark-v2"
+OPERA_CHECKED_HORIZON_SCHEMA = "spc-opera-checked-pv-horizon-receipt-v3"
+OPERA_CHECKED_HORIZON_FILENAME = "opera-checked-pv-horizon-receipt.json"
+CANDIDATE_SCHEMA = "spc-browser-wasm-release-candidate-v1"
+CHECKED_HORIZON_EVIDENCE_SCHEMA = "spc-checked-horizon-wasm-evidence-v1"
+WHITE_HORIZON_CANDIDATE_SHA256 = (
+    "d050d64ee2388a82969a0953fdc1aa937455951d762ec9b7d16c3f9fee7b5c94"
+)
+WHITE_HORIZON_PROOF_SET_SHA256 = (
+    "5b7dda6a22771961e77b0bcd107f7cb14a04390886199c1e955148aa12b455bb"
+)
+WHITE_HORIZON_ROOT_PV_SHA256 = (
+    "2b391d9f78869648bbb89bf23ce4233f16ccb57ac930d0c724815226008743d4"
+)
+BLACK_HORIZON_CANDIDATE_SHA256 = (
+    "0dabf1be2fd78c5065515628fe556d9b750f3623e9ba583c13984066f5cbe2a9"
+)
+BLACK_HORIZON_PROOF_SET_SHA256 = (
+    "9dd5bade7dafab271411fe3bddfd0e8fd86c35daea56fc11629f4aae5b17c961"
+)
 HEX_64 = re.compile(r"[0-9a-f]{64}")
 GIT_REVISION = re.compile(r"[0-9a-f]{40,64}")
 ASPIRATION_INITIAL_DELTA = 2_048
@@ -68,6 +87,44 @@ RECEIPT_FILENAMES = {
     "browser_prefix": "browser-prefix-receipt.json",
     "mate_parity": "mate-parity-receipt.json",
     "opera": "opera-d1-d5-receipt.json",
+}
+
+OPERA_CHECKED_HORIZON_CHECKS = frozenset(
+    {
+        "authenticity_scope_is_local_checkout",
+        "standalone_signature_not_claimed",
+        "local_origin_is_loopback",
+        "evaluated_page_is_opera",
+        "local_assets_are_sha256_bound",
+        "native_worker_factory_is_bound",
+        "no_synthetic_worker_events",
+        "manifest_preflight_identity_bound",
+        "result_identity_bound",
+        "local_wasm_preflight",
+        "completed_depth_5",
+        "publishable",
+        "selected_safety_certified",
+        "compiled_replay_is_authoritative",
+        "policy_is_explicit",
+        "all_fixture_rejections_repaired_without_veto",
+        "f3_exact_raw_mate_and_same_root_repair",
+        "b3_exact_raw_mate_and_same_root_repair",
+        "repaired_candidates_are_distinct",
+        "newest_request_order_proofs_hit",
+        "final_repaired_winner_warm_recertified",
+        "global_work_respected",
+        "no_interruption",
+        "deadline_respected",
+    }
+)
+
+CHECKED_HORIZON_STATIC_ASSETS = {
+    "browser_engine_worker": "browser-engine-worker.js",
+    "browser_engine_client": "browser-engine-client.js",
+    "browser_prefix_contract": "browser-prefix-contract.js",
+    "browser_root_iteration_client": "browser-root-iteration-client.js",
+    "root_iteration_coordinator": "root-iteration-coordinator.js",
+    "wasm_kernel_adapter": "wasm-kernel-adapter.js",
 }
 
 
@@ -105,6 +162,7 @@ class ValidatedEvidence:
     build: BuildEvidence
     receipts: dict[str, Receipt]
     root_contract: dict[str, Any]
+    checked_horizon_proof_research: dict[str, Any]
     prefix_contract: dict[str, Any]
     oracle_signature_sha256: str
     root_config: dict[str, Any]
@@ -115,6 +173,18 @@ class ValidatedEvidence:
     opera_result: dict[str, Any]
     opera_memory: dict[str, Any]
     safety_reserve_positions: int
+
+
+@dataclass(frozen=True)
+class OperaCheckedHorizonEvidence:
+    receipt: Receipt
+    local_checkout_asset_set_sha256: str
+    elapsed_seconds: float
+    work: int
+    line_rejections: int
+    native_repairs: int
+    candidate_vetoes: int
+    selected_root_series: str
 
 
 def _mapping(value: object, label: str) -> Mapping[str, Any]:
@@ -162,6 +232,257 @@ def _false(mapping: Mapping[str, Any], key: str, label: str) -> None:
         raise ReleaseGateError(f"{label} field {key!r} must be false")
 
 
+def _signed_integer(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ReleaseGateError(f"{label} must be an integer")
+    return value
+
+
+def _validate_checked_horizon_case(
+    value: object,
+    *,
+    label: str,
+    root_side: str,
+    root_order_key: str,
+    proof_order: list[str],
+    proof_path_lengths: list[int],
+    child_depth: int,
+    score: int,
+    prior_score: int,
+    prior_schema: str,
+    hits: int,
+    hit_mask: int,
+    exact_tt_hits: int,
+    disposition: str,
+    candidate_sha256: str,
+    proof_set_sha256: str,
+    root_pv_sha256: str | None = None,
+) -> dict[str, Any]:
+    case = dict(_mapping(value, label))
+    expected_keys = {
+        "root_side",
+        "root_order_key",
+        "request_proof_count",
+        "request_proof_order",
+        "request_proof_path_lengths",
+        "newest_proof_anchor",
+        "child_depth",
+        "schema",
+        "status",
+        "bound",
+        "score",
+        "horizon_proofs_validated",
+        "horizon_proof_hits",
+        "horizon_proof_hit_mask",
+        "horizon_proof_set_identity_sha256",
+        "candidate_identity_sha256",
+        "exact_tt_hits",
+        "prior_same_root_schema",
+        "prior_same_root_status",
+        "prior_same_root_bound",
+        "prior_same_root_score",
+        "prior_same_root_candidate_identity_sha256",
+        "disposition",
+    }
+    if root_pv_sha256 is not None:
+        expected_keys.update(
+            {"root_pv_sha256", "prior_same_root_root_pv_sha256"}
+        )
+    if set(case) != expected_keys:
+        raise ReleaseGateError(f"{label} fields do not match the exact evidence schema")
+    proof_count = len(proof_order)
+    actual_order = _list(case.get("request_proof_order"), f"{label} proof order")
+    if any(not isinstance(item, str) for item in actual_order):
+        raise ReleaseGateError(f"{label} proof order anchors must be strings")
+    actual_lengths = _list(
+        case.get("request_proof_path_lengths"),
+        f"{label} proof path lengths",
+    )
+    if any(
+        isinstance(item, bool) or not isinstance(item, int)
+        for item in actual_lengths
+    ):
+        raise ReleaseGateError(f"{label} proof path lengths must be exact integers")
+    expected = {
+        "root_side": root_side,
+        "root_order_key": root_order_key,
+        "request_proof_count": proof_count,
+        "request_proof_order": proof_order,
+        "request_proof_path_lengths": proof_path_lengths,
+        "newest_proof_anchor": proof_order[-1],
+        "child_depth": child_depth,
+        "schema": "spc-root-horizon-research-result-v1",
+        "status": "complete",
+        "bound": "exact",
+        "score": score,
+        "horizon_proofs_validated": proof_count,
+        "horizon_proof_hits": hits,
+        "horizon_proof_hit_mask": hit_mask,
+        "horizon_proof_set_identity_sha256": proof_set_sha256,
+        "candidate_identity_sha256": candidate_sha256,
+        "exact_tt_hits": exact_tt_hits,
+        "prior_same_root_schema": prior_schema,
+        "prior_same_root_status": "complete",
+        "prior_same_root_bound": "exact",
+        "prior_same_root_score": prior_score,
+        "prior_same_root_candidate_identity_sha256": candidate_sha256,
+        "disposition": disposition,
+    }
+    if root_pv_sha256 is not None:
+        expected.update(
+            {
+                "root_pv_sha256": root_pv_sha256,
+                "prior_same_root_root_pv_sha256": root_pv_sha256,
+            }
+        )
+    for key in (
+        "request_proof_count",
+        "child_depth",
+        "horizon_proofs_validated",
+        "horizon_proof_hits",
+        "horizon_proof_hit_mask",
+        "exact_tt_hits",
+    ):
+        _integer(case.get(key), f"{label} field {key}")
+    for key, expected_value in expected.items():
+        if case.get(key) != expected_value:
+            raise ReleaseGateError(
+                f"{label} field {key!r} is not exact checked-horizon evidence"
+            )
+    _signed_integer(case.get("score"), f"{label} score")
+    _signed_integer(case.get("prior_same_root_score"), f"{label} prior score")
+    for key in (
+        "horizon_proof_set_identity_sha256",
+        "candidate_identity_sha256",
+        "prior_same_root_candidate_identity_sha256",
+    ):
+        digest = _text(case.get(key), f"{label} {key}")
+        if HEX_64.fullmatch(digest) is None:
+            raise ReleaseGateError(f"{label} {key} is not a SHA-256 commitment")
+    if root_pv_sha256 is not None:
+        for key in ("root_pv_sha256", "prior_same_root_root_pv_sha256"):
+            digest = _text(case.get(key), f"{label} {key}")
+            if HEX_64.fullmatch(digest) is None:
+                raise ReleaseGateError(f"{label} {key} is not a SHA-256 commitment")
+    newest_bit = 1 << (proof_count - 1)
+    newest_hit = hit_mask & newest_bit != 0
+    if hits == 0 and hit_mask == 0 and exact_tt_hits > 0:
+        expected_disposition = "warm-exact-recertified"
+    else:
+        expected_disposition = (
+            "same-root-repaired" if newest_hit else "newest-proof-not-hit"
+        )
+    if disposition != expected_disposition:
+        raise ReleaseGateError(f"{label} disposition does not follow request-order hits")
+    if disposition == "same-root-repaired" and score == prior_score:
+        raise ReleaseGateError(f"{label} did not change the same-root result")
+    return case
+
+
+def _validate_checked_horizon_evidence(
+    value: object,
+    *,
+    label: str,
+) -> dict[str, Any]:
+    evidence = dict(_mapping(value, label))
+    expected_keys = {
+        "schema",
+        "white_deep_two_proof",
+        "white_deep_warm_exact",
+        "white_deep_reversed_order",
+        "black_parity",
+    }
+    if set(evidence) != expected_keys or evidence.get("schema") != CHECKED_HORIZON_EVIDENCE_SCHEMA:
+        raise ReleaseGateError(f"{label} does not match the exact evidence schema")
+    white = _validate_checked_horizon_case(
+        evidence["white_deep_two_proof"],
+        label=f"{label} white deep two-proof",
+        root_side="white",
+        root_order_key="h4g2",
+        proof_order=["alternate", "deep"],
+        proof_path_lengths=[3, 3],
+        child_depth=2,
+        score=179,
+        prior_score=336,
+        prior_schema="spc-root-candidate-result-v1",
+        hits=1,
+        hit_mask=0b10,
+        exact_tt_hits=0,
+        disposition="same-root-repaired",
+        candidate_sha256=WHITE_HORIZON_CANDIDATE_SHA256,
+        proof_set_sha256=WHITE_HORIZON_PROOF_SET_SHA256,
+    )
+    warm = _validate_checked_horizon_case(
+        evidence["white_deep_warm_exact"],
+        label=f"{label} white deep warm exact",
+        root_side="white",
+        root_order_key="h4g2",
+        proof_order=["alternate", "deep"],
+        proof_path_lengths=[3, 3],
+        child_depth=2,
+        score=179,
+        prior_score=179,
+        prior_schema="spc-root-horizon-research-result-v1",
+        hits=0,
+        hit_mask=0,
+        exact_tt_hits=1,
+        disposition="warm-exact-recertified",
+        candidate_sha256=WHITE_HORIZON_CANDIDATE_SHA256,
+        proof_set_sha256=WHITE_HORIZON_PROOF_SET_SHA256,
+        root_pv_sha256=WHITE_HORIZON_ROOT_PV_SHA256,
+    )
+    reversed_case = _validate_checked_horizon_case(
+        evidence["white_deep_reversed_order"],
+        label=f"{label} white deep reversed-order",
+        root_side="white",
+        root_order_key="h4g2",
+        proof_order=["deep", "alternate"],
+        proof_path_lengths=[3, 3],
+        child_depth=2,
+        score=179,
+        prior_score=336,
+        prior_schema="spc-root-candidate-result-v1",
+        hits=1,
+        hit_mask=0b01,
+        exact_tt_hits=0,
+        disposition="newest-proof-not-hit",
+        candidate_sha256=WHITE_HORIZON_CANDIDATE_SHA256,
+        proof_set_sha256=WHITE_HORIZON_PROOF_SET_SHA256,
+    )
+    _validate_checked_horizon_case(
+        evidence["black_parity"],
+        label=f"{label} Black parity",
+        root_side="black",
+        root_order_key="f7f5/b8b1",
+        proof_order=["black-mate"],
+        proof_path_lengths=[1],
+        child_depth=0,
+        score=1_000_000 - 2,
+        prior_score=-235,
+        prior_schema="spc-root-candidate-result-v1",
+        hits=1,
+        hit_mask=0b1,
+        exact_tt_hits=0,
+        disposition="same-root-repaired",
+        candidate_sha256=BLACK_HORIZON_CANDIDATE_SHA256,
+        proof_set_sha256=BLACK_HORIZON_PROOF_SET_SHA256,
+    )
+    if (
+        white["horizon_proof_set_identity_sha256"]
+        != reversed_case["horizon_proof_set_identity_sha256"]
+        or white["candidate_identity_sha256"]
+        != reversed_case["candidate_identity_sha256"]
+        or warm["horizon_proof_set_identity_sha256"]
+        != white["horizon_proof_set_identity_sha256"]
+        or warm["candidate_identity_sha256"]
+        != white["candidate_identity_sha256"]
+    ):
+        raise ReleaseGateError(
+            f"{label} reversed order changed the proof set or retained root identity"
+        )
+    return evidence
+
+
 def _sha256_bytes(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
@@ -181,6 +502,648 @@ def _canonical_sha256(value: object) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return _sha256_bytes(encoded)
+
+
+def _same_json(left: object, right: object) -> bool:
+    return left == right
+
+
+_BOUNDARY_KEYS = {
+    "board_fen",
+    "chess960",
+    "ep_targets",
+    "fen",
+    "progressive_ep",
+    "promoted_hex",
+    "quiet_draw_pending",
+    "quiet_series",
+    "series",
+    "series_number",
+    "side_to_move",
+}
+_SERIES_KEYS = {
+    "child_boundary",
+    "ended_by_check",
+    "machine_notation",
+    "moves",
+    "outcome",
+    "transposition_count",
+}
+_UCI_MOVE = re.compile(r"[a-h][1-8][a-h][1-8][qrbn]?")
+
+
+def _validate_boundary(value: object, label: str) -> dict[str, Any]:
+    boundary = dict(_mapping(value, label))
+    if set(boundary) != _BOUNDARY_KEYS:
+        raise ReleaseGateError(f"{label} does not have the exact boundary shape")
+    fen = _text(boundary.get("fen"), f"{label} FEN")
+    if boundary.get("board_fen") != fen or len(fen.split(" ")) != 6:
+        raise ReleaseGateError(f"{label} FEN fields are inconsistent")
+    series = _integer(boundary.get("series"), f"{label} series", 1)
+    if boundary.get("series_number") != series:
+        raise ReleaseGateError(f"{label} series aliases differ")
+    quiet = _integer(boundary.get("quiet_series"), f"{label} quiet series")
+    if boundary.get("quiet_draw_pending") is not (quiet >= 10):
+        raise ReleaseGateError(f"{label} quiet-draw state is inconsistent")
+    ep_targets = _list(boundary.get("ep_targets"), f"{label} en-passant targets")
+    if (
+        len(ep_targets) > 8
+        or len(set(ep_targets)) != len(ep_targets)
+        or any(not isinstance(square, str) or re.fullmatch(r"[a-h][1-8]", square) is None for square in ep_targets)
+        or boundary.get("progressive_ep") != ep_targets
+    ):
+        raise ReleaseGateError(f"{label} en-passant state is not canonical")
+    if re.fullmatch(r"[0-9a-f]{16}", str(boundary.get("promoted_hex", ""))) is None:
+        raise ReleaseGateError(f"{label} promoted-piece mask is not canonical")
+    if boundary.get("chess960") is not False:
+        raise ReleaseGateError(f"{label} must use ordinary chess geometry")
+    mover = "white" if fen.split(" ")[1] == "w" else "black"
+    if boundary.get("side_to_move") != mover or ((series % 2 == 1) != (mover == "white")):
+        raise ReleaseGateError(f"{label} mover and series parity disagree")
+    return boundary
+
+
+def _validate_series(value: object, label: str) -> dict[str, Any]:
+    series = dict(_mapping(value, label))
+    if set(series) != _SERIES_KEYS:
+        raise ReleaseGateError(f"{label} does not have the exact series shape")
+    moves = _list(series.get("moves"), f"{label} moves")
+    if (
+        not moves
+        or any(not isinstance(move, str) or _UCI_MOVE.fullmatch(move) is None for move in moves)
+        or series.get("machine_notation") != "/".join(moves)
+    ):
+        raise ReleaseGateError(f"{label} move sequence is not canonical")
+    _integer(series.get("transposition_count"), f"{label} transposition count", 1)
+    if not isinstance(series.get("ended_by_check"), bool):
+        raise ReleaseGateError(f"{label} check flag must be boolean")
+    if series.get("outcome") not in {None, "checkmate", "draw", "stalemate"}:
+        raise ReleaseGateError(f"{label} has an invalid outcome")
+    _validate_boundary(series.get("child_boundary"), f"{label} child boundary")
+    return series
+
+
+def _worker_identity(value: object, label: str) -> dict[str, Any]:
+    worker = dict(_mapping(value, label))
+    if set(worker) != {"factory_sequence", "name", "channel_id", "url", "type"}:
+        raise ReleaseGateError(f"{label} does not have the exact Worker identity shape")
+    _integer(worker.get("factory_sequence"), f"{label} factory sequence", 1)
+    _text(worker.get("name"), f"{label} name")
+    if worker.get("channel_id") is not None:
+        _text(worker.get("channel_id"), f"{label} channel")
+    if worker.get("type") != "module":
+        raise ReleaseGateError(f"{label} is not an ordinary module Worker")
+    _text(worker.get("url"), f"{label} URL")
+    return worker
+
+
+def _validate_trace_envelope(value: object, label: str) -> dict[str, Any]:
+    trace = dict(_mapping(value, label))
+    if set(trace) != {
+        "worker",
+        "request_sequence",
+        "posted_monotonic_ms",
+        "received_monotonic_ms",
+        "request",
+        "ok",
+        "response",
+    }:
+        raise ReleaseGateError(f"{label} does not have the exact trace envelope")
+    _worker_identity(trace.get("worker"), f"{label} Worker")
+    _integer(trace.get("request_sequence"), f"{label} request sequence", 1)
+    posted = _number(trace.get("posted_monotonic_ms"), f"{label} posted time")
+    received = _number(trace.get("received_monotonic_ms"), f"{label} received time")
+    if received < posted or trace.get("ok") is not True:
+        raise ReleaseGateError(f"{label} is not a successful ordered Worker exchange")
+    _mapping(trace.get("request"), f"{label} request")
+    _mapping(trace.get("response"), f"{label} response")
+    return trace
+
+
+def _identity_fields(
+    evidence: ValidatedEvidence,
+    certificates: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    build = evidence.build
+    root = certificates["root_session"]
+    prefix = certificates["prefix"]
+    root_identity = {
+        "source_fingerprint": build.identity["source_fingerprint"],
+        "kernel_sha256": build.identity["kernel_sha256"],
+        "module_js_sha256": build.identity["module_js_sha256"],
+        "certificate_id": root["certificate_id"],
+        "runtime_variant": "single",
+        "thread_count": 1,
+        "engine_version": build.engine["engine_version"],
+        "ruleset_version": build.engine["ruleset_version"],
+        "profile_id": build.engine["profile_id"],
+    }
+    prefix_identity = {
+        "source_fingerprint": build.identity["source_fingerprint"],
+        "wasm_sha256": build.identity["wasm_sha256"],
+        "module_js_sha256": build.identity["module_js_sha256"],
+        "certificate_id": prefix["certificate_id"],
+        "engine_version": build.engine["engine_version"],
+        "ruleset_version": build.engine["ruleset_version"],
+    }
+    return root_identity, prefix_identity
+
+
+def _require_fields_match(
+    value: object,
+    expected: Mapping[str, Any],
+    label: str,
+) -> Mapping[str, Any]:
+    subject = _mapping(value, label)
+    for key, expected_value in expected.items():
+        if subject.get(key) != expected_value:
+            raise ReleaseGateError(f"{label} field {key!r} is not identity-bound")
+    return subject
+
+
+def _validate_trace_work(
+    trace: Mapping[str, Any],
+    *,
+    maximum_work: int,
+    require_positive: bool,
+    require_warm_exact: bool = False,
+) -> None:
+    request = _mapping(trace.get("request"), "checked-horizon trace request")
+    response = _mapping(trace.get("response"), "checked-horizon trace response")
+    work = _mapping(response.get("work"), "checked-horizon trace work")
+    external = _integer(request.get("external_work"), "trace external work")
+    before = _integer(request.get("native_work_before"), "trace native work before")
+    credit = _integer(request.get("call_work_credit"), "trace work credit", 1)
+    if external > maximum_work or before > maximum_work or credit > 0xFFFFFFFF:
+        raise ReleaseGateError("checked-horizon trace work request exceeds its hard limits")
+    for key, expected in (
+        ("external_work", external),
+        ("native_work_before", before),
+        ("call_work_credit", credit),
+    ):
+        if work.get(key) != expected:
+            raise ReleaseGateError(f"checked-horizon trace work field {key!r} drifted")
+    after = _integer(work.get("native_work_after"), "trace native work after", before)
+    call_work = _integer(
+        work.get("call_native_work"),
+        "trace call-native work",
+        1 if require_positive else 0,
+    )
+    if call_work > credit or call_work != after - before:
+        raise ReleaseGateError("checked-horizon trace call work is not conserved")
+    if work.get("total_accounted_work") != external + after or external + after > maximum_work:
+        raise ReleaseGateError("checked-horizon trace total work is not conserved")
+    call_stats = _mapping(work.get("call_stats"), "checked-horizon call stats")
+    cumulative_stats = _mapping(work.get("cumulative_stats"), "checked-horizon cumulative stats")
+    if (
+        not call_stats
+        or set(call_stats) != set(cumulative_stats)
+        or any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in (*call_stats.values(), *cumulative_stats.values())
+        )
+        or any(cumulative_stats[key] < call_stats[key] for key in call_stats)
+    ):
+        raise ReleaseGateError("checked-horizon trace search statistics are malformed")
+    if require_warm_exact:
+        if _integer(call_stats.get("tt_hits"), "warm exact TT hits", 1) < 1:
+            raise ReleaseGateError("checked-horizon warm recertification did not reuse exact TT state")
+    for entries, peak, capacity in (
+        ("tt_entries", "tt_entries_peak", "tt_capacity"),
+        ("eval_entries", "eval_entries_peak", "eval_capacity"),
+    ):
+        cap = _integer(work.get(capacity), f"trace {capacity}", 1)
+        count = _integer(work.get(entries), f"trace {entries}")
+        high = _integer(work.get(peak), f"trace {peak}")
+        if count > cap or high < count or high > cap:
+            raise ReleaseGateError("checked-horizon trace cache envelope is invalid")
+    series_capacity = _integer(work.get("series_cache_capacity"), "trace series cache capacity", 1)
+    weight_peak = _integer(work.get("series_cache_weight_peak"), "trace series cache weight peak")
+    entry_peak = _integer(work.get("series_cache_entries_peak"), "trace series cache entry peak")
+    if weight_peak > series_capacity or entry_peak > weight_peak:
+        raise ReleaseGateError("checked-horizon trace series cache envelope is invalid")
+
+
+def _same_final_board(frame_fen: object, board_fen: object) -> bool:
+    if not isinstance(frame_fen, str) or not isinstance(board_fen, str):
+        return False
+    frame = frame_fen.split(" ")
+    board = board_fen.split(" ")
+    return len(frame) == 6 and len(board) == 6 and all(
+        frame[index] == board[index] for index in (0, 1, 2, 4, 5)
+    )
+
+
+def _validate_checked_prefix_mate(
+    value: object,
+    *,
+    child: Mapping[str, Any],
+    mate_moves: list[str],
+    request_id: str,
+    prefix_identity: Mapping[str, Any],
+    label: str,
+) -> dict[str, Any]:
+    checked = dict(_require_fields_match(value, prefix_identity, label))
+    if (
+        checked.get("schema") != "spc-boundary-prefix-v1"
+        or checked.get("abi_version") != 1
+        or checked.get("ok") is not True
+        or checked.get("status") != "complete"
+        or checked.get("request_id") != request_id
+        or checked.get("boundary_state") != child
+        or checked.get("prefix") != mate_moves
+        or checked.get("current_prefix") != mate_moves
+    ):
+        raise ReleaseGateError(f"{label} is not the exact authoritative mate replay")
+    san = _list(checked.get("san"), f"{label} SAN")
+    frames = _list(checked.get("frames"), f"{label} frames")
+    if len(san) != len(mate_moves) or len(frames) != len(mate_moves):
+        raise ReleaseGateError(f"{label} did not replay every mate move")
+    for index, frame_value in enumerate(frames):
+        frame = _mapping(frame_value, f"{label} frame {index + 1}")
+        if (
+            frame.get("index") != index + 1
+            or frame.get("uci") != mate_moves[index]
+            or not isinstance(frame.get("san"), str)
+            or frame.get("san") != san[index]
+            or not isinstance(frame.get("board_fen"), str)
+            or len(frame["board_fen"].split(" ")) != 6
+        ):
+            raise ReleaseGateError(f"{label} frame {index + 1} is not canonical")
+    remaining = int(child["series"]) - len(mate_moves)
+    if (
+        checked.get("fen") != checked.get("board_fen")
+        or not _same_final_board(frames[-1].get("board_fen"), checked.get("board_fen"))
+        or checked.get("complete") is not True
+        or checked.get("outcome") != "checkmate"
+        or checked.get("completion_reason") != "checkmate"
+        or checked.get("ended_by_check") is not True
+        or checked.get("check") is not True
+        or checked.get("in_check") is not True
+        or any(checked.get(key) != remaining for key in ("remaining", "moves_remaining", "unused_moves"))
+        or checked.get("legal_next") != []
+        or checked.get("legal_moves") != []
+    ):
+        raise ReleaseGateError(f"{label} did not finish with the exact mate outcome")
+    next_state = _validate_boundary(checked.get("next_state"), f"{label} next state")
+    if (
+        next_state.get("fen") != checked.get("board_fen")
+        or next_state.get("series") != int(child["series"]) + 1
+    ):
+        raise ReleaseGateError(f"{label} mate transition is inconsistent")
+    return checked
+
+
+def _validate_raw_safety_trace(
+    value: object,
+    *,
+    expected_root: str,
+    expected_unsafe_horizon: str,
+    expected_child_fen: str,
+    root_identity: Mapping[str, Any],
+    prefix_identity: Mapping[str, Any],
+    maximum_work: int,
+    label: str,
+) -> dict[str, Any]:
+    trace = _validate_trace_envelope(value, label)
+    request = _require_fields_match(trace["request"], root_identity, f"{label} request")
+    response = _require_fields_match(trace["response"], root_identity, f"{label} response")
+    if request.get("schema") != "spc-root-safety-task-v1" or response.get("status") != "found":
+        raise ReleaseGateError(f"{label} is not a raw found safety result")
+    for key, requested in request.items():
+        if key not in response or response[key] != requested:
+            raise ReleaseGateError(f"{label} response did not echo request field {key!r}")
+    request_id = _text(request.get("request_id"), f"{label} request id")
+    if (
+        request.get("iteration_id") != f"{request_id}:d5"
+        or not isinstance(request.get("generation"), int)
+        or int(request["generation"]) < 1
+        or not isinstance(request.get("safety_revision"), int)
+        or int(request["safety_revision"]) < 0
+        or not isinstance(request.get("incumbent_epoch"), int)
+        or int(request["incumbent_epoch"]) < 0
+        or _number(request.get("deadline_monotonic_ms"), f"{label} deadline")
+        <= float(trace["received_monotonic_ms"])
+        or _number(request.get("deadline_epoch_ms"), f"{label} epoch deadline") <= 0
+        or not 1 <= _integer(request.get("remaining_time_ms"), f"{label} remaining time") <= 60_000
+    ):
+        raise ReleaseGateError(f"{label} request identity, revision, or deadline is invalid")
+    candidate = _mapping(request.get("candidate"), f"{label} candidate")
+    unsafe = _validate_series(candidate.get("root_series"), f"{label} unsafe horizon")
+    if unsafe.get("machine_notation") != expected_unsafe_horizon:
+        raise ReleaseGateError(f"{label} substituted the unsafe horizon trace")
+    child = _validate_boundary(
+        request.get("authoritative_child_boundary"),
+        f"{label} authoritative child",
+    )
+    if child.get("series") != 6 or child.get("fen") != expected_child_fen:
+        raise ReleaseGateError(f"{label} authoritative child is not the fixed fixture")
+    if unsafe.get("child_boundary") != child or unsafe.get("ended_by_check") is not True:
+        raise ReleaseGateError(f"{label} unsafe horizon is not rooted in its child")
+    replay = _require_fields_match(
+        request.get("authoritative_root_replay"),
+        prefix_identity,
+        f"{label} root replay",
+    )
+    expected_replay_id = f"{request.get('iteration_id')}:{request.get('safety_revision')}:pv-horizon-replay-4"
+    if (
+        replay.get("schema") != "spc-boundary-prefix-v1"
+        or replay.get("request_id") != expected_replay_id
+        or replay.get("prefix") != unsafe.get("moves")
+        or replay.get("current_prefix") != unsafe.get("moves")
+        or replay.get("complete") is not True
+        or replay.get("outcome") is not None
+        or replay.get("completion_reason") != "check"
+        or replay.get("ended_by_check") is not True
+        or replay.get("check") is not True
+        or replay.get("in_check") is not True
+        or replay.get("next_state") != child
+    ):
+        raise ReleaseGateError(f"{label} root replay is not authoritative")
+    mate = dict(_mapping(response.get("reply_mate"), f"{label} reply mate"))
+    if set(mate) != {"checked_prefix", "ended_by_check", "machine_notation", "moves", "outcome"}:
+        raise ReleaseGateError(f"{label} raw mate does not have the exact shape")
+    moves = _list(mate.get("moves"), f"{label} mate moves")
+    if (
+        not moves
+        or len(moves) > int(child["series"])
+        or any(not isinstance(move, str) or _UCI_MOVE.fullmatch(move) is None for move in moves)
+        or mate.get("machine_notation") != "/".join(moves)
+        or mate.get("outcome") != "checkmate"
+        or mate.get("ended_by_check") is not True
+    ):
+        raise ReleaseGateError(f"{label} raw mate sequence is not canonical")
+    _validate_checked_prefix_mate(
+        mate.get("checked_prefix"),
+        child=child,
+        mate_moves=moves,
+        request_id=f"{request.get('iteration_id')}:{request.get('safety_revision')}:mate-replay",
+        prefix_identity=prefix_identity,
+        label=f"{label} compiled mate replay",
+    )
+    expected_score = 1_000_000 - 2 if child.get("side_to_move") == "white" else -1_000_000 + 2
+    expected_bounds = [1, 1] if child.get("side_to_move") == "white" else [-1, -1]
+    credit = _integer(request.get("call_work_credit"), f"{label} work credit", 1)
+    if (
+        not isinstance(response.get("work_used"), int)
+        or not 1 <= int(response["work_used"]) <= credit
+        or response.get("override_score") != expected_score
+        or response.get("proof_bounds") != expected_bounds
+    ):
+        raise ReleaseGateError(f"{label} raw mate result is not fail-closed")
+    return trace
+
+
+def _validate_retained_proof(value: object, *, root: str, depth: int, label: str) -> dict[str, Any]:
+    proof = dict(_mapping(value, label))
+    if set(proof) != {"schema", "rooted_path", "mate_reply"} or proof.get("schema") != "spc-retained-root-horizon-proof-v1":
+        raise ReleaseGateError(f"{label} does not have the exact retained-proof shape")
+    path = _list(proof.get("rooted_path"), f"{label} rooted path")
+    if len(path) != depth + 1 or len(path) > 8:
+        raise ReleaseGateError(f"{label} rooted path has the wrong depth")
+    normalized_path = [
+        _validate_series(item, f"{label} rooted series {index}")
+        for index, item in enumerate(path)
+    ]
+    if normalized_path[0].get("machine_notation") != root:
+        raise ReleaseGateError(f"{label} is not rooted at the candidate series")
+    mate = _validate_series(proof.get("mate_reply"), f"{label} mate reply")
+    if (
+        mate.get("transposition_count") != 1
+        or mate.get("outcome") != "checkmate"
+        or mate.get("ended_by_check") is not True
+    ):
+        raise ReleaseGateError(f"{label} mate reply is not exact")
+    return proof
+
+
+_HORIZON_ECHO_KEYS = (
+    "session_id",
+    "request_id",
+    "iteration_id",
+    "generation",
+    "deadline_monotonic_ms",
+    "remaining_time_ms",
+    "source_fingerprint",
+    "kernel_sha256",
+    "module_js_sha256",
+    "certificate_id",
+    "runtime_variant",
+    "thread_count",
+    "engine_version",
+    "ruleset_version",
+    "profile_id",
+    "safety_revision",
+    "incumbent_epoch",
+    "task_id",
+    "enumeration_identity",
+    "candidate_identity",
+    "order_index",
+    "order_key",
+    "purpose",
+    "mate_score",
+    "child_depth",
+    "alpha",
+    "beta",
+    "tt_persistence",
+    "mover",
+)
+
+
+def _validate_horizon_research_trace(
+    value: object,
+    *,
+    expected_root: str,
+    root_identity: Mapping[str, Any],
+    maximum_work: int,
+    require_newest_hit: bool,
+    require_warm_exact: bool,
+    label: str,
+) -> dict[str, Any]:
+    trace = _validate_trace_envelope(value, label)
+    request = _require_fields_match(trace["request"], root_identity, f"{label} request")
+    response = _require_fields_match(trace["response"], root_identity, f"{label} response")
+    if (
+        request.get("schema") != "spc-root-horizon-research-task-v1"
+        or response.get("schema") != "spc-root-horizon-research-result-v1"
+        or response.get("abi_version") != 2
+        or response.get("product_publishable") is not False
+        or response.get("safety_certified") is not False
+        or response.get("status") != "complete"
+        or response.get("bound") != "exact"
+        or response.get("session_id") != request.get("session_id")
+        or any(response.get(key) != request.get(key) for key in _HORIZON_ECHO_KEYS)
+    ):
+        raise ReleaseGateError(f"{label} is not an exact horizon-research exchange")
+    request_id = _text(request.get("request_id"), f"{label} request id")
+    if request.get("iteration_id") != f"{request_id}:d5":
+        raise ReleaseGateError(f"{label} iteration is not rooted at D5")
+    _integer(request.get("generation"), f"{label} generation", 1)
+    _text(request.get("task_id"), f"{label} task id")
+    _text(request.get("enumeration_identity"), f"{label} enumeration identity")
+    candidate_identity = _text(request.get("candidate_identity"), f"{label} candidate identity")
+    _integer(request.get("order_index"), f"{label} order index")
+    _text(request.get("order_key"), f"{label} order key")
+    if (
+        request.get("purpose") != "horizon-research"
+        or request.get("mate_score") != 1_000_000
+        or request.get("child_depth") != 4
+        or request.get("alpha") != -2_000_000
+        or request.get("beta") != 2_000_000
+        or request.get("tt_persistence") != "commit"
+        or request.get("mover") != "white"
+    ):
+        raise ReleaseGateError(f"{label} did not use the exact full-window D5 repair policy")
+    deadline = _number(request.get("deadline_monotonic_ms"), f"{label} deadline")
+    deadline_epoch = _number(request.get("deadline_epoch_ms"), f"{label} epoch deadline")
+    remaining = _integer(request.get("remaining_time_ms"), f"{label} remaining time", 1)
+    if (
+        deadline <= float(trace["posted_monotonic_ms"])
+        or deadline <= float(trace["received_monotonic_ms"])
+        or deadline_epoch <= 0
+        or remaining > 60_000
+    ):
+        raise ReleaseGateError(f"{label} was not completed inside its shared deadline")
+    proofs = _list(request.get("horizon_proofs"), f"{label} proofs")
+    if not 1 <= len(proofs) <= 16:
+        raise ReleaseGateError(f"{label} proof count exceeds the certified contract")
+    normalized_proofs = [
+        _validate_retained_proof(item, root=expected_root, depth=4, label=f"{label} proof {index}")
+        for index, item in enumerate(proofs)
+    ]
+    if len({_canonical_sha256(item) for item in normalized_proofs}) != len(proofs):
+        raise ReleaseGateError(f"{label} contains duplicate retained proofs")
+    root_series = _validate_series(response.get("root_series"), f"{label} root series")
+    child_pv = _list(response.get("child_pv"), f"{label} child PV")
+    normalized_child = [
+        _validate_series(item, f"{label} child PV {index}")
+        for index, item in enumerate(child_pv)
+    ]
+    newest_path = _list(normalized_proofs[-1]["rooted_path"], f"{label} newest path")
+    if (
+        root_series.get("machine_notation") != expected_root
+        or root_series != newest_path[0]
+        or len(normalized_child) > 4
+        or [root_series, *normalized_child] == newest_path
+    ):
+        raise ReleaseGateError(f"{label} did not retain the same root while changing the losing continuation")
+    _signed_integer(response.get("score"), f"{label} score")
+    if abs(int(response["score"])) >= 2_000_000:
+        raise ReleaseGateError(f"{label} returned an invalid score")
+    proof_bounds = _list(response.get("proof_bounds"), f"{label} proof bounds")
+    if len(proof_bounds) != 2 or any(bound not in {-1, 0, 1} for bound in proof_bounds):
+        raise ReleaseGateError(f"{label} proof bounds are invalid")
+    if response.get("configured_max_depth") != 5 or response.get("horizon_proofs_validated") != len(proofs):
+        raise ReleaseGateError(f"{label} did not validate the complete D5 proof set")
+    hits = _integer(response.get("horizon_proof_hits"), f"{label} proof hits")
+    mask = _integer(response.get("horizon_proof_hit_mask"), f"{label} hit mask")
+    if (
+        hits > len(proofs)
+        or mask >= 2 ** len(proofs)
+        or mask.bit_count() != hits
+        or ((hits == 0) != (mask == 0))
+        or (require_newest_hit and mask & (1 << (len(proofs) - 1)) == 0)
+    ):
+        raise ReleaseGateError(f"{label} request-order proof hit accounting is invalid")
+    if require_warm_exact and (hits != 0 or mask != 0):
+        raise ReleaseGateError(f"{label} warm exact replay unexpectedly revisited a proof")
+    set_identity = _text(
+        response.get("horizon_proof_set_identity"),
+        f"{label} proof-set identity",
+    )
+    set_prefix = (
+        f"spc-horizon-proof-set-v1|candidate{len(candidate_identity)}:"
+        f"{candidate_identity}|proofs{len(proofs)}:"
+    )
+    if not set_identity.startswith(set_prefix) or len(set_identity) <= len(set_prefix):
+        raise ReleaseGateError(f"{label} proof-set identity is not candidate-bound")
+    _validate_trace_work(
+        trace,
+        maximum_work=maximum_work,
+        require_positive=require_newest_hit,
+        require_warm_exact=require_warm_exact,
+    )
+    return trace
+
+
+def _trace_occurs(trace: Mapping[str, Any], traces: Sequence[object]) -> bool:
+    return any(item == trace for item in traces)
+
+
+def _validate_safety_repair_crosslink(
+    safety: Mapping[str, Any],
+    repair: Mapping[str, Any],
+    *,
+    expected_root: str,
+    label: str,
+) -> None:
+    safety_request = _mapping(safety["request"], f"{label} safety request")
+    safety_response = _mapping(safety["response"], f"{label} safety response")
+    repair_request = _mapping(repair["request"], f"{label} repair request")
+    repair_response = _mapping(repair["response"], f"{label} repair response")
+    worker = _mapping(safety["worker"], f"{label} safety Worker")
+    if (
+        repair["worker"] != worker
+        or repair["request_sequence"] <= safety["request_sequence"]
+        or repair["posted_monotonic_ms"] < safety["received_monotonic_ms"]
+        or worker.get("channel_id") != safety_request.get("candidate", {}).get("owner_worker_id")
+    ):
+        raise ReleaseGateError(f"{label} repair did not stay on the same warm native Worker")
+    for key in ("session_id", "request_id", "iteration_id", "generation"):
+        if repair_request.get(key) != safety_request.get(key):
+            raise ReleaseGateError(f"{label} repair changed root request field {key!r}")
+    if (
+        repair_request.get("safety_revision") != int(safety_request.get("safety_revision")) + 1
+        or repair_request.get("incumbent_epoch") != safety_request.get("incumbent_epoch")
+        or repair_request.get("deadline_monotonic_ms") != safety_request.get("deadline_monotonic_ms")
+        or repair_request.get("deadline_epoch_ms") != safety_request.get("deadline_epoch_ms")
+        or int(repair_request.get("remaining_time_ms")) > int(safety_request.get("remaining_time_ms"))
+    ):
+        raise ReleaseGateError(f"{label} repair broke revision or deadline continuity")
+    candidate = _mapping(safety_request.get("candidate"), f"{label} raw candidate")
+    for key in ("candidate_identity", "order_index", "order_key"):
+        if repair_request.get(key) != candidate.get(key):
+            raise ReleaseGateError(f"{label} repair changed candidate field {key!r}")
+    raw_child = _list(candidate.get("child_pv"), f"{label} raw child PV")
+    if len(raw_child) != 4:
+        raise ReleaseGateError(f"{label} raw child PV is not the D5 horizon")
+    normalized_child = [
+        _validate_series(item, f"{label} raw child PV {index}")
+        for index, item in enumerate(raw_child)
+    ]
+    newest = _mapping(
+        _list(repair_request.get("horizon_proofs"), f"{label} repair proofs")[-1],
+        f"{label} newest proof",
+    )
+    rooted_path = _list(newest.get("rooted_path"), f"{label} newest rooted path")
+    if (
+        len(rooted_path) != len(normalized_child) + 1
+        or _mapping(rooted_path[0], f"{label} rooted first").get("machine_notation") != expected_root
+        or rooted_path[1:] != normalized_child
+        or candidate.get("root_series") != normalized_child[-1]
+        or rooted_path[-1] != safety_request.get("candidate", {}).get("root_series")
+    ):
+        raise ReleaseGateError(f"{label} retained proof is not the raw losing rooted path")
+    root_replay = _mapping(safety_request.get("authoritative_root_replay"), f"{label} root replay")
+    if (
+        root_replay.get("boundary_state") != _mapping(rooted_path[-2], f"{label} penultimate series").get("child_boundary")
+        or _mapping(rooted_path[-1], f"{label} final rooted series").get("child_boundary")
+        != safety_request.get("authoritative_child_boundary")
+    ):
+        raise ReleaseGateError(f"{label} retained proof crossed an unrelated boundary")
+    raw_mate = _mapping(safety_response.get("reply_mate"), f"{label} raw mate")
+    checked = _mapping(raw_mate.get("checked_prefix"), f"{label} checked mate")
+    proof_mate = _mapping(newest.get("mate_reply"), f"{label} retained mate")
+    if (
+        proof_mate.get("moves") != raw_mate.get("moves")
+        or proof_mate.get("machine_notation") != raw_mate.get("machine_notation")
+        or proof_mate.get("transposition_count") != 1
+        or proof_mate.get("outcome") != raw_mate.get("outcome")
+        or proof_mate.get("ended_by_check") != raw_mate.get("ended_by_check")
+        or proof_mate.get("child_boundary") != checked.get("next_state")
+        or repair_response.get("root_series", {}).get("machine_notation") != expected_root
+    ):
+        raise ReleaseGateError(f"{label} repair did not preserve the exact raw mate proof")
 
 
 def _load_receipt(label: str, path: Path) -> Receipt:
@@ -363,11 +1326,9 @@ def _validate_source_checkout(
         "status",
         "--porcelain=v1",
         "--untracked-files=all",
-        "--",
-        relative_package.as_posix(),
     )
     if str(status).strip():
-        raise ReleaseGateError("engine source package is dirty or contains untracked inputs")
+        raise ReleaseGateError("release checkout is dirty or contains untracked inputs")
     source_paths = sorted(
         (
             path
@@ -679,7 +1640,10 @@ def _validate_build_receipt(
     )
 
 
-def _validate_root_smoke(receipt: Receipt, build: BuildEvidence) -> tuple[dict[str, Any], dict[str, Any]]:
+def _validate_root_smoke(
+    receipt: Receipt,
+    build: BuildEvidence,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     payload = receipt.payload
     if payload.get("schema") != ROOT_SMOKE_SCHEMA or payload.get("status") != "passed-not-certified":
         raise ReleaseGateError("root smoke receipt did not pass its verifier")
@@ -711,6 +1675,8 @@ def _validate_root_smoke(receipt: Receipt, build: BuildEvidence) -> tuple[dict[s
         "aspiration_fail_soft_window",
         "aspiration_fail_high_low_white_black",
         "selected_owner_warm_exact_certification",
+        "checked_horizon_proof_research",
+        "checked_horizon_newest_proof_hit",
         "cumulative_work_and_cache_receipts",
         "exact_manifest_import",
         "configured_max_depth_rejected",
@@ -725,10 +1691,14 @@ def _validate_root_smoke(receipt: Receipt, build: BuildEvidence) -> tuple[dict[s
         _true(gates, key, "root smoke")
     contract = dict(_mapping(payload.get("root_session_contract"), "root session contract"))
     capabilities = _mapping(contract.get("capabilities"), "root session capabilities")
+    request_schemas = _mapping(contract.get("request_schemas"), "root session request schemas")
+    result_schemas = _mapping(contract.get("result_schemas"), "root session result schemas")
     hard_limits = _mapping(contract.get("hard_limits"), "root session hard limits")
+    horizon_research = _mapping(contract.get("horizon_research"), "root session horizon policy")
     if (
         capabilities.get("canonical_root_tactical_policy") is not True
         or capabilities.get("aspiration_windows") is not True
+        or capabilities.get("checked_horizon_proof_research") is not True
     ):
         raise ReleaseGateError("root session contract lacks coordinator search capabilities")
     if (
@@ -736,8 +1706,34 @@ def _validate_root_smoke(receipt: Receipt, build: BuildEvidence) -> tuple[dict[s
         or hard_limits.get("root_tactical_protection_values") != [False]
         or hard_limits.get("minimum_aspiration_initial_delta") != 2_048
         or hard_limits.get("maximum_aspiration_attempts") != 4
+        or hard_limits.get("maximum_horizon_proofs") != 16
+        or hard_limits.get("maximum_horizon_proof_path") != 8
     ):
         raise ReleaseGateError("root session contract hard limits are not release-certified")
+    if (
+        request_schemas.get("search") != "spc-root-candidate-task-v1"
+        or result_schemas.get("search") != "spc-root-candidate-result-v1"
+        or request_schemas.get("horizon_research")
+        != "spc-root-horizon-research-task-v1"
+        or result_schemas.get("horizon_research")
+        != "spc-root-horizon-research-result-v1"
+        or dict(horizon_research)
+        != {
+            "task_schema": "spc-root-horizon-research-task-v1",
+            "result_schema": "spc-root-horizon-research-result-v1",
+            "proof_schema": "spc-retained-root-horizon-proof-v1",
+            "purpose": "horizon-research",
+            "full_window": True,
+            "tt_persistence": "commit",
+            "hit_mask_order": "request-order",
+            "warm_exact_zero_hit_allowed": True,
+        }
+    ):
+        raise ReleaseGateError("root session checked-horizon policy is not release-certified")
+    checked_horizon = _validate_checked_horizon_evidence(
+        payload.get("checked_horizon_proof_research"),
+        label="root smoke checked-horizon evidence",
+    )
     manifest_contract = _mapping(contract.get("manifest"), "root session manifest contract")
     if manifest_contract.get("root_tactical_policy") != "canonical-boundary-policy-v1":
         raise ReleaseGateError("root session manifest omits the canonical tactical policy")
@@ -772,7 +1768,7 @@ def _validate_root_smoke(receipt: Receipt, build: BuildEvidence) -> tuple[dict[s
         stats = _mapping(item.get("stats"), f"root smoke mate {key} stats")
         _integer(stats.get("positions_visited"), f"root smoke mate {key} positions")
         _integer(stats.get("moves_generated"), f"root smoke mate {key} moves")
-    return contract, prefix_contract
+    return contract, prefix_contract, checked_horizon
 
 
 def _validate_root_parity(
@@ -1934,7 +2930,10 @@ def validate_evidence(
         repository=repository,
         source_package=source_package,
     )
-    root_contract, prefix_contract = _validate_root_smoke(receipts["root_smoke"], build)
+    root_contract, prefix_contract, checked_horizon = _validate_root_smoke(
+        receipts["root_smoke"],
+        build,
+    )
     (
         root_cases,
         root_config,
@@ -1963,6 +2962,7 @@ def validate_evidence(
         build=build,
         receipts=receipts,
         root_contract=root_contract,
+        checked_horizon_proof_research=checked_horizon,
         prefix_contract=prefix_contract,
         oracle_signature_sha256=oracle_signature,
         root_config=root_config,
@@ -2009,6 +3009,10 @@ def build_certificates(
     maximum_seconds: float,
     default_seconds: float,
 ) -> dict[str, dict[str, Any]]:
+    maximum_value = float(maximum_seconds)
+    default_value = float(default_seconds)
+    maximum_seconds = int(maximum_value) if maximum_value.is_integer() else maximum_value
+    default_seconds = int(default_value) if default_value.is_integer() else default_value
     if (
         not math.isfinite(maximum_seconds)
         or not math.isfinite(default_seconds)
@@ -2052,6 +3056,9 @@ def build_certificates(
         "root_session_certified": True,
         "reply_mate_safety": False,
         "root_session_contract": dict(evidence.root_contract),
+        "checked_horizon_proof_research": dict(
+            evidence.checked_horizon_proof_research
+        ),
         "geometry": {
             "desktop_workers": 8,
             "desktop_initial_full_wave": 8,
@@ -2079,6 +3086,8 @@ def build_certificates(
             "configured_max_depth_rejected": True,
             "per_call_work_credit": True,
             "selected_owner_warm_exact_certification": True,
+            "checked_horizon_proof_research": True,
+            "checked_horizon_newest_proof_hit": True,
             "deadline_fail_closed": True,
             "work_limit_fail_closed": True,
             "browser_worker_smoke": True,
@@ -2144,6 +3153,505 @@ def build_certificates(
     return {"prefix": prefix, "root_session": root, "mate": mate}
 
 
+def _local_url(value: object, *, origin: str, suffix: str, label: str) -> str:
+    url = _text(value, label)
+    parsed = urlparse(url)
+    expected_origin = urlparse(origin)
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname != "127.0.0.1"
+        or parsed.scheme != expected_origin.scheme
+        or parsed.netloc != expected_origin.netloc
+        or not parsed.path.endswith(suffix)
+    ):
+        raise ReleaseGateError(f"{label} is not the expected loopback-served asset")
+    return url
+
+
+def _validate_observed_asset(
+    value: object,
+    *,
+    expected_path: Path,
+    origin: str,
+    suffix: str,
+    label: str,
+) -> dict[str, Any]:
+    asset = dict(_mapping(value, label))
+    if set(asset) != {"url", "byte_length", "sha256"}:
+        raise ReleaseGateError(f"{label} does not have the exact asset-record shape")
+    _local_url(asset.get("url"), origin=origin, suffix=suffix, label=f"{label} URL")
+    if (
+        not expected_path.is_file()
+        or asset.get("byte_length") != expected_path.stat().st_size
+        or asset.get("sha256") != _sha256_file(expected_path)
+    ):
+        raise ReleaseGateError(f"{label} bytes differ from the staged release candidate")
+    return asset
+
+
+def validate_opera_checked_horizon_receipt(
+    *,
+    receipt_path: Path,
+    evidence: ValidatedEvidence,
+    certificates: Mapping[str, Mapping[str, Any]],
+    repository: Path,
+    source_package: Path,
+    candidate_bundle: Path,
+) -> OperaCheckedHorizonEvidence:
+    receipt = _load_receipt("Opera checked-PV horizon", receipt_path)
+    payload = receipt.payload
+    if (
+        payload.get("schema") != OPERA_CHECKED_HORIZON_SCHEMA
+        or payload.get("status") != "passed-not-certified"
+        or payload.get("product_publishable") is not False
+        or payload.get("safety_certified") is not False
+        or payload.get("certificate_id") is not None
+    ):
+        raise ReleaseGateError("Opera checked-PV receipt is not exact pre-certification evidence")
+    checks = _mapping(payload.get("checks"), "Opera checked-PV checks")
+    if set(checks) != OPERA_CHECKED_HORIZON_CHECKS or any(
+        value is not True for value in checks.values()
+    ):
+        raise ReleaseGateError("Opera checked-PV receipt does not contain every exact passing check")
+
+    page = _mapping(payload.get("page_environment"), "Opera checked-PV page environment")
+    cdp = _mapping(payload.get("cdp"), "Opera checked-PV CDP identity")
+    page_url = _text(payload.get("page_url"), "Opera checked-PV page URL")
+    parsed_page = urlparse(page_url)
+    if (
+        parsed_page.scheme != "http"
+        or parsed_page.hostname != "127.0.0.1"
+        or page.get("location") != page_url
+        or page.get("userAgent") != cdp.get("user_agent")
+        or " OPR/" not in str(cdp.get("user_agent", ""))
+        or not str(cdp.get("browser", "")).startswith("Chrome/")
+        or not isinstance(cdp.get("protocol_version"), str)
+        or not cdp.get("protocol_version")
+        or isinstance(page.get("hardwareConcurrency"), bool)
+        or not isinstance(page.get("hardwareConcurrency"), int)
+        or int(page["hardwareConcurrency"]) < 1
+        or not isinstance(page.get("crossOriginIsolated"), bool)
+    ):
+        raise ReleaseGateError("Opera checked-PV page and CDP identities do not match local Opera")
+    origin = f"{parsed_page.scheme}://{parsed_page.netloc}"
+
+    candidate_bundle = candidate_bundle.resolve()
+    manifest_path = candidate_bundle / "browser-engine-manifest.json"
+    manifest = bundle_builder.validate_existing_bundle(
+        candidate_bundle,
+        source_package.resolve(),
+    )
+    variant = _mapping(
+        _mapping(manifest.get("variants"), "candidate manifest variants").get("single"),
+        "candidate single-WASM variant",
+    )
+    root_certificate = certificates["root_session"]
+    mate_certificate = certificates["mate"]
+    prefix_certificate = certificates["prefix"]
+    expected_manifest_binding = {
+        "source_fingerprint": evidence.build.identity["source_fingerprint"],
+        "runtime_variant": "single",
+        "thread_count": 1,
+        "module_js": variant.get("module_js"),
+        "wasm": variant.get("wasm"),
+        "module_js_sha256": evidence.build.identity["module_js_sha256"],
+        "wasm_sha256": evidence.build.identity["wasm_sha256"],
+        "kernel_sha256": evidence.build.identity["kernel_sha256"],
+        "analysis_certificate_id": None,
+        "root_session_certificate_id": root_certificate["certificate_id"],
+        "mate_certificate_id": mate_certificate["certificate_id"],
+        "prefix_certificate_id": prefix_certificate["certificate_id"],
+        "root_contract_sha256": _canonical_sha256(root_certificate["root_session_contract"]),
+        "root_geometry_sha256": _canonical_sha256(root_certificate["geometry"]),
+        "root_evidence_sha256": _canonical_sha256(root_certificate["evidence"]),
+        "prefix_contract_sha256": _canonical_sha256(prefix_certificate["prefix_contract"]),
+    }
+    if payload.get("manifest_binding") != expected_manifest_binding:
+        observed_manifest_binding = _mapping(
+            payload.get("manifest_binding"),
+            "Opera checked-PV manifest binding",
+        )
+        drifted = sorted(
+            key
+            for key in set(observed_manifest_binding) | set(expected_manifest_binding)
+            if observed_manifest_binding.get(key) != expected_manifest_binding.get(key)
+        )
+        raise ReleaseGateError(
+            "Opera checked-PV manifest binding differs from the core-seven candidate: "
+            + ", ".join(drifted)
+        )
+
+    authenticity = _mapping(payload.get("authenticity"), "Opera checked-PV authenticity")
+    if (
+        authenticity.get("scope") != "local-checkout-hash-bound-unsigned-v1"
+        or authenticity.get("standalone_signature_verified") is not False
+        or authenticity.get("local_origin") != origin
+        or authenticity.get("trusted_worker_events_only") is not True
+    ):
+        raise ReleaseGateError("Opera checked-PV authenticity envelope is not local and fail-closed")
+    manifest_asset = _validate_observed_asset(
+        authenticity.get("manifest"),
+        expected_path=manifest_path,
+        origin=origin,
+        suffix="/engine/browser-engine-manifest.json",
+        label="Opera checked-PV manifest",
+    )
+    assets = _mapping(authenticity.get("assets"), "Opera checked-PV observed assets")
+    expected_asset_labels = {
+        *CHECKED_HORIZON_STATIC_ASSETS,
+        "compiled_module",
+        "compiled_wasm",
+    }
+    if set(assets) != expected_asset_labels:
+        raise ReleaseGateError("Opera checked-PV observed asset set is incomplete")
+    normalized_assets: dict[str, dict[str, Any]] = {}
+    static_directory = repository.resolve() / "src" / "scottish_progressive" / "web" / "static"
+    for asset_label, filename in CHECKED_HORIZON_STATIC_ASSETS.items():
+        normalized_assets[asset_label] = _validate_observed_asset(
+            assets[asset_label],
+            expected_path=static_directory / filename,
+            origin=origin,
+            suffix=f"/{filename}",
+            label=f"Opera checked-PV asset {asset_label}",
+        )
+    lane = candidate_bundle / "single"
+    normalized_assets["compiled_module"] = _validate_observed_asset(
+        assets["compiled_module"],
+        expected_path=lane / str(variant["module_js"]),
+        origin=origin,
+        suffix=f"/engine/single/{variant['module_js']}",
+        label="Opera checked-PV compiled module",
+    )
+    normalized_assets["compiled_wasm"] = _validate_observed_asset(
+        assets["compiled_wasm"],
+        expected_path=lane / str(variant["wasm"]),
+        origin=origin,
+        suffix=f"/engine/single/{variant['wasm']}",
+        label="Opera checked-PV compiled WASM",
+    )
+    asset_commitment = _canonical_sha256(
+        sorted(
+            [
+                ["browser_engine_manifest", manifest_asset],
+                *[[label, asset] for label, asset in normalized_assets.items()],
+            ],
+            key=lambda item: item[0],
+        )
+    )
+    if (
+        authenticity.get("local_checkout_asset_set_sha256") != asset_commitment
+        or HEX_64.fullmatch(str(asset_commitment)) is None
+    ):
+        raise ReleaseGateError("Opera checked-PV local asset-set commitment is invalid")
+
+    worker_calls = _list(
+        authenticity.get("worker_factory_calls"),
+        "Opera checked-PV Worker factory calls",
+    )
+    normalized_workers = [
+        _worker_identity(value, f"Opera checked-PV Worker {index}")
+        for index, value in enumerate(worker_calls)
+    ]
+    expected_worker_url = normalized_assets["browser_engine_worker"]["url"]
+    if (
+        len(normalized_workers) != 9
+        or [worker["factory_sequence"] for worker in normalized_workers] != list(range(1, 10))
+        or normalized_workers[0]["name"] != "scottish-progressive-engine"
+        or normalized_workers[0]["channel_id"] is not None
+        or any(worker["url"] != expected_worker_url for worker in normalized_workers)
+    ):
+        raise ReleaseGateError("Opera checked-PV Worker factory is not exactly bound")
+    expected_roots = {
+        f"scottish-progressive-root-root-{index}": f"root-{index}"
+        for index in range(8)
+    }
+    actual_roots = {
+        worker["name"]: worker["channel_id"] for worker in normalized_workers[1:]
+    }
+    if actual_roots != expected_roots:
+        raise ReleaseGateError("Opera checked-PV root Worker identities are incomplete or duplicated")
+
+    root_identity, prefix_identity = _identity_fields(evidence, certificates)
+    preflight_expected = {
+        "ready": True,
+        "analysis_ready": False,
+        "root_iteration_ready": True,
+        "root_session_ready": True,
+        "mate_ready": True,
+        "prefix_ready": True,
+        "safety_certified": False,
+        "source_fingerprint": evidence.build.identity["source_fingerprint"],
+        "runtime_variant": "single",
+        "thread_count": 1,
+        "module_js_sha256": evidence.build.identity["module_js_sha256"],
+        "wasm_sha256": evidence.build.identity["wasm_sha256"],
+        "kernel_sha256": evidence.build.identity["kernel_sha256"],
+        "certificate_id": None,
+        "root_session_certificate_id": root_certificate["certificate_id"],
+        "mate_certificate_id": mate_certificate["certificate_id"],
+        "prefix_certificate_id": prefix_certificate["certificate_id"],
+        "engine_profile_id": evidence.build.engine["profile_id"],
+        "engine_version": evidence.build.engine["engine_version"],
+        "ruleset_version": evidence.build.engine["ruleset_version"],
+        "root_contract_sha256": expected_manifest_binding["root_contract_sha256"],
+        "root_geometry_sha256": expected_manifest_binding["root_geometry_sha256"],
+        "prefix_contract_sha256": expected_manifest_binding["prefix_contract_sha256"],
+    }
+    if payload.get("preflight_identity") != preflight_expected:
+        raise ReleaseGateError("Opera checked-PV preflight identity differs from the candidate")
+
+    summary = dict(_mapping(payload.get("result_summary"), "Opera checked-PV result summary"))
+    required_summary = {
+        "ok": True,
+        "status": "complete",
+        "requested_depth": 5,
+        "completed_depth": 5,
+        "publishable": True,
+        "safety_certified": True,
+        "coverage_complete": True,
+        "coverage_scope": "all-retained-candidates",
+        "root_scores_complete": True,
+        "width_complete": True,
+        "legal_series_certified": True,
+        "authoritative_replay_certified": True,
+        "legal_validation_runtime": "compiled-wasm",
+        "root_search_mode": "streaming-root-iteration",
+        "selection_policy": "reject-adverse-checked-pv-mates-v1",
+        "selection_policy_filtered": False,
+        "unfiltered_score_winner_selected": False,
+        "timed_out": False,
+        "work_limit_reached": False,
+        "source_fingerprint": evidence.build.identity["source_fingerprint"],
+        "wasm_sha256": evidence.build.identity["wasm_sha256"],
+        "kernel_sha256": evidence.build.identity["kernel_sha256"],
+        "module_js_sha256": evidence.build.identity["module_js_sha256"],
+        "certificate_id": root_certificate["certificate_id"],
+        "mate_certificate_id": mate_certificate["certificate_id"],
+        "prefix_certificate_id": prefix_certificate["certificate_id"],
+        "runtime_variant": "single",
+        "thread_count": 1,
+        "engine_profile_id": evidence.build.engine["profile_id"],
+        "engine_version": evidence.build.engine["engine_version"],
+        "ruleset_version": evidence.build.engine["ruleset_version"],
+    }
+    for key, expected in required_summary.items():
+        if summary.get(key) != expected:
+            raise ReleaseGateError(f"Opera checked-PV result field {key!r} is not release-safe")
+    best_series = _list(summary.get("best_full_series"), "Opera checked-PV best series")
+    if not best_series or any(not isinstance(move, str) or _UCI_MOVE.fullmatch(move) is None for move in best_series):
+        raise ReleaseGateError("Opera checked-PV best series is not canonical")
+    selected_root = "/".join(best_series)
+    _signed_integer(summary.get("score"), "Opera checked-PV score")
+    bounds = _list(summary.get("proof_bounds"), "Opera checked-PV proof bounds")
+    if len(bounds) != 2 or any(bound not in {-1, 0, 1} for bound in bounds):
+        raise ReleaseGateError("Opera checked-PV proof bounds are invalid")
+    line_rejections = _integer(
+        summary.get("pv_horizon_line_rejections"),
+        "Opera checked-PV line rejections",
+        2,
+    )
+    native_repairs = _integer(
+        summary.get("pv_horizon_native_repairs"),
+        "Opera checked-PV native repairs",
+        2,
+    )
+    candidate_vetoes = _integer(
+        summary.get("pv_horizon_candidate_vetoes"),
+        "Opera checked-PV candidate vetoes",
+    )
+    work = _integer(summary.get("work"), "Opera checked-PV work", 1)
+    if candidate_vetoes != 0 or native_repairs + candidate_vetoes != line_rejections:
+        raise ReleaseGateError("Opera checked-PV result accounting is not balanced")
+    for key in (
+        "best_full_series",
+        "score",
+        "work",
+        "source_fingerprint",
+        "wasm_sha256",
+        "kernel_sha256",
+        "module_js_sha256",
+        "selection_policy",
+        "pv_horizon_line_rejections",
+        "pv_horizon_native_repairs",
+        "pv_horizon_candidate_vetoes",
+    ):
+        if payload.get(key) != summary.get(key):
+            raise ReleaseGateError(f"Opera checked-PV top-level field {key!r} drifted")
+    runtime = _mapping(payload.get("runtime_receipt"), "Opera checked-PV runtime receipt")
+    stats = _mapping(payload.get("stats"), "Opera checked-PV result stats")
+    runtime_expected = {
+        "runtime": "browser-wasm",
+        "search_mode": "streaming-root-iteration",
+        "requested_depth": 5,
+        "completed_depth": 5,
+        "canonical_replay_certified": True,
+        "mate_safety_certified": True,
+        "root_bound_coverage_complete": True,
+        "root_bound_coverage_scope": "all-retained-candidates",
+        "selection_policy": summary["selection_policy"],
+        "selection_policy_filtered": False,
+        "unfiltered_score_winner_selected": False,
+        "pv_horizon_line_rejections": line_rejections,
+        "pv_horizon_native_repairs": native_repairs,
+        "pv_horizon_candidate_vetoes": 0,
+        "work": work,
+        "source_fingerprint": evidence.build.identity["source_fingerprint"],
+        "artifact_fingerprint": evidence.build.identity["wasm_sha256"],
+        "kernel_fingerprint": evidence.build.identity["kernel_sha256"],
+        "module_fingerprint": evidence.build.identity["module_js_sha256"],
+        "certificate_id": root_certificate["certificate_id"],
+        "mate_certificate_id": mate_certificate["certificate_id"],
+        "runtime_variant": "single",
+        "thread_count": 1,
+    }
+    for key, expected in runtime_expected.items():
+        if runtime.get(key) != expected:
+            raise ReleaseGateError(f"Opera checked-PV runtime field {key!r} drifted")
+    if (
+        runtime.get("worker_count") != 8
+        or not isinstance(runtime.get("initial_full_wave"), int)
+        or not 1 <= int(runtime["initial_full_wave"]) <= 8
+        or stats.get("coverage_complete") is not True
+        or stats.get("generation_positions") != work
+        or any(
+            stats.get(key) != expected
+            for key, expected in (
+                ("pv_horizon_line_rejections", line_rejections),
+                ("pv_horizon_native_repairs", native_repairs),
+                ("pv_horizon_candidate_vetoes", 0),
+            )
+        )
+    ):
+        raise ReleaseGateError("Opera checked-PV result/stats/runtime accounting drifted")
+    elapsed = _number(payload.get("elapsed_seconds"), "Opera checked-PV elapsed seconds")
+    if elapsed >= 60:
+        raise ReleaseGateError("Opera checked-PV D5 proof did not complete under 60 seconds")
+
+    safety_map = _mapping(payload.get("horizon_safety_traces"), "Opera checked-PV safety traces")
+    repair_map = _mapping(payload.get("certified_repair_traces"), "Opera checked-PV repair traces")
+    warm_map = _mapping(
+        payload.get("final_winner_warm_recertification"),
+        "Opera checked-PV warm recertifications",
+    )
+    if set(safety_map) != {"f3", "b3"} or set(repair_map) != {"f3", "b3"} or set(warm_map) != {"f3", "b3"}:
+        raise ReleaseGateError("Opera checked-PV trace fixtures are incomplete")
+    research_traces = _list(payload.get("horizon_research_traces"), "Opera checked-PV research traces")
+    fixtures = {
+        "f3": (
+            "f2f3",
+            "d1e2/e2c4/c4c7/f1c4/c7c8",
+            "rnQ1k1nr/1p1p1ppp/8/p3p3/1PB1P3/5P2/1PPP3P/RNB1K1Nq b Qkq - 0 7",
+        ),
+        "b3": (
+            "b2b3",
+            "e1f2/d1g4/f2e3/g1h3/g4h5",
+            "rnbq1bnr/pppp1kpp/4p3/7Q/2B5/1P2K2N/PBPP2PP/RN5R b - - 4 7",
+        ),
+    }
+    validated_pairs: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+    for fixture, (expected_root, unsafe_horizon, child_fen) in fixtures.items():
+        safety = _validate_raw_safety_trace(
+            safety_map[fixture],
+            expected_root=expected_root,
+            expected_unsafe_horizon=unsafe_horizon,
+            expected_child_fen=child_fen,
+            root_identity=root_identity,
+            prefix_identity=prefix_identity,
+            maximum_work=100_000_000,
+            label=f"Opera checked-PV {fixture} safety",
+        )
+        repair = _validate_horizon_research_trace(
+            repair_map[fixture],
+            expected_root=expected_root,
+            root_identity=root_identity,
+            maximum_work=100_000_000,
+            require_newest_hit=True,
+            require_warm_exact=False,
+            label=f"Opera checked-PV {fixture} repair",
+        )
+        if safety["worker"] not in normalized_workers or repair["worker"] not in normalized_workers:
+            raise ReleaseGateError(
+                f"Opera checked-PV {fixture} trace Worker was not created by the bound factory"
+            )
+        if not _trace_occurs(repair, research_traces):
+            raise ReleaseGateError(f"Opera checked-PV {fixture} repair is absent from the raw trace")
+        _validate_safety_repair_crosslink(
+            safety,
+            repair,
+            expected_root=expected_root,
+            label=f"Opera checked-PV {fixture}",
+        )
+        validated_pairs[fixture] = (safety, repair)
+    f3_candidate = validated_pairs["f3"][1]["request"].get("candidate_identity")
+    b3_candidate = validated_pairs["b3"][1]["request"].get("candidate_identity")
+    if f3_candidate == b3_candidate:
+        raise ReleaseGateError("Opera checked-PV f3 and b3 repairs reused one candidate identity")
+
+    for fixture, (expected_root, _, _) in fixtures.items():
+        warm_value = warm_map[fixture]
+        if selected_root != expected_root:
+            if warm_value is not None:
+                raise ReleaseGateError(f"Opera checked-PV {fixture} contains an unrelated warm recertification")
+            continue
+        if warm_value is None:
+            raise ReleaseGateError(f"Opera checked-PV selected {fixture} winner lacks warm recertification")
+        warm = _validate_horizon_research_trace(
+            warm_value,
+            expected_root=expected_root,
+            root_identity=root_identity,
+            maximum_work=100_000_000,
+            require_newest_hit=False,
+            require_warm_exact=True,
+            label=f"Opera checked-PV {fixture} warm recertification",
+        )
+        repair = validated_pairs[fixture][1]
+        if not _trace_occurs(warm, research_traces):
+            raise ReleaseGateError(f"Opera checked-PV {fixture} warm recertification is absent from the raw trace")
+        for key in (
+            "worker",
+            "session_id",
+            "request_id",
+            "iteration_id",
+            "generation",
+            "deadline_monotonic_ms",
+            "deadline_epoch_ms",
+            "enumeration_identity",
+            "candidate_identity",
+            "order_index",
+            "order_key",
+            "safety_revision",
+            "horizon_proofs",
+        ):
+            left = warm.get(key) if key == "worker" else warm["request"].get(key)
+            right = repair.get(key) if key == "worker" else repair["request"].get(key)
+            if left != right:
+                raise ReleaseGateError(f"Opera checked-PV {fixture} warm field {key!r} drifted")
+        if (
+            warm["request"].get("task_id") == repair["request"].get("task_id")
+            or warm["request"].get("remaining_time_ms") > repair["request"].get("remaining_time_ms")
+            or warm["request"].get("incumbent_epoch") not in {
+                repair["request"].get("incumbent_epoch"),
+                int(repair["request"].get("incumbent_epoch")) + 1,
+            }
+            or any(
+                warm["response"].get(key) != repair["response"].get(key)
+                for key in ("horizon_proof_set_identity", "score", "root_series", "child_pv")
+            )
+        ):
+            raise ReleaseGateError(f"Opera checked-PV {fixture} warm exact result drifted")
+
+    return OperaCheckedHorizonEvidence(
+        receipt=receipt,
+        local_checkout_asset_set_sha256=asset_commitment,
+        elapsed_seconds=elapsed,
+        work=work,
+        line_rejections=line_rejections,
+        native_repairs=native_repairs,
+        candidate_vetoes=candidate_vetoes,
+        selected_root_series=selected_root,
+    )
+
+
 def _write_json(path: Path, value: object) -> None:
     path.write_text(
         json.dumps(value, indent=2, sort_keys=True) + "\n",
@@ -2167,17 +3675,124 @@ def _directory_records(directory: Path) -> tuple[list[dict[str, object]], str]:
     return records, _canonical_sha256(records)
 
 
+def stage_release_candidate(
+    evidence: ValidatedEvidence,
+    certificates: Mapping[str, Mapping[str, Any]],
+    *,
+    source_package: Path,
+    output: Path,
+    maximum_seconds: float,
+    default_seconds: float,
+) -> Mapping[str, Any]:
+    """Stage immutable core-seven bytes for local Opera attestation only."""
+    maximum_value = float(maximum_seconds)
+    default_value = float(default_seconds)
+    maximum_seconds = int(maximum_value) if maximum_value.is_integer() else maximum_value
+    default_seconds = int(default_value) if default_value.is_integer() else default_value
+    output = output.resolve()
+    if output.exists():
+        raise FileExistsError(f"release candidate output already exists: {output}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f".{output.name}.", dir=output.parent) as name:
+        staging = Path(name) / "candidate"
+        staging.mkdir()
+        certificate_directory = staging / "certificates"
+        evidence_directory = staging / "evidence"
+        certificate_directory.mkdir()
+        evidence_directory.mkdir()
+        certificate_paths: dict[str, Path] = {}
+        for label, certificate in certificates.items():
+            path = certificate_directory / f"{label.replace('_', '-')}-certificate.json"
+            _write_json(path, certificate)
+            certificate_paths[label] = path
+        receipt_records = []
+        for label, filename in RECEIPT_FILENAMES.items():
+            receipt = evidence.receipts[label]
+            destination = evidence_directory / filename
+            destination.write_bytes(receipt.raw)
+            receipt_records.append(
+                {
+                    "label": label,
+                    "path": destination.relative_to(staging).as_posix(),
+                    "schema": receipt.payload.get("schema"),
+                    "sha256": receipt.sha256,
+                    "bytes": len(receipt.raw),
+                }
+            )
+        bundle_directory = staging / "browser-engine"
+        bundle_builder.build_bundle(
+            single_wasm=evidence.build.wasm,
+            single_module_js=evidence.build.module_js,
+            single_prefix_certificate_path=certificate_paths["prefix"],
+            single_root_session_certificate_path=certificate_paths["root_session"],
+            single_mate_certificate_path=certificate_paths["mate"],
+            source_package=source_package.resolve(),
+            output=bundle_directory,
+        )
+        bundle_builder.validate_existing_bundle(bundle_directory, source_package.resolve())
+        bundle_records, bundle_set_sha256 = _directory_records(bundle_directory)
+        certificate_records, certificate_set_sha256 = _directory_records(certificate_directory)
+        candidate_seed = {
+            "artifact": evidence.build.identity,
+            "bundle_set_sha256": bundle_set_sha256,
+            "certificate_set_sha256": certificate_set_sha256,
+            "receipts": [
+                {key: item[key] for key in ("label", "sha256")}
+                for item in receipt_records
+            ],
+            "policy": {
+                "maximum_seconds": maximum_seconds,
+                "default_seconds": default_seconds,
+            },
+        }
+        candidate_id = f"spc-browser-wasm-candidate-{_canonical_sha256(candidate_seed)[:16]}"
+        candidate_receipt = {
+            "schema": CANDIDATE_SCHEMA,
+            "status": "staged-for-local-opera-attestation",
+            "product_publishable": False,
+            "safety_certified": False,
+            "candidate_id": candidate_id,
+            "source_revision": evidence.build.identity["source_revision"],
+            "artifact": dict(evidence.build.identity),
+            "certificates": {
+                label: {
+                    "certificate_id": certificate["certificate_id"],
+                    "path": certificate_paths[label].relative_to(staging).as_posix(),
+                    "sha256": _sha256_file(certificate_paths[label]),
+                }
+                for label, certificate in certificates.items()
+            },
+            "evidence_receipts": receipt_records,
+            "browser_bundle": {
+                "path": "browser-engine",
+                "files": bundle_records,
+                "artifact_set_sha256": bundle_set_sha256,
+            },
+            "certificate_set_sha256": certificate_set_sha256,
+            "next_required_gate": OPERA_CHECKED_HORIZON_SCHEMA,
+        }
+        _write_json(staging / "candidate-receipt.json", candidate_receipt)
+        staging.replace(output)
+    return candidate_receipt
+
+
 def promote_release(
     evidence: ValidatedEvidence,
     certificates: Mapping[str, Mapping[str, Any]],
     *,
     source_package: Path,
+    repository: Path,
+    opera_checked_horizon_receipt: Path,
     output: Path,
     authorized_by: str,
     maximum_seconds: float,
     default_seconds: float,
 ) -> Mapping[str, Any]:
     authorized_by = _text(authorized_by, "promotion authorizer")
+    maximum_value = float(maximum_seconds)
+    default_value = float(default_seconds)
+    maximum_seconds = int(maximum_value) if maximum_value.is_integer() else maximum_value
+    default_seconds = int(default_value) if default_value.is_integer() else default_value
     output = output.resolve()
     if output.exists():
         raise FileExistsError(f"release output already exists: {output}")
@@ -2219,6 +3834,25 @@ def promote_release(
             output=bundle_directory,
         )
         bundle_builder.validate_existing_bundle(bundle_directory, source_package.resolve())
+        checked_horizon = validate_opera_checked_horizon_receipt(
+            receipt_path=opera_checked_horizon_receipt,
+            evidence=evidence,
+            certificates=certificates,
+            repository=repository,
+            source_package=source_package,
+            candidate_bundle=bundle_directory,
+        )
+        checked_destination = evidence_directory / OPERA_CHECKED_HORIZON_FILENAME
+        checked_destination.write_bytes(checked_horizon.receipt.raw)
+        receipt_records.append(
+            {
+                "label": "opera_checked_horizon",
+                "path": checked_destination.relative_to(staging).as_posix(),
+                "schema": checked_horizon.receipt.payload.get("schema"),
+                "sha256": checked_horizon.receipt.sha256,
+                "bytes": len(checked_horizon.receipt.raw),
+            }
+        )
         bundle_records, bundle_set_sha256 = _directory_records(bundle_directory)
         certificate_records, certificate_set_sha256 = _directory_records(certificate_directory)
         release_seed = {
@@ -2292,6 +3926,17 @@ def promote_release(
                 "initial_full_wave": 8,
                 "result": evidence.opera_result,
                 "memory": evidence.opera_memory,
+                "opera_checked_horizon": {
+                    "elapsed_seconds": checked_horizon.elapsed_seconds,
+                    "work": checked_horizon.work,
+                    "selected_root_series": checked_horizon.selected_root_series,
+                    "pv_horizon_line_rejections": checked_horizon.line_rejections,
+                    "pv_horizon_native_repairs": checked_horizon.native_repairs,
+                    "pv_horizon_candidate_vetoes": checked_horizon.candidate_vetoes,
+                    "local_checkout_asset_set_sha256": (
+                        checked_horizon.local_checkout_asset_set_sha256
+                    ),
+                },
             },
             "gates": {
                 "exact_source_and_artifact_identity": True,
@@ -2308,6 +3953,25 @@ def promote_release(
                 "w32_d1_through_d5_under_60_seconds": True,
                 "existing_bundle_revalidated": True,
                 "immutable_copy_by_digest": True,
+                "opera_checked_horizon_raw_trace_attested": (
+                    checked_horizon.line_rejections >= 2
+                    and checked_horizon.native_repairs >= 2
+                    and checked_horizon.candidate_vetoes == 0
+                ),
+                "opera_checked_horizon_local_assets_bound": (
+                    HEX_64.fullmatch(
+                        checked_horizon.local_checkout_asset_set_sha256
+                    )
+                    is not None
+                ),
+                "opera_checked_horizon_d5_under_60_seconds": (
+                    checked_horizon.elapsed_seconds < 60
+                ),
+                "opera_checked_horizon_accounting_balanced": (
+                    checked_horizon.native_repairs
+                    + checked_horizon.candidate_vetoes
+                    == checked_horizon.line_rejections
+                ),
             },
         }
         _write_json(staging / "release-receipt.json", release_receipt)
@@ -2344,8 +4008,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--authorized-by")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--check-only", action="store_true")
+    parser.add_argument("--stage-candidate", action="store_true")
+    parser.add_argument("--opera-checked-horizon-receipt", type=Path)
     args = parser.parse_args(argv)
-    if args.check_only:
+    if args.stage_candidate:
+        if args.check_only or args.authorized_by is not None:
+            parser.error("--stage-candidate cannot certify, authorize, or publish")
+        if args.opera_checked_horizon_receipt is not None:
+            parser.error("--stage-candidate must precede the Opera checked-horizon receipt")
+        if args.output is None:
+            parser.error("--stage-candidate requires --output")
+    elif args.opera_checked_horizon_receipt is None:
+        parser.error("final validation requires --opera-checked-horizon-receipt")
+    elif args.check_only:
         if args.output is not None or args.authorized_by is not None:
             parser.error("--check-only cannot be combined with --output or --authorized-by")
     elif args.output is None or args.authorized_by is None:
@@ -2375,7 +4050,36 @@ def main(argv: Sequence[str] | None = None) -> int:
             maximum_seconds=args.maximum_seconds,
             default_seconds=args.default_seconds,
         )
-        if args.check_only:
+        if args.stage_candidate:
+            assert args.output is not None
+            result = stage_release_candidate(
+                evidence,
+                certificates,
+                source_package=args.source_package.resolve(),
+                output=args.output.resolve(),
+                maximum_seconds=args.maximum_seconds,
+                default_seconds=args.default_seconds,
+            )
+        elif args.check_only:
+            assert args.opera_checked_horizon_receipt is not None
+            with tempfile.TemporaryDirectory(prefix="spc-release-check-") as name:
+                candidate = Path(name) / "candidate"
+                stage_release_candidate(
+                    evidence,
+                    certificates,
+                    source_package=args.source_package.resolve(),
+                    output=candidate,
+                    maximum_seconds=args.maximum_seconds,
+                    default_seconds=args.default_seconds,
+                )
+                checked_horizon = validate_opera_checked_horizon_receipt(
+                    receipt_path=args.opera_checked_horizon_receipt.resolve(),
+                    evidence=evidence,
+                    certificates=certificates,
+                    repository=args.repository.resolve(),
+                    source_package=args.source_package.resolve(),
+                    candidate_bundle=candidate / "browser-engine",
+                )
             result: Mapping[str, Any] = {
                 "schema": RELEASE_SCHEMA,
                 "status": "validated-not-promoted",
@@ -2390,6 +4094,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     label: receipt.sha256
                     for label, receipt in sorted(evidence.receipts.items())
                 },
+                "opera_checked_horizon_receipt_sha256": checked_horizon.receipt.sha256,
+                "opera_checked_horizon_asset_set_sha256": (
+                    checked_horizon.local_checkout_asset_set_sha256
+                ),
                 "opera_total_d1_through_d5_seconds": evidence.opera_elapsed_seconds,
                 "certificate_ids": {
                     label: certificate["certificate_id"]
@@ -2397,11 +4105,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 },
             }
         else:
-            assert args.output is not None and args.authorized_by is not None
+            assert (
+                args.output is not None
+                and args.authorized_by is not None
+                and args.opera_checked_horizon_receipt is not None
+            )
             result = promote_release(
                 evidence,
                 certificates,
                 source_package=args.source_package.resolve(),
+                repository=args.repository.resolve(),
+                opera_checked_horizon_receipt=(
+                    args.opera_checked_horizon_receipt.resolve()
+                ),
                 output=args.output.resolve(),
                 authorized_by=args.authorized_by,
                 maximum_seconds=args.maximum_seconds,

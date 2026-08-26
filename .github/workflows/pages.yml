@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
@@ -64,13 +66,20 @@ jobs:
           if 'src="/' in index or 'href="/styles.css"' in index:
               raise SystemExit("root-relative assets would break the project Pages path")
 
-      # The exact, repository-bound browser bundle is the static release
-      # authority. Render remains an optional runtime fallback and is never a
-      # prerequisite for publishing these independently verifiable bytes.
+      # Pages may consume only the separately promoted, parent-source-bound
+      # browser release. The gate also proves that the checked-in static mirror
+      # is byte-identical before the site artifact is assembled.
       - name: Validate local certified browser engine release authority
         run: >-
           python scripts/build_browser_wasm_bundle.py
           --validate-existing src/scottish_progressive/web/static/engine
+          --source-package src/scottish_progressive
+
+      - name: Validate promoted browser engine release authority
+        run: >-
+          python scripts/validate_promoted_browser_wasm_release.py
+          --repository .
+          --release release/browser-wasm
           --source-package src/scottish_progressive
 
       - name: Build commit-addressed Pages artifact
@@ -79,6 +88,27 @@ jobs:
           --source src/scottish_progressive/web/static
           --output _site
           --version "$GITHUB_SHA"
+
+      - name: Install promoted engine bytes into Pages artifact
+        shell: python
+        run: |
+          from pathlib import Path
+          import shutil
+
+          site = Path("_site").resolve(strict=True)
+          promoted = Path("release/browser-wasm/browser-engine").resolve(strict=True)
+          target = site / "engine"
+          if target.is_symlink() or target.resolve() != site / "engine":
+              raise SystemExit("unsafe Pages engine target")
+          if target.exists():
+              shutil.rmtree(target)
+          shutil.copytree(promoted, target)
+
+      - name: Revalidate packaged Pages engine bytes
+        run: >-
+          python scripts/build_browser_wasm_bundle.py
+          --validate-existing _site/engine
+          --source-package src/scottish_progressive
 
       - name: Upload static site
         uses: actions/upload-pages-artifact@v4

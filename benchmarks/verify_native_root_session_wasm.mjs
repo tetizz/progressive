@@ -132,6 +132,7 @@ function create(overrides = {}) {
   assert.equal(reply.capabilities.reply_mate_safety, false);
   assert.equal(reply.capabilities.aspiration_windows, true);
   assert.equal(reply.capabilities.selected_owner_certification, true);
+  assert.equal(reply.capabilities.checked_horizon_proof_research, true);
   assert.deepEqual(reply.config, overrides.config ?? config);
   return reply;
 }
@@ -242,6 +243,29 @@ assert.equal(contract.reply_mate_safety, false);
 assert.equal(contract.response_lifetime, "until-next-root-session-abi-call-on-this-worker");
 assert.equal(contract.capabilities.aspiration_windows, true);
 assert.equal(contract.capabilities.deep_teacher_value_model, true);
+assert.equal(contract.capabilities.checked_horizon_proof_research, true);
+assert.equal(contract.request_schemas.search, "spc-root-candidate-task-v1");
+assert.equal(
+  contract.request_schemas.horizon_research,
+  "spc-root-horizon-research-task-v1",
+);
+assert.equal(contract.result_schemas.search, "spc-root-candidate-result-v1");
+assert.equal(
+  contract.result_schemas.horizon_research,
+  "spc-root-horizon-research-result-v1",
+);
+assert.equal(contract.hard_limits.maximum_horizon_proofs, 16);
+assert.equal(contract.hard_limits.maximum_horizon_proof_path, 8);
+assert.deepEqual(contract.horizon_research, {
+  task_schema: "spc-root-horizon-research-task-v1",
+  result_schema: "spc-root-horizon-research-result-v1",
+  proof_schema: "spc-retained-root-horizon-proof-v1",
+  purpose: "horizon-research",
+  full_window: true,
+  tt_persistence: "commit",
+  hit_mask_order: "request-order",
+  warm_exact_zero_hit_allowed: true,
+});
 assert.equal(contract.hard_limits.deep_teacher_value_model.optional, true);
 assert.deepEqual(
   contract.hard_limits.deep_teacher_value_model.feature_counts,
@@ -278,6 +302,11 @@ const depthOne = call(
   }),
 );
 assert.equal(depthOne.status, "complete", JSON.stringify(depthOne));
+assert.equal(depthOne.schema, "spc-root-candidate-result-v1");
+assert.equal("horizon_proof_set_identity" in depthOne, false);
+assert.equal("horizon_proofs_validated" in depthOne, false);
+assert.equal("horizon_proof_hits" in depthOne, false);
+assert.equal("horizon_proof_hit_mask" in depthOne, false);
 assert.equal(depthOne.bound, "exact");
 const depthTwo = call(
   wasm._spc_root_session_search_json,
@@ -1139,6 +1168,157 @@ const afterExtension = call(
 );
 assert.equal(afterExtension.status, "complete", JSON.stringify(afterExtension));
 assert.equal(wasm._spc_root_session_destroy(extensionSession.session_id), 1);
+
+// A dedicated checked-horizon request overlays only the supplied retained
+// candidate while ordinary candidate v1 remains unchanged.
+const horizonBoundary = Object.freeze({
+  fen: "6k1/8/8/q7/8/8/5PPP/1R4K1 w - - 0 1",
+  series: 1,
+  quiet_series: 0,
+  ep_targets: [],
+  promoted_hex: "0000000000000000",
+  chess960: false,
+});
+const horizonMateReply = Object.freeze({
+  moves: Object.freeze(["g8f7", "a5e1"]),
+  machine_notation: "g8f7/a5e1",
+  transposition_count: 1,
+  child_boundary: Object.freeze({
+    fen: "1R6/5k2/8/8/8/8/5PPP/4q1K1 w - - 3 3",
+    board_fen: "1R6/5k2/8/8/8/8/5PPP/4q1K1 w - - 3 3",
+    series: 3,
+    series_number: 3,
+    side_to_move: "white",
+    quiet_series: 2,
+    quiet_draw_pending: false,
+    ep_targets: Object.freeze([]),
+    progressive_ep: Object.freeze([]),
+    promoted_hex: "0000000000000000",
+    chess960: false,
+  }),
+  outcome: "checkmate",
+  ended_by_check: true,
+});
+const horizonSession = create({ boundary: horizonBoundary });
+const horizonDeadline = Math.floor(performance.now() + 60_000);
+const horizonEnumeration = enumerate(
+  horizonSession.session_id,
+  0,
+  horizonDeadline,
+  ["b1b8"],
+  500_000,
+  "horizon-enumerate",
+);
+assert.equal(horizonEnumeration.status, "complete", JSON.stringify(horizonEnumeration));
+const horizonCandidate = horizonEnumeration.candidates.find(
+  (item) => item.order_key === "b1b8",
+);
+assert(horizonCandidate);
+assert.equal(horizonCandidate.root_series.ended_by_check, true);
+const horizonProof = Object.freeze({
+  schema: "spc-retained-root-horizon-proof-v1",
+  rooted_path: Object.freeze([horizonCandidate.root_series]),
+  mate_reply: horizonMateReply,
+});
+const horizonRequest = {
+  ...searchTask({
+    candidate: horizonCandidate,
+    manifest: horizonEnumeration,
+    nativeBefore: horizonEnumeration.work.native_work_after,
+    childDepth: 0,
+    deadline: horizonDeadline,
+    purpose: "horizon-research",
+    iteration: "horizon-research",
+    task: "horizon-research-1",
+  }),
+  schema: "spc-root-horizon-research-task-v1",
+  horizon_proofs: [horizonProof],
+};
+const horizonRepair = call(
+  wasm._spc_root_session_search_json,
+  [horizonSession.session_id],
+  horizonRequest,
+);
+assert.equal(horizonRepair.schema, "spc-root-horizon-research-result-v1");
+assert.equal(horizonRepair.status, "complete", JSON.stringify(horizonRepair));
+assert.equal(horizonRepair.bound, "exact");
+assert.equal(horizonRepair.score, -config.mate_score + 2);
+assert.equal(horizonRepair.horizon_proofs_validated, 1);
+assert.equal(horizonRepair.horizon_proof_hits, 1);
+assert.equal(horizonRepair.horizon_proof_hit_mask, 1);
+assert.match(horizonRepair.horizon_proof_set_identity, /^spc-horizon-proof-set-v1\|/);
+const horizonWarm = call(
+  wasm._spc_root_session_search_json,
+  [horizonSession.session_id],
+  {
+    ...horizonRequest,
+    task_id: "horizon-research-warm",
+    native_work_before: horizonRepair.work.native_work_after,
+  },
+);
+assert.equal(horizonWarm.schema, "spc-root-horizon-research-result-v1");
+assert.equal(horizonWarm.status, "complete", JSON.stringify(horizonWarm));
+assert.equal(horizonWarm.score, horizonRepair.score);
+assert.equal(
+  horizonWarm.horizon_proof_set_identity,
+  horizonRepair.horizon_proof_set_identity,
+);
+assert.equal(horizonWarm.horizon_proofs_validated, 1);
+assert.equal(horizonWarm.horizon_proof_hits, 0);
+assert.equal(horizonWarm.horizon_proof_hit_mask, 0);
+const {
+  horizon_proofs: _discardedHorizonProofs,
+  ...missingDedicatedProofs
+} = horizonRequest;
+for (const [task, message] of [
+  [
+    {
+      ...horizonRequest,
+      schema: "spc-root-candidate-task-v1",
+      task_id: "ordinary-candidate-with-proof-extension",
+      native_work_before: horizonWarm.work.native_work_after,
+    },
+    "ordinary candidate v1 must reject dedicated proof fields",
+  ],
+  [
+    {
+      ...missingDedicatedProofs,
+      task_id: "horizon-research-missing-proofs",
+      native_work_before: horizonWarm.work.native_work_after,
+    },
+    "dedicated checked-horizon v1 must require its proof field",
+  ],
+  [
+    {
+      ...horizonRequest,
+      task_id: "horizon-research-too-many",
+      native_work_before: horizonWarm.work.native_work_after,
+      horizon_proofs: Array.from({ length: 17 }, () => horizonProof),
+    },
+    "more than sixteen proofs must fail closed",
+  ],
+  [
+    {
+      ...horizonRequest,
+      task_id: "horizon-research-path-too-long",
+      native_work_before: horizonWarm.work.native_work_after,
+      horizon_proofs: [{
+        ...horizonProof,
+        rooted_path: Array.from({ length: 9 }, () => horizonCandidate.root_series),
+      }],
+    },
+    "a proof path longer than eight series must fail closed",
+  ],
+]) {
+  const invalid = call(
+    wasm._spc_root_session_search_json,
+    [horizonSession.session_id],
+    task,
+  );
+  assert.equal(invalid.status, "unsupported", message);
+  assert.equal(invalid.error_code, "candidate-task-invalid", message);
+}
+assert.equal(wasm._spc_root_session_destroy(horizonSession.session_id), 1);
 
 // Duplicate known keys, surrogate attacks, invalid raw UTF-8, and unknown keys
 // are all rejected before a session is created or mutated.

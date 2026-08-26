@@ -21,6 +21,15 @@ const IDENTITY = Object.freeze({
   ruleset_version: "progressive-synthetic-v1",
   profile_id: "baseline-100",
 });
+const ORDINARY_CANDIDATE_TASK_KEYS = Object.freeze([
+  "alpha", "beta", "call_work_credit", "candidate_identity", "certificate_id",
+  "child_depth", "deadline_monotonic_ms", "engine_version", "enumeration_identity",
+  "external_work", "generation", "incumbent_epoch", "iteration_id", "kernel_sha256",
+  "mate_score", "module_js_sha256", "mover", "native_work_before", "order_index",
+  "order_key", "profile_id", "purpose", "request_id", "ruleset_version",
+  "runtime_variant", "safety_revision", "schema", "source_fingerprint", "task_id",
+  "thread_count", "tt_persistence",
+].sort());
 
 
 function request(workerCount, overrides = {}) {
@@ -179,6 +188,9 @@ class SyntheticWorker {
     const before = this.nativeWork;
     this.nativeWork += actualWork;
     const reply = {
+      schema: task.schema === "spc-root-horizon-research-task-v1"
+        ? "spc-root-horizon-research-result-v1"
+        : "spc-root-candidate-result-v1",
       request_id: task.request_id,
       iteration_id: task.iteration_id,
       source_fingerprint: task.source_fingerprint,
@@ -261,6 +273,40 @@ function safetyReply(task, values) {
     safety_revision: task.safety_revision,
     candidate_identity: task.candidate_identity,
     ...values,
+  };
+}
+
+
+function syntheticBoundary(series) {
+  const white = series % 2 === 1;
+  const fen = white ? WHITE_FEN : BLACK_FEN;
+  return {
+    fen,
+    board_fen: fen,
+    series,
+    series_number: series,
+    side_to_move: white ? "white" : "black",
+    quiet_series: 0,
+    quiet_draw_pending: false,
+    ep_targets: [],
+    progressive_ep: [],
+    promoted_hex: "0000000000000000",
+    chess960: false,
+  };
+}
+
+
+function syntheticSeries(moves, childSeries, {
+  outcome = null,
+  endedByCheck = false,
+} = {}) {
+  return {
+    moves: [...moves],
+    machine_notation: moves.join("/"),
+    transposition_count: 1,
+    child_boundary: syntheticBoundary(childSeries),
+    outcome,
+    ended_by_check: endedByCheck,
   };
 }
 
@@ -747,6 +793,802 @@ async function testCheckedPvPolicyVeto() {
 }
 
 
+async function testCheckedPvProofRepairsOnlyTheSelectedCandidate() {
+  const definitions = [
+    { id: "a", key: "a2a3", score: 100 },
+    { id: "b", key: "b2b3", score: 90 },
+  ];
+  const checkedPv = [
+    syntheticSeries(["a7a6", "b8c6"], 3),
+    syntheticSeries(["g1f3", "b1c3", "f1b5"], 4),
+    syntheticSeries(["d7d6", "c8d7", "d8c8", "e8d8"], 5),
+    syntheticSeries(["b5c6", "f3e5", "c3d5", "d1h5", "h5f7"], 6, {
+      endedByCheck: true,
+    }),
+  ];
+  checkedPv[1].transposition_count = 9;
+  const mateReply = syntheticSeries(
+    ["d8e7", "c8c1", "c1e1", "e1e2", "e2e1", "e1h1"],
+    7,
+    { outcome: "checkmate", endedByCheck: true },
+  );
+  const pool = workers(1, definitions, {
+    mutate: (task, reply) => {
+      if (task.schema === "spc-root-horizon-research-task-v1") {
+        assert.equal(task.candidate_identity, "a");
+        assert.equal(task.purpose, "horizon-research");
+        assert.equal(task.tt_persistence, "commit");
+        assert.equal(task.alpha, -2 * MATE);
+        assert.equal(task.beta, 2 * MATE);
+        assert.equal(task.horizon_proofs.length, 1);
+        assert.equal(task.horizon_proofs[0].rooted_path[0].transposition_count, 7);
+        assert.equal(task.horizon_proofs[0].rooted_path[2].transposition_count, 9);
+        assert.equal(task.horizon_proofs[0].mate_reply.transposition_count, 1);
+        return {
+          ...reply,
+          schema: "spc-root-horizon-research-result-v1",
+          score: 80,
+          child_pv: [],
+          horizon_proof_set_identity: "spc-horizon-proof-set-v1|synthetic",
+          horizon_proofs_validated: 1,
+          horizon_proof_hits: 1,
+          horizon_proof_hit_mask: 1,
+        };
+      }
+      assert.equal(task.schema, "spc-root-candidate-task-v1");
+      assert.deepEqual(Object.keys(task).sort(), ORDINARY_CANDIDATE_TASK_KEYS);
+      if (task.candidate_identity === "a") {
+        return { ...reply, child_pv: checkedPv };
+      }
+      return reply;
+    },
+  });
+  let rejectedA = false;
+  const retainedManifest = manifest(definitions);
+  retainedManifest.candidates[0].root_series.transposition_count = 7;
+  const result = await api.runRootIteration({
+    request: request(1, { iteration_id: "checked-pv-native-repair" }),
+    manifest: retainedManifest,
+    workers: pool,
+    safetyProbe: async (task) => {
+      if (task.candidate_identity !== "a" || rejectedA) {
+        return safetyReply(task, { status: "exhausted", work_used: 1 });
+      }
+      rejectedA = true;
+      return safetyReply(task, {
+        status: "line-rejected",
+        safety_scope: "pv-horizon",
+        work_used: 2,
+        line_rejection: {
+          schema: "spc-pv-horizon-line-rejection-v1",
+          reason: "adverse-immediate-series-mate",
+          mate_ply: 6,
+          horizon_series: checkedPv.at(-1).machine_notation,
+        },
+        reply_mate: mateReply,
+        horizon_proof: {
+          schema: "spc-retained-root-horizon-proof-v1",
+          rooted_path: [task.candidate.root_series, ...checkedPv],
+          mate_reply: mateReply,
+        },
+      });
+    },
+  });
+
+  assert.equal(result.selected.candidate_identity, "b");
+  assert.equal(result.selected.score, 90);
+  assert.equal(result.pv_horizon_line_rejections, 1);
+  assert.equal(result.pv_horizon_native_repairs, 1);
+  assert.equal(result.pv_horizon_candidate_vetoes, 0);
+  assert.equal(result.selection_policy_filtered, false);
+  assert.equal(
+    result.root_bounds.find((item) => item.candidate_identity === "a")?.score,
+    80,
+  );
+  assert.equal(
+    result.root_bounds.find((item) => item.candidate_identity === "a")?.selection_eligible,
+    true,
+  );
+  const horizonCalls = pool[0].calls.filter(
+    (task) => task.schema === "spc-root-horizon-research-task-v1",
+  );
+  assert.equal(horizonCalls.length, 1);
+  assert.deepEqual(horizonCalls[0].horizon_proofs[0].rooted_path.slice(1), checkedPv);
+  assert.equal(
+    pool[0].calls.filter((task) => (
+      task.candidate_identity === "b" && task.purpose === "full"
+    )).length,
+    0,
+    "repair must not force a full search of every challenger",
+  );
+}
+
+
+async function runRepairedWinnerRecertification(mode) {
+  const definitions = [
+    { id: "a", key: "a2a3", score: 100 },
+    { id: "b", key: "b2b3", score: 90 },
+  ];
+  const checkedPv = [
+    syntheticSeries(["a7a6", "b8c6"], 3),
+    syntheticSeries(["g1f3", "b1c3", "f1b5"], 4),
+    syntheticSeries(["d7d6", "c8d7", "d8c8", "e8d8"], 5),
+    syntheticSeries(["b5c6", "f3e5", "c3d5", "d1h5", "h5f7"], 6, {
+      endedByCheck: true,
+    }),
+  ];
+  const mateReply = syntheticSeries(
+    ["d8e7", "c8c1", "c1e1", "e1e2", "e2e1", "e1h1"],
+    7,
+    { outcome: "checkmate", endedByCheck: true },
+  );
+  let horizonCalls = 0;
+  const pool = workers(1, definitions, {
+    mutate: (task, reply) => {
+      if (task.schema === "spc-root-horizon-research-task-v1") {
+        horizonCalls += 1;
+        assert.equal(task.candidate_identity, "a");
+        assert.equal(task.horizon_proofs.length, 1);
+        const completed = {
+          ...reply,
+          schema: "spc-root-horizon-research-result-v1",
+          score: 95,
+          child_pv: [],
+          horizon_proof_set_identity: "spc-horizon-proof-set-v1|same-owner",
+          horizon_proofs_validated: 1,
+          horizon_proof_hits: horizonCalls === 1 ? 1 : 0,
+          horizon_proof_hit_mask: horizonCalls === 1 ? 1 : 0,
+        };
+        if (horizonCalls !== 2 || mode === "complete") return completed;
+        return {
+          ...completed,
+          status: mode,
+          bound: "unknown",
+          score: 0,
+          child_pv: [],
+          horizon_proof_set_identity: "",
+          horizon_proofs_validated: 0,
+          horizon_proof_hits: 0,
+          horizon_proof_hit_mask: 0,
+        };
+      }
+      if (task.candidate_identity === "a") return { ...reply, child_pv: checkedPv };
+      return reply;
+    },
+  });
+  let safetyCalls = 0;
+  const result = await api.runRootIteration({
+    request: request(1, { iteration_id: "checked-pv-owner-recertification" }),
+    manifest: manifest(definitions),
+    workers: pool,
+    safetyProbe: async (task) => {
+      safetyCalls += 1;
+      if (safetyCalls > 1) {
+        return safetyReply(task, { status: "exhausted", work_used: 1 });
+      }
+      return safetyReply(task, {
+        status: "line-rejected",
+        safety_scope: "pv-horizon",
+        work_used: 2,
+        line_rejection: {
+          schema: "spc-pv-horizon-line-rejection-v1",
+          reason: "adverse-immediate-series-mate",
+          mate_ply: 6,
+          horizon_series: checkedPv.at(-1).machine_notation,
+        },
+        reply_mate: mateReply,
+        horizon_proof: {
+          schema: "spc-retained-root-horizon-proof-v1",
+          rooted_path: [task.candidate.root_series, ...checkedPv],
+          mate_reply: mateReply,
+        },
+      });
+    },
+  });
+
+  return { checkedPv, horizonCalls, pool, result };
+}
+
+
+async function testRepairedWinnerRecertifiesWithTheSameProofSet() {
+  const { checkedPv, horizonCalls, pool, result } = await runRepairedWinnerRecertification(
+    "complete",
+  );
+  assert.equal(result.selected.candidate_identity, "a");
+  assert.equal(result.selected.score, 95);
+  assert.equal(result.pv_horizon_native_repairs, 1);
+  assert.equal(result.pv_horizon_candidate_vetoes, 0);
+  assert.equal(horizonCalls, 2, "repair and warm owner certification must both carry proofs");
+  const calls = pool[0].calls.filter(
+    (task) => task.schema === "spc-root-horizon-research-task-v1",
+  );
+  assert.deepEqual(calls[1].horizon_proofs, calls[0].horizon_proofs);
+  assert.equal(
+    pool[0].calls.filter((task) => (
+      task.candidate_identity === "a" && task.purpose === "selected-certification"
+    )).length,
+    1,
+    "only the pre-proof owner certification may use ordinary candidate v1",
+  );
+}
+
+
+async function testFailedRepairedWinnerRecertificationReclassifiesTheLastRepair() {
+  for (const mode of ["work_limit", "unsupported"]) {
+    const { horizonCalls, result } = await runRepairedWinnerRecertification(mode);
+    assert.equal(result.selected.candidate_identity, "b", mode);
+    assert.equal(result.pv_horizon_line_rejections, 1, mode);
+    assert.equal(result.pv_horizon_native_repairs, 0, mode);
+    assert.equal(result.pv_horizon_candidate_vetoes, 1, mode);
+    assert.equal(
+      result.pv_horizon_native_repairs + result.pv_horizon_candidate_vetoes,
+      result.pv_horizon_line_rejections,
+      mode,
+    );
+    assert.equal(result.selection_policy_filtered, true, mode);
+    assert.equal(horizonCalls, 2, mode);
+  }
+}
+
+
+async function runSecondCheckedPvProofScenario({ impossibleReceipt = false } = {}) {
+  const definitions = [
+    { id: "a", key: "a2a3", score: 100 },
+    { id: "b", key: "b2b3", score: 90 },
+  ];
+  const firstPv = [
+    syntheticSeries(["a7a6", "b8c6"], 3),
+    syntheticSeries(["g1f3", "b1c3", "f1b5"], 4),
+    syntheticSeries(["d7d6", "c8d7", "d8c8", "e8d8"], 5),
+    syntheticSeries(["b5c6", "f3e5", "c3d5", "d1h5", "h5f7"], 6, {
+      endedByCheck: true,
+    }),
+  ];
+  const secondPv = [
+    syntheticSeries(["a7a5", "b8a6"], 3),
+    syntheticSeries(["g1h3", "b1a3", "h1g1"], 4),
+    syntheticSeries(["d7d5", "c8f5", "d8d7", "e8d8"], 5),
+    syntheticSeries(["h3g5", "a3b5", "g1h1", "d1e1", "e1e7"], 6, {
+      endedByCheck: true,
+    }),
+  ];
+  const firstMate = syntheticSeries(
+    ["d8e7", "c8c1", "c1e1", "e1e2", "e2e1", "e1h1"],
+    7,
+    { outcome: "checkmate", endedByCheck: true },
+  );
+  const secondMate = syntheticSeries(
+    ["d8c8", "f5c2", "c2d1", "d1a4", "a4e8", "e8e1"],
+    7,
+    { outcome: "checkmate", endedByCheck: true },
+  );
+  const proofSetCalls = [];
+  const pool = workers(1, definitions, {
+    mutate: (task, reply) => {
+      if (task.schema === "spc-root-horizon-research-task-v1") {
+        proofSetCalls.push(task.horizon_proofs);
+        const proofCount = task.horizon_proofs.length;
+        const firstForSet = proofSetCalls.filter((set) => set.length === proofCount).length === 1;
+        const impossibleBitCount = impossibleReceipt && proofCount === 2 && firstForSet;
+        return {
+          ...reply,
+          schema: "spc-root-horizon-research-result-v1",
+          score: proofCount === 1 ? 98 : 92,
+          child_pv: proofCount === 1 ? secondPv : [],
+          horizon_proof_set_identity: `spc-horizon-proof-set-v1|${proofCount}`,
+          horizon_proofs_validated: proofCount,
+          horizon_proof_hits: firstForSet ? 1 : 0,
+          horizon_proof_hit_mask: impossibleBitCount
+            ? 3
+            : firstForSet ? 2 ** (proofCount - 1) : 0,
+        };
+      }
+      if (task.candidate_identity === "a") return { ...reply, child_pv: firstPv };
+      return reply;
+    },
+  });
+  let safetyCall = 0;
+  const resultPromise = api.runRootIteration({
+    request: request(1, { iteration_id: "checked-pv-second-proof-bit" }),
+    manifest: manifest(definitions),
+    workers: pool,
+    safetyProbe: async (task) => {
+      safetyCall += 1;
+      if (safetyCall > 2) {
+        return safetyReply(task, { status: "exhausted", work_used: 1 });
+      }
+      const pv = safetyCall === 1 ? firstPv : secondPv;
+      const mate = safetyCall === 1 ? firstMate : secondMate;
+      assert.deepEqual(task.candidate.child_pv, pv);
+      return safetyReply(task, {
+        status: "line-rejected",
+        safety_scope: "pv-horizon",
+        work_used: 2,
+        line_rejection: {
+          schema: "spc-pv-horizon-line-rejection-v1",
+          reason: "adverse-immediate-series-mate",
+          mate_ply: 6,
+          horizon_series: pv.at(-1).machine_notation,
+        },
+        reply_mate: mate,
+        horizon_proof: {
+          schema: "spc-retained-root-horizon-proof-v1",
+          rooted_path: [task.candidate.root_series, ...pv],
+          mate_reply: mate,
+        },
+      });
+    },
+  });
+
+  if (impossibleReceipt) {
+    await assert.rejects(resultPromise, (error) => {
+      assert.equal(error?.code, "root-worker-result-invalid");
+      return true;
+    });
+    return proofSetCalls;
+  }
+  const result = await resultPromise;
+  assert.equal(result.selected.candidate_identity, "a");
+  assert.equal(result.selected.score, 92);
+  assert.equal(result.pv_horizon_line_rejections, 2);
+  assert.equal(result.pv_horizon_native_repairs, 2);
+  assert.equal(result.pv_horizon_candidate_vetoes, 0);
+  assert.deepEqual(proofSetCalls.map((set) => set.length), [1, 1, 2, 2]);
+  assert.deepEqual(proofSetCalls[2][0], proofSetCalls[0][0]);
+  assert.deepEqual(proofSetCalls[2][1].rooted_path.slice(1), secondPv);
+  return proofSetCalls;
+}
+
+
+async function testSecondCheckedPvProofUsesItsRequestOrderHitBit() {
+  await runSecondCheckedPvProofScenario();
+}
+
+
+async function testImpossibleProofHitPopulationFailsClosed() {
+  const calls = await runSecondCheckedPvProofScenario({ impossibleReceipt: true });
+  assert.deepEqual(calls.map((set) => set.length), [1, 1, 2]);
+}
+
+
+async function testDuplicateCheckedPvProofFallsBackToCandidateVeto() {
+  const definitions = [
+    { id: "a", key: "a2a3", score: 100 },
+    { id: "b", key: "b2b3", score: 90 },
+  ];
+  const checkedPv = [
+    syntheticSeries(["a7a6", "b8c6"], 3),
+    syntheticSeries(["g1f3", "b1c3", "f1b5"], 4),
+    syntheticSeries(["d7d6", "c8d7", "d8c8", "e8d8"], 5),
+    syntheticSeries(["b5c6", "f3e5", "c3d5", "d1h5", "h5f7"], 6, {
+      endedByCheck: true,
+    }),
+  ];
+  const mateReply = syntheticSeries(
+    ["d8e7", "c8c1", "c1e1", "e1e2", "e2e1", "e1h1"],
+    7,
+    { outcome: "checkmate", endedByCheck: true },
+  );
+  let horizonCalls = 0;
+  const pool = workers(1, definitions, {
+    mutate: (task, reply) => {
+      if (task.schema === "spc-root-horizon-research-task-v1") {
+        horizonCalls += 1;
+        return {
+          ...reply,
+          schema: "spc-root-horizon-research-result-v1",
+          score: 100,
+          child_pv: checkedPv,
+          horizon_proof_set_identity: "spc-horizon-proof-set-v1|duplicate",
+          horizon_proofs_validated: 1,
+          horizon_proof_hits: horizonCalls === 1 ? 1 : 0,
+          horizon_proof_hit_mask: horizonCalls === 1 ? 1 : 0,
+        };
+      }
+      if (task.candidate_identity === "a") return { ...reply, child_pv: checkedPv };
+      return reply;
+    },
+  });
+  let aSafetyCalls = 0;
+  const result = await api.runRootIteration({
+    request: request(1, { iteration_id: "checked-pv-duplicate-proof" }),
+    manifest: manifest(definitions),
+    workers: pool,
+    safetyProbe: async (task) => {
+      if (task.candidate_identity !== "a" || aSafetyCalls >= 2) {
+        return safetyReply(task, { status: "exhausted", work_used: 1 });
+      }
+      aSafetyCalls += 1;
+      return safetyReply(task, {
+        status: "line-rejected",
+        safety_scope: "pv-horizon",
+        work_used: 2,
+        line_rejection: {
+          schema: "spc-pv-horizon-line-rejection-v1",
+          reason: "adverse-immediate-series-mate",
+          mate_ply: 6,
+          horizon_series: checkedPv.at(-1).machine_notation,
+        },
+        reply_mate: mateReply,
+        horizon_proof: {
+          schema: "spc-retained-root-horizon-proof-v1",
+          rooted_path: [task.candidate.root_series, ...checkedPv],
+          mate_reply: mateReply,
+        },
+      });
+    },
+  });
+
+  assert.equal(result.selected.candidate_identity, "b");
+  assert.equal(result.pv_horizon_line_rejections, 2);
+  assert.equal(result.pv_horizon_native_repairs, 1);
+  assert.equal(result.pv_horizon_candidate_vetoes, 1);
+  assert.equal(horizonCalls, 2, "duplicate proof must not dispatch a third native search");
+}
+
+
+async function testSixteenthProofIsTheLocalResearchCapacity() {
+  const definitions = [
+    { id: "a", key: "a2a3", score: 100 },
+    { id: "b", key: "b2b3", score: 90 },
+  ];
+  const firstMoves = [
+    "a7a6", "a7a5", "b7b6", "b7b5", "c7c6", "c7c5", "d7d6", "d7d5",
+    "e7e6", "e7e5", "f7f6", "f7f5", "g7g6", "g7g5", "h7h6", "h7h5",
+    "b8a6",
+  ];
+  const pvs = firstMoves.map((firstMove) => [
+    syntheticSeries([firstMove, "b8c6"], 3),
+    syntheticSeries(["g1f3", "b1c3", "f1b5"], 4),
+    syntheticSeries(["d7d6", "c8d7", "d8c8", "e8d8"], 5),
+    syntheticSeries(["b5c6", "f3e5", "c3d5", "d1h5", "h5f7"], 6, {
+      endedByCheck: true,
+    }),
+  ]);
+  const mateReply = syntheticSeries(
+    ["d8e7", "c8c1", "c1e1", "e1e2", "e2e1", "e1h1"],
+    7,
+    { outcome: "checkmate", endedByCheck: true },
+  );
+  const proofSetCounts = new Map();
+  let horizonCalls = 0;
+  const pool = workers(1, definitions, {
+    mutate: (task, reply) => {
+      if (task.schema === "spc-root-horizon-research-task-v1") {
+        horizonCalls += 1;
+        const proofCount = task.horizon_proofs.length;
+        const callsForSet = (proofSetCounts.get(proofCount) ?? 0) + 1;
+        proofSetCounts.set(proofCount, callsForSet);
+        const repair = callsForSet === 1;
+        return {
+          ...reply,
+          schema: "spc-root-horizon-research-result-v1",
+          score: 100,
+          child_pv: pvs[proofCount],
+          horizon_proof_set_identity: `spc-horizon-proof-set-v1|capacity-${proofCount}`,
+          horizon_proofs_validated: proofCount,
+          horizon_proof_hits: repair ? 1 : 0,
+          horizon_proof_hit_mask: repair ? 2 ** (proofCount - 1) : 0,
+        };
+      }
+      if (task.candidate_identity === "a") return { ...reply, child_pv: pvs[0] };
+      return reply;
+    },
+  });
+  let aSafetyCalls = 0;
+  const result = await api.runRootIteration({
+    request: request(1, { iteration_id: "checked-pv-proof-capacity" }),
+    manifest: manifest(definitions),
+    workers: pool,
+    safetyProbe: async (task) => {
+      if (task.candidate_identity !== "a" || aSafetyCalls >= pvs.length) {
+        return safetyReply(task, { status: "exhausted", work_used: 1 });
+      }
+      const pv = pvs[aSafetyCalls];
+      aSafetyCalls += 1;
+      assert.deepEqual(task.candidate.child_pv, pv);
+      return safetyReply(task, {
+        status: "line-rejected",
+        safety_scope: "pv-horizon",
+        work_used: 2,
+        line_rejection: {
+          schema: "spc-pv-horizon-line-rejection-v1",
+          reason: "adverse-immediate-series-mate",
+          mate_ply: 6,
+          horizon_series: pv.at(-1).machine_notation,
+        },
+        reply_mate: mateReply,
+        horizon_proof: {
+          schema: "spc-retained-root-horizon-proof-v1",
+          rooted_path: [task.candidate.root_series, ...pv],
+          mate_reply: mateReply,
+        },
+      });
+    },
+  });
+
+  assert.equal(result.selected.candidate_identity, "b");
+  assert.equal(result.pv_horizon_line_rejections, 17);
+  assert.equal(result.pv_horizon_native_repairs, 16);
+  assert.equal(result.pv_horizon_candidate_vetoes, 1);
+  assert.equal(horizonCalls, 32, "the seventeenth proof must fall back before dispatch");
+  assert.equal(Math.max(...proofSetCounts.keys()), 16);
+}
+
+
+async function testHorizonResearchFallbacksAndMalformedReceipt() {
+  const definitions = [
+    { id: "a", key: "a2a3", score: 100 },
+    { id: "b", key: "b2b3", score: 90 },
+  ];
+  const checkedPv = [
+    syntheticSeries(["a7a6", "b8c6"], 3),
+    syntheticSeries(["g1f3", "b1c3", "f1b5"], 4),
+    syntheticSeries(["d7d6", "c8d7", "d8c8", "e8d8"], 5),
+    syntheticSeries(["b5c6", "f3e5", "c3d5", "d1h5", "h5f7"], 6, {
+      endedByCheck: true,
+    }),
+  ];
+  const mateReply = syntheticSeries(
+    ["d8e7", "c8c1", "c1e1", "e1e2", "e2e1", "e1h1"],
+    7,
+    { outcome: "checkmate", endedByCheck: true },
+  );
+  const run = async (mode) => {
+    const pool = workers(1, definitions, {
+      throwWhen: (task) => (
+        mode === "lost" && task.schema === "spc-root-horizon-research-task-v1"
+      ),
+      mutate: (task, reply) => {
+        if (task.schema === "spc-root-horizon-research-task-v1") {
+          const common = {
+            ...reply,
+            schema: "spc-root-horizon-research-result-v1",
+            score: 80,
+            child_pv: [],
+            horizon_proof_set_identity: "spc-horizon-proof-set-v1|fallback",
+            horizon_proofs_validated: 1,
+            horizon_proof_hits: mode === "zero-hit" ? 0 : 1,
+            horizon_proof_hit_mask: mode === "zero-hit" ? 0 : 1,
+          };
+          if (mode === "work-limit" || mode === "unsupported") {
+            return {
+              ...common,
+              status: mode === "work-limit" ? "work_limit" : "unsupported",
+              bound: "unknown",
+              score: 0,
+              child_pv: [],
+              horizon_proof_set_identity: "",
+              horizon_proofs_validated: 0,
+              horizon_proof_hits: 0,
+              horizon_proof_hit_mask: 0,
+            };
+          }
+          if (mode === "malformed") {
+            return { ...common, horizon_proofs_validated: 0 };
+          }
+          if (mode === "stale") {
+            return { ...common, safety_revision: task.safety_revision - 1 };
+          }
+          if (mode === "identity-mismatch") {
+            return { ...common, kernel_sha256: "f".repeat(64) };
+          }
+          if (mode === "deadline") {
+            return { ...common, status: "deadline", bound: "unknown" };
+          }
+          return common;
+        }
+        if (task.candidate_identity === "a") return { ...reply, child_pv: checkedPv };
+        return reply;
+      },
+    });
+    const resultPromise = api.runRootIteration({
+      request: request(1, { iteration_id: `checked-pv-${mode}` }),
+      manifest: manifest(definitions),
+      workers: pool,
+      safetyProbe: async (task) => (
+        task.candidate_identity === "a"
+          ? safetyReply(task, {
+            status: "line-rejected",
+            safety_scope: "pv-horizon",
+            work_used: 2,
+            line_rejection: {
+              schema: "spc-pv-horizon-line-rejection-v1",
+              reason: "adverse-immediate-series-mate",
+              mate_ply: 6,
+              horizon_series: checkedPv.at(-1).machine_notation,
+            },
+            reply_mate: mateReply,
+            horizon_proof: {
+              schema: "spc-retained-root-horizon-proof-v1",
+              rooted_path: [task.candidate.root_series, ...checkedPv],
+              mate_reply: mateReply,
+            },
+          })
+          : safetyReply(task, { status: "exhausted", work_used: 1 })
+      ),
+    });
+    return { pool, resultPromise };
+  };
+
+  for (const mode of ["zero-hit", "work-limit", "unsupported"]) {
+    const { resultPromise } = await run(mode);
+    const result = await resultPromise;
+    assert.equal(result.selected.candidate_identity, "b");
+    assert.equal(result.pv_horizon_native_repairs, 0);
+    assert.equal(result.pv_horizon_candidate_vetoes, 1);
+    assert.equal(result.selection_policy_filtered, true);
+    const rejected = result.root_bounds.find((item) => item.candidate_identity === "a");
+    assert.equal(rejected.score, 100, `${mode} must not publish an unproven repair score`);
+    assert.equal(rejected.selection_eligible, false);
+  }
+
+  for (const mode of ["malformed", "stale", "identity-mismatch", "deadline"]) {
+    const { resultPromise } = await run(mode);
+    await assert.rejects(resultPromise, (error) => {
+      assert.equal(error?.code, "root-worker-result-invalid", mode);
+      return true;
+    });
+  }
+  const { resultPromise: lost } = await run("lost");
+  await assert.rejects(lost, (error) => {
+    assert.equal(error?.code, "root-worker-lost");
+    return true;
+  });
+}
+
+
+async function testNoSearchCreditFallsBackWithoutSpendingHeldSafetyWork() {
+  const definitions = [
+    { id: "a", key: "a2a3", score: 100 },
+    { id: "b", key: "b2b3", score: 0, terminalScore: 0, terminalProof: [0, 0] },
+  ];
+  const checkedPv = [
+    syntheticSeries(["a7a6", "b8c6"], 3),
+    syntheticSeries(["g1f3", "b1c3", "f1b5"], 4),
+    syntheticSeries(["d7d6", "c8d7", "d8c8", "e8d8"], 5),
+    syntheticSeries(["b5c6", "f3e5", "c3d5", "d1h5", "h5f7"], 6, {
+      endedByCheck: true,
+    }),
+  ];
+  const mateReply = syntheticSeries(
+    ["d8e7", "c8c1", "c1e1", "e1e2", "e2e1", "e1h1"],
+    7,
+    { outcome: "checkmate", endedByCheck: true },
+  );
+  const retainedManifest = manifest(definitions);
+  retainedManifest.candidates[1].root_series.outcome = "stalemate";
+  retainedManifest.candidates[1].root_series.ended_by_check = false;
+  const pool = workers(1, definitions, {
+    mutate: (task, reply) => (
+      task.candidate_identity === "a" ? { ...reply, child_pv: checkedPv } : reply
+    ),
+  });
+  const result = await api.runRootIteration({
+    request: request(1, {
+      iteration_id: "checked-pv-no-research-credit",
+      caps: {
+        max_work: 7,
+        initial_work: 0,
+        safety_reserve_work: 5,
+        search_call_work_credit: 7,
+        safety_call_work_credit: 5,
+        max_memory_bytes: 1_024,
+      },
+    }),
+    manifest: retainedManifest,
+    workers: pool,
+    safetyProbe: async (task) => safetyReply(task, {
+      status: "line-rejected",
+      safety_scope: "pv-horizon",
+      work_used: 2,
+      line_rejection: {
+        schema: "spc-pv-horizon-line-rejection-v1",
+        reason: "adverse-immediate-series-mate",
+        mate_ply: 6,
+        horizon_series: checkedPv.at(-1).machine_notation,
+      },
+      reply_mate: mateReply,
+      horizon_proof: {
+        schema: "spc-retained-root-horizon-proof-v1",
+        rooted_path: [task.candidate.root_series, ...checkedPv],
+        mate_reply: mateReply,
+      },
+    }),
+  });
+
+  assert.equal(result.selected.candidate_identity, "b");
+  assert.equal(result.pv_horizon_native_repairs, 0);
+  assert.equal(result.pv_horizon_candidate_vetoes, 1);
+  assert.equal(result.work.safety_committed_work, 2);
+  assert.equal(result.work.remaining_work, 3);
+  assert.equal(
+    pool[0].calls.some((task) => task.schema === "spc-root-horizon-research-task-v1"),
+    false,
+  );
+}
+
+
+async function testBlackCheckedPvRepairReversesTheCorrectionDirection() {
+  const definitions = [
+    { id: "a", key: "a7a6", score: -100 },
+    { id: "b", key: "b7b6", score: -90 },
+  ];
+  const checkedPv = [
+    syntheticSeries(["a2a3", "b1c3", "g1f3"], 4),
+    syntheticSeries(["a7a6", "b8c6", "g8f6", "h7h6"], 5),
+    syntheticSeries(["d2d4", "c1f4", "d1d2", "e1d1", "d2e3"], 6),
+    syntheticSeries(["d7d6", "c8d7", "d8c8", "e8d8", "f6e4", "e4f2"], 7, {
+      endedByCheck: true,
+    }),
+  ];
+  const mateReply = syntheticSeries(
+    ["d1e1", "f4c7", "c7d8", "d8c8", "c8e8", "e8e7", "e7f7"],
+    8,
+    { outcome: "checkmate", endedByCheck: true },
+  );
+  const pool = workers(1, definitions, {
+    mutate: (task, reply) => {
+      if (task.schema === "spc-root-horizon-research-task-v1") {
+        return {
+          ...reply,
+          schema: "spc-root-horizon-research-result-v1",
+          score: -80,
+          child_pv: [],
+          horizon_proof_set_identity: "spc-horizon-proof-set-v1|black",
+          horizon_proofs_validated: 1,
+          horizon_proof_hits: 1,
+          horizon_proof_hit_mask: 1,
+        };
+      }
+      if (task.candidate_identity === "a") return { ...reply, child_pv: checkedPv };
+      return reply;
+    },
+  });
+  let rejected = false;
+  const result = await api.runRootIteration({
+    request: request(1, { series: 2, iteration_id: "checked-pv-black-repair" }),
+    manifest: manifest(definitions, { white: false }),
+    workers: pool,
+    safetyProbe: async (task) => {
+      if (task.candidate_identity !== "a" || rejected) {
+        return safetyReply(task, { status: "exhausted", work_used: 1 });
+      }
+      rejected = true;
+      return safetyReply(task, {
+        status: "line-rejected",
+        safety_scope: "pv-horizon",
+        work_used: 2,
+        line_rejection: {
+          schema: "spc-pv-horizon-line-rejection-v1",
+          reason: "adverse-immediate-series-mate",
+          mate_ply: 6,
+          horizon_series: checkedPv.at(-1).machine_notation,
+        },
+        reply_mate: mateReply,
+        horizon_proof: {
+          schema: "spc-retained-root-horizon-proof-v1",
+          rooted_path: [task.candidate.root_series, ...checkedPv],
+          mate_reply: mateReply,
+        },
+      });
+    },
+  });
+
+  assert.equal(result.mover, "black");
+  assert.equal(result.selected.candidate_identity, "b");
+  assert.equal(result.pv_horizon_native_repairs, 1);
+  assert.equal(result.pv_horizon_candidate_vetoes, 0);
+  assert.equal(result.root_bounds.find((item) => item.candidate_identity === "a")?.score, -80);
+  assert.equal(
+    pool[0].calls.filter((task) => (
+      task.candidate_identity === "b" && task.purpose === "full"
+    )).length,
+    0,
+  );
+}
+
+
 async function testAspirationWideningAndFallback() {
   const definitions = [
     { id: "a", key: "a", score: 3_000 },
@@ -915,6 +1757,16 @@ async function testProtocolFaults() {
     request: request(1),
     manifest: manifest(single),
     workers: missingPool,
+    safetyProbe: exhaustedSafety(),
+  }), "root-worker-result-invalid");
+
+  const wrongSchemaPool = workers(1, single, {
+    mutate: (_task, reply) => ({ ...reply, schema: "spc-root-candidate-result-v0" }),
+  });
+  await expectCode(api.runRootIteration({
+    request: request(1),
+    manifest: manifest(single),
+    workers: wrongSchemaPool,
     safetyProbe: exhaustedSafety(),
   }), "root-worker-result-invalid");
 
@@ -1301,6 +2153,16 @@ await testProofAwareRootSelection();
 await testBlackMirror();
 await testTerminalProductionOrder();
 await testSafetyRevisionAndBoundInvalidation();
+await testCheckedPvProofRepairsOnlyTheSelectedCandidate();
+await testRepairedWinnerRecertifiesWithTheSameProofSet();
+await testFailedRepairedWinnerRecertificationReclassifiesTheLastRepair();
+await testSecondCheckedPvProofUsesItsRequestOrderHitBit();
+await testImpossibleProofHitPopulationFailsClosed();
+await testDuplicateCheckedPvProofFallsBackToCandidateVeto();
+await testSixteenthProofIsTheLocalResearchCapacity();
+await testHorizonResearchFallbacksAndMalformedReceipt();
+await testNoSearchCreditFallsBackWithoutSpendingHeldSafetyWork();
+await testBlackCheckedPvRepairReversesTheCorrectionDirection();
 await testCheckedPvPolicyVeto();
 await testResponseOrderPermutations();
 await testAspirationWideningAndFallback();
@@ -1311,7 +2173,7 @@ await testUnsupportedEnvelope();
 
 process.stdout.write(`${JSON.stringify({
   schema: "spc-root-iteration-coordinator-verifier-v1",
-  scenarios: 23,
+  scenarios: 27,
   response_order_permutations: 8,
   response_order_worker_count: 8,
   streaming_first_wave: true,
@@ -1324,6 +2186,17 @@ process.stdout.write(`${JSON.stringify({
   proof_aware_scout_research: true,
   terminal_production_order: true,
   safety_revision_bound_invalidation: true,
+  checked_pv_native_candidate_repair: true,
+  checked_pv_repaired_winner_same_owner_recertified: true,
+  checked_pv_failed_warm_recertification_accounting_balanced: true,
+  checked_pv_second_proof_request_order_hit_bit: true,
+  checked_pv_impossible_hit_population_fail_closed: true,
+  checked_pv_duplicate_proof_veto_fallback: true,
+  checked_pv_maximum_16_proofs_veto_fallback: true,
+  checked_pv_zero_hit_work_limit_and_unsupported_veto_fallback: true,
+  checked_pv_malformed_stale_identity_deadline_and_lost_fail_closed: true,
+  checked_pv_no_search_credit_veto_fallback: true,
+  checked_pv_black_repair_direction: true,
   checked_pv_policy_veto_without_score_forgery: true,
   all_policy_vetoes_fail_closed: true,
   exact_aspiration_widening: true,

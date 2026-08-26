@@ -227,6 +227,8 @@ def main() -> int:
             "deadline_fail_closed",
             "canonical_root_tactical_policy",
             "legacy_root_tactical_policy_rejected",
+            "checked_horizon_proof_research",
+            "checked_horizon_newest_proof_hit",
         )
     ):
         raise ValueError("root smoke evidence lacks a required real gate")

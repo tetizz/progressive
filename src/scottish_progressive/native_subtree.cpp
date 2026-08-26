@@ -1156,7 +1156,6 @@ public:
     std::uint64_t eval_entries_peak = 0;
     std::vector<ValidatedHorizonProofSet> horizon_proof_sets;
     const ValidatedHorizonProofSet* active_horizon_proof_set = nullptr;
-    std::uint64_t active_horizon_proof_hits = 0;
     std::uint16_t active_horizon_proof_hit_mask = 0;
 
     std::unordered_map<TTKey, TTEntry, TTKeyHash> tt;
@@ -1440,7 +1439,6 @@ public:
         retained_width_complete = false;
         retained_root_tactical_protection.reset();
         active_horizon_proof_set = nullptr;
-        active_horizon_proof_hits = 0;
         active_horizon_proof_hit_mask = 0;
     }
 
@@ -2088,7 +2086,6 @@ public:
         const ValidatedHorizonProofSet* proof_set
     ) noexcept {
         active_horizon_proof_set = proof_set;
-        active_horizon_proof_hits = 0;
         active_horizon_proof_hit_mask = 0;
     }
 
@@ -2111,10 +2108,10 @@ public:
         if (found == active_horizon_proof_set->proofs.end()) {
             return nullptr;
         }
-        ++active_horizon_proof_hits;
-        active_horizon_proof_hit_mask |= static_cast<std::uint16_t>(
+        const auto proof_bit = static_cast<std::uint16_t>(
             std::uint16_t{1} << found->request_index
         );
+        active_horizon_proof_hit_mask |= proof_bit;
         return &*found;
     }
 
@@ -3488,10 +3485,11 @@ SubtreeSearchSession::search_retained_root_candidate(
                 request.beta,
                 1
             );
-            const std::uint64_t horizon_proof_hits =
-                impl_->active_horizon_proof_hits;
             const std::uint16_t horizon_proof_hit_mask =
                 impl_->active_horizon_proof_hit_mask;
+            const std::uint64_t horizon_proof_hits = static_cast<std::uint64_t>(
+                std::popcount(horizon_proof_hit_mask)
+            );
             impl_->activate_horizon_proof_set(nullptr);
             if (transaction_open) {
                 result.tt_writes_rolled_back = impl_->rollback_transaction();

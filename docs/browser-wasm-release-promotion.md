@@ -5,11 +5,14 @@ combined root-session, prefix, and mate WebAssembly artifact. It copies the
 already verified bytes by digest. It does not rebuild them and it does not turn
 legacy lab output into release evidence.
 
-No current receipt is implicitly trusted. Promotion stops unless all seven
-receipts identify the same source revision, source fingerprint, kernel source
-set, module, WASM file, and two-file artifact set. The helper also hashes the
-current checkout, tracked dependency closure, compiler, artifacts, input
-receipts, generated certificates, and final browser bundle.
+No current receipt is implicitly trusted. The first stage stops unless all
+seven core receipts identify the same source revision, source fingerprint,
+kernel source set, module, WASM file, and two-file artifact set. It emits an
+immutable, non-publishable candidate for a real local Opera check. Final
+promotion additionally requires that checked-PV receipt as an eighth outer
+attestation. The helper also hashes the clean current checkout, tracked
+dependency closure, compiler, artifacts, input receipts, generated
+certificates, and final browser bundle.
 The compiler executable, version, digest, and exact canonical builder command
 are also bound; extra or conflicting compile/link flags fail promotion.
 
@@ -25,6 +28,14 @@ The input receipt schemas are:
 - `spc-mate-wasm-receipt-v2`
 - `spc-opera-root-session-cdp-receipt-v1`, containing an
   `spc-opera-root-d5-benchmark-v2` Worker receipt
+
+Those seven receipts stage the exact candidate bytes. Final validation then
+requires `spc-opera-checked-pv-horizon-receipt-v3`, captured from those staged
+bytes in local Opera. The v3 receipt binds the page and CDP Opera identities,
+the manifest and browser asset hashes, the ordinary Worker factory, raw f3 and
+b3 checked-horizon mate traces, successful same-root native repairs, balanced
+work accounting, and warm exact TT recertification. It remains explicitly
+non-publishable evidence until the promotion helper validates it.
 
 The old root differential, prefix v1, mate v1, and Opera benchmark v1 formats
 are deliberately non-promotable. They either lack exact artifact identity or
@@ -108,24 +119,57 @@ $common = @(
   '--default-seconds', '60'
 )
 
-python .\scripts\promote_browser_wasm_release.py @common --check-only
+$candidate = '.\build\browser-wasm-candidate'
+python .\scripts\promote_browser_wasm_release.py @common `
+  --stage-candidate `
+  --output $candidate
+
+# Serve a Pages candidate containing $candidate\browser-engine, then capture
+# the required local Opera receipt from those exact bytes.
+$checked = "$evidence\opera-checked-pv-horizon-v3.json"
+node .\benchmarks\capture_opera_checked_pv_horizon.mjs `
+  --endpoint http://127.0.0.1:9237 `
+  --url 'http://127.0.0.1:8898/?release=candidate' `
+  --output $checked `
+  --timeout-ms 120000
 
 python .\scripts\promote_browser_wasm_release.py @common `
+  --check-only `
+  --opera-checked-horizon-receipt $checked
+
+python .\scripts\promote_browser_wasm_release.py @common `
+  --opera-checked-horizon-receipt $checked `
   --authorized-by tetizz `
   --output .\build\browser-wasm-release
 ```
 
-The second command creates an immutable directory containing:
+The first command creates a non-publishable candidate containing the exact
+core-seven bundle. The final command rebuilds those same bytes, validates the
+local Opera receipt against them, and creates an immutable directory containing:
 
 - `browser-engine/`, the existing-builder-validated bundle;
 - `certificates/`, the prefix, root-session, and mate certificates;
-- `evidence/`, byte-for-byte copies of the seven receipts;
+- `evidence/`, byte-for-byte copies of the seven core receipts plus the local
+  Opera checked-PV receipt;
 - `release-receipt.json`, the promotion authorization, all evidence hashes,
   bundle digest, measured Opera result, memory proof, and release gates.
 
 The output path must not already exist. A failed gate leaves no promoted output.
-The Pages build must consume `browser-engine/` from this directory directly;
-recompiling the kernel after promotion invalidates the release.
+Do not publish from this temporary output. Copy the complete promoted directory
+to `release/browser-wasm` in one dedicated artifact commit whose sole parent is
+the exact `source_revision` in `release-receipt.json`. Mirror its three
+`browser-engine/` files byte-for-byte into
+`src/scottish_progressive/web/static/engine`, and update only the pinned release
+certificate test when its ID changes. That artifact commit may contain no
+other paths.
+
+Pages runs `scripts/validate_promoted_browser_wasm_release.py` before building.
+The validator recomputes the release ID and every file-set digest, validates
+all eight receipts and three certificates, revalidates the bundle against the
+parent source checkout, enforces the artifact-only Git diff, and checks the
+static mirror. Pages then replaces `_site/engine` from the validated promoted
+directory and validates the packaged bytes again. Recompiling or editing the
+kernel after promotion invalidates the release.
 
 ## Optional deep-teacher browser activation
 

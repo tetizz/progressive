@@ -566,6 +566,11 @@
     const completedDepth = Number(result?.completed_depth);
     const receipt = result?.runtime_receipt;
     const mateCache = receipt?.mate_cache;
+    const maximumHorizonProofs = identity.root_session_contract
+      ?.hard_limits?.maximum_horizon_proofs;
+    const maximumHorizonRepairs = request?.limits?.max_series * maximumHorizonProofs;
+    const maximumHorizonVetoes = request?.limits?.max_series;
+    const maximumHorizonLineRejections = maximumHorizonRepairs + maximumHorizonVetoes;
     if (
       !result
       || typeof result !== "object"
@@ -597,13 +602,26 @@
       || typeof result.root_scores_complete !== "boolean"
       || result.root_bound_coverage_complete !== true
       || result.selection_policy !== CHECKED_PV_SELECTION_POLICY
+      || !exactInteger(maximumHorizonProofs, 1, 30)
       || !exactInteger(
         result.pv_horizon_line_rejections,
         0,
-        request.limits.max_series,
+        maximumHorizonLineRejections,
       )
+      || !exactInteger(
+        result.pv_horizon_native_repairs,
+        0,
+        maximumHorizonRepairs,
+      )
+      || !exactInteger(
+        result.pv_horizon_candidate_vetoes,
+        0,
+        maximumHorizonVetoes,
+      )
+      || result.pv_horizon_native_repairs + result.pv_horizon_candidate_vetoes
+        !== result.pv_horizon_line_rejections
       || result.selection_policy_filtered
-        !== (result.pv_horizon_line_rejections > 0)
+        !== (result.pv_horizon_candidate_vetoes > 0)
       || result.selection_policy_filtered
         && (completedDepth < 3 || completedDepth % 2 !== 1)
       || result.root_bound_coverage_scope !== (
@@ -612,10 +630,14 @@
           : "all-retained-candidates"
       )
       || result.unfiltered_score_winner_selected
-        !== !result.selection_policy_filtered
+        !== (result.pv_horizon_line_rejections === 0)
       || result.stats?.coverage_complete !== true
       || result.stats?.pv_horizon_line_rejections
         !== result.pv_horizon_line_rejections
+      || result.stats?.pv_horizon_native_repairs
+        !== result.pv_horizon_native_repairs
+      || result.stats?.pv_horizon_candidate_vetoes
+        !== result.pv_horizon_candidate_vetoes
       || !receipt
       || receipt.runtime !== "browser-wasm"
       || receipt.search_mode !== "streaming-root-iteration"
@@ -640,6 +662,8 @@
       || receipt.selection_policy !== result.selection_policy
       || receipt.selection_policy_filtered !== result.selection_policy_filtered
       || receipt.pv_horizon_line_rejections !== result.pv_horizon_line_rejections
+      || receipt.pv_horizon_native_repairs !== result.pv_horizon_native_repairs
+      || receipt.pv_horizon_candidate_vetoes !== result.pv_horizon_candidate_vetoes
       || receipt.root_bound_coverage_scope !== result.root_bound_coverage_scope
       || receipt.unfiltered_score_winner_selected
         !== result.unfiltered_score_winner_selected

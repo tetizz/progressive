@@ -419,6 +419,31 @@
       && sessionConfig.mate_score === MATE_SCORE
       && sessionConfig.worker_threads === 1
       && identity?.root_session_contract?.capabilities?.aspiration_windows === true
+      && identity?.root_session_contract?.capabilities?.checked_horizon_proof_research
+        === true
+      && identity?.root_session_contract?.request_schemas?.search
+        === "spc-root-candidate-task-v1"
+      && identity?.root_session_contract?.request_schemas?.horizon_research
+        === "spc-root-horizon-research-task-v1"
+      && identity?.root_session_contract?.result_schemas?.search
+        === "spc-root-candidate-result-v1"
+      && identity?.root_session_contract?.result_schemas?.horizon_research
+        === "spc-root-horizon-research-result-v1"
+      && identity?.root_session_contract?.hard_limits?.maximum_horizon_proofs === 16
+      && identity?.root_session_contract?.hard_limits?.maximum_horizon_proof_path === 8
+      && identity?.root_session_contract?.horizon_research?.task_schema
+        === "spc-root-horizon-research-task-v1"
+      && identity?.root_session_contract?.horizon_research?.result_schema
+        === "spc-root-horizon-research-result-v1"
+      && identity?.root_session_contract?.horizon_research?.proof_schema
+        === "spc-retained-root-horizon-proof-v1"
+      && identity?.root_session_contract?.horizon_research?.purpose === "horizon-research"
+      && identity?.root_session_contract?.horizon_research?.full_window === true
+      && identity?.root_session_contract?.horizon_research?.tt_persistence === "commit"
+      && identity?.root_session_contract?.horizon_research?.hit_mask_order
+        === "request-order"
+      && identity?.root_session_contract?.horizon_research?.warm_exact_zero_hit_allowed
+        === true
       && identity?.root_session_contract?.hard_limits?.minimum_aspiration_initial_delta
         === ASPIRATION_INITIAL_DELTA
       && identity?.root_session_contract?.hard_limits?.maximum_aspiration_attempts
@@ -1053,6 +1078,7 @@
           || response.capabilities?.aspiration_windows !== true
           || response.capabilities?.selected_owner_certification !== true
           || response.capabilities?.canonical_root_tactical_policy !== true
+          || response.capabilities?.checked_horizon_proof_research !== true
           || response.capabilities?.reply_mate_safety !== false
           || response.canonical_root_tactical_policy !== ROOT_TACTICAL_POLICY
           || response.canonical_root_tactical_protection
@@ -1496,6 +1522,8 @@
         selection_policy: CHECKED_PV_SELECTION_POLICY,
         selection_policy_filtered: false,
         pv_horizon_line_rejections: 0,
+        pv_horizon_native_repairs: 0,
+        pv_horizon_candidate_vetoes: 0,
         exact_width: false,
         timed_out: false,
         work_limit_reached: false,
@@ -1511,6 +1539,8 @@
           safety_status: "terminal-mate-rescue",
           terminal_mate_rescues: 1,
           pv_horizon_line_rejections: 0,
+          pv_horizon_native_repairs: 0,
+          pv_horizon_candidate_vetoes: 0,
           mate_cache_hits: mateCacheHits,
           mate_cache_misses: mateCacheMisses,
           mate_cache_entries: this.mateProofCache.size,
@@ -1545,6 +1575,8 @@
           selection_policy: CHECKED_PV_SELECTION_POLICY,
           selection_policy_filtered: false,
           pv_horizon_line_rejections: 0,
+          pv_horizon_native_repairs: 0,
+          pv_horizon_candidate_vetoes: 0,
           terminal_mate_rescue: {
             trigger,
             status: "found",
@@ -2001,15 +2033,38 @@
                 });
                 workUsed += horizonSafety.work_used;
                 if (horizonSafety.status === "found") {
+                  const checkedMate = horizonSafety.reply_mate?.checked_prefix;
+                  const mateChild = normalizeExactBoundaryState(checkedMate?.next_state || {});
+                  if (mateChild === null) {
+                    throw new RootIterationClientError(
+                      "The checked-PV mate witness omitted its authoritative child boundary.",
+                      "browser-root-mate-proof-invalid",
+                    );
+                  }
+                  const mateReply = Object.freeze({
+                    moves: Object.freeze([...horizonSafety.reply_mate.moves]),
+                    machine_notation: horizonSafety.reply_mate.machine_notation,
+                    transposition_count: 1,
+                    child_boundary: mateChild,
+                    outcome: "checkmate",
+                    ended_by_check: true,
+                  });
                   const {
                     override_score: _discardedOverride,
                     proof_bounds: _discardedProofBounds,
+                    reply_mate: _discardedReplyMate,
                     ...evidence
                   } = horizonSafety;
                   return {
                     ...evidence,
                     status: "line-rejected",
                     work_used: workUsed,
+                    reply_mate: mateReply,
+                    horizon_proof: Object.freeze({
+                      schema: "spc-retained-root-horizon-proof-v1",
+                      rooted_path: Object.freeze([rootSeries, ...horizon.pv]),
+                      mate_reply: mateReply,
+                    }),
                     line_rejection: {
                       schema: "spc-pv-horizon-line-rejection-v1",
                       reason: "adverse-immediate-series-mate",
@@ -2112,15 +2167,28 @@
               || iteration.safety_certified !== true
               || iteration.selection_policy !== CHECKED_PV_SELECTION_POLICY
               || !exactInteger(iteration.pv_horizon_line_rejections, 0)
+              || !exactInteger(
+                iteration.pv_horizon_native_repairs,
+                0,
+                iteration.pv_horizon_line_rejections,
+              )
+              || !exactInteger(
+                iteration.pv_horizon_candidate_vetoes,
+                0,
+                iteration.pv_horizon_line_rejections,
+              )
+              || iteration.pv_horizon_native_repairs
+                + iteration.pv_horizon_candidate_vetoes
+                !== iteration.pv_horizon_line_rejections
               || iteration.selection_policy_filtered
-                !== (iteration.pv_horizon_line_rejections > 0)
+                !== (iteration.pv_horizon_candidate_vetoes > 0)
               || iteration.coverage_scope !== (
                 iteration.selection_policy_filtered
                   ? "selection-eligible-candidates"
                   : "all-retained-candidates"
               )
               || iteration.unfiltered_score_winner_selected
-                !== !iteration.selection_policy_filtered
+                !== (iteration.pv_horizon_line_rejections === 0)
               || !["exhausted", "terminal"].includes(iteration.safety_status)
             ) {
               throw new RootIterationClientError(
@@ -2223,6 +2291,8 @@
               selection_policy: iteration.selection_policy,
               selection_policy_filtered: iteration.selection_policy_filtered,
               pv_horizon_line_rejections: iteration.pv_horizon_line_rejections,
+              pv_horizon_native_repairs: iteration.pv_horizon_native_repairs,
+              pv_horizon_candidate_vetoes: iteration.pv_horizon_candidate_vetoes,
               exact_width: iteration.width_complete,
               timed_out: false,
               work_limit_reached: false,
@@ -2237,6 +2307,8 @@
                 coverage_complete: true,
                 safety_status: iteration.safety_status,
                 pv_horizon_line_rejections: iteration.pv_horizon_line_rejections,
+                pv_horizon_native_repairs: iteration.pv_horizon_native_repairs,
+                pv_horizon_candidate_vetoes: iteration.pv_horizon_candidate_vetoes,
                 mate_cache_hits: mateCacheHits,
                 mate_cache_misses: mateCacheMisses,
                 mate_cache_entries: this.mateProofCache.size,
@@ -2283,6 +2355,8 @@
                 selection_policy: iteration.selection_policy,
                 selection_policy_filtered: iteration.selection_policy_filtered,
                 pv_horizon_line_rejections: iteration.pv_horizon_line_rejections,
+                pv_horizon_native_repairs: iteration.pv_horizon_native_repairs,
+                pv_horizon_candidate_vetoes: iteration.pv_horizon_candidate_vetoes,
                 aspiration: {
                   ...aspiration,
                   owner_worker_id: aspirationOwnerId,

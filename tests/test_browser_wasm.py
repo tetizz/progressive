@@ -150,6 +150,110 @@ def _prefix_certificate(
     }
 
 
+def _checked_horizon_evidence() -> dict[str, object]:
+    def case(
+        *,
+        root_side: str,
+        root_order_key: str,
+        proof_order: list[str],
+        proof_path_lengths: list[int],
+        child_depth: int,
+        score: int,
+        prior_score: int,
+        hit_mask: int,
+        disposition: str,
+        prior_schema: str = "spc-root-candidate-result-v1",
+        hits: int = 1,
+        exact_tt_hits: int = 0,
+        candidate_sha256: str = "d050d64ee2388a82969a0953fdc1aa937455951d762ec9b7d16c3f9fee7b5c94",
+        proof_set_sha256: str = "5b7dda6a22771961e77b0bcd107f7cb14a04390886199c1e955148aa12b455bb",
+        root_pv_sha256: str | None = None,
+    ) -> dict[str, object]:
+        evidence = {
+            "root_side": root_side,
+            "root_order_key": root_order_key,
+            "request_proof_count": len(proof_order),
+            "request_proof_order": proof_order,
+            "request_proof_path_lengths": proof_path_lengths,
+            "newest_proof_anchor": proof_order[-1],
+            "child_depth": child_depth,
+            "schema": "spc-root-horizon-research-result-v1",
+            "status": "complete",
+            "bound": "exact",
+            "score": score,
+            "horizon_proofs_validated": len(proof_order),
+            "horizon_proof_hits": hits,
+            "horizon_proof_hit_mask": hit_mask,
+            "horizon_proof_set_identity_sha256": proof_set_sha256,
+            "candidate_identity_sha256": candidate_sha256,
+            "exact_tt_hits": exact_tt_hits,
+            "prior_same_root_schema": prior_schema,
+            "prior_same_root_status": "complete",
+            "prior_same_root_bound": "exact",
+            "prior_same_root_score": prior_score,
+            "prior_same_root_candidate_identity_sha256": candidate_sha256,
+            "disposition": disposition,
+        }
+        if root_pv_sha256 is not None:
+            evidence["root_pv_sha256"] = root_pv_sha256
+            evidence["prior_same_root_root_pv_sha256"] = root_pv_sha256
+        return evidence
+
+    return {
+        "schema": "spc-checked-horizon-wasm-evidence-v1",
+        "white_deep_two_proof": case(
+            root_side="white",
+            root_order_key="h4g2",
+            proof_order=["alternate", "deep"],
+            proof_path_lengths=[3, 3],
+            child_depth=2,
+            score=179,
+            prior_score=336,
+            hit_mask=0b10,
+            disposition="same-root-repaired",
+        ),
+        "white_deep_warm_exact": case(
+            root_side="white",
+            root_order_key="h4g2",
+            proof_order=["alternate", "deep"],
+            proof_path_lengths=[3, 3],
+            child_depth=2,
+            score=179,
+            prior_score=179,
+            prior_schema="spc-root-horizon-research-result-v1",
+            hits=0,
+            hit_mask=0,
+            exact_tt_hits=1,
+            disposition="warm-exact-recertified",
+            root_pv_sha256="2b391d9f78869648bbb89bf23ce4233f16ccb57ac930d0c724815226008743d4",
+        ),
+        "white_deep_reversed_order": case(
+            root_side="white",
+            root_order_key="h4g2",
+            proof_order=["deep", "alternate"],
+            proof_path_lengths=[3, 3],
+            child_depth=2,
+            score=179,
+            prior_score=336,
+            hit_mask=0b01,
+            disposition="newest-proof-not-hit",
+        ),
+        "black_parity": case(
+            root_side="black",
+            root_order_key="f7f5/b8b1",
+            proof_order=["black-mate"],
+            proof_path_lengths=[1],
+            child_depth=0,
+            score=999_998,
+            prior_score=-235,
+            hit_mask=0b1,
+            disposition="same-root-repaired",
+            candidate_sha256="0dabf1be2fd78c5065515628fe556d9b750f3623e9ba583c13984066f5cbe2a9",
+            proof_set_sha256="9dd5bade7dafab271411fe3bddfd0e8fd86c35daea56fc11629f4aae5b17c961",
+        ),
+    }
+
+
 def _root_session_certificate(
     builder,
     *,
@@ -215,6 +319,15 @@ def _root_session_certificate(
                 "aspiration_windows": True,
                 "selected_owner_certification": True,
                 "canonical_root_tactical_policy": True,
+                "checked_horizon_proof_research": True,
+            },
+            "request_schemas": {
+                "search": "spc-root-candidate-task-v1",
+                "horizon_research": "spc-root-horizon-research-task-v1",
+            },
+            "result_schemas": {
+                "search": "spc-root-candidate-result-v1",
+                "horizon_research": "spc-root-horizon-research-result-v1",
             },
             "hard_limits": {
                 "minimum_depth": 1,
@@ -240,8 +353,21 @@ def _root_session_certificate(
                 "maximum_eval_capacity": 1_048_576,
                 "minimum_weight": 25,
                 "maximum_weight": 300,
+                "maximum_horizon_proofs": 16,
+                "maximum_horizon_proof_path": 8,
+            },
+            "horizon_research": {
+                "task_schema": "spc-root-horizon-research-task-v1",
+                "result_schema": "spc-root-horizon-research-result-v1",
+                "proof_schema": "spc-retained-root-horizon-proof-v1",
+                "purpose": "horizon-research",
+                "full_window": True,
+                "tt_persistence": "commit",
+                "hit_mask_order": "request-order",
+                "warm_exact_zero_hit_allowed": True,
             },
         },
+        "checked_horizon_proof_research": _checked_horizon_evidence(),
         "geometry": {
             "desktop_workers": 8,
             "desktop_initial_full_wave": 8,
@@ -289,6 +415,8 @@ def _root_session_certificate(
             "configured_max_depth_rejected": True,
             "per_call_work_credit": True,
             "selected_owner_warm_exact_certification": True,
+            "checked_horizon_proof_research": True,
+            "checked_horizon_newest_proof_hit": True,
             "deadline_fail_closed": True,
             "work_limit_fail_closed": True,
             "browser_worker_smoke": True,
@@ -798,6 +926,80 @@ def test_bundle_builder_rejects_model_from_a_different_native_source(
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js is required for browser contract tests")
+def test_browser_adapter_validates_horizon_research_receipts(tmp_path: Path) -> None:
+    adapter = tmp_path / "wasm-kernel-adapter.mjs"
+    adapter.write_text(
+        (STATIC / "wasm-kernel-adapter.js").read_text(encoding="utf-8")
+        + "\nexport { validateHorizonResearchReceipt };\n",
+        encoding="utf-8",
+    )
+    script = r"""
+import { pathToFileURL } from "node:url";
+const api = await import(pathToFileURL(process.argv[1]));
+const base = {
+  status: "complete",
+  horizon_proof_set_identity: "spc-horizon-proof-set-v1|fixture",
+  horizon_proofs_validated: 2,
+  horizon_proof_hits: 1,
+  horizon_proof_hit_mask: 2,
+};
+const accepted = [
+  base,
+  { ...base, horizon_proof_hits: 0, horizon_proof_hit_mask: 0 },
+  {
+    ...base,
+    status: "work_limit",
+    horizon_proof_set_identity: "",
+    horizon_proofs_validated: 0,
+    horizon_proof_hits: 0,
+    horizon_proof_hit_mask: 0,
+  },
+].every((receipt) => api.validateHorizonResearchReceipt(receipt, 2) === receipt);
+const invalid = [
+  { ...base, horizon_proof_hits: 1, horizon_proof_hit_mask: 3 },
+  { ...base, horizon_proof_hits: 2, horizon_proof_hit_mask: 1 },
+  { ...base, horizon_proof_hit_mask: 4 },
+  { ...base, horizon_proof_hits: 3, horizon_proof_hit_mask: 3 },
+  { ...base, horizon_proof_hits: 1, horizon_proof_hit_mask: 0 },
+  { ...base, status: "work_limit", horizon_proof_set_identity: "" },
+  {
+    ...base,
+    status: "deadline",
+    horizon_proof_set_identity: "",
+    horizon_proofs_validated: 0,
+    horizon_proof_hits: 0,
+    horizon_proof_hit_mask: 0,
+  },
+];
+const rejected = invalid.map((receipt) => {
+  try {
+    api.validateHorizonResearchReceipt(receipt, 2);
+    return false;
+  } catch (error) {
+    return error.code === "browser-root-search-invalid";
+  }
+});
+process.stdout.write(JSON.stringify({ accepted, rejected }));
+"""
+    completed = subprocess.run(
+        [
+            str(NODE),
+            "--input-type=module",
+            "-e",
+            script,
+            str(adapter),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(completed.stdout) == {
+        "accepted": True,
+        "rejected": [True, True, True, True, True, True, True],
+    }
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is required for browser contract tests")
 def test_browser_adapter_activates_exact_model_and_falls_back_on_hash_mismatch(
     tmp_path: Path,
 ) -> None:
@@ -1144,6 +1346,121 @@ def test_root_and_mate_certificates_fail_closed_on_contract_and_identity_drift(
         )
 
     root["evidence"]["start_w32_d5_elapsed_seconds"] = 42.5
+    root["evidence"]["checked_horizon_newest_proof_hit"] = False
+    root_path.write_text(json.dumps(root), encoding="utf-8")
+    with pytest.raises(ValueError, match="missing required passing evidence"):
+        builder.build_bundle(
+            single_wasm=wasm,
+            single_module_js=module_js,
+            single_root_session_certificate_path=root_path,
+            single_mate_certificate_path=mate_path,
+            source_package=package,
+            output=tmp_path / "unproven-horizon-research",
+        )
+
+    root["evidence"]["checked_horizon_newest_proof_hit"] = True
+    root["root_session_contract"]["horizon_research"][
+        "hit_mask_order"
+    ] = "canonical-order"
+    root_path.write_text(json.dumps(root), encoding="utf-8")
+    with pytest.raises(ValueError, match="checked-horizon re-search policy"):
+        builder.build_bundle(
+            single_wasm=wasm,
+            single_module_js=module_js,
+            single_root_session_certificate_path=root_path,
+            single_mate_certificate_path=mate_path,
+            source_package=package,
+            output=tmp_path / "horizon-policy-drift",
+        )
+
+    root["root_session_contract"]["horizon_research"][
+        "hit_mask_order"
+    ] = "request-order"
+    checked_horizon = copy.deepcopy(root["checked_horizon_proof_research"])
+    root["checked_horizon_proof_research"]["white_deep_two_proof"][
+        "horizon_proof_hit_mask"
+    ] = 0b01
+    root_path.write_text(json.dumps(root), encoding="utf-8")
+    with pytest.raises(ValueError, match="exact checked-horizon evidence"):
+        builder.build_bundle(
+            single_wasm=wasm,
+            single_module_js=module_js,
+            single_root_session_certificate_path=root_path,
+            single_mate_certificate_path=mate_path,
+            source_package=package,
+            output=tmp_path / "horizon-request-order-mask-drift",
+        )
+
+    root["checked_horizon_proof_research"] = copy.deepcopy(checked_horizon)
+    root["checked_horizon_proof_research"]["white_deep_reversed_order"][
+        "horizon_proof_set_identity_sha256"
+    ] = "0" * 64
+    root_path.write_text(json.dumps(root), encoding="utf-8")
+    with pytest.raises(ValueError, match="exact checked-horizon evidence"):
+        builder.build_bundle(
+            single_wasm=wasm,
+            single_module_js=module_js,
+            single_root_session_certificate_path=root_path,
+            single_mate_certificate_path=mate_path,
+            source_package=package,
+            output=tmp_path / "horizon-set-identity-drift",
+        )
+
+    root["checked_horizon_proof_research"] = copy.deepcopy(checked_horizon)
+    for case_name in (
+        "white_deep_two_proof",
+        "white_deep_warm_exact",
+        "white_deep_reversed_order",
+    ):
+        case = root["checked_horizon_proof_research"][case_name]
+        case["candidate_identity_sha256"] = "1" * 64
+        case["prior_same_root_candidate_identity_sha256"] = "1" * 64
+        case["horizon_proof_set_identity_sha256"] = "2" * 64
+    root_path.write_text(json.dumps(root), encoding="utf-8")
+    with pytest.raises(ValueError, match="exact checked-horizon evidence"):
+        builder.build_bundle(
+            single_wasm=wasm,
+            single_module_js=module_js,
+            single_root_session_certificate_path=root_path,
+            single_mate_certificate_path=mate_path,
+            source_package=package,
+            output=tmp_path / "horizon-coordinated-identity-drift",
+        )
+
+    root["checked_horizon_proof_research"] = copy.deepcopy(checked_horizon)
+    root["checked_horizon_proof_research"]["black_parity"][
+        "candidate_identity_sha256"
+    ] = "3" * 64
+    root["checked_horizon_proof_research"]["black_parity"][
+        "prior_same_root_candidate_identity_sha256"
+    ] = "3" * 64
+    root_path.write_text(json.dumps(root), encoding="utf-8")
+    with pytest.raises(ValueError, match="exact checked-horizon evidence"):
+        builder.build_bundle(
+            single_wasm=wasm,
+            single_module_js=module_js,
+            single_root_session_certificate_path=root_path,
+            single_mate_certificate_path=mate_path,
+            source_package=package,
+            output=tmp_path / "horizon-black-identity-drift",
+        )
+
+    root["checked_horizon_proof_research"] = copy.deepcopy(checked_horizon)
+    root["checked_horizon_proof_research"]["white_deep_warm_exact"][
+        "exact_tt_hits"
+    ] = 0
+    root_path.write_text(json.dumps(root), encoding="utf-8")
+    with pytest.raises(ValueError, match="exact checked-horizon evidence"):
+        builder.build_bundle(
+            single_wasm=wasm,
+            single_module_js=module_js,
+            single_root_session_certificate_path=root_path,
+            single_mate_certificate_path=mate_path,
+            source_package=package,
+            output=tmp_path / "horizon-warm-tt-drift",
+        )
+
+    root["checked_horizon_proof_research"] = checked_horizon
     root["root_session_contract"]["hard_limits"][
         "root_tactical_protection_values"
     ] = [False, True]

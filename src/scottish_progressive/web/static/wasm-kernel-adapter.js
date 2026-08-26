@@ -5,6 +5,13 @@ const PREFIX_RESULT_SCHEMA = "spc-boundary-prefix-v1";
 const ROOT_SESSION_CERTIFICATE_SCHEMA = "spc-root-session-certificate-v1";
 const MATE_CERTIFICATE_SCHEMA = "spc-series-mate-certificate-v1";
 const ROOT_SESSION_ABI_VERSION = 2;
+const ROOT_CANDIDATE_TASK_SCHEMA = "spc-root-candidate-task-v1";
+const ROOT_CANDIDATE_RESULT_SCHEMA = "spc-root-candidate-result-v1";
+const ROOT_HORIZON_RESEARCH_TASK_SCHEMA = "spc-root-horizon-research-task-v1";
+const ROOT_HORIZON_RESEARCH_RESULT_SCHEMA = "spc-root-horizon-research-result-v1";
+const RETAINED_ROOT_HORIZON_PROOF_SCHEMA = "spc-retained-root-horizon-proof-v1";
+const MAX_RETAINED_ROOT_HORIZON_PROOFS = 16;
+const MAX_RETAINED_ROOT_HORIZON_PROOF_PATH = 8;
 const MATE_ABI_VERSION = 1;
 const ROOT_TACTICAL_POLICY = "canonical-boundary-policy-v1";
 const DEEP_TEACHER_MODEL_SCHEMA = "spc-deep-teacher-linear-value-v1";
@@ -776,6 +783,8 @@ function validateRootSessionCertificate(certificate, value, context) {
     "per_call_work_credit", "deadline_fail_closed", "work_limit_fail_closed",
     "browser_worker_smoke", "opera_worker_smoke",
     "selected_owner_warm_exact_certification",
+    "checked_horizon_proof_research",
+    "checked_horizon_newest_proof_hit",
   ];
   if (
     !certificateMatchesArtifact(certificate, value, context)
@@ -798,6 +807,26 @@ function validateRootSessionCertificate(certificate, value, context) {
     || contract.capabilities?.aspiration_windows !== true
     || contract.capabilities?.selected_owner_certification !== true
     || contract.capabilities?.canonical_root_tactical_policy !== true
+    || contract.capabilities?.checked_horizon_proof_research !== true
+    || contract.request_schemas?.search !== ROOT_CANDIDATE_TASK_SCHEMA
+    || contract.request_schemas?.horizon_research
+      !== ROOT_HORIZON_RESEARCH_TASK_SCHEMA
+    || contract.result_schemas?.search !== ROOT_CANDIDATE_RESULT_SCHEMA
+    || contract.result_schemas?.horizon_research
+      !== ROOT_HORIZON_RESEARCH_RESULT_SCHEMA
+    || contract.hard_limits?.maximum_horizon_proofs
+      !== MAX_RETAINED_ROOT_HORIZON_PROOFS
+    || contract.hard_limits?.maximum_horizon_proof_path
+      !== MAX_RETAINED_ROOT_HORIZON_PROOF_PATH
+    || contract.horizon_research?.task_schema !== ROOT_HORIZON_RESEARCH_TASK_SCHEMA
+    || contract.horizon_research?.result_schema !== ROOT_HORIZON_RESEARCH_RESULT_SCHEMA
+    || contract.horizon_research?.proof_schema
+      !== RETAINED_ROOT_HORIZON_PROOF_SCHEMA
+    || contract.horizon_research?.purpose !== "horizon-research"
+    || contract.horizon_research?.full_window !== true
+    || contract.horizon_research?.tt_persistence !== "commit"
+    || contract.horizon_research?.hit_mask_order !== "request-order"
+    || contract.horizon_research?.warm_exact_zero_hit_allowed !== true
     || contract.hard_limits?.minimum_aspiration_initial_delta
       !== MIN_ASPIRATION_INITIAL_DELTA
     || contract.hard_limits?.maximum_aspiration_attempts
@@ -1411,6 +1440,115 @@ function rootIdentityEnvelope(identity) {
     ruleset_version: identity.ruleset_version,
     profile_id: identity.profile_id,
   };
+}
+
+function bitCount16(value) {
+  let remaining = value;
+  let count = 0;
+  while (remaining !== 0) {
+    count += remaining & 1;
+    remaining >>>= 1;
+  }
+  return count;
+}
+
+function validateHorizonProofRequest(request, identity) {
+  const proofs = request?.horizon_proofs;
+  const contract = identity?.root_session_contract;
+  if (
+    contract?.capabilities?.checked_horizon_proof_research !== true
+    || contract?.request_schemas?.search !== ROOT_CANDIDATE_TASK_SCHEMA
+    || contract?.request_schemas?.horizon_research !== ROOT_HORIZON_RESEARCH_TASK_SCHEMA
+    || contract?.result_schemas?.search !== ROOT_CANDIDATE_RESULT_SCHEMA
+    || contract?.result_schemas?.horizon_research !== ROOT_HORIZON_RESEARCH_RESULT_SCHEMA
+    || contract?.hard_limits?.maximum_horizon_proofs
+      !== MAX_RETAINED_ROOT_HORIZON_PROOFS
+    || contract?.hard_limits?.maximum_horizon_proof_path
+      !== MAX_RETAINED_ROOT_HORIZON_PROOF_PATH
+    || contract?.horizon_research?.task_schema !== ROOT_HORIZON_RESEARCH_TASK_SCHEMA
+    || contract?.horizon_research?.result_schema !== ROOT_HORIZON_RESEARCH_RESULT_SCHEMA
+    || contract?.horizon_research?.proof_schema !== RETAINED_ROOT_HORIZON_PROOF_SCHEMA
+    || contract?.horizon_research?.purpose !== "horizon-research"
+    || contract?.horizon_research?.full_window !== true
+    || contract?.horizon_research?.tt_persistence !== "commit"
+    || contract?.horizon_research?.hit_mask_order !== "request-order"
+    || contract?.horizon_research?.warm_exact_zero_hit_allowed !== true
+    || request?.purpose !== "horizon-research"
+    || request?.tt_persistence !== "commit"
+    || request?.alpha !== -2 * request?.mate_score
+    || request?.beta !== 2 * request?.mate_score
+    || !Array.isArray(proofs)
+    || proofs.length < 1
+    || proofs.length > MAX_RETAINED_ROOT_HORIZON_PROOFS
+    || proofs.some((proof) => (
+      !proof
+      || typeof proof !== "object"
+      || Array.isArray(proof)
+      || !sameJson(Object.keys(proof).sort(), ["mate_reply", "rooted_path", "schema"])
+      || proof.schema !== RETAINED_ROOT_HORIZON_PROOF_SCHEMA
+      || !Array.isArray(proof.rooted_path)
+      || proof.rooted_path.length < 1
+      || proof.rooted_path.length > MAX_RETAINED_ROOT_HORIZON_PROOF_PATH
+      || !proof.mate_reply
+      || typeof proof.mate_reply !== "object"
+      || Array.isArray(proof.mate_reply)
+      || proof.mate_reply.outcome !== "checkmate"
+      || proof.mate_reply.ended_by_check !== true
+      || proof.mate_reply.transposition_count !== 1
+    ))
+  ) {
+    throw new KernelAdapterError(
+      "The checked-horizon request differs from its certified exact schema.",
+      "browser-root-request-invalid",
+    );
+  }
+}
+
+function validateHorizonResearchReceipt(raw, proofCount) {
+  const maskLimit = 2 ** proofCount;
+  const fallbackStatus = ["work_limit", "unsupported"].includes(raw?.status);
+  if (
+    !Number.isSafeInteger(proofCount)
+    || proofCount < 1
+    || proofCount > MAX_RETAINED_ROOT_HORIZON_PROOFS
+    || typeof raw?.horizon_proof_set_identity !== "string"
+    || !Number.isSafeInteger(raw.horizon_proofs_validated)
+    || raw.horizon_proofs_validated < 0
+    || raw.horizon_proofs_validated > MAX_RETAINED_ROOT_HORIZON_PROOFS
+    || !Number.isSafeInteger(raw.horizon_proof_hits)
+    || raw.horizon_proof_hits < 0
+    || raw.horizon_proof_hits > raw.horizon_proofs_validated
+    || !Number.isSafeInteger(raw.horizon_proof_hit_mask)
+    || raw.horizon_proof_hit_mask < 0
+    || raw.horizon_proof_hit_mask > 0xffff
+    || raw.horizon_proof_hit_mask >= maskLimit
+      || bitCount16(raw.horizon_proof_hit_mask) !== raw.horizon_proof_hits
+    || (
+      fallbackStatus
+      && (
+        raw.horizon_proof_set_identity !== ""
+        || raw.horizon_proofs_validated !== 0
+        || raw.horizon_proof_hits !== 0
+        || raw.horizon_proof_hit_mask !== 0
+      )
+    )
+    || (
+      !fallbackStatus
+      && (
+        raw.status !== "complete"
+        || !raw.horizon_proof_set_identity
+        || raw.horizon_proofs_validated !== proofCount
+        || (raw.horizon_proof_hits === 0)
+          !== (raw.horizon_proof_hit_mask === 0)
+      )
+    )
+  ) {
+    throw new KernelAdapterError(
+      "The native checked-horizon re-search returned an invalid proof receipt.",
+      "browser-root-search-invalid",
+    );
+  }
+  return raw;
 }
 
 function nativeRootRequest(request, identity, schema, fields) {
@@ -2071,6 +2209,7 @@ export async function loadCertifiedBrowserKernel({
         || raw.capabilities?.aspiration_windows !== true
         || raw.capabilities?.selected_owner_certification !== true
         || raw.capabilities?.canonical_root_tactical_policy !== true
+        || raw.capabilities?.checked_horizon_proof_research !== true
         || raw.capabilities?.reply_mate_safety !== false
         || expectedCanonicalProtection === null
         || !canonicalRootPolicyMatches(raw, expectedCanonicalProtection)
@@ -2210,16 +2349,25 @@ export async function loadCertifiedBrowserKernel({
           "browser-root-session-mismatch",
         );
       }
+      const horizonResearch = request?.schema === ROOT_HORIZON_RESEARCH_TASK_SCHEMA;
+      if (horizonResearch) validateHorizonProofRequest(request, identity);
+      const taskSchema = horizonResearch
+        ? ROOT_HORIZON_RESEARCH_TASK_SCHEMA
+        : ROOT_CANDIDATE_TASK_SCHEMA;
+      const resultSchema = horizonResearch
+        ? ROOT_HORIZON_RESEARCH_RESULT_SCHEMA
+        : ROOT_CANDIDATE_RESULT_SCHEMA;
       const nativeRequest = nativeRootRequest(
         clampRootRemainingTime(request),
         identity,
-        "spc-root-candidate-task-v1",
+        taskSchema,
         [
           "alpha", "beta", "call_work_credit", "candidate_identity",
           "child_depth", "deadline_monotonic_ms", "enumeration_identity",
           "external_work", "incumbent_epoch", "mate_score", "mover",
           "native_work_before", "order_index", "order_key", "purpose",
           "remaining_time_ms", "safety_revision", "task_id", "tt_persistence",
+          ...(horizonResearch ? ["horizon_proofs"] : []),
         ],
       );
       const pointer = withJsonArgument(
@@ -2242,8 +2390,11 @@ export async function loadCertifiedBrowserKernel({
         raw,
         nativeRequest,
         identity,
-        "spc-root-candidate-result-v1",
+        resultSchema,
       );
+      if (horizonResearch) {
+        validateHorizonResearchReceipt(raw, nativeRequest.horizon_proofs.length);
+      }
       return {
         ...raw,
         ...rootMemoryReceipt(),

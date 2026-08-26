@@ -229,6 +229,9 @@ def test_browser_engine_assets_are_fail_closed_and_receipted() -> None:
         encoding="utf-8"
     )
     adapter = (STATIC / "wasm-kernel-adapter.js").read_text(encoding="utf-8")
+    coordinator = (STATIC / "root-iteration-coordinator.js").read_text(
+        encoding="utf-8"
+    )
 
     assert app.index("browserRuntime = await preflightCertifiedBrowserRuntime") < app.index(
         'requestJson("/api/health"'
@@ -288,11 +291,18 @@ def test_browser_engine_assets_are_fail_closed_and_receipted() -> None:
     assert "const pooledPrefix = this.rootRunner?.hasLivePool?.() === true" in client
     assert 'root_search_mode: "streaming-root-iteration"' in root_client
     assert "root_bound_coverage_complete: iteration.coverage_complete" in root_client
+    assert 'schema: "spc-retained-root-horizon-proof-v1"' in root_client
+    assert "pv_horizon_native_repairs" in root_client
+    assert "pv_horizon_candidate_vetoes" in root_client
     assert "deadline_epoch_ms: deadlineEpochMs" in root_client
     assert "safetyWork" in root_client
     assert "mateProofCacheKey" in root_client
     assert "playLimits.safety_reserve_positions" in root_client
     assert '"_spc_root_session_search_json"' in adapter
+    assert '"spc-root-horizon-research-task-v1"' in adapter
+    assert '"spc-root-horizon-research-result-v1"' in adapter
+    assert "bitCount16(raw.horizon_proof_hit_mask) !== raw.horizon_proof_hits" in adapter
+    assert "checked_horizon_newest_proof_hit" in adapter
     assert '"_spc_series_mate_search_json"' in adapter
     assert "clampRootRemainingTime" in adapter
     assert "deadline_epoch_ms" in adapter
@@ -309,6 +319,11 @@ def test_browser_engine_assets_are_fail_closed_and_receipted() -> None:
     assert "progressive_ep: cursor.ep_targets" in app
     assert "promoted_hex: cursor.promoted_hex" in app
     assert "chess960: cursor.chess960 === true" in app
+    assert "MAX_RETAINED_ROOT_HORIZON_PROOFS = 16" in coordinator
+    assert "newestProofBit" in coordinator
+    assert coordinator == (ROOT / "root-iteration-coordinator.js").read_text(
+        encoding="utf-8"
+    )
     assert (STATIC / "browser-prefix-contract.js").read_text(encoding="utf-8") == (
         ROOT / "browser-prefix-contract.js"
     ).read_text(encoding="utf-8")

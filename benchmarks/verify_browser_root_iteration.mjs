@@ -138,10 +138,33 @@ const IDENTITY = Object.freeze({
   root_session_contract: Object.freeze({
     schema: "spc-root-session-contract-v1",
     abi_version: 2,
-    capabilities: Object.freeze({ aspiration_windows: true }),
+    capabilities: Object.freeze({
+      aspiration_windows: true,
+      checked_horizon_proof_research: true,
+    }),
+    request_schemas: Object.freeze({
+      search: "spc-root-candidate-task-v1",
+      horizon_research: "spc-root-horizon-research-task-v1",
+    }),
+    result_schemas: Object.freeze({
+      search: "spc-root-candidate-result-v1",
+      horizon_research: "spc-root-horizon-research-result-v1",
+    }),
     hard_limits: Object.freeze({
       minimum_aspiration_initial_delta: 2_048,
       maximum_aspiration_attempts: 4,
+      maximum_horizon_proofs: 16,
+      maximum_horizon_proof_path: 8,
+    }),
+    horizon_research: Object.freeze({
+      task_schema: "spc-root-horizon-research-task-v1",
+      result_schema: "spc-root-horizon-research-result-v1",
+      proof_schema: "spc-retained-root-horizon-proof-v1",
+      purpose: "horizon-research",
+      full_window: true,
+      tt_persistence: "commit",
+      hit_mask_order: "request-order",
+      warm_exact_zero_hit_allowed: true,
     }),
   }),
   root_geometry: GEOMETRY,
@@ -457,6 +480,7 @@ class MockWorld {
           aspiration_windows: true,
           selected_owner_certification: true,
           canonical_root_tactical_policy: true,
+          checked_horizon_proof_research: true,
           reply_mate_safety: false,
         },
         product_publishable: false,
@@ -585,8 +609,14 @@ class MockWorld {
       };
     }
     if (type === "root-search") {
-      strictKeys(payload, SEARCH_KEYS);
-      assert.equal(payload.schema, "spc-root-candidate-task-v1");
+      const horizonResearch = payload.schema === "spc-root-horizon-research-task-v1";
+      strictKeys(payload, horizonResearch ? [...SEARCH_KEYS, "horizon_proofs"] : SEARCH_KEYS);
+      assert.equal(
+        payload.schema,
+        horizonResearch
+          ? "spc-root-horizon-research-task-v1"
+          : "spc-root-candidate-task-v1",
+      );
       this.deadlineEpochs.push(payload.deadline_epoch_ms);
       this.searchDispatches.push({ worker: worker.name, task: { ...payload } });
       if (
@@ -603,7 +633,9 @@ class MockWorld {
       if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
       const index = Number(payload.candidate_identity.slice(1));
       const white = worker.boundary.series % 2 === 1;
-      const score = white ? 100 - index * 10 : -100 + index * 10;
+      const score = horizonResearch
+        ? white ? 80 : -80
+        : white ? 100 - index * 10 : -100 + index * 10;
       const bound = payload.purpose === "scout" || payload.purpose === "aspiration"
         ? score <= payload.alpha ? "upper" : score >= payload.beta ? "lower" : "exact"
         : "exact";
@@ -614,7 +646,7 @@ class MockWorld {
           ? 4
           : this.favorableHorizonFirst && payload.child_depth === 3 ? 3 : 0
         : 0;
-      if (pvLength > 0) {
+      if (pvLength > 0 && !horizonResearch) {
         let start = worker.manifest.candidates[0].root_series.child_boundary;
         childPv = Array.from({ length: pvLength }, (_, pvIndex) => {
           const series = start.series;
@@ -637,7 +669,9 @@ class MockWorld {
         });
       }
       return {
-        schema: "spc-root-candidate-result-v1",
+        schema: horizonResearch
+          ? "spc-root-horizon-research-result-v1"
+          : "spc-root-candidate-result-v1",
         abi_version: 2,
         request_id: payload.request_id,
         iteration_id: payload.iteration_id,
@@ -663,6 +697,12 @@ class MockWorld {
         safety_certified: false,
         memory_bytes: MEMORY.initial_bytes,
         memory_peak_bytes: MEMORY.initial_bytes,
+        ...(horizonResearch ? {
+          horizon_proof_set_identity: "spc-horizon-proof-set-v1|mock",
+          horizon_proofs_validated: payload.horizon_proofs.length,
+          horizon_proof_hits: 1,
+          horizon_proof_hit_mask: 2 ** (payload.horizon_proofs.length - 1),
+        } : {}),
       };
     }
     if (type === "prefix") {
@@ -1357,8 +1397,32 @@ async function testCheckedPvHorizonMateRejectsTheProvisionalWinner() {
   assert(horizonProof, "the selected checked D5 horizon must receive an exact S6 mate probe");
   assert.equal(horizonProof.call_work_credit, 262_144);
   assert.equal(horizonProof.override_score, -CONFIG.mate_score + 2);
-  assert.equal(result.selection_policy_filtered, true);
+  assert.equal(result.selection_policy_filtered, false);
   assert.equal(result.pv_horizon_line_rejections, 1);
+  assert.equal(result.pv_horizon_native_repairs, 1);
+  assert.equal(result.pv_horizon_candidate_vetoes, 0);
+  const maximumHorizonProofs = IDENTITY.root_session_contract
+    .hard_limits.maximum_horizon_proofs;
+  const aboveRetainedWidth = structuredClone(result);
+  const validHighRejectionCount = requestPayload.max_series + 1;
+  aboveRetainedWidth.pv_horizon_line_rejections = validHighRejectionCount;
+  aboveRetainedWidth.pv_horizon_native_repairs = validHighRejectionCount;
+  aboveRetainedWidth.stats.pv_horizon_line_rejections = validHighRejectionCount;
+  aboveRetainedWidth.stats.pv_horizon_native_repairs = validHighRejectionCount;
+  aboveRetainedWidth.runtime_receipt.pv_horizon_line_rejections = validHighRejectionCount;
+  aboveRetainedWidth.runtime_receipt.pv_horizon_native_repairs = validHighRejectionCount;
+  browserClientApi.validatePublishedRootAnalysis(
+    aboveRetainedWidth,
+    requestPayload,
+    client.identity,
+  );
+  const horizonResearch = world.searchDispatches.find(({ task }) => (
+    task.schema === "spc-root-horizon-research-task-v1"
+  ));
+  assert(horizonResearch, "the exact checked-horizon witness must return to its warm owner");
+  assert.equal(horizonResearch.task.horizon_proofs.length, 1);
+  assert.equal(horizonResearch.task.horizon_proofs[0].schema,
+    "spc-retained-root-horizon-proof-v1");
   const assertFilteredMutationRejected = (label, mutate) => {
     const candidate = structuredClone(result);
     mutate(candidate);
@@ -1383,18 +1447,30 @@ async function testCheckedPvHorizonMateRejectsTheProvisionalWinner() {
       candidate.runtime_receipt.pv_horizon_line_rejections = 1.5;
     }],
     ["aligned excessive rejection count", (candidate) => {
-      const excessive = requestPayload.max_series + 1;
+      const maximumRepairs = requestPayload.max_series * maximumHorizonProofs;
+      const maximumVetoes = requestPayload.max_series;
+      const excessive = maximumRepairs + maximumVetoes + 1;
       candidate.pv_horizon_line_rejections = excessive;
+      candidate.pv_horizon_native_repairs = maximumRepairs;
+      candidate.pv_horizon_candidate_vetoes = maximumVetoes + 1;
       candidate.stats.pv_horizon_line_rejections = excessive;
+      candidate.stats.pv_horizon_native_repairs = maximumRepairs;
+      candidate.stats.pv_horizon_candidate_vetoes = maximumVetoes + 1;
       candidate.runtime_receipt.pv_horizon_line_rejections = excessive;
+      candidate.runtime_receipt.pv_horizon_native_repairs = maximumRepairs;
+      candidate.runtime_receipt.pv_horizon_candidate_vetoes = maximumVetoes + 1;
+      candidate.selection_policy_filtered = true;
+      candidate.runtime_receipt.selection_policy_filtered = true;
+      candidate.root_bound_coverage_scope = "selection-eligible-candidates";
+      candidate.runtime_receipt.root_bound_coverage_scope = "selection-eligible-candidates";
     }],
-    ["aligned false selection filter", (candidate) => {
-      candidate.selection_policy_filtered = false;
-      candidate.runtime_receipt.selection_policy_filtered = false;
+    ["aligned forged candidate veto", (candidate) => {
+      candidate.selection_policy_filtered = true;
+      candidate.runtime_receipt.selection_policy_filtered = true;
     }],
-    ["aligned all-candidate coverage scope", (candidate) => {
-      candidate.root_bound_coverage_scope = "all-retained-candidates";
-      candidate.runtime_receipt.root_bound_coverage_scope = "all-retained-candidates";
+    ["aligned filtered coverage scope", (candidate) => {
+      candidate.root_bound_coverage_scope = "selection-eligible-candidates";
+      candidate.runtime_receipt.root_bound_coverage_scope = "selection-eligible-candidates";
     }],
     ["aligned unfiltered winner", (candidate) => {
       candidate.unfiltered_score_winner_selected = true;
@@ -1403,17 +1479,30 @@ async function testCheckedPvHorizonMateRejectsTheProvisionalWinner() {
     ["statistics rejection-count drift", (candidate) => {
       candidate.stats.pv_horizon_line_rejections = 0;
     }],
+    ["statistics repair-count drift", (candidate) => {
+      candidate.stats.pv_horizon_native_repairs = 0;
+    }],
+    ["aligned unresolved line rejection", (candidate) => {
+      candidate.pv_horizon_native_repairs = 0;
+      candidate.stats.pv_horizon_native_repairs = 0;
+      candidate.runtime_receipt.pv_horizon_native_repairs = 0;
+    }],
+    ["aligned forged veto count", (candidate) => {
+      candidate.pv_horizon_candidate_vetoes = 1;
+      candidate.stats.pv_horizon_candidate_vetoes = 1;
+      candidate.runtime_receipt.pv_horizon_candidate_vetoes = 1;
+    }],
     ["receipt selection-policy drift", (candidate) => {
       candidate.runtime_receipt.selection_policy = "untrusted-policy-v0";
     }],
     ["receipt selection-filter drift", (candidate) => {
-      candidate.runtime_receipt.selection_policy_filtered = false;
+      candidate.runtime_receipt.selection_policy_filtered = true;
     }],
     ["receipt rejection-count drift", (candidate) => {
       candidate.runtime_receipt.pv_horizon_line_rejections = 0;
     }],
     ["receipt coverage-scope drift", (candidate) => {
-      candidate.runtime_receipt.root_bound_coverage_scope = "all-retained-candidates";
+      candidate.runtime_receipt.root_bound_coverage_scope = "selection-eligible-candidates";
     }],
     ["receipt unfiltered-winner drift", (candidate) => {
       candidate.runtime_receipt.unfiltered_score_winner_selected = true;
@@ -1770,6 +1859,8 @@ process.stdout.write(JSON.stringify({
   preflight_heap_released: true,
   white_black_mate_mapping: true,
   checked_pv_horizon_mate_rejected: true,
+  checked_pv_horizon_native_repaired: true,
+  checked_pv_horizon_dedicated_schema: true,
   checked_pv_horizon_root_chain_fail_closed: true,
   stale_horizon_safety_reply_fail_closed: true,
   favorable_checked_horizon_not_vetoed: true,

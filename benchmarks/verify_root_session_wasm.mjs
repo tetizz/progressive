@@ -10,6 +10,9 @@ const START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const START_BLACK_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1";
 const LIVE_S5 = "rn1q1bnr/ppp1pkpp/5p2/8/3Pp3/2NB4/PPP2PPP/R1BbK1NR w KQ - 0 7";
 const BARE_KINGS = "8/8/8/8/8/2k5/8/K7 w - - 0 1";
+const CHECKED_HORIZON_FEN = "6k1/8/8/q7/8/8/5PPP/1R4K1 w - - 0 1";
+const DEEP_HORIZON_FEN = "2k5/4pr2/8/8/3K3N/7R/2qP2b1/1B6 w - - 0 1";
+const BLACK_HORIZON_FEN = "1r4k1/5ppp/8/8/Q7/8/8/6K1 b - - 0 1";
 const HIGH_SERIES_FEN = "8/8/8/8/1K6/8/1k6/8 b - - 100 110";
 const HIGH_SERIES_ROOT = [
   "b2a1", "a1a2", "a2a1", "a1a2", "a2a1", "a1b2",
@@ -246,6 +249,181 @@ function exactCandidateResult(result) {
 }
 
 
+function proofBoundary(fen, series, quietSeries) {
+  return {
+    fen,
+    series,
+    quiet_series: quietSeries,
+    ep_targets: [],
+    promoted_hex: ZERO_PROMOTED,
+    chess960: false,
+  };
+}
+
+
+function proofSeries(
+  moves,
+  fen,
+  series,
+  quietSeries,
+  { transpositionCount = 1, outcome = null, endedByCheck = false } = {},
+) {
+  return {
+    moves,
+    machine_notation: moves.join("/"),
+    transposition_count: transpositionCount,
+    child_boundary: proofBoundary(fen, series, quietSeries),
+    outcome,
+    ended_by_check: endedByCheck,
+  };
+}
+
+
+function deriveHorizonDisposition(result, priorSameRoot, requestProofCount) {
+  const newestProofBit = 2 ** (requestProofCount - 1);
+  if (
+    result.schema !== "spc-root-horizon-research-result-v1"
+    || result.status !== "complete"
+    || result.bound !== "exact"
+    || result.horizon_proofs_validated !== requestProofCount
+  ) {
+    return "invalid-horizon-result";
+  }
+  if ((result.horizon_proof_hit_mask & newestProofBit) === 0) {
+    return "newest-proof-not-hit";
+  }
+  if (
+    priorSameRoot.schema !== "spc-root-candidate-result-v1"
+    || priorSameRoot.status !== "complete"
+    || priorSameRoot.bound !== "exact"
+    || priorSameRoot.candidate_identity !== result.candidate_identity
+    || priorSameRoot.order_key !== result.order_key
+    || priorSameRoot.score === result.score
+  ) {
+    return "newest-proof-hit-without-same-root-repair";
+  }
+  return "same-root-repaired";
+}
+
+
+function horizonProofAnchor(proof) {
+  const mate = proof?.mate_reply?.machine_notation;
+  if (mate === "c7d7/d7e6/e6d6/d6d4") {
+    return "deep";
+  }
+  if (mate === "c8b8/e7e5/f7b7/a1d4") {
+    return "alternate";
+  }
+  if (mate === "g1f2/a4e8") {
+    return "black-mate";
+  }
+  throw new Error(`unknown checked-horizon proof anchor: ${String(mate)}`);
+}
+
+
+function horizonCaseEvidence({
+  result,
+  priorSameRoot,
+  proofs,
+}) {
+  const proofOrder = proofs.map(horizonProofAnchor);
+  const proofPathLengths = proofs.map((proof) => proof.rooted_path.length);
+  assert.equal(result.child_depth, proofPathLengths[0] - 1);
+  assert.equal(proofOrder.length, proofPathLengths.length);
+  assert.equal(priorSameRoot.candidate_identity, result.candidate_identity);
+  assert.equal(priorSameRoot.order_key, result.order_key);
+  const disposition = deriveHorizonDisposition(
+    result,
+    priorSameRoot,
+    proofOrder.length,
+  );
+  return {
+    root_side: result.mover,
+    root_order_key: result.order_key,
+    request_proof_count: proofOrder.length,
+    request_proof_order: proofOrder,
+    request_proof_path_lengths: proofPathLengths,
+    newest_proof_anchor: proofOrder.at(-1),
+    child_depth: result.child_depth,
+    schema: result.schema,
+    status: result.status,
+    bound: result.bound,
+    score: result.score,
+    horizon_proofs_validated: result.horizon_proofs_validated,
+    horizon_proof_hits: result.horizon_proof_hits,
+    horizon_proof_hit_mask: result.horizon_proof_hit_mask,
+    horizon_proof_set_identity_sha256: sha256(result.horizon_proof_set_identity),
+    candidate_identity_sha256: sha256(result.candidate_identity),
+    exact_tt_hits: result.work.call_stats.tt_hits,
+    prior_same_root_schema: priorSameRoot.schema,
+    prior_same_root_status: priorSameRoot.status,
+    prior_same_root_bound: priorSameRoot.bound,
+    prior_same_root_score: priorSameRoot.score,
+    prior_same_root_candidate_identity_sha256: sha256(
+      priorSameRoot.candidate_identity,
+    ),
+    disposition,
+  };
+}
+
+
+function warmHorizonCaseEvidence({ result, repaired, proofs }) {
+  assert.equal(result.schema, "spc-root-horizon-research-result-v1");
+  assert.equal(result.status, "complete");
+  assert.equal(result.bound, "exact");
+  assert.equal(result.score, repaired.score);
+  assert.deepEqual(result.root_series, repaired.root_series);
+  assert.deepEqual(result.child_pv, repaired.child_pv);
+  assert.equal(result.horizon_proof_set_identity, repaired.horizon_proof_set_identity);
+  assert.equal(result.candidate_identity, repaired.candidate_identity);
+  assert.equal(result.horizon_proofs_validated, proofs.length);
+  assert.equal(result.horizon_proof_hits, 0);
+  assert.equal(result.horizon_proof_hit_mask, 0);
+  assert.ok(Number.isSafeInteger(result.work.call_stats.tt_hits));
+  assert.ok(result.work.call_stats.tt_hits > 0);
+  const proofOrder = proofs.map(horizonProofAnchor);
+  const proofPathLengths = proofs.map((proof) => proof.rooted_path.length);
+  const rootPvSha256 = sha256(JSON.stringify({
+    root_series: result.root_series,
+    child_pv: result.child_pv,
+  }));
+  const priorRootPvSha256 = sha256(JSON.stringify({
+    root_series: repaired.root_series,
+    child_pv: repaired.child_pv,
+  }));
+  assert.equal(rootPvSha256, priorRootPvSha256);
+  return {
+    root_side: result.mover,
+    root_order_key: result.order_key,
+    request_proof_count: proofs.length,
+    request_proof_order: proofOrder,
+    request_proof_path_lengths: proofPathLengths,
+    newest_proof_anchor: proofOrder.at(-1),
+    child_depth: result.child_depth,
+    schema: result.schema,
+    status: result.status,
+    bound: result.bound,
+    score: result.score,
+    horizon_proofs_validated: result.horizon_proofs_validated,
+    horizon_proof_hits: result.horizon_proof_hits,
+    horizon_proof_hit_mask: result.horizon_proof_hit_mask,
+    horizon_proof_set_identity_sha256: sha256(result.horizon_proof_set_identity),
+    candidate_identity_sha256: sha256(result.candidate_identity),
+    exact_tt_hits: result.work.call_stats.tt_hits,
+    prior_same_root_schema: repaired.schema,
+    prior_same_root_status: repaired.status,
+    prior_same_root_bound: repaired.bound,
+    prior_same_root_score: repaired.score,
+    prior_same_root_candidate_identity_sha256: sha256(
+      repaired.candidate_identity,
+    ),
+    root_pv_sha256: rootPvSha256,
+    prior_same_root_root_pv_sha256: priorRootPvSha256,
+    disposition: "warm-exact-recertified",
+  };
+}
+
+
 async function main() {
   const args = parseArguments(process.argv.slice(2));
   const [moduleBytes, wasmBytes, buildReceiptText] = await Promise.all([
@@ -285,6 +463,29 @@ async function main() {
   assert.equal(contract.capabilities.aspiration_windows, true);
   assert.equal(contract.capabilities.selected_owner_certification, true);
   assert.equal(contract.capabilities.canonical_root_tactical_policy, true);
+  assert.equal(contract.capabilities.checked_horizon_proof_research, true);
+  assert.equal(contract.request_schemas.search, "spc-root-candidate-task-v1");
+  assert.equal(
+    contract.request_schemas.horizon_research,
+    "spc-root-horizon-research-task-v1",
+  );
+  assert.equal(contract.result_schemas.search, "spc-root-candidate-result-v1");
+  assert.equal(
+    contract.result_schemas.horizon_research,
+    "spc-root-horizon-research-result-v1",
+  );
+  assert.equal(contract.hard_limits.maximum_horizon_proofs, 16);
+  assert.equal(contract.hard_limits.maximum_horizon_proof_path, 8);
+  assert.deepEqual(contract.horizon_research, {
+    task_schema: "spc-root-horizon-research-task-v1",
+    result_schema: "spc-root-horizon-research-result-v1",
+    proof_schema: "spc-retained-root-horizon-proof-v1",
+    purpose: "horizon-research",
+    full_window: true,
+    tt_persistence: "commit",
+    hit_mask_order: "request-order",
+    warm_exact_zero_hit_allowed: true,
+  });
   assert.equal(contract.hard_limits.root_tactical_policy, "canonical-boundary-policy-v1");
   assert.deepEqual(contract.hard_limits.root_tactical_protection_values, [false]);
   assert.equal(contract.hard_limits.minimum_aspiration_initial_delta, 2_048);
@@ -613,6 +814,7 @@ async function main() {
   assert.equal(created.value.canonical_root_tactical_protection, false);
   assert.equal(created.value.capabilities.aspiration_windows, true);
   assert.equal(created.value.capabilities.canonical_root_tactical_policy, true);
+  assert.equal(created.value.capabilities.checked_horizon_proof_research, true);
   const primarySession = created.value.session_id;
   const deadline = Math.ceil(performance.now() + args.timeoutMs);
   const credit = args.maxWork;
@@ -660,6 +862,14 @@ async function main() {
   timings.searchD1Ms = depthOne.elapsedMs;
   assert.equal(depthOne.value.status, "complete");
   assert.notEqual(depthOne.value.bound, "unknown");
+  for (const key of [
+    "horizon_proof_set_identity",
+    "horizon_proofs_validated",
+    "horizon_proof_hits",
+    "horizon_proof_hit_mask",
+  ]) {
+    assert.equal(key in depthOne.value, false, `ordinary candidate v1 leaked ${key}`);
+  }
   nativeWork = assertWorkReceipt(depthOne.value, nativeWork, credit);
   assertCumulative(enumerated.value.work, depthOne.value.work);
 
@@ -799,6 +1009,450 @@ async function main() {
   assert.equal(overDepth.error_code, "candidate-task-invalid");
   assert.equal(Module._spc_root_session_destroy(primarySession), 1);
   assert.equal(Module._spc_root_session_destroy(primarySession), 0);
+
+  const horizonCreated = bridge.rootJson(
+    "_spc_root_session_create_json",
+    null,
+    {
+      ...createRequest("create-horizon", "checked-horizon-research", 1),
+      boundary: {
+        ...boundary,
+        fen: CHECKED_HORIZON_FEN,
+      },
+    },
+  );
+  assert.equal(horizonCreated.status, "ready", JSON.stringify(horizonCreated));
+  const horizonSession = horizonCreated.session_id;
+  const horizonDeadline = Math.ceil(performance.now() + args.timeoutMs);
+  const horizonEnumerated = bridge.rootJson(
+    "_spc_root_session_enumerate_json",
+    horizonSession,
+    {
+      ...route(
+        "spc-root-session-enumerate-v1",
+        "enumerate-horizon",
+        "checked-horizon-research",
+        1,
+        0,
+        credit,
+        horizonDeadline,
+      ),
+      preferred_series: ["b1b8"],
+    },
+  );
+  assert.equal(horizonEnumerated.status, "complete", JSON.stringify(horizonEnumerated));
+  const horizonCandidate = horizonEnumerated.candidates.find(
+    (item) => item.order_key === "b1b8",
+  );
+  assert(horizonCandidate, "preferred checked root candidate was not retained");
+  assert.equal(horizonCandidate.root_series.ended_by_check, true);
+  const horizonProof = {
+    schema: "spc-retained-root-horizon-proof-v1",
+    rooted_path: [horizonCandidate.root_series],
+    mate_reply: {
+      moves: ["g8f7", "a5e1"],
+      machine_notation: "g8f7/a5e1",
+      transposition_count: 1,
+      child_boundary: {
+        fen: "1R6/5k2/8/8/8/8/5PPP/4q1K1 w - - 3 3",
+        board_fen: "1R6/5k2/8/8/8/8/5PPP/4q1K1 w - - 3 3",
+        series: 3,
+        series_number: 3,
+        side_to_move: "white",
+        quiet_series: 2,
+        quiet_draw_pending: false,
+        ep_targets: [],
+        progressive_ep: [],
+        promoted_hex: ZERO_PROMOTED,
+        chess960: false,
+      },
+      outcome: "checkmate",
+      ended_by_check: true,
+    },
+  };
+  const horizonSearchRequest = (requestId, nativeWork) => ({
+    ...searchRequest(
+      requestId,
+      "checked-horizon-research",
+      1,
+      nativeWork,
+      credit,
+      horizonDeadline,
+      horizonEnumerated,
+      horizonCandidate,
+      0,
+      "horizon-research",
+    ),
+    schema: "spc-root-horizon-research-task-v1",
+    horizon_proofs: [horizonProof],
+  });
+  const horizonRepair = bridge.rootJson(
+    "_spc_root_session_search_json",
+    horizonSession,
+    horizonSearchRequest(
+      "search-horizon-repair",
+      horizonEnumerated.work.native_work_after,
+    ),
+  );
+  assert.equal(horizonRepair.schema, "spc-root-horizon-research-result-v1");
+  assert.equal(horizonRepair.status, "complete", JSON.stringify(horizonRepair));
+  assert.equal(horizonRepair.bound, "exact");
+  assert.equal(horizonRepair.score, -MATE_SCORE + 2);
+  assert.equal(horizonRepair.horizon_proofs_validated, 1);
+  assert.equal(horizonRepair.horizon_proof_hits, 1);
+  assert.equal(horizonRepair.horizon_proof_hit_mask, 1);
+  assert.match(horizonRepair.horizon_proof_set_identity, /^spc-horizon-proof-set-v1\|/);
+  assert.equal(Module._spc_root_session_destroy(horizonSession), 1);
+
+  const deepProofFor = (rootSeries) => ({
+    schema: "spc-retained-root-horizon-proof-v1",
+    rooted_path: [
+      rootSeries,
+      proofSeries(
+        ["c2c7", "e7e5"],
+        "2k5/2q2r2/8/4p3/3K4/7R/3P2N1/1B6 w - - 0 3",
+        3,
+        0,
+        { endedByCheck: true },
+      ),
+      proofSeries(
+        ["d4e4", "b1a2", "a2e6"],
+        "2k5/2q2r2/4B3/4p3/4K3/7R/3P2N1/8 b - - 3 3",
+        4,
+        1,
+        { endedByCheck: true },
+      ),
+    ],
+    mate_reply: proofSeries(
+      ["c7d7", "d7e6", "e6d6", "d6d4"],
+      "2k5/5r2/8/4p3/3qK3/7R/3P2N1/8 w - - 2 7",
+      5,
+      0,
+      { outcome: "checkmate", endedByCheck: true },
+    ),
+  });
+  const alternateDeepProofFor = (rootSeries) => ({
+    schema: "spc-retained-root-horizon-proof-v1",
+    rooted_path: [
+      rootSeries,
+      proofSeries(
+        ["c2a2", "a2a1"],
+        "2k5/4pr2/8/8/3K4/7R/3P2N1/qB6 w - - 2 3",
+        3,
+        1,
+        { endedByCheck: true },
+      ),
+      proofSeries(
+        ["d4c4", "b1c2", "c2f5"],
+        "2k5/4pr2/8/5B2/2K5/7R/3P2N1/q7 b - - 5 3",
+        4,
+        2,
+        { transpositionCount: 9, endedByCheck: true },
+      ),
+    ],
+    mate_reply: proofSeries(
+      ["c8b8", "e7e5", "f7b7", "a1d4"],
+      "1k6/1r6/8/4pB2/2Kq4/7R/3P2N1/8 w - - 2 7",
+      5,
+      0,
+      { outcome: "checkmate", endedByCheck: true },
+    ),
+  });
+  const prepareDeepHorizonSession = (label) => {
+    const iterationId = `checked-horizon-${label}`;
+    const createdDeep = bridge.rootJson(
+      "_spc_root_session_create_json",
+      null,
+      {
+        ...createRequest(`create-${label}`, iterationId, 1),
+        boundary: {
+          ...boundary,
+          fen: DEEP_HORIZON_FEN,
+        },
+        config: {
+          ...config,
+          max_depth: 3,
+        },
+      },
+    );
+    assert.equal(createdDeep.status, "ready", JSON.stringify(createdDeep));
+    const deadlineDeep = Math.ceil(performance.now() + args.timeoutMs);
+    const enumerationDeep = bridge.rootJson(
+      "_spc_root_session_enumerate_json",
+      createdDeep.session_id,
+      {
+        ...route(
+          "spc-root-session-enumerate-v1",
+          `enumerate-${label}`,
+          iterationId,
+          1,
+          0,
+          credit,
+          deadlineDeep,
+        ),
+        preferred_series: ["h4g2"],
+      },
+    );
+    assert.equal(enumerationDeep.status, "complete", JSON.stringify(enumerationDeep));
+    const candidateDeep = enumerationDeep.candidates.find(
+      (item) => item.order_key === "h4g2",
+    );
+    assert(candidateDeep, "preferred deep checked-horizon candidate was not retained");
+    const baselineDeep = bridge.rootJson(
+      "_spc_root_session_search_json",
+      createdDeep.session_id,
+      searchRequest(
+        `baseline-${label}`,
+        iterationId,
+        1,
+        enumerationDeep.work.native_work_after,
+        credit,
+        deadlineDeep,
+        enumerationDeep,
+        candidateDeep,
+        2,
+      ),
+    );
+    assert.equal(baselineDeep.schema, "spc-root-candidate-result-v1");
+    assert.equal(baselineDeep.status, "complete", JSON.stringify(baselineDeep));
+    assert.equal(baselineDeep.bound, "exact");
+    assert.equal(baselineDeep.score, 336);
+    assert.deepEqual(
+      [baselineDeep.root_series, ...baselineDeep.child_pv].map(
+        (item) => item.machine_notation,
+      ),
+      ["h4g2", "c2c7/e7e5", "d4e4/b1a2/a2e6"],
+    );
+    return {
+      sessionId: createdDeep.session_id,
+      iterationId,
+      deadline: deadlineDeep,
+      enumeration: enumerationDeep,
+      candidate: candidateDeep,
+      baseline: baselineDeep,
+      deepProof: deepProofFor(candidateDeep.root_series),
+      alternateProof: alternateDeepProofFor(candidateDeep.root_series),
+    };
+  };
+  const searchDeepHorizon = (
+    prepared,
+    requestId,
+    proofs,
+    nativeWork = prepared.baseline.work.native_work_after,
+  ) => bridge.rootJson(
+    "_spc_root_session_search_json",
+    prepared.sessionId,
+    {
+      ...searchRequest(
+        requestId,
+        prepared.iterationId,
+        1,
+        nativeWork,
+        credit,
+        prepared.deadline,
+        prepared.enumeration,
+        prepared.candidate,
+        2,
+        "horizon-research",
+      ),
+      schema: "spc-root-horizon-research-task-v1",
+      horizon_proofs: proofs,
+    },
+  );
+
+  const deepNewest = prepareDeepHorizonSession("deep-newest");
+  const deepNewestProofs = [deepNewest.alternateProof, deepNewest.deepProof];
+  const deepNewestRepair = searchDeepHorizon(
+    deepNewest,
+    "search-deep-newest",
+    deepNewestProofs,
+  );
+  assert.equal(deepNewestRepair.status, "complete", JSON.stringify(deepNewestRepair));
+  assert.equal(deepNewestRepair.bound, "exact");
+  assert.equal(deepNewestRepair.score, 179);
+  assert.equal(deepNewestRepair.horizon_proofs_validated, 2);
+  assert.equal(deepNewestRepair.horizon_proof_hits, 1);
+  assert.equal(deepNewestRepair.horizon_proof_hit_mask, 0b10);
+  assert.deepEqual(
+    [deepNewestRepair.root_series, ...deepNewestRepair.child_pv].map(
+      (item) => item.machine_notation,
+    ),
+    ["h4g2", "c2c7/e7e5", "d4d3/d3e2/h3h8"],
+  );
+  const whiteDeepTwoProof = horizonCaseEvidence({
+    result: deepNewestRepair,
+    priorSameRoot: deepNewest.baseline,
+    proofs: deepNewestProofs,
+  });
+  assert.equal(whiteDeepTwoProof.disposition, "same-root-repaired");
+  const deepWarmExactResult = searchDeepHorizon(
+    deepNewest,
+    "search-deep-warm-exact",
+    deepNewestProofs,
+    deepNewestRepair.work.native_work_after,
+  );
+  const whiteDeepWarmExact = warmHorizonCaseEvidence({
+    result: deepWarmExactResult,
+    repaired: deepNewestRepair,
+    proofs: deepNewestProofs,
+  });
+  assert.equal(whiteDeepWarmExact.disposition, "warm-exact-recertified");
+  assert.equal(Module._spc_root_session_destroy(deepNewest.sessionId), 1);
+
+  const deepReversed = prepareDeepHorizonSession("deep-reversed");
+  const deepReversedProofs = [deepReversed.deepProof, deepReversed.alternateProof];
+  const deepReversedResult = searchDeepHorizon(
+    deepReversed,
+    "search-deep-reversed",
+    deepReversedProofs,
+  );
+  assert.equal(deepReversedResult.status, "complete", JSON.stringify(deepReversedResult));
+  assert.equal(deepReversedResult.bound, "exact");
+  assert.equal(deepReversedResult.score, 179);
+  assert.equal(deepReversedResult.horizon_proofs_validated, 2);
+  assert.equal(deepReversedResult.horizon_proof_hits, 1);
+  assert.equal(deepReversedResult.horizon_proof_hit_mask, 0b01);
+  assert.equal(
+    deepReversedResult.horizon_proof_set_identity,
+    deepNewestRepair.horizon_proof_set_identity,
+  );
+  const whiteDeepReversedOrder = horizonCaseEvidence({
+    result: deepReversedResult,
+    priorSameRoot: deepReversed.baseline,
+    proofs: deepReversedProofs,
+  });
+  assert.equal(whiteDeepReversedOrder.disposition, "newest-proof-not-hit");
+  assert.equal(Module._spc_root_session_destroy(deepReversed.sessionId), 1);
+
+  const blackIterationId = "checked-horizon-black-parity";
+  const blackCreated = bridge.rootJson(
+    "_spc_root_session_create_json",
+    null,
+    {
+      ...createRequest("create-horizon-black", blackIterationId, 1),
+      boundary: {
+        ...boundary,
+        fen: BLACK_HORIZON_FEN,
+        series: 2,
+      },
+      config: {
+        ...config,
+        max_depth: 1,
+      },
+    },
+  );
+  assert.equal(blackCreated.status, "ready", JSON.stringify(blackCreated));
+  const blackDeadline = Math.ceil(performance.now() + args.timeoutMs);
+  const blackEnumerated = bridge.rootJson(
+    "_spc_root_session_enumerate_json",
+    blackCreated.session_id,
+    {
+      ...route(
+        "spc-root-session-enumerate-v1",
+        "enumerate-horizon-black",
+        blackIterationId,
+        1,
+        0,
+        credit,
+        blackDeadline,
+      ),
+      preferred_series: ["f7f5", "b8b1"],
+    },
+  );
+  assert.equal(blackEnumerated.status, "complete", JSON.stringify(blackEnumerated));
+  const blackCandidate = blackEnumerated.candidates.find(
+    (item) => item.order_key === "f7f5/b8b1",
+  );
+  assert(blackCandidate, "preferred Black checked-horizon candidate was not retained");
+  const blackBaseline = bridge.rootJson(
+    "_spc_root_session_search_json",
+    blackCreated.session_id,
+    searchRequest(
+      "baseline-horizon-black",
+      blackIterationId,
+      1,
+      blackEnumerated.work.native_work_after,
+      credit,
+      blackDeadline,
+      blackEnumerated,
+      blackCandidate,
+      0,
+    ),
+  );
+  assert.equal(blackBaseline.schema, "spc-root-candidate-result-v1");
+  assert.equal(blackBaseline.status, "complete", JSON.stringify(blackBaseline));
+  assert.equal(blackBaseline.bound, "exact");
+  assert.equal(blackBaseline.score, -235);
+  const blackProof = {
+    schema: "spc-retained-root-horizon-proof-v1",
+    rooted_path: [blackCandidate.root_series],
+    mate_reply: proofSeries(
+      ["g1f2", "a4e8"],
+      "4Q1k1/6pp/8/5p2/8/8/5K2/1r6 b - - 3 3",
+      4,
+      1,
+      { outcome: "checkmate", endedByCheck: true },
+    ),
+  };
+  const blackRepair = bridge.rootJson(
+    "_spc_root_session_search_json",
+    blackCreated.session_id,
+    {
+      ...searchRequest(
+        "search-horizon-black",
+        blackIterationId,
+        1,
+        blackBaseline.work.native_work_after,
+        credit,
+        blackDeadline,
+        blackEnumerated,
+        blackCandidate,
+        0,
+        "horizon-research",
+      ),
+      schema: "spc-root-horizon-research-task-v1",
+      horizon_proofs: [blackProof],
+    },
+  );
+  assert.equal(blackRepair.status, "complete", JSON.stringify(blackRepair));
+  assert.equal(blackRepair.bound, "exact");
+  assert.equal(blackRepair.score, MATE_SCORE - 2);
+  assert.deepEqual(blackRepair.proof_bounds, [1, 1]);
+  assert.equal(blackRepair.horizon_proofs_validated, 1);
+  assert.equal(blackRepair.horizon_proof_hits, 1);
+  assert.equal(blackRepair.horizon_proof_hit_mask, 0b1);
+  const blackParity = horizonCaseEvidence({
+    result: blackRepair,
+    priorSameRoot: blackBaseline,
+    proofs: [blackProof],
+  });
+  assert.equal(blackParity.disposition, "same-root-repaired");
+  assert.equal(Module._spc_root_session_destroy(blackCreated.session_id), 1);
+
+  const checkedHorizonProofResearch = {
+    schema: "spc-checked-horizon-wasm-evidence-v1",
+    white_deep_two_proof: whiteDeepTwoProof,
+    white_deep_warm_exact: whiteDeepWarmExact,
+    white_deep_reversed_order: whiteDeepReversedOrder,
+    black_parity: blackParity,
+  };
+  const checkedHorizonProofResearchGate =
+    whiteDeepTwoProof.disposition === "same-root-repaired"
+    && whiteDeepTwoProof.horizon_proof_hit_mask === 0b10
+    && whiteDeepReversedOrder.disposition === "newest-proof-not-hit"
+    && whiteDeepReversedOrder.horizon_proof_hit_mask === 0b01
+    && whiteDeepWarmExact.disposition === "warm-exact-recertified"
+    && whiteDeepWarmExact.horizon_proof_hits === 0
+    && whiteDeepWarmExact.horizon_proof_hit_mask === 0
+    && whiteDeepWarmExact.exact_tt_hits > 0
+    && whiteDeepWarmExact.horizon_proof_set_identity_sha256
+      === whiteDeepTwoProof.horizon_proof_set_identity_sha256
+    && whiteDeepReversedOrder.horizon_proof_set_identity_sha256
+      === whiteDeepTwoProof.horizon_proof_set_identity_sha256
+    && blackParity.disposition === "same-root-repaired"
+    && blackParity.root_side === "black"
+    && blackParity.horizon_proof_hit_mask === 0b1;
+  assert.equal(checkedHorizonProofResearchGate, true);
 
   const legacyPolicy = bridge.rootJson(
     "_spc_root_session_create_json",
@@ -1208,6 +1862,11 @@ async function main() {
         aspirationFailSoft.white.memory_peak_bytes,
         aspirationFailSoft.black.memory_peak_bytes,
         importedDepthTwo.value.memory_peak_bytes,
+        horizonRepair.memory_peak_bytes,
+        deepNewestRepair.memory_peak_bytes,
+        deepWarmExactResult.memory_peak_bytes,
+        deepReversedResult.memory_peak_bytes,
+        blackRepair.memory_peak_bytes,
         timedOut.memory_peak_bytes,
         highSeriesSearched.value.memory_peak_bytes,
         highSeriesImported.value.memory_peak_bytes,
@@ -1223,6 +1882,8 @@ async function main() {
       aspiration_fail_soft_window: true,
       aspiration_fail_high_low_white_black: true,
       selected_owner_warm_exact_certification: true,
+      checked_horizon_proof_research: checkedHorizonProofResearchGate,
+      checked_horizon_newest_proof_hit: checkedHorizonProofResearchGate,
       cumulative_work_and_cache_receipts: true,
       exact_manifest_import: true,
       configured_max_depth_rejected: true,
@@ -1247,6 +1908,10 @@ async function main() {
       aspiration: exactCandidateResult(aspiration.value),
       aspiration_fail_soft: aspirationFailSoft,
       selected_certification: exactCandidateResult(selectedCertification.value),
+      horizon_repair: exactCandidateResult(horizonRepair),
+      horizon_warm_exact: exactCandidateResult(deepWarmExactResult),
+      horizon_proof_set_identity_sha256:
+        whiteDeepWarmExact.horizon_proof_set_identity_sha256,
       imported_d2: exactCandidateResult(importedDepthTwo.value),
       native_work_after: nativeWork,
       imported_native_work_after: importedWork,
@@ -1256,6 +1921,7 @@ async function main() {
       high_series_import_native_work_after: highSeriesImportNativeWork,
       high_series_unsafe_import_error: unsafeHighSeriesImport.error_code,
     },
+    checked_horizon_proof_research: checkedHorizonProofResearch,
     mate_receipts: {
       found: mateFound.value,
       exhausted: mateExhausted,
