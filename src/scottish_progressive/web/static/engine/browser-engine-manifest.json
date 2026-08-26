@@ -2,14 +2,14 @@
   "abi_version": 1,
   "contract_version": 1,
   "schema": "spc-browser-wasm-manifest-v1",
-  "source_fingerprint": "c725b0166d87f66c",
+  "source_fingerprint": "a71198a160691211",
   "variants": {
     "single": {
-      "kernel_sha256": "38288edf94be9cec357ecb920f8bbafa43af5e02568183ca4fab58cac0c2d004",
+      "kernel_sha256": "bd537ba0570dc0cc1a563776164ed5b4a82a4621a5a6a06ae555aaddec92eb84",
       "mate_certificate": {
         "abi_version": 1,
         "allocator": "dlmalloc",
-        "certificate_id": "spc-mate-07dee1c268c2bb5c",
+        "certificate_id": "spc-mate-c0adc3593c732044",
         "contract_version": 1,
         "engine": {
           "engine_version": "spc-0.9.0",
@@ -52,7 +52,7 @@
           "_malloc",
           "_free"
         ],
-        "kernel_sha256": "38288edf94be9cec357ecb920f8bbafa43af5e02568183ca4fab58cac0c2d004",
+        "kernel_sha256": "bd537ba0570dc0cc1a563776164ed5b4a82a4621a5a6a06ae555aaddec92eb84",
         "mate_capability_certified": true,
         "memory": {
           "estimated_peak_bytes": 134217728,
@@ -60,7 +60,7 @@
           "initial_bytes": 67108864,
           "maximum_bytes": 134217728
         },
-        "module_js_sha256": "d9754e7c66e04617fb1db9704b96bf1a634206aad22e9bb07afd009979499460",
+        "module_js_sha256": "5858e17f744758965f8c7c3de32cf8272f263b7e50f20593546e4d18d5eb9fa6",
         "product_publishable": false,
         "reply_mate_safety": true,
         "runtime_requirements": {
@@ -72,17 +72,17 @@
         },
         "runtime_variant": "single",
         "schema": "spc-series-mate-certificate-v1",
-        "source_fingerprint": "c725b0166d87f66c",
+        "source_fingerprint": "a71198a160691211",
         "status": "certified",
         "support_files": [],
         "thread_count": 1,
-        "wasm_sha256": "25a2a89518dfb67793deb72df20cc4c491e43ea4c9558d1a458aa215a95901f6",
+        "wasm_sha256": "4b109615fe0d2a0bf05d01c56c801de099eae5a0cb68ca0d36d8c1f2956bd336",
         "wasm_simd": false
       },
       "module_js": "spc-engine.js",
-      "module_js_sha256": "d9754e7c66e04617fb1db9704b96bf1a634206aad22e9bb07afd009979499460",
+      "module_js_sha256": "5858e17f744758965f8c7c3de32cf8272f263b7e50f20593546e4d18d5eb9fa6",
       "prefix_certificate": {
-        "certificate_id": "spc-prefix-2ed04c703bb5c943",
+        "certificate_id": "spc-prefix-8e527cc494a13ba3",
         "contract_version": 1,
         "engine": {
           "engine_version": "spc-0.9.0",
@@ -101,7 +101,7 @@
           "initial_bytes": 67108864,
           "maximum_bytes": 134217728
         },
-        "module_js_sha256": "d9754e7c66e04617fb1db9704b96bf1a634206aad22e9bb07afd009979499460",
+        "module_js_sha256": "5858e17f744758965f8c7c3de32cf8272f263b7e50f20593546e4d18d5eb9fa6",
         "prefix_contract": {
           "abi_version": 1,
           "chess960": false,
@@ -121,16 +121,16 @@
           "schema": "spc-boundary-prefix-contract-v1"
         },
         "runtime_variant": "single",
-        "source_fingerprint": "c725b0166d87f66c",
+        "source_fingerprint": "a71198a160691211",
         "status": "certified",
         "support_files": [],
         "thread_count": 1,
-        "wasm_sha256": "25a2a89518dfb67793deb72df20cc4c491e43ea4c9558d1a458aa215a95901f6"
+        "wasm_sha256": "4b109615fe0d2a0bf05d01c56c801de099eae5a0cb68ca0d36d8c1f2956bd336"
       },
       "root_session_certificate": {
         "abi_version": 2,
         "allocator": "dlmalloc",
-        "certificate_id": "spc-root-session-a7ee2880fae4203f",
+        "certificate_id": "spc-root-session-13e6c43a588813a2",
         "contract_version": 1,
         "engine": {
           "engine_version": "spc-0.9.0",
@@ -156,7 +156,7 @@
           "persistent_d1_d2_session": true,
           "selected_owner_warm_exact_certification": true,
           "start_w32_d5_completed_depth": 5,
-          "start_w32_d5_elapsed_seconds": 29.941699999988078,
+          "start_w32_d5_elapsed_seconds": 33.567,
           "start_w32_d5_width": 32,
           "work_limit_fail_closed": true
         },
@@ -212,14 +212,14 @@
           },
           "supported_lower_geometries": []
         },
-        "kernel_sha256": "38288edf94be9cec357ecb920f8bbafa43af5e02568183ca4fab58cac0c2d004",
+        "kernel_sha256": "bd537ba0570dc0cc1a563776164ed5b4a82a4621a5a6a06ae555aaddec92eb84",
         "memory": {
           "estimated_peak_bytes": 134217728,
           "growth_enabled": true,
           "initial_bytes": 67108864,
           "maximum_bytes": 134217728
         },
-        "module_js_sha256": "d9754e7c66e04617fb1db9704b96bf1a634206aad22e9bb07afd009979499460",
+        "module_js_sha256": "5858e17f744758965f8c7c3de32cf8272f263b7e50f20593546e4d18d5eb9fa6",
         "product_publishable": false,
         "reply_mate_safety": false,
         "root_session_certified": true,
@@ -229,6 +229,7 @@
             "aspiration_windows": true,
             "call_work_credit": true,
             "canonical_root_tactical_policy": true,
+            "deep_teacher_value_model": true,
             "enumerate": true,
             "hard_memory_limit": true,
             "import": true,
@@ -245,6 +246,22 @@
           },
           "hard_limits": {
             "chess960": false,
+            "deep_teacher_value_model": {
+              "feature_counts": [
+                7,
+                14,
+                19,
+                38,
+                44,
+                47
+              ],
+              "fixed_point_scale": 1000000000,
+              "mate_score": 1000000,
+              "optional": true,
+              "schema": "spc-deep-teacher-match-overlay-v1",
+              "score_policy": "symmetric-half-away-from-zero-divide-by-1000000000-then-clamp-below-mate-v1",
+              "work_policy": "charge-reach-plus-direct-and-two-move-legal-variants-v1"
+            },
             "external_cache_weight_lte_series_cache_capacity": true,
             "maximum_aspiration_attempts": 4,
             "maximum_depth": 8,
@@ -333,17 +350,17 @@
         },
         "runtime_variant": "single",
         "schema": "spc-root-session-certificate-v1",
-        "source_fingerprint": "c725b0166d87f66c",
+        "source_fingerprint": "a71198a160691211",
         "status": "certified",
         "support_files": [],
         "thread_count": 1,
-        "wasm_sha256": "25a2a89518dfb67793deb72df20cc4c491e43ea4c9558d1a458aa215a95901f6",
+        "wasm_sha256": "4b109615fe0d2a0bf05d01c56c801de099eae5a0cb68ca0d36d8c1f2956bd336",
         "wasm_simd": false
       },
       "support_files": [],
       "thread_count": 1,
       "wasm": "spc-root-session.wasm",
-      "wasm_sha256": "25a2a89518dfb67793deb72df20cc4c491e43ea4c9558d1a458aa215a95901f6"
+      "wasm_sha256": "4b109615fe0d2a0bf05d01c56c801de099eae5a0cb68ca0d36d8c1f2956bd336"
     }
   }
 }

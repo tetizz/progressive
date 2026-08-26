@@ -202,14 +202,15 @@ def _browser_receipt(*, scenario: str = "initial", mode: str = "faster") -> dict
     }
 
 
-def test_certified_baseline_rejects_stale_checked_in_browser_assets() -> None:
+def test_certified_baseline_accepts_current_checked_in_browser_assets() -> None:
     from scottish_progressive.model import ENGINE_SOURCE_FINGERPRINT
 
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    assert manifest["source_fingerprint"] != ENGINE_SOURCE_FINGERPRINT
+    assert manifest["source_fingerprint"] == ENGINE_SOURCE_FINGERPRINT
 
-    with pytest.raises(GateError, match="stale.*source_fingerprint"):
-        certified_baseline(MANIFEST)
+    baseline = certified_baseline(MANIFEST)
+    assert baseline["source_fingerprint"] == ENGINE_SOURCE_FINGERPRINT
+    assert baseline["certificate_id"] == "spc-root-session-13e6c43a588813a2"
 
 
 def test_browser_receipt_normalizes_real_engine_metrics_and_identity(
@@ -236,7 +237,7 @@ def test_browser_receipt_normalizes_real_engine_metrics_and_identity(
     assert sample["evaluation"]["score_white_heuristic_points"] == 617
     assert sample["timeout_reason"] is None
     assert sample["artifact"]["certificate_id"] == (
-        "spc-root-session-a7ee2880fae4203f"
+        "spc-root-session-13e6c43a588813a2"
     )
     assert sample["artifact"]["source_revision"] == "a" * 40
 

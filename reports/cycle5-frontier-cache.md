@@ -52,16 +52,20 @@ Black-after-`e4` anchor. It was removed rather than merged.
 - Cold wheel packaging passed after regenerating all three opening-report pairs
   for the candidate fingerprint. Their chess payloads are unchanged; only
   identity and timing metadata differ.
-- A current-source WASM lab build passed dependency closure, root-session smoke,
+- A clean-source WASM build passed dependency closure, root-session smoke,
   native/WASM root differential, prefix parity, browser prefix contract, and
   mate parity. The S7 staged mate stayed identical while work fell from 48,777
   to 45,694 (6.32%).
+- Real Opera GX certification completed W32 D5 with the same selected series,
+  score, proof bounds, full PV, and all 20 rival bounds in three schedules:
+  warm wave 8 in 33.567 seconds, warm wave 4 in 36.988 seconds, and cold D5 in
+  32.947 seconds. The seven-receipt release promotion passed and produced the
+  tracked website bundle for fingerprint `a71198a160691211`.
 
 ## Limits of this checkpoint
 
 This is a modest exact-cache optimization, not a Stockfish-level result. It
 does not demonstrate depth 5 under ten seconds: Faster remains depth 3 at five
-seconds in these anchors, and the previous Strong deadline completed depth 4.
-The current WASM bytes are a lab artifact only and must be rebuilt from the
-clean committed revision and pass the real Opera cold/warm D1-D5 certification
-before the website bundle can be promoted.
+seconds in the native anchors. The certified eight-Worker browser path reaches
+depth 5 in about 33-37 seconds, which is a real completion improvement but is
+still well outside the sub-10 target.
