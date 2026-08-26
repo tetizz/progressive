@@ -210,7 +210,7 @@ def test_certified_baseline_accepts_current_checked_in_browser_assets() -> None:
 
     baseline = certified_baseline(MANIFEST)
     assert baseline["source_fingerprint"] == ENGINE_SOURCE_FINGERPRINT
-    assert baseline["certificate_id"] == "spc-root-session-5f603e5f10ce6b81"
+    assert baseline["certificate_id"] == "spc-root-session-c766ee5d1fdb7806"
 
 
 def test_browser_receipt_normalizes_real_engine_metrics_and_identity(
@@ -237,7 +237,7 @@ def test_browser_receipt_normalizes_real_engine_metrics_and_identity(
     assert sample["evaluation"]["score_white_heuristic_points"] == 617
     assert sample["timeout_reason"] is None
     assert sample["artifact"]["certificate_id"] == (
-        "spc-root-session-5f603e5f10ce6b81"
+        "spc-root-session-c766ee5d1fdb7806"
     )
     assert sample["artifact"]["source_revision"] == "a" * 40
 

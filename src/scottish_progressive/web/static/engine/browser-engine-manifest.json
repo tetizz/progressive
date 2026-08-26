@@ -2,14 +2,14 @@
   "abi_version": 1,
   "contract_version": 1,
   "schema": "spc-browser-wasm-manifest-v1",
-  "source_fingerprint": "102906f5c8651305",
+  "source_fingerprint": "e685c5a994c5d145",
   "variants": {
     "single": {
-      "kernel_sha256": "f1ea95aad551ee520324497025e10719431e673bc300b09414104f69650088e3",
+      "kernel_sha256": "162a2db76c136d8ecfbd0fd6969c7e3685a4bb87ccbebf6b70b7e7eb6239bd88",
       "mate_certificate": {
         "abi_version": 1,
         "allocator": "dlmalloc",
-        "certificate_id": "spc-mate-b335d6effde48a90",
+        "certificate_id": "spc-mate-8099db3587a4aa31",
         "contract_version": 1,
         "engine": {
           "engine_version": "spc-0.9.0",
@@ -52,7 +52,7 @@
           "_malloc",
           "_free"
         ],
-        "kernel_sha256": "f1ea95aad551ee520324497025e10719431e673bc300b09414104f69650088e3",
+        "kernel_sha256": "162a2db76c136d8ecfbd0fd6969c7e3685a4bb87ccbebf6b70b7e7eb6239bd88",
         "mate_capability_certified": true,
         "memory": {
           "estimated_peak_bytes": 134217728,
@@ -60,7 +60,7 @@
           "initial_bytes": 67108864,
           "maximum_bytes": 134217728
         },
-        "module_js_sha256": "5858e17f744758965f8c7c3de32cf8272f263b7e50f20593546e4d18d5eb9fa6",
+        "module_js_sha256": "392b8b668df9832d4a110b089124f7a68448ce3c9356100e484d6049c020fd14",
         "product_publishable": false,
         "reply_mate_safety": true,
         "runtime_requirements": {
@@ -72,17 +72,17 @@
         },
         "runtime_variant": "single",
         "schema": "spc-series-mate-certificate-v1",
-        "source_fingerprint": "102906f5c8651305",
+        "source_fingerprint": "e685c5a994c5d145",
         "status": "certified",
         "support_files": [],
         "thread_count": 1,
-        "wasm_sha256": "26ae7db3c96db46921ceb8f7c2acbc0f3a8f8a60a06b0595a71b5634ff299711",
+        "wasm_sha256": "8ae6d2337b7a3ea18ab6ade4f5dfd9508ca28efc73b4f631a561faff6dba3478",
         "wasm_simd": false
       },
       "module_js": "spc-engine.js",
-      "module_js_sha256": "5858e17f744758965f8c7c3de32cf8272f263b7e50f20593546e4d18d5eb9fa6",
+      "module_js_sha256": "392b8b668df9832d4a110b089124f7a68448ce3c9356100e484d6049c020fd14",
       "prefix_certificate": {
-        "certificate_id": "spc-prefix-52ec6301a141b4b5",
+        "certificate_id": "spc-prefix-e26fc571a4a1be9d",
         "contract_version": 1,
         "engine": {
           "engine_version": "spc-0.9.0",
@@ -101,7 +101,7 @@
           "initial_bytes": 67108864,
           "maximum_bytes": 134217728
         },
-        "module_js_sha256": "5858e17f744758965f8c7c3de32cf8272f263b7e50f20593546e4d18d5eb9fa6",
+        "module_js_sha256": "392b8b668df9832d4a110b089124f7a68448ce3c9356100e484d6049c020fd14",
         "prefix_contract": {
           "abi_version": 1,
           "chess960": false,
@@ -121,16 +121,16 @@
           "schema": "spc-boundary-prefix-contract-v1"
         },
         "runtime_variant": "single",
-        "source_fingerprint": "102906f5c8651305",
+        "source_fingerprint": "e685c5a994c5d145",
         "status": "certified",
         "support_files": [],
         "thread_count": 1,
-        "wasm_sha256": "26ae7db3c96db46921ceb8f7c2acbc0f3a8f8a60a06b0595a71b5634ff299711"
+        "wasm_sha256": "8ae6d2337b7a3ea18ab6ade4f5dfd9508ca28efc73b4f631a561faff6dba3478"
       },
       "root_session_certificate": {
         "abi_version": 2,
         "allocator": "dlmalloc",
-        "certificate_id": "spc-root-session-5f603e5f10ce6b81",
+        "certificate_id": "spc-root-session-c766ee5d1fdb7806",
         "contract_version": 1,
         "engine": {
           "engine_version": "spc-0.9.0",
@@ -156,7 +156,7 @@
           "persistent_d1_d2_session": true,
           "selected_owner_warm_exact_certification": true,
           "start_w32_d5_completed_depth": 5,
-          "start_w32_d5_elapsed_seconds": 33.14260000002384,
+          "start_w32_d5_elapsed_seconds": 33.95040000009537,
           "start_w32_d5_width": 32,
           "work_limit_fail_closed": true
         },
@@ -212,14 +212,14 @@
           },
           "supported_lower_geometries": []
         },
-        "kernel_sha256": "f1ea95aad551ee520324497025e10719431e673bc300b09414104f69650088e3",
+        "kernel_sha256": "162a2db76c136d8ecfbd0fd6969c7e3685a4bb87ccbebf6b70b7e7eb6239bd88",
         "memory": {
           "estimated_peak_bytes": 134217728,
           "growth_enabled": true,
           "initial_bytes": 67108864,
           "maximum_bytes": 134217728
         },
-        "module_js_sha256": "5858e17f744758965f8c7c3de32cf8272f263b7e50f20593546e4d18d5eb9fa6",
+        "module_js_sha256": "392b8b668df9832d4a110b089124f7a68448ce3c9356100e484d6049c020fd14",
         "product_publishable": false,
         "reply_mate_safety": false,
         "root_session_certified": true,
@@ -350,17 +350,17 @@
         },
         "runtime_variant": "single",
         "schema": "spc-root-session-certificate-v1",
-        "source_fingerprint": "102906f5c8651305",
+        "source_fingerprint": "e685c5a994c5d145",
         "status": "certified",
         "support_files": [],
         "thread_count": 1,
-        "wasm_sha256": "26ae7db3c96db46921ceb8f7c2acbc0f3a8f8a60a06b0595a71b5634ff299711",
+        "wasm_sha256": "8ae6d2337b7a3ea18ab6ade4f5dfd9508ca28efc73b4f631a561faff6dba3478",
         "wasm_simd": false
       },
       "support_files": [],
       "thread_count": 1,
       "wasm": "spc-root-session.wasm",
-      "wasm_sha256": "26ae7db3c96db46921ceb8f7c2acbc0f3a8f8a60a06b0595a71b5634ff299711"
+      "wasm_sha256": "8ae6d2337b7a3ea18ab6ade4f5dfd9508ca28efc73b4f631a561faff6dba3478"
     }
   }
 }
