@@ -2707,6 +2707,29 @@ def _apply_opening_policy_summary(
         }
 
 
+def _claim_scope_statement(config: ExternalMatchConfig) -> str:
+    if config.opening_policy == OPENING_POLICY_INITIAL:
+        return (
+            "All games begin from the standard initial Progressive Series 1 "
+            "with empty history; the engines own every played series. The "
+            f"{config.pairs * 2}-game schedule repeats one deterministic initial "
+            "state, so its games are not independent opening samples."
+        )
+    if config.common_wall_timeout_seconds is not None:
+        return (
+            "Results apply only to the selected canonical Scottish Progressive "
+            "openings and the exact equal end-to-end call-wall, engine-native "
+            "return policy in this report. A disclosed legal local move-only "
+            "fallback can be played when no series-depth iteration completes. "
+            "Search depth, work units, startup, and replay overhead remain "
+            "engine-specific."
+        )
+    return (
+        "Results apply only to the selected canonical Scottish Progressive "
+        "openings and the exact asymmetric policies in this report."
+    )
+
+
 def _rule_protocol_gaps(config: ExternalMatchConfig) -> list[dict[str, str]]:
     timed = config.common_wall_timeout_seconds is not None
     return [
@@ -3690,26 +3713,7 @@ def run_external_match(
             "promotion_effect": "none",
             "native_research_engine_only": True,
             "browser_release_equivalence_claim": False,
-            "statement": (
-                "All games begin from the standard initial Progressive Series 1 "
-                "with empty history; the engines own every played series. The "
-                "100-game schedule repeats one deterministic initial state, so "
-                "its games are not 50 independent opening samples."
-                if config.opening_policy == OPENING_POLICY_INITIAL
-                else (
-                "Results apply only to the selected canonical Scottish "
-                "Progressive openings and the exact equal end-to-end call-wall, "
-                "engine-native return policy in this report. A disclosed legal "
-                "local move-only fallback can be played when no series-depth "
-                "iteration completes. Search depth, work units, startup, and "
-                "replay overhead remain engine-specific."
-                if config.common_wall_timeout_seconds is not None
-                else (
-                    "Results apply only to the selected canonical Scottish "
-                    "Progressive openings and the exact asymmetric policies in "
-                    "this report."
-                ))
-            ),
+            "statement": _claim_scope_statement(config),
             "stockfish_level_claim": False,
             "rating_claim": False,
             "all_scheduled_results_required": True,

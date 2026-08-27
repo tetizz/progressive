@@ -328,6 +328,14 @@ def test_initial_position_repetitions_do_not_emit_inferential_p_value() -> None:
     }
 
 
+def test_two_game_initial_promotion_receipt_labels_actual_schedule_size() -> None:
+    statement = rematch_module._claim_scope_statement(
+        _initial_position_config(pairs=1)
+    )
+    assert "2-game schedule" in statement
+    assert "100-game schedule" not in statement
+
+
 def test_initial_position_games_begin_with_both_engines_owning_their_series(
     tmp_path: Path,
 ) -> None:
