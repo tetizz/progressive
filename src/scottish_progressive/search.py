@@ -18,6 +18,8 @@ from .model import (
 )
 from .native_subtree import (
     SUBTREE_STAT_FIELDS,
+    NativeHorizonProof,
+    NativeSubtreeBound,
     NativeSubtreeSession,
     native_subtree_eligible,
 )
@@ -46,6 +48,11 @@ from .rules import (
 
 if TYPE_CHECKING:
     from .mate_proof_cache import MateProofCache
+    from .selected_pv_horizon import (
+        CandidateHorizonState,
+        SelectedPvHorizonCertification,
+        SelectedPvHorizonProof,
+    )
     from .series_mate import SeriesMateProbe
 
 
@@ -273,6 +280,19 @@ class SearchStats:
     root_safety_widening_positions: int = 0
     root_safety_widened_terminal_mates: int = 0
     root_safety_widened_exact_children: int = 0
+    selected_pv_horizon_probe_calls: int = 0
+    selected_pv_horizon_found: int = 0
+    selected_pv_horizon_exhausted: int = 0
+    selected_pv_horizon_unknown: int = 0
+    selected_pv_horizon_line_rejections: int = 0
+    selected_pv_horizon_native_repairs: int = 0
+    selected_pv_horizon_repair_interruptions: int = 0
+    selected_pv_horizon_candidate_vetoes: int = 0
+    selected_pv_horizon_all_vetoed_frontiers: int = 0
+    selected_pv_horizon_widenings: int = 0
+    selected_pv_horizon_widened_candidates: int = 0
+    selected_pv_horizon_prior_depth_discards: int = 0
+    selected_pv_horizon_move_only_fallbacks: int = 0
     native_series_mate_calls: int = 0
     native_series_mate_positions: int = 0
     native_series_mate_edges: int = 0
@@ -512,11 +532,15 @@ class _WorkLimit(Exception):
     pass
 
 
+class _HorizonPolicyExhausted(Exception):
+    pass
+
+
 class _RootInterrupted(Exception):
     def __init__(
         self,
         scored: tuple[ScoredSeries, ...],
-        cause: _Timeout | _WorkLimit,
+        cause: _Timeout | _WorkLimit | _HorizonPolicyExhausted,
         fallback: SeriesResult,
     ) -> None:
         super().__init__(type(cause).__name__)
@@ -530,7 +554,7 @@ class _AdjudicationPending(Exception):
 
 
 class _RootAdjudicationPending(_AdjudicationPending):
-    def __init__(self, fallback: SeriesResult) -> None:
+    def __init__(self, fallback: SeriesResult | None = None) -> None:
         super().__init__()
         self.fallback = fallback
 
@@ -658,6 +682,14 @@ class SeriesSearcher:
         self._root_child_mate_screen_work = 0
         self._native_subtree_session: NativeSubtreeSession | None = None
         self._native_subtree_stats_applied = (0,) * len(SUBTREE_STAT_FIELDS)
+        # The pure-Python fallback uses the same replayed leaf theorem as the
+        # native retained-root namespace. Exact keys prevent a proof from
+        # leaking across clock or promoted-piece provenance.
+        self._selected_pv_leaf_mate_overrides: dict[
+            _TTKey, SeriesResult
+        ] = {}
+        self._selected_pv_leaf_override_hits: set[_TTKey] = set()
+        self._selected_pv_root_vetoes: set[str] = set()
 
     def _tactical_frontier_protection_enabled(
         self,
@@ -785,19 +817,7 @@ class SeriesSearcher:
         session = self._native_subtree_session
         if session is None:  # pragma: no cover - caller invariant
             raise RuntimeError("native subtree session is unavailable")
-        work_index = SUBTREE_STAT_FIELDS.index("generation_positions")
-        native_work = self._native_subtree_stats_applied[work_index]
-        external_work = self.stats.generation_positions - native_work
-        if external_work < 0:
-            raise RuntimeError("native subtree external work accounting regressed")
-        remaining_nanoseconds = (
-            None
-            if self._deadline is None
-            else max(
-                0,
-                int((self._deadline - time.perf_counter()) * 1_000_000_000),
-            )
-        )
+        external_work, remaining_nanoseconds = self._native_work_context()
         result = session.search(
             state,
             depth=depth,
@@ -824,6 +844,24 @@ class SeriesSearcher:
                 result.message or "native subtree search is unsupported"
             )
         return result.score, result.principal_variation, result.proof_bounds
+
+    def _native_work_context(self) -> tuple[int, int | None]:
+        """Returns the shared work/deadline view for one native session call."""
+
+        work_index = SUBTREE_STAT_FIELDS.index("generation_positions")
+        native_work = self._native_subtree_stats_applied[work_index]
+        external_work = self.stats.generation_positions - native_work
+        if external_work < 0:
+            raise RuntimeError("native subtree external work accounting regressed")
+        remaining_nanoseconds = (
+            None
+            if self._deadline is None
+            else max(
+                0,
+                int((self._deadline - time.perf_counter()) * 1_000_000_000),
+            )
+        )
+        return external_work, remaining_nanoseconds
 
     def _quiet_adjudication(self, state: ProgressiveState) -> str | None:
         if not state.quiet_draw_pending:
@@ -1288,6 +1326,229 @@ class SeriesSearcher:
         self._root_child_mate_screen_work += work
         self.stats.root_safety_screen_positions += work
         self.stats.generation_positions += work
+
+    def _selected_pv_horizon_probe(
+        self,
+        state: ProgressiveState,
+    ) -> SeriesMateProbe:
+        """Runs the exact one-series leaf probe under the shared safety budget."""
+
+        from .series_mate import (
+            SeriesMateProbe,
+            SeriesMateStatus,
+            find_native_series_mate,
+        )
+
+        self.stats.selected_pv_horizon_probe_calls += 1
+        self.stats.native_series_mate_calls += 1
+        remaining = self._root_child_mate_screen_remaining()
+        if remaining < 1:
+            self.stats.native_series_mate_work_limit_hits += 1
+            return SeriesMateProbe(
+                SeriesMateStatus.WORK_LIMIT,
+                "selected-PV horizon safety budget is exhausted",
+            )
+        remaining_seconds = (
+            None
+            if self._deadline is None
+            else max(0.0, self._deadline - time.perf_counter())
+        )
+        probe = find_native_series_mate(
+            state,
+            max_positions=None,
+            max_work=remaining,
+            time_limit_seconds=remaining_seconds,
+        )
+        self._record_native_series_mate_probe(probe)
+        if probe.status is SeriesMateStatus.FOUND:
+            self.stats.native_series_mate_found += 1
+        elif probe.status is SeriesMateStatus.EXHAUSTED:
+            self.stats.native_series_mate_exhausted += 1
+        elif probe.status is SeriesMateStatus.WORK_LIMIT:
+            self.stats.native_series_mate_work_limit_hits += 1
+        elif probe.status is SeriesMateStatus.DEADLINE:
+            self.stats.native_series_mate_deadline_hits += 1
+        else:
+            self.stats.native_series_mate_unsupported += 1
+        return probe
+
+    def _certify_selected_pv_horizon(
+        self,
+        root: ProgressiveState,
+        pv: tuple[SeriesResult, ...],
+    ) -> SelectedPvHorizonCertification:
+        from .selected_pv_horizon import (
+            SelectedPvHorizonStatus,
+            certify_selected_pv_horizon,
+        )
+
+        certification = certify_selected_pv_horizon(
+            root,
+            pv,
+            self._selected_pv_horizon_probe,
+        )
+        if certification.status is SelectedPvHorizonStatus.FOUND:
+            self.stats.selected_pv_horizon_found += 1
+        elif certification.status is SelectedPvHorizonStatus.EXHAUSTED:
+            self.stats.selected_pv_horizon_exhausted += 1
+        elif certification.status is SelectedPvHorizonStatus.UNKNOWN:
+            self.stats.selected_pv_horizon_unknown += 1
+        return certification
+
+    @staticmethod
+    def _raise_selected_pv_horizon_unknown(
+        certification: SelectedPvHorizonCertification,
+    ) -> None:
+        from .series_mate import SeriesMateStatus
+
+        if certification.probe_status is SeriesMateStatus.DEADLINE:
+            raise _Timeout
+        # Work-limit, unsupported, invalid replay, and malformed native output
+        # are all UNKNOWN. Abort this depth without certifying the candidate.
+        raise _WorkLimit
+
+    def _repair_selected_root_python(
+        self,
+        candidate: ScoredSeries,
+        depth: int,
+        state: CandidateHorizonState,
+    ) -> ScoredSeries:
+        """Pure-Python exact-leaf overlay used when no native subtree exists."""
+
+        proof_keys: list[_TTKey] = []
+        for proof in state.retained_proofs:
+            leaf = proof.rooted_path[-1].final_state
+            key = self._tt_key(leaf)
+            self._selected_pv_leaf_mate_overrides[key] = proof.mate_reply
+            proof_keys.append(key)
+        if not proof_keys:  # pragma: no cover - policy invariant
+            raise RuntimeError("selected-PV repair has no retained proof")
+        # Ordinary TT entries have no proof-set namespace. Clear them before
+        # enabling the exact leaf theorem so an old depth-zero value cannot
+        # bypass the newly retained mate. The overlay then stays active for
+        # the remainder of this searcher run.
+        if self._tt_transaction_stack:  # pragma: no cover - root invariant
+            raise RuntimeError("selected-PV repair entered during a TT transaction")
+        self._tt.clear()
+        self._selected_pv_leaf_override_hits.clear()
+        score, child_pv, proof_bounds = self._minimax(
+            candidate.series.final_state,
+            depth - 1,
+            -MATE_SCORE * 2,
+            MATE_SCORE * 2,
+            1,
+        )
+        if proof_keys[-1] not in self._selected_pv_leaf_override_hits:
+            raise _WorkLimit
+        return ScoredSeries(
+            candidate.series,
+            score,
+            child_pv,
+            proof_bounds,
+        )
+
+    def _repair_selected_root_native(
+        self,
+        root: ProgressiveState,
+        candidate: ScoredSeries,
+        depth: int,
+        state: CandidateHorizonState,
+    ) -> ScoredSeries:
+        """Warm full-window native re-search under replayed leaf proofs."""
+
+        session = self._native_subtree_session
+        if session is None:  # pragma: no cover - caller invariant
+            raise RuntimeError("native selected-PV repair has no session")
+        external_work, remaining_nanoseconds = self._native_work_context()
+        manifest = session.enumerate_root(
+            root,
+            preferred_series=candidate.series.machine_notation,
+            external_work=external_work,
+            remaining_nanoseconds=remaining_nanoseconds,
+        )
+        self._sync_native_subtree_stats(manifest.work.cumulative_stats)
+        self._selective = self._selective or manifest.selective
+        self._evaluation_work_limit_reached = (
+            self._evaluation_work_limit_reached
+            or manifest.evaluation_work_limit_reached
+        )
+        if manifest.status == 1:
+            raise _WorkLimit
+        if manifest.status == 2:
+            raise _Timeout
+        if manifest.status == 3:
+            raise _AdjudicationPending
+        if manifest.status != 0:
+            raise _WorkLimit
+        retained = next(
+            (
+                item
+                for item in manifest.candidates
+                if item.order_key == candidate.series.machine_notation
+                and item.series == candidate.series
+            ),
+            None,
+        )
+        if retained is None:
+            raise _WorkLimit
+        native_proofs = tuple(
+            NativeHorizonProof(proof.rooted_path, proof.mate_reply)
+            for proof in state.retained_proofs
+        )
+        if not native_proofs:  # pragma: no cover - policy invariant
+            raise RuntimeError("selected-PV repair has no retained proof")
+        external_work, remaining_nanoseconds = self._native_work_context()
+        result = session.search_root_candidate(
+            enumeration_identity=manifest.enumeration_identity,
+            candidate_identity=retained.candidate_identity,
+            child_depth=depth - 1,
+            alpha=-MATE_SCORE * 2,
+            beta=MATE_SCORE * 2,
+            external_work=external_work,
+            remaining_nanoseconds=remaining_nanoseconds,
+            rollback_tt=False,
+            horizon_proofs=native_proofs,
+        )
+        self._sync_native_subtree_stats(result.work.cumulative_stats)
+        self._selective = self._selective or result.selective
+        self._evaluation_work_limit_reached = (
+            self._evaluation_work_limit_reached
+            or result.evaluation_work_limit_reached
+        )
+        if result.status == 1:
+            raise _WorkLimit
+        if result.status == 2:
+            raise _Timeout
+        if result.status == 3:
+            raise _AdjudicationPending
+        if result.status != 0:
+            raise _WorkLimit
+        newest_mask = 1 << (len(native_proofs) - 1)
+        if (
+            result.bound is not NativeSubtreeBound.EXACT
+            or result.root_series != candidate.series
+            or result.horizon_proofs_validated != len(native_proofs)
+            or not result.horizon_proof_set_identity
+            or result.horizon_proof_hit_mask & newest_mask == 0
+        ):
+            raise _WorkLimit
+        return ScoredSeries(
+            candidate.series,
+            result.score,
+            result.child_principal_variation,
+            result.proof_bounds,
+        )
+
+    def _repair_selected_root(
+        self,
+        root: ProgressiveState,
+        candidate: ScoredSeries,
+        depth: int,
+        state: CandidateHorizonState,
+    ) -> ScoredSeries:
+        if self._native_subtree_session is None:
+            return self._repair_selected_root_python(candidate, depth, state)
+        return self._repair_selected_root_native(root, candidate, depth, state)
 
     def _mark_root_child_proven_mate(
         self,
@@ -2456,6 +2717,22 @@ class SeriesSearcher:
             return 0, (), (0, 0)
         if adjudication == "manual-proof-required":
             raise _AdjudicationPending
+        key = self._tt_key(state)
+        mate_override = self._selected_pv_leaf_mate_overrides.get(key)
+        if mate_override is not None:
+            score = self._terminal_score(
+                mate_override,
+                state.board.turn,
+                ply_from_root + 1,
+            )
+            if score is None:  # pragma: no cover - replay invariant
+                raise RuntimeError("selected-PV mate override is nonterminal")
+            self._selected_pv_leaf_override_hits.add(key)
+            return (
+                score,
+                (mate_override,),
+                self._terminal_proof_bounds(mate_override, state.board.turn),
+            )
         if depth == 0:
             leaf = self._evaluate(state)
             if leaf.tactical_unstable:
@@ -2468,7 +2745,6 @@ class SeriesSearcher:
                 )
             return leaf.total, (), UNKNOWN_PROOF_BOUNDS
 
-        key = self._tt_key(state)
         entry = self._tt.get(key)
         original_alpha, original_beta = alpha, beta
         if entry is not None and entry.depth >= depth:
@@ -2670,12 +2946,17 @@ class SeriesSearcher:
         depth: int,
         required_prefix: tuple[str, ...],
         root_mate_overrides: Mapping[_TTKey, SeriesResult],
+        root_horizon_overrides: Mapping[str, ScoredSeries] | None = None,
+        root_horizon_vetoes: frozenset[str] = frozenset(),
+        root_frontier_override: _GeneratedSeriesList | None = None,
     ) -> tuple[
         int,
         tuple[SeriesResult, ...],
         tuple[ScoredSeries, ...],
         str | None,
     ]:
+        if root_horizon_overrides is None:
+            root_horizon_overrides = {}
         mover = state.board.turn
         reserve_positions = (
             state.moves_available
@@ -2693,25 +2974,29 @@ class SeriesSearcher:
                 # copy without double-counting that already-recorded eviction.
                 self._series_generation_cache.clear()
                 self._series_generation_cache_weight = 0
-        try:
-            series = self._ordered_generated(
-                state,
-                ply_from_root=1,
-                required_prefix=required_prefix,
-                reserve_positions=reserve_positions,
-                preferred_series=self._preferred_root_series,
-            )
+        if root_frontier_override is None:
+            try:
+                series = self._ordered_generated(
+                    state,
+                    ply_from_root=1,
+                    required_prefix=required_prefix,
+                    reserve_positions=reserve_positions,
+                    preferred_series=self._preferred_root_series,
+                )
+                width_complete = series.width_complete
+            except _WorkLimit as error:
+                # The ordinary frontier exhausted only the non-reserved part
+                # of the deterministic budget. Spend the remaining at-most-
+                # one-position-per-micro-move allowance on a legal width-one
+                # seed. The outer policy still excludes any horizon veto.
+                fallback = self._generate_root_seed(
+                    state,
+                    required_prefix=required_prefix,
+                )
+                raise _RootInterrupted((), error, fallback) from error
+        else:
+            series = root_frontier_override
             width_complete = series.width_complete
-        except _WorkLimit as error:
-            # The ordinary frontier exhausted only the non-reserved part of
-            # the deterministic budget. Spend the remaining at-most-one-
-            # position-per-micro-move allowance on a legal width-one seed so
-            # engine play does not fail merely because no scored root existed.
-            fallback = self._generate_root_seed(
-                state,
-                required_prefix=required_prefix,
-            )
-            raise _RootInterrupted((), error, fallback) from error
         # Root policy and its cached frontier stay in Python. Start the native
         # descendant session only after that frontier exists, reserving its
         # exact cache weight from the shared public 16k-series envelope.
@@ -2723,6 +3008,16 @@ class SeriesSearcher:
             self._native_subtree_session.insert_external_cache(
                 self._series_generation_cache_weight
             )
+        if root_horizon_vetoes:
+            self._selective = True
+            series = tuple(
+                result
+                for result in series
+                if result.machine_notation not in root_horizon_vetoes
+            )
+            if not series:
+                self._root_scores_complete = False
+                return self._evaluate(state).total, (), (), None
         scored: list[ScoredSeries] = []
         root_alpha = -MATE_SCORE * 2
         root_beta = MATE_SCORE * 2
@@ -2730,6 +3025,25 @@ class SeriesSearcher:
         for result in series:
             try:
                 self._check_deadline()
+                horizon_override = root_horizon_overrides.get(
+                    result.machine_notation
+                )
+                if horizon_override is not None:
+                    materialized = self._materialize_series(result)
+                    if horizon_override.series != materialized:
+                        raise RuntimeError(
+                            "selected-PV root repair drifted from its candidate"
+                        )
+                    scored.append(horizon_override)
+                    if not _root_candidate_is_proven_adverse(
+                        mover, horizon_override
+                    ):
+                        has_non_adverse_exact = True
+                        if mover == chess.WHITE:
+                            root_alpha = max(root_alpha, horizon_override.score)
+                        else:
+                            root_beta = min(root_beta, horizon_override.score)
+                    continue
                 terminal = self._terminal_score(result, mover, 1)
                 if terminal is None:
                     child_state = result.final_state
@@ -2871,7 +3185,9 @@ class SeriesSearcher:
         # This flag intentionally means every retained root candidate has an
         # exact score. ``exact_width`` separately reports whether the retained
         # frontier contains every legal branch.
-        self._root_scores_complete = len(scored) == len(series)
+        self._root_scores_complete = (
+            not root_horizon_vetoes and len(scored) == len(series)
+        )
         scored = list(_proof_safe_root_order(mover, scored))
         if not scored:
             static = self._evaluate(state).total
@@ -2881,7 +3197,9 @@ class SeriesSearcher:
             mover,
             [item.proof_bounds for item in scored],
             all_branches_visited=(
-                width_complete and len(scored) == len(series)
+                width_complete
+                and not root_horizon_vetoes
+                and len(scored) == len(series)
             ),
         )
         return (
@@ -2894,13 +3212,18 @@ class SeriesSearcher:
     def _root_safety_fallback(
         self,
         *candidates: SeriesResult | None,
+        excluded_series: frozenset[str] = frozenset(),
     ) -> SeriesResult | None:
         """Prefers exact-safe children and never returns a proven mate child."""
 
         unique: list[SeriesResult] = []
         seen: set[tuple[int, str, int, int]] = set()
         for candidate in candidates:
-            if candidate is None or candidate.outcome is not None:
+            if (
+                candidate is None
+                or candidate.outcome is not None
+                or candidate.machine_notation in excluded_series
+            ):
                 continue
             key = candidate.final_state.transposition_key
             if key in seen or key in self._root_child_proven_mate_keys:
@@ -2919,12 +3242,64 @@ class SeriesSearcher:
             return unique[0]
         return None
 
+    def _selected_pv_horizon_widened_frontier(
+        self,
+        state: ProgressiveState,
+        required_prefix: tuple[str, ...],
+        vetoes: frozenset[str],
+    ) -> _GeneratedSeriesList:
+        """Regenerates one bounded wider root after the retained set is vetoed."""
+
+        self.stats.selected_pv_horizon_widenings += 1
+        generated, width_complete = self._generate(
+            state,
+            ply_from_root=1,
+            required_prefix=required_prefix,
+            tactical_protection=True,
+            max_frontier_states=ROOT_ALL_MATING_WIDEN_FRONTIER,
+        )
+        if isinstance(generated, _NativeSeriesBatch):
+            ordered: list[SeriesResult | _NativeSeriesReference] = (
+                generated.references()
+            )
+        else:
+            mover = state.board.turn
+            ordered = sorted(
+                generated,
+                key=lambda item: (
+                    (
+                        -self._static_series_score(item, mover, 1)
+                        if mover == chess.WHITE
+                        else self._static_series_score(item, mover, 1)
+                    ),
+                    item.machine_notation,
+                ),
+            )
+        widened = self._apply_root_promotion_mate_lane(
+            state,
+            _GeneratedSeriesList(ordered, width_complete=width_complete),
+            ply_from_root=1,
+            required_prefix=required_prefix,
+            reserve_positions=0,
+        )
+        candidates = [
+            candidate
+            for candidate in widened
+            if candidate.machine_notation not in vetoes
+        ]
+        self.stats.selected_pv_horizon_widened_candidates += len(candidates)
+        return _GeneratedSeriesList(
+            candidates,
+            width_complete=widened.width_complete and not vetoes,
+        )
+
     def _root_all_mating_widening(
         self,
         state: ProgressiveState,
         depth: int,
         required_prefix: tuple[str, ...],
         retained: tuple[ScoredSeries, ...],
+        excluded_series: frozenset[str] = frozenset(),
     ) -> tuple[
         int,
         tuple[SeriesResult, ...],
@@ -2962,6 +3337,17 @@ class SeriesSearcher:
             if isinstance(generated, _NativeSeriesBatch)
             else generated
         )
+        if excluded_series:
+            candidates = tuple(
+                candidate
+                for candidate in candidates
+                if candidate.machine_notation not in excluded_series
+            )
+            retained = tuple(
+                item
+                for item in retained
+                if item.series.machine_notation not in excluded_series
+            )
         self.stats.root_safety_widened_candidates += len(candidates)
 
         mover = state.board.turn
@@ -3178,7 +3564,7 @@ class SeriesSearcher:
         tuple[ScoredSeries, ...],
         str | None,
     ]:
-        """Screens only provisional root winners, then deterministically retries.
+        """Certifies provisional root winners, then deterministically retries.
 
         A wide immediate-reply probe is safety verification, not move ordering.
         Running it on every successive alpha contender made hosted depth two
@@ -3187,18 +3573,32 @@ class SeriesSearcher:
         unsafe provisional winner is assigned its authoritative replay-mate
         override by child position, and the cached root/minimax pass is
         repeated with a reset root window until a screened winner survives.
+
+        The selected canonical PV then receives the same exact one-series leaf
+        certification used by the browser policy. A first replayed proof
+        re-searches that same root under a proof namespace; a second distinct
+        proof vetoes only that root series. Any incomplete proof or repair is
+        UNKNOWN and aborts this iterative depth before it can be published.
         """
 
-        if not self._root_child_safety_screen_required():
-            return self._search_root_pass(
-                state,
-                depth,
-                required_prefix,
-                {},
-            )
+        from .selected_pv_horizon import (
+            CandidateHorizonState,
+            HorizonPolicyAction,
+            SelectedPvHorizonStatus,
+            observe_horizon_proof,
+        )
+
+        # The browser creates a fresh coordinator for every iterative depth.
+        # Keep the run-visible set scoped to this depth as well: it exists only
+        # to stop an interrupted depth from resurrecting one of its own vetoes.
+        # A later, freshly started depth is allowed to reconsider that root.
+        self._selected_pv_root_vetoes.clear()
 
         widened_terminal = self._root_widened_terminal_series
-        if widened_terminal is not None:
+        if (
+            widened_terminal is not None
+            and self._root_child_safety_screen_required()
+        ):
             mover = state.board.turn
             score = self._terminal_score(widened_terminal, mover, 1)
             if score is None:  # pragma: no cover - cache invariant
@@ -3219,6 +3619,13 @@ class SeriesSearcher:
             )
 
         overrides: dict[_TTKey, SeriesResult] = {}
+        horizon_overrides: dict[str, ScoredSeries] = {}
+        # Veto eligibility is scoped to this selected depth, matching the
+        # browser policy. The searcher-wide set below is only a final-return
+        # block until a later depth positively certifies that root again.
+        horizon_vetoes: set[str] = set()
+        horizon_states: dict[str, CandidateHorizonState] = {}
+        widened_frontier: _GeneratedSeriesList | None = None
         last_exact_exhausted: SeriesResult | None = None
         last_unknown: SeriesResult | None = None
 
@@ -3230,8 +3637,32 @@ class SeriesSearcher:
                     depth,
                     required_prefix,
                     overrides,
+                    horizon_overrides,
+                    frozenset(horizon_vetoes),
+                    widened_frontier,
                 )
             except _RootInterrupted as interrupted:
+                if horizon_vetoes:
+                    # Keep only an explicitly unvetoed move-only fallback from
+                    # the current frontier. Its score/proof never survives this
+                    # interrupted depth, and a vetoed seed can never escape.
+                    fallback = self._root_safety_fallback(
+                        interrupted.fallback,
+                        last_exact_exhausted,
+                        last_unknown,
+                        excluded_series=frozenset(horizon_vetoes),
+                    )
+                    if fallback is None:
+                        raise interrupted.cause from interrupted
+                    raise _RootInterrupted(
+                        (), interrupted.cause, fallback
+                    ) from interrupted
+                if (
+                    not self._root_child_safety_screen_required()
+                    and not horizon_states
+                    and not horizon_vetoes
+                ):
+                    raise
                 # A retry has reset alpha/beta around new authoritative evidence.
                 # Partial scores from any pass cannot certify the iteration, so
                 # expose only an exact-EXHAUSTED or explicitly UNKNOWN child as
@@ -3240,11 +3671,20 @@ class SeriesSearcher:
                     last_exact_exhausted,
                     last_unknown,
                     interrupted.fallback,
+                    excluded_series=frozenset(horizon_vetoes),
                 )
                 if fallback is None:
                     raise interrupted.cause from interrupted
                 raise _RootInterrupted((), interrupted.cause, fallback) from interrupted
             except (_Timeout, _WorkLimit) as error:
+                if horizon_vetoes:
+                    raise
+                if (
+                    not self._root_child_safety_screen_required()
+                    and not horizon_states
+                    and not horizon_vetoes
+                ):
+                    raise
                 # Root generation can be interrupted before _search_root_pass has
                 # materialized a frontier and wrapped the cancellation. A retry
                 # may still have a previously screened exact-EXHAUSTED or UNKNOWN
@@ -3254,83 +3694,224 @@ class SeriesSearcher:
                 fallback = self._root_safety_fallback(
                     last_exact_exhausted,
                     last_unknown,
+                    excluded_series=frozenset(horizon_vetoes),
                 )
                 if fallback is None:
                     raise
                 raise _RootInterrupted((), error, fallback) from error
             if not pv:
+                if horizon_vetoes and widened_frontier is None:
+                    self.stats.selected_pv_horizon_all_vetoed_frontiers += 1
+                    widened_frontier = (
+                        self._selected_pv_horizon_widened_frontier(
+                            state,
+                            required_prefix,
+                            frozenset(horizon_vetoes),
+                        )
+                    )
+                    if widened_frontier:
+                        continue
+                if horizon_vetoes:
+                    # The bounded wider selector found no unvetoed root. No
+                    # known-vetoed series may cross SearchResult.best_series.
+                    self._root_scores_complete = False
+                    raise _HorizonPolicyExhausted
                 return score, pv, alternatives, proof
 
             provisional = pv[0]
             if provisional.outcome is not None:
+                self._selected_pv_root_vetoes.discard(
+                    provisional.machine_notation
+                )
                 return score, pv, alternatives, proof
             child_state = provisional.final_state
             child_key = child_state.transposition_key
             override_key = self._tt_key(child_state)
-            if child_key in self._root_child_native_mate_exhausted_keys:
-                last_exact_exhausted = provisional
-            elif child_key not in self._root_child_proven_mate_keys:
-                last_unknown = provisional
-            if override_key in overrides:
-                # The best root choice still loses after every root bound was
-                # repaired around its authoritative reply mate. If every
-                # retained choice has the same replay-proven defect, widen the
-                # selector before describing any one retained line as a loss.
-                if alternatives and all(
-                    item.series.outcome is None
-                    and item.series.final_state.transposition_key
-                    in self._root_child_proven_mate_keys
-                    for item in alternatives
-                ):
-                    if state.series_number <= ROOT_ALL_MATING_WIDEN_MAX_SERIES:
-                        return self._root_all_mating_widening(
-                            state,
-                            depth,
-                            required_prefix,
-                            alternatives,
+            widened_nonterminal = False
+            if self._root_child_safety_screen_required():
+                if child_key in self._root_child_native_mate_exhausted_keys:
+                    last_exact_exhausted = provisional
+                elif child_key not in self._root_child_proven_mate_keys:
+                    last_unknown = provisional
+                if override_key in overrides:
+                    # The best root choice still loses after every root bound
+                    # was repaired around its authoritative reply mate. If
+                    # every retained choice has the same replay-proven defect,
+                    # widen the selector before describing the capped set as a
+                    # loss.
+                    if alternatives and all(
+                        item.series.outcome is None
+                        and item.series.final_state.transposition_key
+                        in self._root_child_proven_mate_keys
+                        for item in alternatives
+                    ):
+                        if state.series_number <= ROOT_ALL_MATING_WIDEN_MAX_SERIES:
+                            widened = self._root_all_mating_widening(
+                                state,
+                                depth,
+                                required_prefix,
+                                alternatives,
+                                frozenset(horizon_vetoes),
+                            )
+                            score, pv, alternatives, proof = widened
+                            if not pv:
+                                return widened
+                            provisional = pv[0]
+                            if provisional.outcome is not None:
+                                return widened
+                            child_state = provisional.final_state
+                            child_key = child_state.transposition_key
+                            override_key = self._tt_key(child_state)
+                            widened_nonterminal = True
+                        else:
+                            self._selective = True
+                            return score, pv, alternatives, None
+                    else:
+                        return score, pv, alternatives, proof
+                if not widened_nonterminal:
+                    reply_mate = (
+                        pv[1]
+                        if (
+                            len(pv) > 1
+                            and pv[1].outcome == Outcome.CHECKMATE
+                            and pv[1].ended_by_check
                         )
-                    # At later series, an 832-wide root itself can exceed the
-                    # hosted 10M ceiling. Preserve the replay-truth for the
-                    # selected retained line, but never promote the capped set
-                    # to a game-wide forced-loss proof.
-                    self._selective = True
-                    return score, pv, alternatives, None
-                return score, pv, alternatives, proof
-            reply_mate = (
-                pv[1]
-                if (
-                    len(pv) > 1
-                    and pv[1].outcome == Outcome.CHECKMATE
-                    and pv[1].ended_by_check
+                        else None
+                    )
+                    try:
+                        if reply_mate is None:
+                            reply_mate = self._root_child_immediate_mate(child_state)
+                    except (_Timeout, _WorkLimit) as error:
+                        fallback = self._root_safety_fallback(
+                            last_exact_exhausted,
+                            provisional,
+                            last_unknown,
+                            excluded_series=frozenset(horizon_vetoes),
+                        )
+                        if fallback is None:
+                            raise
+                        raise _RootInterrupted((), error, fallback) from error
+                    if reply_mate is not None:
+                        self._mark_root_child_proven_mate(child_key)
+                        if (
+                            last_unknown is not None
+                            and last_unknown.final_state.transposition_key == child_key
+                        ):
+                            last_unknown = None
+                        overrides[override_key] = reply_mate
+                        self.stats.root_safety_retries += 1
+                        continue
+                    if child_key in self._root_child_native_mate_exhausted_keys:
+                        last_exact_exhausted = provisional
+                    # At depth one this exact child probe is the selected-PV leaf
+                    # probe. Do not repeat the same exhaustive question.
+                    if len(pv) == 1:
+                        self._selected_pv_root_vetoes.discard(
+                            provisional.machine_notation
+                        )
+                        return score, pv, alternatives, proof
+
+            certification = self._certify_selected_pv_horizon(state, pv)
+            if certification.status in {
+                SelectedPvHorizonStatus.NOT_APPLICABLE,
+                SelectedPvHorizonStatus.EXHAUSTED,
+            }:
+                self._selected_pv_root_vetoes.discard(
+                    provisional.machine_notation
                 )
-                else None
+                return score, pv, alternatives, proof
+            if certification.status is SelectedPvHorizonStatus.UNKNOWN:
+                try:
+                    self._raise_selected_pv_horizon_unknown(certification)
+                except (_Timeout, _WorkLimit) as error:
+                    if horizon_vetoes:
+                        # A known-vetoed earlier root invalidates any retained
+                        # depth that selected it. Preserve this current,
+                        # explicitly unvetoed root only as a move-only fallback;
+                        # its incomplete score/PV/proof remain unpublished.
+                        raise _RootInterrupted((), error, provisional) from error
+                    raise
+            horizon_proof = certification.proof
+            if horizon_proof is None:  # pragma: no cover - status invariant
+                raise RuntimeError("found selected-PV horizon has no proof")
+
+            candidate = next(
+                (item for item in alternatives if item.series == provisional),
+                ScoredSeries(provisional, score, pv[1:]),
             )
+            notation = provisional.machine_notation
+            candidate_state = horizon_states.get(
+                notation,
+                CandidateHorizonState(candidate_series=notation),
+            )
+            decision = observe_horizon_proof(candidate_state, horizon_proof)
+            self.stats.selected_pv_horizon_line_rejections += 1
+            if decision.action is HorizonPolicyAction.UNKNOWN:
+                raise _WorkLimit
+            if decision.action is HorizonPolicyAction.VETO:
+                horizon_overrides.pop(notation, None)
+                horizon_vetoes.add(notation)
+                self._selected_pv_root_vetoes.add(notation)
+                if (
+                    last_exact_exhausted is not None
+                    and last_exact_exhausted.machine_notation == notation
+                ):
+                    last_exact_exhausted = None
+                if (
+                    last_unknown is not None
+                    and last_unknown.machine_notation == notation
+                ):
+                    last_unknown = None
+                self.stats.selected_pv_horizon_candidate_vetoes += 1
+                self._selective = True
+                continue
+
+            # A replay-proven adverse leaf makes the current un-repaired A
+            # unsafe to resurrect from an older completed depth. Keep it in
+            # the run-visible exclusion set until the same-root repair really
+            # completes. A fresh iterative depth clears this depth-local set.
+            self._selected_pv_root_vetoes.add(notation)
             try:
-                if reply_mate is None:
-                    reply_mate = self._root_child_immediate_mate(child_state)
+                repaired = self._repair_selected_root(
+                    state,
+                    candidate,
+                    depth,
+                    decision.next_state,
+                )
             except (_Timeout, _WorkLimit) as error:
-                # No incomplete safety probe may certify an unscreened score.
-                # The iterative-deepening caller will retain its last complete
-                # depth; at depth zero this is explicitly a move-only fallback.
+                self.stats.selected_pv_horizon_repair_interruptions += 1
                 fallback = self._root_safety_fallback(
+                    *(
+                        item.series
+                        for item in alternatives
+                        if item.series.machine_notation != notation
+                    ),
                     last_exact_exhausted,
-                    provisional,
                     last_unknown,
+                    excluded_series=frozenset(horizon_vetoes | {notation}),
                 )
                 if fallback is None:
                     raise
                 raise _RootInterrupted((), error, fallback) from error
-            if reply_mate is None:
-                if child_key in self._root_child_native_mate_exhausted_keys:
-                    last_exact_exhausted = provisional
-                return score, pv, alternatives, proof
-            self._mark_root_child_proven_mate(child_key)
-            if (
-                last_unknown is not None
-                and last_unknown.final_state.transposition_key == child_key
-            ):
-                last_unknown = None
-            overrides[override_key] = reply_mate
+            except _AdjudicationPending as error:
+                self.stats.selected_pv_horizon_repair_interruptions += 1
+                fallback = self._root_safety_fallback(
+                    *(
+                        item.series
+                        for item in alternatives
+                        if item.series.machine_notation != notation
+                    ),
+                    last_exact_exhausted,
+                    last_unknown,
+                    excluded_series=frozenset(horizon_vetoes | {notation}),
+                )
+                raise _RootAdjudicationPending(fallback) from error
+            self._selected_pv_root_vetoes.discard(notation)
+            horizon_states[notation] = (
+                decision.next_state.record_successful_repair()
+            )
+            horizon_overrides[notation] = repaired
+            self.stats.selected_pv_horizon_native_repairs += 1
             self.stats.root_safety_retries += 1
 
     def run(
@@ -3343,6 +3924,7 @@ class SeriesSearcher:
         started = time.perf_counter()
         self._preferred_root_series = None
         self._root_widened_terminal_series = None
+        self._selected_pv_root_vetoes.clear()
         self._root_tactical_frontier_protection = (
             _tactical_frontier_protection_eligible(
                 state,
@@ -3436,9 +4018,15 @@ class SeriesSearcher:
                 timed_out = isinstance(interrupted.cause, _Timeout)
                 work_limit_reached = isinstance(interrupted.cause, _WorkLimit)
                 self._selective = True
-                if completed_depth == 0:
+                prior_root_vetoed = bool(
+                    completed_depth > 0
+                    and best_pv
+                    and best_pv[0].machine_notation
+                    in self._selected_pv_root_vetoes
+                )
+                if completed_depth == 0 or prior_root_vetoed:
                     self._root_scores_complete = False
-                    if interrupted.scored:
+                    if interrupted.scored and not prior_root_vetoed:
                         mover = state.board.turn
                         partial = _proof_safe_root_order(
                             mover,
@@ -3453,9 +4041,21 @@ class SeriesSearcher:
                         # explicitly labeled root evaluation rather than
                         # pretending the chosen series completed a search.
                         best_score = root_evaluation.total
-                        best_pv = (interrupted.fallback,)
+                        if (
+                            interrupted.fallback.machine_notation
+                            not in self._selected_pv_root_vetoes
+                        ):
+                            best_pv = (interrupted.fallback,)
+                            if self._selected_pv_root_vetoes:
+                                self.stats.selected_pv_horizon_move_only_fallbacks += 1
+                        else:
+                            best_pv = ()
                         alternatives = ()
                     best_proof = None
+                    if prior_root_vetoed:
+                        self.stats.selected_pv_horizon_prior_depth_discards += 1
+                        completed_depth = 0
+                        completed_root_scores_complete = False
                 else:
                     self._root_scores_complete = completed_root_scores_complete
                 break
@@ -3475,7 +4075,49 @@ class SeriesSearcher:
                 else:
                     self._root_scores_complete = completed_root_scores_complete
                 break
+            except _HorizonPolicyExhausted:
+                self._selective = True
+                if completed_depth == 0:
+                    self._root_scores_complete = False
+                else:
+                    self._root_scores_complete = completed_root_scores_complete
+                break
             except _AdjudicationPending as pending:
+                prior_root_vetoed = bool(
+                    completed_depth > 0
+                    and best_pv
+                    and best_pv[0].machine_notation
+                    in self._selected_pv_root_vetoes
+                )
+                if isinstance(pending, _RootAdjudicationPending) and (
+                    completed_depth == 0 or prior_root_vetoed
+                ):
+                    # The current depth learned that the retained A is unsafe,
+                    # then repair reached a position requiring manual proof.
+                    # Preserve that honest adjudication state, but never revive
+                    # A: an explicitly unvetoed current-frontier B may survive
+                    # only as an unevaluated move-only fallback.
+                    self._selective = True
+                    self._root_scores_complete = False
+                    adjudication = "manual-proof-required"
+                    best_score = root_evaluation.total
+                    if (
+                        pending.fallback is not None
+                        and pending.fallback.machine_notation
+                        not in self._selected_pv_root_vetoes
+                    ):
+                        best_pv = (pending.fallback,)
+                        if self._selected_pv_root_vetoes:
+                            self.stats.selected_pv_horizon_move_only_fallbacks += 1
+                    else:
+                        best_pv = ()
+                    alternatives = ()
+                    best_proof = None
+                    if prior_root_vetoed:
+                        self.stats.selected_pv_horizon_prior_depth_discards += 1
+                    completed_depth = 0
+                    completed_root_scores_complete = False
+                    break
                 if completed_depth > 0:
                     # The deeper iteration is unknown, but the last fully
                     # completed iteration remains a legal search result. Keep
@@ -3506,7 +4148,9 @@ class SeriesSearcher:
                     self._root_scores_complete = False
                     adjudication = "manual-proof-required"
                     best_score = root_evaluation.total
-                    best_pv = (pending.fallback,)
+                    best_pv = (
+                        (pending.fallback,) if pending.fallback is not None else ()
+                    )
                     alternatives = ()
                     best_proof = None
                     break
@@ -3544,6 +4188,22 @@ class SeriesSearcher:
             self._preferred_root_series = (
                 best_pv[0].machine_notation if best_pv else None
             )
+
+        if (
+            best_pv
+            and best_pv[0].machine_notation in self._selected_pv_root_vetoes
+        ):
+            # A deeper iteration can discover that an earlier completed
+            # depth's root is unsafe before that deeper iteration stops. Never
+            # resurrect the now-vetoed prior choice through iterative fallback.
+            self.stats.selected_pv_horizon_prior_depth_discards += 1
+            best_score = root_evaluation.total
+            best_pv = ()
+            alternatives = ()
+            best_proof = None
+            completed_depth = 0
+            completed_root_scores_complete = False
+            self._root_scores_complete = False
 
         elapsed = time.perf_counter() - started
         work_limit_reached = (

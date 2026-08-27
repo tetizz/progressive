@@ -26,6 +26,9 @@ ROOT = ProgressiveState.from_fen(
 CHECKED_ROOT = play_series(ROOT, ("b1b8",))
 BLACK_MATE = play_series(CHECKED_ROOT.final_state, ("g8f7", "a5e1"))
 
+QUIET_ROOT_LINE = play_series(ROOT, ("b1b2",))
+QUIET_ROOT_MATE = play_series(QUIET_ROOT_LINE.final_state, ("a5e1",))
+
 BLACK_ROOT = ProgressiveState.from_fen(
     "1r4k1/5ppp/8/8/Q7/8/8/6K1 b - - 0 1",
     2,
@@ -96,11 +99,11 @@ ALTERNATE_DEEP_PROOF = NativeHorizonProof(
 )
 
 
-def _session() -> NativeSubtreeSession:
+def _session(*, width: int = 4) -> NativeSubtreeSession:
     if not native_subtree_available():
         pytest.skip("source-matched native retained-root contract is unavailable")
     return NativeSubtreeSession(
-        max_series_per_node=4,
+        max_series_per_node=width,
         max_work=2_000_000,
         requested_depth=1,
         mate_score=MATE_SCORE,
@@ -207,6 +210,51 @@ def test_exact_checked_horizon_proof_substitutes_the_reply_mate() -> None:
     assert result.horizon_proof_hit_mask == 0b1
     assert result.horizon_proof_set_identity.startswith("spc-horizon-proof-set-v1|")
     assert result.work.call_native_work == 3
+
+
+def test_exact_quiet_horizon_proof_substitutes_the_reply_mate() -> None:
+    session = _session(width=16)
+    manifest = session.enumerate_root(
+        ROOT,
+        preferred_series=QUIET_ROOT_LINE.machine_notation,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    candidate = next(
+        item
+        for item in manifest.candidates
+        if item.order_key == QUIET_ROOT_LINE.machine_notation
+    )
+
+    result = session.search_root_candidate(
+        enumeration_identity=manifest.enumeration_identity,
+        candidate_identity=candidate.candidate_identity,
+        child_depth=0,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=manifest.work.native_work_after,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+        horizon_proofs=(
+            NativeHorizonProof(
+                rooted_path=(QUIET_ROOT_LINE,),
+                mate_reply=QUIET_ROOT_MATE,
+            ),
+        ),
+    )
+
+    assert QUIET_ROOT_LINE.ended_by_check is False
+    assert result.status == 0
+    assert result.bound is NativeSubtreeBound.EXACT
+    assert result.score == -MATE_SCORE + 2
+    assert tuple(item.machine_notation for item in result.principal_variation) == (
+        QUIET_ROOT_LINE.machine_notation,
+        QUIET_ROOT_MATE.machine_notation,
+    )
+    assert result.proof_bounds == (-1, -1)
+    assert result.horizon_proofs_validated == 1
+    assert result.horizon_proof_hits == 1
+    assert result.horizon_proof_hit_mask == 0b1
 
 
 def test_no_proof_search_preserves_the_pre_overlay_result_and_work() -> None:

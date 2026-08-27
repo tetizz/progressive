@@ -213,8 +213,9 @@ struct RetainedRootImportRequest {
 
 struct RetainedRootHorizonProof {
     // The path is rooted at the retained boundary and includes the retained
-    // root series. Its final boundary must be a nonterminal check. mate_reply
-    // is the exact next complete series and must end in checkmate.
+    // root series. Its final boundary must be nonterminal with the adverse
+    // side to move. mate_reply is the exact next complete series and must end
+    // in checkmate.
     std::vector<CompleteSeriesCandidate> rooted_path;
     CompleteSeriesCandidate mate_reply;
 };
@@ -236,7 +237,7 @@ struct RetainedRootCandidateRequest {
     // Empty preserves the ordinary retained-root search namespace exactly.
     // Non-empty payloads are authoritatively replayed before a same-depth,
     // full-window re-search and may substitute only their exact depth-zero
-    // checked boundaries.
+    // selected-PV boundaries.
     std::vector<RetainedRootHorizonProof> horizon_proofs;
 };
 

@@ -2016,15 +2016,13 @@ public:
             );
             const std::int64_t mate_ply = horizon_ply + 1;
             if (
-                !canonical.rooted_path.back().ended_by_check
-                || !is_in_check(cursor.board)
-                || cursor.board.white_to_move
+                cursor.board.white_to_move
                     == retained_root_state->board.white_to_move
                 || mate_ply % 2 != 0
             ) {
                 throw StopSearch(
                     SubtreeSearchStatus::Unsupported,
-                    "native horizon proof boundary is not an adverse checked horizon"
+                    "native horizon proof boundary is not an adverse selected horizon"
                 );
             }
 

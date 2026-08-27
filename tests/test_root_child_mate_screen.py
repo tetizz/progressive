@@ -1034,6 +1034,9 @@ def test_interrupted_safety_retry_keeps_the_last_completed_root_depth(
         depth: int,
         _required_prefix: tuple[str, ...],
         overrides: object,
+        _horizon_overrides: object,
+        _horizon_vetoes: object,
+        _root_frontier_override: object,
     ) -> tuple[
         int,
         tuple[SeriesResult, ...],
@@ -1256,6 +1259,9 @@ def test_collect_all_interruption_is_fail_closed_only_for_screened_caps(
         _depth: int,
         _required_prefix: tuple[str, ...],
         _overrides: object,
+        _horizon_overrides: object,
+        _horizon_vetoes: object,
+        _root_frontier_override: object,
     ) -> None:
         raise search_module._RootInterrupted(
             (scored,),
@@ -1324,6 +1330,9 @@ def test_raw_retry_interruption_never_falls_back_to_a_proven_mate_child(
         _depth: int,
         _required_prefix: tuple[str, ...],
         _overrides: object,
+        _horizon_overrides: object,
+        _horizon_vetoes: object,
+        _root_frontier_override: object,
     ) -> tuple[
         int,
         tuple[SeriesResult, ...],
@@ -1400,6 +1409,9 @@ def test_raw_retry_timeout_restores_last_completed_root_metadata(
         depth: int,
         _required_prefix: tuple[str, ...],
         overrides: object,
+        _horizon_overrides: object,
+        _horizon_vetoes: object,
+        _root_frontier_override: object,
     ) -> tuple[
         int,
         tuple[SeriesResult, ...],
@@ -1717,7 +1729,24 @@ def test_root_tactical_protection_retains_the_stronger_s4_candidate() -> None:
     assert searcher.stats.tactical_final_reserve_drops > 0
 
 
-def test_root_tactical_protection_keeps_depth_three_opening_result() -> None:
+def test_depth_three_replays_horizon_mate_and_selects_certified_e3() -> None:
+    proof_cursor = ProgressiveState.initial()
+    proof_path = []
+    for moves in (
+        ("e2e4",),
+        ("d7d5", "d5e4"),
+        ("d1e2", "e2e4", "f1b5"),
+    ):
+        selected = play_series(proof_cursor, moves)
+        proof_path.append(selected)
+        proof_cursor = selected.final_state
+    replayed_mate = play_series(
+        proof_cursor,
+        ("c8d7", "d7b5", "d8d3", "d3f1"),
+    )
+    assert replayed_mate.outcome is Outcome.CHECKMATE
+    assert replayed_mate.ended_by_check
+
     result = analyze(
         ProgressiveState.initial(),
         SearchLimits(
@@ -1731,14 +1760,22 @@ def test_root_tactical_protection_keeps_depth_three_opening_result() -> None:
     )
 
     assert result.best_series is not None
-    assert result.best_series.moves == ("e2e4",)
-    assert result.score == 530
+    assert result.best_series.moves == ("e2e3",)
+    assert result.best_series != proof_path[0]
+    assert result.score == 506
     assert result.completed_depth == 3
-    assert result.stats.work_positions == 161_007
+    assert result.stats.work_positions == 249_123
     assert result.stats.root_pvs_zero_window_searches > 0
-    assert result.stats.native_series_mate_calls == 2
-    assert result.stats.native_series_mate_exhausted == 2
+    assert result.stats.native_series_mate_calls == 4
+    assert result.stats.native_series_mate_found == 1
+    assert result.stats.native_series_mate_exhausted == 3
     assert result.stats.root_safety_exact_exhausted_children == 2
+    assert result.stats.selected_pv_horizon_probe_calls == 2
+    assert result.stats.selected_pv_horizon_found == 1
+    assert result.stats.selected_pv_horizon_exhausted == 1
+    assert result.stats.selected_pv_horizon_line_rejections == 1
+    assert result.stats.selected_pv_horizon_native_repairs == 1
+    assert result.stats.selected_pv_horizon_candidate_vetoes == 0
     assert result.stats.tactical_frontier_states_retained == 0
     assert result.stats.tactical_frontier_reserve_drops == 0
 
@@ -1773,8 +1810,16 @@ def test_shallow_s4_unknown_returns_only_a_move_liveness_fallback() -> None:
     assert result.stats.root_safety_unknown_interruptions == 1
 
 
-def test_website_depth_four_selects_stronger_safe_root_tactical_line() -> None:
-    """Root protection changes the live choice, not merely its mate screen."""
+def test_website_depth_four_horizon_unknown_retains_only_completed_depth_two() -> None:
+    """The new guard is fail-closed; restoring D4 is a measured perf gate.
+
+    Baseline b61496 completed D4 on 6,716,498 work and selected
+    ``ROOT_TACTICAL_S4``. The shared horizon guard finds a new selected-PV mate
+    at D3, repairs once, then cannot finish the later exact-negative question
+    inside the unchanged 3M safety/10M total limits. It must retain the legal D2
+    result without publishing a D3 score or proof. The full comparison is in
+    ``selected-pv-horizon-early-s4-budget-gate.json``.
+    """
 
     root = _early_s4_state()
     limits = SearchLimits(
@@ -1788,28 +1833,21 @@ def test_website_depth_four_selects_stronger_safe_root_tactical_line() -> None:
     result = analyze(root, limits, PROFILE)
 
     assert result.best_series is not None
-    assert result.best_series.moves == ROOT_TACTICAL_S4
-    assert result.score == 730
-    assert result.completed_depth == 4
+    assert result.best_series.moves == HOSTED_SHALLOW_S4
+    assert result.score == 625
+    assert result.completed_depth == 2
+    assert result.work_limit_reached
+    assert not result.timed_out
+    assert len(result.principal_variation) == 2
     assert result.proof is None
     assert not result.exact_width
-    assert result.stats.tactical_frontier_states_retained > 0
-    assert result.stats.tactical_frontier_reserve_drops > 0
-    assert result.stats.work_positions == 6_716_498
-
-    prior = analyze(
-        root,
-        limits,
-        PROFILE,
-        required_prefix=PRIOR_SAFE_S4,
-    )
-    assert prior.best_series is not None
-    assert prior.best_series.moves == PRIOR_SAFE_S4
-    assert prior.score == 1_627
-    assert prior.completed_depth == 4
-    # Scores are white-centric heuristic values, so Black prefers the lower
-    # score. Neither selective result is a proof of a win.
-    assert result.score < prior.score
+    assert result.stats.work_positions == 3_181_113
+    assert result.stats.root_safety_screen_positions == 2_833_024
+    assert result.stats.selected_pv_horizon_found == 1
+    assert result.stats.selected_pv_horizon_native_repairs == 1
+    assert result.stats.selected_pv_horizon_candidate_vetoes == 0
+    assert result.stats.selected_pv_horizon_unknown == 0
+    assert result.stats.root_safety_unknown_interruptions == 1
 
     selected_child = play_series(root, result.best_series.moves).final_state
     reply_mate, verifier_work = _ordinary_cap832_reply_mate(

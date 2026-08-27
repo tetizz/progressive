@@ -219,7 +219,7 @@ class NativeRetainedRootCandidate:
 
 @dataclass(frozen=True, slots=True)
 class NativeHorizonProof:
-    """Exact checked-horizon path plus its opponent's mating reply series."""
+    """Exact selected-PV path plus its opponent's mating reply series."""
 
     rooted_path: tuple[SeriesResult, ...]
     mate_reply: SeriesResult
