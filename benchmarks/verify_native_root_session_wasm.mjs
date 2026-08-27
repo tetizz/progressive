@@ -1264,13 +1264,15 @@ assert.equal(
   horizonRepair.horizon_proof_set_identity,
 );
 assert.equal(horizonWarm.horizon_proofs_validated, 1);
-assert.equal(horizonWarm.horizon_proof_hits, 0);
-assert.equal(horizonWarm.horizon_proof_hit_mask, 0);
+// A depth-zero search consumes its retained proof before any transposition
+// lookup, so the warm call must report the same structural proof hit.
+assert.equal(horizonWarm.horizon_proof_hits, 1);
+assert.equal(horizonWarm.horizon_proof_hit_mask, 1);
 const {
   horizon_proofs: _discardedHorizonProofs,
   ...missingDedicatedProofs
 } = horizonRequest;
-for (const [task, message] of [
+for (const [task, expectedError, message] of [
   [
     {
       ...horizonRequest,
@@ -1278,6 +1280,7 @@ for (const [task, message] of [
       task_id: "ordinary-candidate-with-proof-extension",
       native_work_before: horizonWarm.work.native_work_after,
     },
+    "request-field-unknown",
     "ordinary candidate v1 must reject dedicated proof fields",
   ],
   [
@@ -1286,6 +1289,7 @@ for (const [task, message] of [
       task_id: "horizon-research-missing-proofs",
       native_work_before: horizonWarm.work.native_work_after,
     },
+    "request-field-missing",
     "dedicated checked-horizon v1 must require its proof field",
   ],
   [
@@ -1295,6 +1299,7 @@ for (const [task, message] of [
       native_work_before: horizonWarm.work.native_work_after,
       horizon_proofs: Array.from({ length: 17 }, () => horizonProof),
     },
+    "candidate-task-invalid",
     "more than sixteen proofs must fail closed",
   ],
   [
@@ -1307,6 +1312,7 @@ for (const [task, message] of [
         rooted_path: Array.from({ length: 9 }, () => horizonCandidate.root_series),
       }],
     },
+    "candidate-task-invalid",
     "a proof path longer than eight series must fail closed",
   ],
 ]) {
@@ -1316,7 +1322,7 @@ for (const [task, message] of [
     task,
   );
   assert.equal(invalid.status, "unsupported", message);
-  assert.equal(invalid.error_code, "candidate-task-invalid", message);
+  assert.equal(invalid.error_code, expectedError, message);
 }
 assert.equal(wasm._spc_root_session_destroy(horizonSession.session_id), 1);
 
