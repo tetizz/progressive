@@ -120,6 +120,12 @@ STATIC_MIRRORS = {
     "src/scottish_progressive/web/static/engine/single/spc-engine.js": BROWSER_FILES[1],
     "src/scottish_progressive/web/static/engine/single/spc-root-session.wasm": BROWSER_FILES[2],
 }
+REUSABLE_IMMUTABLE_RELEASE_PAYLOADS = frozenset(
+    {
+        "release/browser-wasm/browser-engine/single/spc-engine.js",
+        "release/browser-wasm/browser-engine/single/spc-root-session.wasm",
+    }
+)
 ALLOWED_ARTIFACT_TEST = "tests/test_release_engine_gate.py"
 
 EXPECTED_GATES = frozenset(
@@ -495,11 +501,30 @@ def _validate_artifact_commit(
         )
         if not allowed:
             raise PromotedReleaseError(f"artifact commit contains a non-release change: {path}")
-    for path in expected_tracked:
+    if not REUSABLE_IMMUTABLE_RELEASE_PAYLOADS <= expected_tracked:
+        raise PromotedReleaseError(
+            "reusable immutable release payload policy is outside the release inventory"
+        )
+    required_replacements = expected_tracked - REUSABLE_IMMUTABLE_RELEASE_PAYLOADS
+    for path in required_replacements:
         if changes.get(path) not in {"A", "M"}:
             raise PromotedReleaseError(
                 "promoted release file was not added or replaced by the artifact "
                 f"commit: {path}"
+            )
+    for path in REUSABLE_IMMUTABLE_RELEASE_PAYLOADS:
+        status = changes.get(path)
+        if status is None:
+            parent_blob = _git_text(repository, "rev-parse", f"{parent}:{path}")
+            head_blob = _git_text(repository, "rev-parse", f"{head}:{path}")
+            if parent_blob != head_blob:
+                raise PromotedReleaseError(
+                    "unchanged reusable release payload does not resolve to the "
+                    f"same Git blob: {path}"
+                )
+        elif status not in {"A", "M"}:
+            raise PromotedReleaseError(
+                f"reusable release payload has forbidden {status} change: {path}"
             )
     return head
 

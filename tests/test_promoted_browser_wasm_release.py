@@ -12,6 +12,10 @@ import pytest
 from scripts import validate_promoted_browser_wasm_release as validator
 
 
+FIXTURE_MODULE_BYTES = b"export default async function engine() {}\n"
+FIXTURE_WASM_BYTES = b"\0asm\x01\0\0\0fixture"
+
+
 def _canonical_sha256(value: object) -> str:
     return hashlib.sha256(
         json.dumps(
@@ -73,7 +77,12 @@ def _build_fixture(
         for relative in prior_files:
             path = old_release / relative
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(f"prior release: {relative}\n".encode("utf-8"))
+            if relative == "browser-engine/single/spc-engine.js":
+                path.write_bytes(FIXTURE_MODULE_BYTES)
+            elif relative == "browser-engine/single/spc-root-session.wasm":
+                path.write_bytes(FIXTURE_WASM_BYTES)
+            else:
+                path.write_bytes(f"prior release: {relative}\n".encode("utf-8"))
         (old_release / "obsolete.txt").write_text("old release\n", encoding="utf-8")
     _git(repository, "init", "-q")
     _git(repository, "config", "user.name", "tetizz")
@@ -90,8 +99,8 @@ def _build_fixture(
     (browser / "single").mkdir(parents=True)
     module = browser / "single" / "spc-engine.js"
     wasm = browser / "single" / "spc-root-session.wasm"
-    module.write_text("export default async function engine() {}\n", encoding="utf-8")
-    wasm.write_bytes(b"\0asm\x01\0\0\0fixture")
+    module.write_bytes(FIXTURE_MODULE_BYTES)
+    wasm.write_bytes(FIXTURE_WASM_BYTES)
 
     artifact = {
         "source_revision": source_revision,
@@ -401,7 +410,52 @@ def test_accepts_replacement_release_and_release_only_deletion(
 ) -> None:
     fixture = _build_fixture(tmp_path, monkeypatch, prior_release=True)
 
+    for path in validator.REUSABLE_IMMUTABLE_RELEASE_PAYLOADS:
+        assert _git(
+            fixture["repository"],
+            "diff",
+            "--name-only",
+            fixture["source_revision"],
+            fixture["artifact_revision"],
+            "--",
+            path,
+        ) == ""
     assert _validate(fixture)["status"] == "validated"
+
+
+def test_reissue_still_requires_every_release_authority_file_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _build_fixture(tmp_path, monkeypatch, prior_release=True)
+    repository = fixture["repository"]
+    release = fixture["release"]
+    release_files = {
+        path.relative_to(release).as_posix()
+        for path in release.rglob("*")
+        if path.is_file()
+    }
+    unchanged_authority = "browser-engine/browser-engine-manifest.json"
+    for relative in release_files:
+        tracked = f"release/browser-wasm/{relative}"
+        if (
+            tracked in validator.REUSABLE_IMMUTABLE_RELEASE_PAYLOADS
+            or relative == unchanged_authority
+        ):
+            continue
+        path = release / relative
+        path.write_bytes(path.read_bytes() + b"\nnext release authority\n")
+    _git(repository, "add", "release/browser-wasm")
+    _git(repository, "commit", "-q", "-m", "reissue fixture")
+
+    with pytest.raises(
+        validator.PromotedReleaseError,
+        match="promoted release file was not added or replaced",
+    ):
+        validator._validate_artifact_commit(
+            repository=repository,
+            release_files=release_files,
+            source_revision=fixture["artifact_revision"],
+        )
 
 
 def test_rejects_schema_only_fabricated_evidence_receipts(
