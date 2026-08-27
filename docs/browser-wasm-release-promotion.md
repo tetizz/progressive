@@ -30,11 +30,16 @@ The input receipt schemas are:
   `spc-opera-root-d5-benchmark-v2` Worker receipt
 
 Those seven receipts stage the exact candidate bytes. Final validation then
-requires `spc-opera-checked-pv-horizon-receipt-v3`, captured from those staged
-bytes in local Opera. The v3 receipt binds the page and CDP Opera identities,
+requires `spc-opera-checked-pv-horizon-receipt-v4`, captured from those staged
+bytes in local Opera. The v4 receipt binds the page and CDP Opera identities,
 the manifest and browser asset hashes, the ordinary Worker factory, raw f3 and
-b3 checked-horizon mate traces, successful same-root native repairs, balanced
-work accounting, and warm exact TT recertification. It remains explicitly
+b3 checked-horizon mate traces, and the exact
+`repair-once-then-veto-adverse-checked-pv-mates-v1` policy. It proves one
+successful same-root f3 repair, a second distinct f3 proof that triggers the
+one-repair policy veto without dispatching a two-proof f3 search, the repaired
+and warm-recertified `b2b3` winner, full root-to-child series continuity for
+each retained D5 path, exact 3/2/1 rejection/repair/veto accounting, and
+selection-eligible coverage. It remains explicitly
 non-publishable evidence until the promotion helper validates it.
 
 The old root differential, prefix v1, mate v1, and Opera benchmark v1 formats
@@ -126,7 +131,7 @@ python .\scripts\promote_browser_wasm_release.py @common `
 
 # Serve a Pages candidate containing $candidate\browser-engine, then capture
 # the required local Opera receipt from those exact bytes.
-$checked = "$evidence\opera-checked-pv-horizon-v3.json"
+$checked = "$evidence\opera-checked-pv-horizon-v4.json"
 node .\benchmarks\capture_opera_checked_pv_horizon.mjs `
   --endpoint http://127.0.0.1:9237 `
   --url 'http://127.0.0.1:8898/?release=candidate' `

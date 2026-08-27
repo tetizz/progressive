@@ -18,12 +18,18 @@ from urllib.parse import parse_qs, urlparse
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+SOURCE_ROOT = ROOT / "src"
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
 
+import chess  # noqa: E402
 from benchmarks.build_root_session_wasm import (  # noqa: E402
     EXPORTED_FUNCTIONS,
     SOURCES as KERNEL_SOURCES,
 )
 from benchmarks.check_wasm_dependency_closure import REQUIRED as CLOSURE_SOURCES  # noqa: E402
+from scottish_progressive.model import ProgressiveState  # noqa: E402
+from scottish_progressive.rules import SeriesLegalityError, play_series  # noqa: E402
 from scripts import build_browser_wasm_bundle as bundle_builder  # noqa: E402
 
 
@@ -36,10 +42,15 @@ BROWSER_PREFIX_SCHEMA = "spc-browser-prefix-contract-receipt-v1"
 MATE_PARITY_SCHEMA = "spc-mate-wasm-receipt-v2"
 OPERA_CDP_SCHEMA = "spc-opera-root-session-cdp-receipt-v1"
 OPERA_WORKER_SCHEMA = "spc-opera-root-d5-benchmark-v2"
-OPERA_CHECKED_HORIZON_SCHEMA = "spc-opera-checked-pv-horizon-receipt-v3"
+OPERA_CHECKED_HORIZON_SCHEMA = "spc-opera-checked-pv-horizon-receipt-v4"
 OPERA_CHECKED_HORIZON_FILENAME = "opera-checked-pv-horizon-receipt.json"
 CANDIDATE_SCHEMA = "spc-browser-wasm-release-candidate-v1"
 CHECKED_HORIZON_EVIDENCE_SCHEMA = "spc-checked-horizon-wasm-evidence-v1"
+CHECKED_PV_SELECTION_POLICY = "repair-once-then-veto-adverse-checked-pv-mates-v1"
+SAME_ROOT_REPAIR_POLICY_SCHEMA = "spc-same-root-horizon-repair-policy-v1"
+PV_HORIZON_POLICY_VETO_SCHEMA = "spc-pv-horizon-candidate-veto-v1"
+THRESHOLD_VETO_WITNESS_SCHEMA = "spc-opera-same-root-repair-limit-witness-v1"
+MAXIMUM_SUCCESSFUL_SAME_ROOT_REPAIRS = 1
 WHITE_HORIZON_CANDIDATE_SHA256 = (
     "d050d64ee2388a82969a0953fdc1aa937455951d762ec9b7d16c3f9fee7b5c94"
 )
@@ -106,11 +117,13 @@ OPERA_CHECKED_HORIZON_CHECKS = frozenset(
         "selected_safety_certified",
         "compiled_replay_is_authoritative",
         "policy_is_explicit",
-        "all_fixture_rejections_repaired_without_veto",
+        "repair_once_then_veto_policy_bound",
         "f3_exact_raw_mate_and_same_root_repair",
+        "f3_second_distinct_proof_vetoed_without_research",
         "b3_exact_raw_mate_and_same_root_repair",
         "repaired_candidates_are_distinct",
         "newest_request_order_proofs_hit",
+        "selected_b3_after_f3_policy_veto",
         "final_repaired_winner_warm_recertified",
         "global_work_respected",
         "no_interruption",
@@ -577,10 +590,60 @@ def _validate_series(value: object, label: str) -> dict[str, Any]:
     _integer(series.get("transposition_count"), f"{label} transposition count", 1)
     if not isinstance(series.get("ended_by_check"), bool):
         raise ReleaseGateError(f"{label} check flag must be boolean")
-    if series.get("outcome") not in {None, "checkmate", "draw", "stalemate"}:
+    if series.get("outcome") not in {None, "checkmate", "stalemate", "ten_series_draw"}:
         raise ReleaseGateError(f"{label} has an invalid outcome")
     _validate_boundary(series.get("child_boundary"), f"{label} child boundary")
     return series
+
+
+def _validate_rooted_path_continuity(
+    path: list[dict[str, Any]],
+    *,
+    label: str,
+) -> None:
+    state = ProgressiveState.initial()
+    for index, series in enumerate(path):
+        expected_series = index + 1
+        moves = _list(series.get("moves"), f"{label} series {expected_series} moves")
+        try:
+            result = play_series(state, moves)
+        except (SeriesLegalityError, ValueError, chess.InvalidMoveError) as error:
+            raise ReleaseGateError(
+                f"{label} rooted path failed authoritative replay at series "
+                f"{expected_series}: {error}"
+            ) from error
+        final_state = result.final_state
+        ep_targets = [chess.square_name(square) for square in final_state.ep_targets]
+        fen = final_state.board.fen(en_passant="fen")
+        actual_boundary = {
+            "board_fen": fen,
+            "chess960": bool(final_state.board.chess960),
+            "ep_targets": ep_targets,
+            "fen": fen,
+            "progressive_ep": ep_targets,
+            "promoted_hex": f"{final_state.board.promoted:016x}",
+            "quiet_draw_pending": final_state.quiet_draw_pending,
+            "quiet_series": final_state.quiet_series,
+            "series": final_state.series_number,
+            "series_number": final_state.series_number,
+            "side_to_move": "white" if final_state.board.turn == chess.WHITE else "black",
+        }
+        expected_outcome = (
+            None
+            if result.outcome is None
+            else str(result.outcome.value).replace("-", "_")
+        )
+        if (
+            tuple(moves) != result.moves
+            or series.get("child_boundary") != actual_boundary
+            or series.get("ended_by_check") is not result.ended_by_check
+            or series.get("outcome") != expected_outcome
+            or (index < len(path) - 1 and result.outcome is not None)
+        ):
+            raise ReleaseGateError(
+                f"{label} rooted path is not contiguous with its authoritative boundaries"
+            )
+        state = final_state
 
 
 def _worker_identity(value: object, label: str) -> dict[str, Any]:
@@ -798,8 +861,8 @@ def _validate_raw_safety_trace(
     value: object,
     *,
     expected_root: str,
-    expected_unsafe_horizon: str,
-    expected_child_fen: str,
+    expected_unsafe_horizon: str | None,
+    expected_child_fen: str | None,
     root_identity: Mapping[str, Any],
     prefix_identity: Mapping[str, Any],
     maximum_work: int,
@@ -829,14 +892,25 @@ def _validate_raw_safety_trace(
     ):
         raise ReleaseGateError(f"{label} request identity, revision, or deadline is invalid")
     candidate = _mapping(request.get("candidate"), f"{label} candidate")
+    if (
+        request.get("candidate_identity") != candidate.get("candidate_identity")
+        or candidate.get("order_key") != expected_root
+    ):
+        raise ReleaseGateError(f"{label} candidate is not bound to the expected root")
     unsafe = _validate_series(candidate.get("root_series"), f"{label} unsafe horizon")
-    if unsafe.get("machine_notation") != expected_unsafe_horizon:
+    if (
+        expected_unsafe_horizon is not None
+        and unsafe.get("machine_notation") != expected_unsafe_horizon
+    ):
         raise ReleaseGateError(f"{label} substituted the unsafe horizon trace")
     child = _validate_boundary(
         request.get("authoritative_child_boundary"),
         f"{label} authoritative child",
     )
-    if child.get("series") != 6 or child.get("fen") != expected_child_fen:
+    if (
+        child.get("series") != 6
+        or (expected_child_fen is not None and child.get("fen") != expected_child_fen)
+    ):
         raise ReleaseGateError(f"{label} authoritative child is not the fixed fixture")
     if unsafe.get("child_boundary") != child or unsafe.get("ended_by_check") is not True:
         raise ReleaseGateError(f"{label} unsafe horizon is not rooted in its child")
@@ -905,6 +979,7 @@ def _validate_retained_proof(value: object, *, root: str, depth: int, label: str
         _validate_series(item, f"{label} rooted series {index}")
         for index, item in enumerate(path)
     ]
+    _validate_rooted_path_continuity(normalized_path, label=label)
     if normalized_path[0].get("machine_notation") != root:
         raise ReleaseGateError(f"{label} is not rooted at the candidate series")
     mate = _validate_series(proof.get("mate_reply"), f"{label} mate reply")
@@ -1068,6 +1143,86 @@ def _validate_horizon_research_trace(
 
 def _trace_occurs(trace: Mapping[str, Any], traces: Sequence[object]) -> bool:
     return any(item == trace for item in traces)
+
+
+def _validate_same_root_repair_policy(value: object, label: str) -> dict[str, Any]:
+    policy = dict(_mapping(value, label))
+    expected = {
+        "schema": SAME_ROOT_REPAIR_POLICY_SCHEMA,
+        "maximum_successful_same_root_repairs": MAXIMUM_SUCCESSFUL_SAME_ROOT_REPAIRS,
+    }
+    if policy != expected:
+        raise ReleaseGateError(f"{label} is not the exact bounded same-root repair policy")
+    return policy
+
+
+def _validate_policy_veto(value: object, label: str) -> dict[str, Any]:
+    veto = dict(_mapping(value, label))
+    if set(veto) != {
+        "schema",
+        "candidate_identity",
+        "reason",
+        "maximum_successful_same_root_repairs",
+        "repairs_before_veto",
+        "retained_proofs_before_veto",
+        "distinct_proofs_observed",
+    }:
+        raise ReleaseGateError(f"{label} does not have the exact policy-veto shape")
+    _text(veto.get("candidate_identity"), f"{label} candidate identity")
+    if (
+        veto.get("schema") != PV_HORIZON_POLICY_VETO_SCHEMA
+        or veto.get("reason") != "same-root-repair-limit"
+        or veto.get("maximum_successful_same_root_repairs")
+        != MAXIMUM_SUCCESSFUL_SAME_ROOT_REPAIRS
+        or veto.get("repairs_before_veto") != MAXIMUM_SUCCESSFUL_SAME_ROOT_REPAIRS
+        or veto.get("retained_proofs_before_veto") != MAXIMUM_SUCCESSFUL_SAME_ROOT_REPAIRS
+        or veto.get("distinct_proofs_observed") != 2
+    ):
+        raise ReleaseGateError(f"{label} is not the exact one-repair threshold veto")
+    return veto
+
+
+def _retained_proof_from_raw_safety(
+    safety: Mapping[str, Any],
+    *,
+    root_series: Mapping[str, Any],
+    expected_root: str,
+    label: str,
+) -> dict[str, Any]:
+    request = _mapping(safety.get("request"), f"{label} request")
+    response = _mapping(safety.get("response"), f"{label} response")
+    candidate = _mapping(request.get("candidate"), f"{label} candidate")
+    child_pv = _list(candidate.get("child_pv"), f"{label} child PV")
+    if len(child_pv) != 4:
+        raise ReleaseGateError(f"{label} does not expose a complete D5 child PV")
+    normalized_child = [
+        _validate_series(item, f"{label} child PV {index}")
+        for index, item in enumerate(child_pv)
+    ]
+    if candidate.get("root_series") != normalized_child[-1]:
+        raise ReleaseGateError(f"{label} candidate does not end at its checked-PV horizon")
+    mate = _mapping(response.get("reply_mate"), f"{label} reply mate")
+    checked = _mapping(mate.get("checked_prefix"), f"{label} checked mate")
+    proof = {
+        "schema": "spc-retained-root-horizon-proof-v1",
+        "rooted_path": [dict(root_series), *normalized_child],
+        "mate_reply": {
+            "child_boundary": dict(
+                _mapping(checked.get("next_state"), f"{label} mate child boundary")
+            ),
+            "ended_by_check": mate.get("ended_by_check"),
+            "machine_notation": mate.get("machine_notation"),
+            "moves": list(_list(mate.get("moves"), f"{label} mate moves")),
+            "outcome": mate.get("outcome"),
+            "transposition_count": 1,
+        },
+    }
+    return _validate_retained_proof(
+        proof,
+        root=expected_root,
+        depth=4,
+        label=f"{label} derived proof",
+    )
 
 
 def _validate_safety_repair_crosslink(
@@ -3409,15 +3564,15 @@ def validate_opera_checked_horizon_receipt(
         "publishable": True,
         "safety_certified": True,
         "coverage_complete": True,
-        "coverage_scope": "all-retained-candidates",
+        "coverage_scope": "selection-eligible-candidates",
         "root_scores_complete": True,
         "width_complete": True,
         "legal_series_certified": True,
         "authoritative_replay_certified": True,
         "legal_validation_runtime": "compiled-wasm",
         "root_search_mode": "streaming-root-iteration",
-        "selection_policy": "reject-adverse-checked-pv-mates-v1",
-        "selection_policy_filtered": False,
+        "selection_policy": CHECKED_PV_SELECTION_POLICY,
+        "selection_policy_filtered": True,
         "unfiltered_score_winner_selected": False,
         "timed_out": False,
         "work_limit_reached": False,
@@ -3441,6 +3596,8 @@ def validate_opera_checked_horizon_receipt(
     if not best_series or any(not isinstance(move, str) or _UCI_MOVE.fullmatch(move) is None for move in best_series):
         raise ReleaseGateError("Opera checked-PV best series is not canonical")
     selected_root = "/".join(best_series)
+    if selected_root != "b2b3":
+        raise ReleaseGateError("Opera checked-PV result did not select the release-bound b2b3 root")
     _signed_integer(summary.get("score"), "Opera checked-PV score")
     bounds = _list(summary.get("proof_bounds"), "Opera checked-PV proof bounds")
     if len(bounds) != 2 or any(bound not in {-1, 0, 1} for bound in bounds):
@@ -3448,7 +3605,7 @@ def validate_opera_checked_horizon_receipt(
     line_rejections = _integer(
         summary.get("pv_horizon_line_rejections"),
         "Opera checked-PV line rejections",
-        2,
+        3,
     )
     native_repairs = _integer(
         summary.get("pv_horizon_native_repairs"),
@@ -3460,8 +3617,27 @@ def validate_opera_checked_horizon_receipt(
         "Opera checked-PV candidate vetoes",
     )
     work = _integer(summary.get("work"), "Opera checked-PV work", 1)
-    if candidate_vetoes != 0 or native_repairs + candidate_vetoes != line_rejections:
+    if (
+        line_rejections != 3
+        or native_repairs != 2
+        or candidate_vetoes != 1
+        or native_repairs + candidate_vetoes != line_rejections
+    ):
         raise ReleaseGateError("Opera checked-PV result accounting is not balanced")
+    repair_policy = _validate_same_root_repair_policy(
+        summary.get("same_root_repair_policy"),
+        "Opera checked-PV result repair policy",
+    )
+    policy_vetoes = _list(
+        summary.get("pv_horizon_policy_vetoes"),
+        "Opera checked-PV result policy vetoes",
+    )
+    if len(policy_vetoes) != 1:
+        raise ReleaseGateError("Opera checked-PV result must contain exactly one policy veto")
+    policy_veto = _validate_policy_veto(
+        policy_vetoes[0],
+        "Opera checked-PV result policy veto",
+    )
     for key in (
         "best_full_series",
         "score",
@@ -3474,6 +3650,8 @@ def validate_opera_checked_horizon_receipt(
         "pv_horizon_line_rejections",
         "pv_horizon_native_repairs",
         "pv_horizon_candidate_vetoes",
+        "same_root_repair_policy",
+        "pv_horizon_policy_vetoes",
     ):
         if payload.get(key) != summary.get(key):
             raise ReleaseGateError(f"Opera checked-PV top-level field {key!r} drifted")
@@ -3487,13 +3665,15 @@ def validate_opera_checked_horizon_receipt(
         "canonical_replay_certified": True,
         "mate_safety_certified": True,
         "root_bound_coverage_complete": True,
-        "root_bound_coverage_scope": "all-retained-candidates",
+        "root_bound_coverage_scope": "selection-eligible-candidates",
         "selection_policy": summary["selection_policy"],
-        "selection_policy_filtered": False,
+        "selection_policy_filtered": True,
         "unfiltered_score_winner_selected": False,
         "pv_horizon_line_rejections": line_rejections,
         "pv_horizon_native_repairs": native_repairs,
-        "pv_horizon_candidate_vetoes": 0,
+        "pv_horizon_candidate_vetoes": candidate_vetoes,
+        "same_root_repair_policy": repair_policy,
+        "pv_horizon_policy_vetoes": [policy_veto],
         "work": work,
         "source_fingerprint": evidence.build.identity["source_fingerprint"],
         "artifact_fingerprint": evidence.build.identity["wasm_sha256"],
@@ -3518,7 +3698,7 @@ def validate_opera_checked_horizon_receipt(
             for key, expected in (
                 ("pv_horizon_line_rejections", line_rejections),
                 ("pv_horizon_native_repairs", native_repairs),
-                ("pv_horizon_candidate_vetoes", 0),
+                ("pv_horizon_candidate_vetoes", candidate_vetoes),
             )
         )
     ):
@@ -3586,6 +3766,132 @@ def validate_opera_checked_horizon_receipt(
     b3_candidate = validated_pairs["b3"][1]["request"].get("candidate_identity")
     if f3_candidate == b3_candidate:
         raise ReleaseGateError("Opera checked-PV f3 and b3 repairs reused one candidate identity")
+    if policy_veto.get("candidate_identity") != f3_candidate:
+        raise ReleaseGateError("Opera checked-PV threshold veto is not bound to the repaired f3 candidate")
+
+    witness = dict(
+        _mapping(
+            payload.get("threshold_veto_witness"),
+            "Opera checked-PV threshold-veto witness",
+        )
+    )
+    if set(witness) != {
+        "schema",
+        "root_series",
+        "candidate_identity",
+        "first_repair_request_sequence",
+        "second_safety_request_sequence",
+        "first_proof_sha256",
+        "second_proof_sha256",
+        "proof_count_2_research_dispatched",
+        "policy_veto",
+        "second_safety_trace",
+    }:
+        raise ReleaseGateError("Opera checked-PV threshold-veto witness has the wrong shape")
+    if (
+        witness.get("schema") != THRESHOLD_VETO_WITNESS_SCHEMA
+        or witness.get("root_series") != "f2f3"
+        or witness.get("candidate_identity") != f3_candidate
+        or witness.get("policy_veto") != policy_veto
+        or witness.get("proof_count_2_research_dispatched") is not False
+    ):
+        raise ReleaseGateError("Opera checked-PV threshold-veto witness is not policy-bound")
+    first_repair = validated_pairs["f3"][1]
+    second_safety = _validate_raw_safety_trace(
+        witness.get("second_safety_trace"),
+        expected_root="f2f3",
+        expected_unsafe_horizon=None,
+        expected_child_fen=None,
+        root_identity=root_identity,
+        prefix_identity=prefix_identity,
+        maximum_work=100_000_000,
+        label="Opera checked-PV f3 threshold-veto safety",
+    )
+    if second_safety["worker"] not in normalized_workers:
+        raise ReleaseGateError(
+            "Opera checked-PV f3 threshold-veto safety Worker was not created by the bound factory"
+        )
+    first_request = _mapping(first_repair["request"], "Opera checked-PV f3 first repair request")
+    second_request = _mapping(second_safety["request"], "Opera checked-PV f3 second safety request")
+    second_candidate = _mapping(
+        second_request.get("candidate"),
+        "Opera checked-PV f3 second safety candidate",
+    )
+    if (
+        witness.get("first_repair_request_sequence") != first_repair["request_sequence"]
+        or witness.get("second_safety_request_sequence") != second_safety["request_sequence"]
+        or second_safety["request_sequence"] <= first_repair["request_sequence"]
+        or second_safety["posted_monotonic_ms"] < first_repair["received_monotonic_ms"]
+        or second_safety["worker"] != first_repair["worker"]
+        or second_request.get("candidate_identity") != f3_candidate
+        or second_candidate.get("candidate_identity") != f3_candidate
+        or second_candidate.get("order_key") != "f2f3"
+        or second_candidate.get("order_index") != first_request.get("order_index")
+        or any(
+            second_request.get(key) != first_request.get(key)
+            for key in (
+                "session_id",
+                "request_id",
+                "iteration_id",
+                "generation",
+                "deadline_monotonic_ms",
+                "deadline_epoch_ms",
+                "candidate_identity",
+            )
+        )
+        or second_request.get("safety_revision") != first_request.get("safety_revision")
+        or not isinstance(second_request.get("incumbent_epoch"), int)
+        or int(second_request["incumbent_epoch"]) < int(first_request.get("incumbent_epoch"))
+        or int(second_request.get("remaining_time_ms")) > int(first_request.get("remaining_time_ms"))
+    ):
+        raise ReleaseGateError(
+            "Opera checked-PV second f3 proof is not ordered after the first same-root repair"
+        )
+    first_proofs = _list(
+        first_request.get("horizon_proofs"),
+        "Opera checked-PV f3 first repair proofs",
+    )
+    if len(first_proofs) != 1:
+        raise ReleaseGateError("Opera checked-PV f3 first repair did not carry exactly one proof")
+    first_proof = _validate_retained_proof(
+        first_proofs[0],
+        root="f2f3",
+        depth=4,
+        label="Opera checked-PV f3 first retained proof",
+    )
+    first_root_series = _mapping(
+        _list(first_proof.get("rooted_path"), "Opera checked-PV f3 first proof path")[0],
+        "Opera checked-PV f3 root series",
+    )
+    second_proof = _retained_proof_from_raw_safety(
+        second_safety,
+        root_series=first_root_series,
+        expected_root="f2f3",
+        label="Opera checked-PV f3 threshold-veto safety",
+    )
+    first_proof_sha256 = _canonical_sha256(first_proof)
+    second_proof_sha256 = _canonical_sha256(second_proof)
+    if (
+        witness.get("first_proof_sha256") != first_proof_sha256
+        or witness.get("second_proof_sha256") != second_proof_sha256
+        or HEX_64.fullmatch(str(first_proof_sha256)) is None
+        or HEX_64.fullmatch(str(second_proof_sha256)) is None
+        or first_proof_sha256 == second_proof_sha256
+    ):
+        raise ReleaseGateError("Opera checked-PV f3 threshold-veto proofs are not distinct and hash-bound")
+    for index, trace_value in enumerate(research_traces):
+        trace = _validate_trace_envelope(
+            trace_value,
+            f"Opera checked-PV raw research trace {index}",
+        )
+        request = _mapping(trace.get("request"), f"Opera checked-PV raw research request {index}")
+        if request.get("schema") != "spc-root-horizon-research-task-v1":
+            raise ReleaseGateError("Opera checked-PV raw research trace is not horizon research")
+        proofs = _list(request.get("horizon_proofs"), f"Opera checked-PV raw research proofs {index}")
+        if request.get("candidate_identity") == f3_candidate and len(proofs) >= 2:
+            raise ReleaseGateError(
+                "Opera checked-PV dispatched f3 proof-count-2 research instead of threshold-vetoing"
+            )
 
     for fixture, (expected_root, _, _) in fixtures.items():
         warm_value = warm_map[fixture]
@@ -3954,9 +4260,9 @@ def promote_release(
                 "existing_bundle_revalidated": True,
                 "immutable_copy_by_digest": True,
                 "opera_checked_horizon_raw_trace_attested": (
-                    checked_horizon.line_rejections >= 2
-                    and checked_horizon.native_repairs >= 2
-                    and checked_horizon.candidate_vetoes == 0
+                    checked_horizon.line_rejections == 3
+                    and checked_horizon.native_repairs == 2
+                    and checked_horizon.candidate_vetoes == 1
                 ),
                 "opera_checked_horizon_local_assets_bound": (
                     HEX_64.fullmatch(

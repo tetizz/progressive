@@ -1506,7 +1506,7 @@ function validateHorizonProofRequest(request, identity) {
 
 function validateHorizonResearchReceipt(raw, proofCount) {
   const maskLimit = 2 ** proofCount;
-  const fallbackStatus = ["work_limit", "unsupported"].includes(raw?.status);
+  const fallbackStatus = ["work_limit", "deadline", "unsupported"].includes(raw?.status);
   if (
     !Number.isSafeInteger(proofCount)
     || proofCount < 1

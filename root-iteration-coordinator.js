@@ -16,7 +16,7 @@
   const UNKNOWN = "unknown";
   const WHITE = "white";
   const BLACK = "black";
-  const CHECKED_PV_SELECTION_POLICY = "reject-adverse-checked-pv-mates-v1";
+  const CHECKED_PV_SELECTION_POLICY = "repair-once-then-veto-adverse-checked-pv-mates-v1";
   const PROOF_AWARE_SELECTION_POLICY = "exclude-proven-opponent-wins-unless-forced-v1";
   const ROOT_CANDIDATE_TASK_SCHEMA = "spc-root-candidate-task-v1";
   const ROOT_CANDIDATE_RESULT_SCHEMA = "spc-root-candidate-result-v1";
@@ -24,6 +24,7 @@
   const ROOT_HORIZON_RESEARCH_RESULT_SCHEMA = "spc-root-horizon-research-result-v1";
   const RETAINED_ROOT_HORIZON_PROOF_SCHEMA = "spc-retained-root-horizon-proof-v1";
   const MAX_RETAINED_ROOT_HORIZON_PROOFS = 16;
+  const MAX_SAME_ROOT_HORIZON_REPAIRS = 1;
   const MAX_RETAINED_ROOT_HORIZON_PROOF_PATH = 8;
   const MIN_ASPIRATION_INITIAL_DELTA = 2_048;
   const MAX_ASPIRATION_ATTEMPTS = 4;
@@ -835,8 +836,10 @@
   function validateSearchReply(reply, task, worker) {
     const work = reply?.work;
     const horizonResearch = task.schema === ROOT_HORIZON_RESEARCH_TASK_SCHEMA;
-    const fallbackStatus = horizonResearch
-      && ["work_limit", "unsupported"].includes(reply?.status);
+    const deadlineStatus = reply?.status === "deadline";
+    const fallbackStatus = deadlineStatus || (
+      horizonResearch && ["work_limit", "unsupported"].includes(reply?.status)
+    );
     if (
       !reply
       || typeof reply !== "object"
@@ -873,6 +876,10 @@
       || reply.proof_bounds.length !== 2
       || reply.proof_bounds.some((bound) => ![-1, 0, 1].includes(bound))
       || !Array.isArray(reply.child_pv)
+      || (
+        deadlineStatus
+        && (reply.bound !== UNKNOWN || reply.score !== 0 || reply.child_pv.length !== 0)
+      )
       || !work
       || work.call_work_credit !== task.call_work_credit
       || work.external_work !== task.external_work
@@ -928,8 +935,8 @@
           "root-worker-result-invalid",
         );
       }
-      if (fallbackStatus) return reply;
     }
+    if (fallbackStatus) return reply;
     if (reply.bound === UNKNOWN) {
       throw new RootCoordinatorError(
         "A completed root task returned UNKNOWN coverage.",
@@ -1064,6 +1071,18 @@
     let pvHorizonLineRejections = 0;
     let pvHorizonNativeRepairs = 0;
     let pvHorizonCandidateVetoes = 0;
+    const pvHorizonPolicyVetoes = [];
+    const recordPolicyVeto = (record, reason, distinctProofsObserved) => {
+      pvHorizonPolicyVetoes.push(Object.freeze({
+        schema: "spc-pv-horizon-candidate-veto-v1",
+        candidate_identity: record.candidate.candidate_identity,
+        reason,
+        maximum_successful_same_root_repairs: MAX_SAME_ROOT_HORIZON_REPAIRS,
+        repairs_before_veto: record.horizonNativeRepairs,
+        retained_proofs_before_veto: record.horizonProofs.length,
+        distinct_proofs_observed: distinctProofsObserved,
+      }));
+    };
     let incumbent = null;
     let incumbentSignature = null;
     let invalidated = false;
@@ -1225,6 +1244,11 @@
           pv_horizon_line_rejections: 0,
           pv_horizon_native_repairs: 0,
           pv_horizon_candidate_vetoes: 0,
+          same_root_repair_policy: Object.freeze({
+            schema: "spc-same-root-horizon-repair-policy-v1",
+            maximum_successful_same_root_repairs: MAX_SAME_ROOT_HORIZON_REPAIRS,
+          }),
+          pv_horizon_policy_vetoes: Object.freeze([]),
           coverage_scope: "all-retained-candidates",
           unfiltered_score_winner_selected: true,
           coverage_complete: true,
@@ -1477,6 +1501,10 @@
           );
           ledger.settle(outcome.reservation, reply.work.call_native_work);
           outcome.worker.nativeWorkAfter = reply.work.native_work_after;
+          if (reply.status === "deadline") {
+            invalidate("deadline");
+            throw invalidationError();
+          }
         } catch (error) {
           if (!outcome.reservation || ledger.tokens.get(outcome.reservation.token)?.settled !== true) {
             finishReservationLost(outcome);
@@ -1748,6 +1776,11 @@
           }
           incumbent.policyRejected = true;
           incumbent.safetyStatus = "line-rejected";
+          recordPolicyVeto(
+            incumbent,
+            "owner-recertification-failed",
+            incumbent.horizonProofs.length,
+          );
           incumbent.horizonNativeRepairs -= 1;
           pvHorizonNativeRepairs -= 1;
           pvHorizonCandidateVetoes += 1;
@@ -1884,14 +1917,18 @@
           }
           pvHorizonLineRejections += 1;
           safetyRevision += 1;
-          const rejectCandidate = async () => {
+          const rejectCandidate = async (
+            reason,
+            distinctProofsObserved = incumbent.horizonProofs.length,
+          ) => {
             incumbent.policyRejected = true;
             incumbent.safetyStatus = "line-rejected";
+            recordPolicyVeto(incumbent, reason, distinctProofsObserved);
             pvHorizonCandidateVetoes += 1;
             await ensureFinalCoverage();
           };
           if (safety.horizon_proof === undefined) {
-            await rejectCandidate();
+            await rejectCandidate("missing-horizon-proof");
             continue;
           }
           const proof = normalizeHorizonProof(
@@ -1900,11 +1937,17 @@
             request,
             safety,
           );
-          if (
-            incumbent.horizonProofs.length >= MAX_RETAINED_ROOT_HORIZON_PROOFS
-            || incumbent.horizonProofs.some((item) => sameJsonValue(item, proof))
-          ) {
-            await rejectCandidate();
+          if (incumbent.horizonProofs.some((item) => sameJsonValue(item, proof))) {
+            await rejectCandidate("duplicate-horizon-proof");
+            continue;
+          }
+          const distinctProofsObserved = incumbent.horizonProofs.length + 1;
+          if (incumbent.horizonProofs.length >= MAX_RETAINED_ROOT_HORIZON_PROOFS) {
+            await rejectCandidate("retained-proof-capacity", distinctProofsObserved);
+            continue;
+          }
+          if (incumbent.horizonNativeRepairs >= MAX_SAME_ROOT_HORIZON_REPAIRS) {
+            await rejectCandidate("same-root-repair-limit", distinctProofsObserved);
             continue;
           }
           incumbent.horizonProofs.push(proof);
@@ -1922,7 +1965,7 @@
             });
           } catch (error) {
             if (error?.code !== "root-work-limit") throw error;
-            await rejectCandidate();
+            await rejectCandidate("repair-work-limit", distinctProofsObserved);
             continue;
           }
           const repair = await consumeOne();
@@ -1938,11 +1981,17 @@
             );
           }
           const newestProofBit = 2 ** (incumbent.horizonProofs.length - 1);
-          if (
-            ["work_limit", "unsupported"].includes(repair.reply.status)
-            || (repair.reply.horizon_proof_hit_mask & newestProofBit) === 0
-          ) {
-            await rejectCandidate();
+          if (["work_limit", "unsupported"].includes(repair.reply.status)) {
+            await rejectCandidate(
+              repair.reply.status === "work_limit"
+                ? "repair-work-limit"
+                : "repair-unsupported",
+              distinctProofsObserved,
+            );
+            continue;
+          }
+          if ((repair.reply.horizon_proof_hit_mask & newestProofBit) === 0) {
+            await rejectCandidate("repair-proof-not-hit", distinctProofsObserved);
             continue;
           }
           makeExact(incumbent, repair.reply, owner.id);
@@ -2011,9 +2060,10 @@
       if (
         pvHorizonNativeRepairs + pvHorizonCandidateVetoes
         !== pvHorizonLineRejections
+        || pvHorizonPolicyVetoes.length !== pvHorizonCandidateVetoes
       ) {
         throw new RootCoordinatorError(
-          "Checked-horizon terminal dispositions do not balance their line rejections.",
+          "Checked-horizon dispositions and veto receipts do not balance their line rejections.",
           "root-horizon-accounting-invalid",
           { work: ledger.snapshot() },
         );
@@ -2048,6 +2098,11 @@
         pv_horizon_line_rejections: pvHorizonLineRejections,
         pv_horizon_native_repairs: pvHorizonNativeRepairs,
         pv_horizon_candidate_vetoes: pvHorizonCandidateVetoes,
+        same_root_repair_policy: Object.freeze({
+          schema: "spc-same-root-horizon-repair-policy-v1",
+          maximum_successful_same_root_repairs: MAX_SAME_ROOT_HORIZON_REPAIRS,
+        }),
+        pv_horizon_policy_vetoes: Object.freeze([...pvHorizonPolicyVetoes]),
         coverage_scope: pvHorizonCandidateVetoes > 0
           ? "selection-eligible-candidates"
           : "all-retained-candidates",

@@ -22,7 +22,16 @@
   const MAX_INITIAL_MEMORY_BYTES = 128 * 1024 * 1024;
   const MAXIMUM_MEMORY_BYTES = 256 * 1024 * 1024;
   const MAX_ESTIMATED_PEAK_MEMORY_BYTES = 192 * 1024 * 1024;
-  const CHECKED_PV_SELECTION_POLICY = "reject-adverse-checked-pv-mates-v1";
+  const CHECKED_PV_SELECTION_POLICY =
+    "repair-once-then-veto-adverse-checked-pv-mates-v1";
+  const MAX_SAME_ROOT_HORIZON_REPAIRS = 1;
+  const SAME_ROOT_REPAIR_POLICY_SCHEMA = "spc-same-root-horizon-repair-policy-v1";
+  const PV_HORIZON_POLICY_VETO_SCHEMA = "spc-pv-horizon-candidate-veto-v1";
+  const PV_HORIZON_POLICY_VETO_REASONS = new Set([
+    "duplicate-horizon-proof", "missing-horizon-proof", "owner-recertification-failed",
+    "repair-proof-not-hit", "repair-unsupported", "repair-work-limit",
+    "retained-proof-capacity", "same-root-repair-limit",
+  ]);
   const PREFIX_API = globalThis.ScottishProgressiveBrowserPrefix || null;
   const ROOT_RUNNER_API = globalThis.ScottishProgressiveBrowserRootIteration || null;
   const scriptVersion = (() => {
@@ -94,6 +103,83 @@
 
   function exactInteger(value, minimum, maximum) {
     return Number.isInteger(value) && value >= minimum && value <= maximum;
+  }
+
+  function hasOwn(value, key) {
+    return value !== null
+      && typeof value === "object"
+      && Object.prototype.hasOwnProperty.call(value, key);
+  }
+
+  function normalizedSameRootRepairPolicy(value) {
+    const expectedKeys = ["maximum_successful_same_root_repairs", "schema"];
+    if (
+      !value
+      || typeof value !== "object"
+      || Array.isArray(value)
+      || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(expectedKeys)
+      || value.schema !== SAME_ROOT_REPAIR_POLICY_SCHEMA
+      || value.maximum_successful_same_root_repairs
+        !== MAX_SAME_ROOT_HORIZON_REPAIRS
+    ) return null;
+    return {
+      schema: SAME_ROOT_REPAIR_POLICY_SCHEMA,
+      maximum_successful_same_root_repairs: MAX_SAME_ROOT_HORIZON_REPAIRS,
+    };
+  }
+
+  function normalizedPvHorizonPolicyVetoes(value, expectedCount, maximumProofs) {
+    if (!Array.isArray(value) || value.length !== expectedCount) return null;
+    const expectedKeys = [
+      "candidate_identity", "distinct_proofs_observed",
+      "maximum_successful_same_root_repairs", "reason", "repairs_before_veto",
+      "retained_proofs_before_veto", "schema",
+    ];
+    const seen = new Set();
+    const normalized = [];
+    for (const entry of value) {
+      if (
+        !entry
+        || typeof entry !== "object"
+        || Array.isArray(entry)
+        || JSON.stringify(Object.keys(entry).sort()) !== JSON.stringify(expectedKeys)
+        || entry.schema !== PV_HORIZON_POLICY_VETO_SCHEMA
+        || typeof entry.candidate_identity !== "string"
+        || !entry.candidate_identity
+        || seen.has(entry.candidate_identity)
+        || !PV_HORIZON_POLICY_VETO_REASONS.has(entry.reason)
+        || entry.maximum_successful_same_root_repairs
+          !== MAX_SAME_ROOT_HORIZON_REPAIRS
+        || !exactInteger(
+          entry.repairs_before_veto,
+          0,
+          MAX_SAME_ROOT_HORIZON_REPAIRS,
+        )
+        || !exactInteger(entry.retained_proofs_before_veto, 0, maximumProofs)
+        || !exactInteger(entry.distinct_proofs_observed, 0, maximumProofs + 1)
+        || entry.distinct_proofs_observed < entry.retained_proofs_before_veto
+        || (
+          entry.reason === "same-root-repair-limit"
+          && (
+            entry.repairs_before_veto !== 1
+            || entry.retained_proofs_before_veto !== 1
+            || entry.distinct_proofs_observed !== 2
+          )
+        )
+      ) return null;
+      seen.add(entry.candidate_identity);
+      normalized.push({
+        schema: entry.schema,
+        candidate_identity: entry.candidate_identity,
+        reason: entry.reason,
+        maximum_successful_same_root_repairs:
+          entry.maximum_successful_same_root_repairs,
+        repairs_before_veto: entry.repairs_before_veto,
+        retained_proofs_before_veto: entry.retained_proofs_before_veto,
+        distinct_proofs_observed: entry.distinct_proofs_observed,
+      });
+    }
+    return normalized;
   }
 
   function canonicalPromotedHex(value) {
@@ -568,9 +654,59 @@
     const mateCache = receipt?.mate_cache;
     const maximumHorizonProofs = identity.root_session_contract
       ?.hard_limits?.maximum_horizon_proofs;
-    const maximumHorizonRepairs = request?.limits?.max_series * maximumHorizonProofs;
+    const maximumHorizonRepairs = request?.limits?.max_series
+      * MAX_SAME_ROOT_HORIZON_REPAIRS;
     const maximumHorizonVetoes = request?.limits?.max_series;
     const maximumHorizonLineRejections = maximumHorizonRepairs + maximumHorizonVetoes;
+    const interruptedLastSafe = [
+      "interruption_code", "attempted_work", "attempted_wall_time_seconds",
+    ].some((key) => hasOwn(receipt, key))
+      || hasOwn(result, "attempted_work")
+      || hasOwn(result, "attempted_wall_time_seconds")
+      || result?.timed_out === true
+      || result?.work_limit_reached === true
+      || receipt?.timed_out === true
+      || receipt?.work_limit_reached === true;
+    const interruptionStateValid = !interruptedLastSafe || (
+      typeof receipt?.interruption_code === "string"
+      && receipt.interruption_code.length > 0
+      && typeof result?.timed_out === "boolean"
+      && typeof result?.work_limit_reached === "boolean"
+      && receipt?.timed_out === result.timed_out
+      && receipt?.work_limit_reached === result.work_limit_reached
+    );
+    const attemptedWorkValid = !interruptedLastSafe || (
+      exactInteger(result?.work, 0, Number.MAX_SAFE_INTEGER)
+      && receipt?.work === result.work
+      && exactInteger(
+        result?.attempted_work,
+        result.work,
+        Number.MAX_SAFE_INTEGER,
+      )
+      && receipt?.attempted_work === result.attempted_work
+    );
+    const attemptedWallTimeValid = !interruptedLastSafe || (
+      Number.isFinite(receipt?.wall_time_seconds)
+      && receipt.wall_time_seconds >= 0
+      && Number.isFinite(result?.attempted_wall_time_seconds)
+      && result.attempted_wall_time_seconds >= receipt.wall_time_seconds
+      && receipt?.attempted_wall_time_seconds
+        === result.attempted_wall_time_seconds
+    );
+    const repairPolicies = [
+      result?.same_root_repair_policy,
+      result?.stats?.same_root_repair_policy,
+      receipt?.same_root_repair_policy,
+    ].map(normalizedSameRootRepairPolicy);
+    const policyVetoes = [
+      result?.pv_horizon_policy_vetoes,
+      result?.stats?.pv_horizon_policy_vetoes,
+      receipt?.pv_horizon_policy_vetoes,
+    ].map((value) => normalizedPvHorizonPolicyVetoes(
+      value,
+      result?.pv_horizon_candidate_vetoes,
+      maximumHorizonProofs,
+    ));
     if (
       !result
       || typeof result !== "object"
@@ -602,7 +738,18 @@
       || typeof result.root_scores_complete !== "boolean"
       || result.root_bound_coverage_complete !== true
       || result.selection_policy !== CHECKED_PV_SELECTION_POLICY
+      || !interruptionStateValid
+      || !attemptedWorkValid
+      || !attemptedWallTimeValid
       || !exactInteger(maximumHorizonProofs, 1, 30)
+      || repairPolicies.some((value) => value === null)
+      || repairPolicies.some((value) => (
+        JSON.stringify(value) !== JSON.stringify(repairPolicies[0])
+      ))
+      || policyVetoes.some((value) => value === null)
+      || policyVetoes.some((value) => (
+        JSON.stringify(value) !== JSON.stringify(policyVetoes[0])
+      ))
       || !exactInteger(
         result.pv_horizon_line_rejections,
         0,

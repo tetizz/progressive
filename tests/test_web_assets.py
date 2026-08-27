@@ -78,6 +78,7 @@ def test_pages_uses_the_local_certified_bundle_without_waiting_for_render() -> N
     assert "time.monotonic() + 15 * 60" not in workflow
     assert "Validate local certified browser engine release authority" in workflow
     assert "--validate-existing src/scottish_progressive/web/static/engine" in workflow
+    assert "python-chess==1.999 chess==1.11.2" in workflow
     for asset in (
         "browser-prefix-contract.js",
         "root-iteration-coordinator.js",
@@ -92,6 +93,25 @@ def test_pages_uses_the_local_certified_bundle_without_waiting_for_render() -> N
     assert "python scripts/build_pages_site.py" in workflow
     assert '--version "$GITHUB_SHA"' in workflow
     assert "path: _site" in workflow
+
+
+def test_checked_horizon_capture_compares_canonical_contracts_and_exact_hit_masks() -> None:
+    capture = (ROOT / "benchmarks" / "capture_opera_checked_pv_horizon.mjs").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "canonicalJson(preflight.prefix_contract)\n"
+        "        === canonicalJson(prefixCertificate.prefix_contract)"
+    ) in capture
+    assert (
+        "bitCount16(response.horizon_proof_hit_mask) "
+        "!== response.horizon_proof_hits"
+    ) in capture
+    assert (
+        "bitCount16(response.horizon_proof_hit_mask) "
+        "> response.horizon_proof_hits"
+    ) not in capture
 
 
 def test_pages_never_binds_the_certified_local_engine_to_render_identity() -> None:
@@ -561,6 +581,11 @@ def test_play_strength_is_explicit_and_reports_completed_not_claimed_depth() -> 
     assert "Selective width" in evidence
     assert "Time limit reached" in evidence
     assert "Work limit reached" in evidence
+    assert "attemptedWork:" in app
+    assert "attemptedElapsedSeconds:" in app
+    assert "Last safe: ${compactNumber(evidence.work)} work" in evidence
+    assert "Interrupted attempt: ${compactNumber(evidence.attemptedWork)} work" in evidence
+    assert "${evidence.attemptedElapsedSeconds.toFixed(1)}s attempted" in evidence
     assert "Best-move alpha-beta across up to ${evidence.maxSeries} retained series per node" in evidence
     assert 'renderStrengthOption(dom.play_strength_strong, playSearchLimits("strong"))' in evidence
     assert "time limit only" in evidence

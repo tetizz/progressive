@@ -1658,6 +1658,17 @@
       stats.elapsed_seconds,
       runtimeReceipt.wall_time_seconds,
     );
+    const workRaw = first(result?.work, stats.generation_positions);
+    const attemptedWorkRaw = first(
+      result?.attempted_work,
+      runtimeReceipt.attempted_work,
+      workRaw,
+    );
+    const attemptedElapsedRaw = first(
+      result?.attempted_elapsed_seconds,
+      runtimeReceipt.attempted_wall_time_seconds,
+      elapsedRaw,
+    );
     const workerCountRaw = first(runtimeReceipt.worker_count, stats.root_workers, null);
     return {
       strength: requested.strength,
@@ -1677,6 +1688,17 @@
         stats.coverage_complete,
       )),
       elapsedSeconds: Number.isFinite(Number(elapsedRaw)) ? Number(elapsedRaw) : null,
+      work: Number.isSafeInteger(Number(workRaw)) && Number(workRaw) >= 0
+        ? Number(workRaw)
+        : null,
+      attemptedWork: Number.isSafeInteger(Number(attemptedWorkRaw))
+        && Number(attemptedWorkRaw) >= 0
+        ? Number(attemptedWorkRaw)
+        : null,
+      attemptedElapsedSeconds: Number.isFinite(Number(attemptedElapsedRaw))
+        && Number(attemptedElapsedRaw) >= 0
+        ? Number(attemptedElapsedRaw)
+        : null,
       runtime: String(first(runtimeReceipt.runtime, "render-server")),
       artifactFingerprint: first(runtimeReceipt.artifact_fingerprint, null),
       threadCount: Math.max(1, Math.floor(asNumber(
@@ -1792,7 +1814,26 @@
       evidence.timedOut === true ? "Time limit reached" : evidence.timedOut === false ? "Within time limit" : "Time status not reported",
     ];
     if (evidence.workLimitReached === true) status.push("Work limit reached");
-    if (evidence.elapsedSeconds !== null) status.push(`${evidence.elapsedSeconds.toFixed(1)}s elapsed`);
+    if (
+      evidence.work !== null
+      && evidence.attemptedWork !== null
+      && evidence.attemptedWork > evidence.work
+    ) {
+      status.push(`Last safe: ${compactNumber(evidence.work)} work`);
+      status.push(`Interrupted attempt: ${compactNumber(evidence.attemptedWork)} work`);
+    } else if (evidence.work !== null) {
+      status.push(`${compactNumber(evidence.work)} work`);
+    }
+    if (
+      evidence.attemptedElapsedSeconds !== null
+      && evidence.elapsedSeconds !== null
+      && evidence.attemptedElapsedSeconds > evidence.elapsedSeconds
+    ) {
+      status.push(`${evidence.elapsedSeconds.toFixed(1)}s to last safe depth`);
+      status.push(`${evidence.attemptedElapsedSeconds.toFixed(1)}s attempted`);
+    } else if (evidence.elapsedSeconds !== null) {
+      status.push(`${evidence.elapsedSeconds.toFixed(1)}s elapsed`);
+    }
     dom.play_search_status.textContent = status.filter(Boolean).join(" · ");
   }
 

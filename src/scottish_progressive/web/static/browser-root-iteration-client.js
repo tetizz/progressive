@@ -12,7 +12,19 @@
   const ASPIRATION_INITIAL_DELTA = 2_048;
   const MAX_ASPIRATION_ATTEMPTS = 4;
   const ROOT_TACTICAL_POLICY = "canonical-boundary-policy-v1";
-  const CHECKED_PV_SELECTION_POLICY = "reject-adverse-checked-pv-mates-v1";
+  const CHECKED_PV_SELECTION_POLICY =
+    "repair-once-then-veto-adverse-checked-pv-mates-v1";
+  const MAX_SAME_ROOT_HORIZON_REPAIRS = 1;
+  const SAME_ROOT_REPAIR_POLICY = Object.freeze({
+    schema: "spc-same-root-horizon-repair-policy-v1",
+    maximum_successful_same_root_repairs: MAX_SAME_ROOT_HORIZON_REPAIRS,
+  });
+  const EMPTY_PV_HORIZON_POLICY_VETOES = Object.freeze([]);
+  const PV_HORIZON_POLICY_VETO_REASONS = new Set([
+    "duplicate-horizon-proof", "missing-horizon-proof", "owner-recertification-failed",
+    "repair-proof-not-hit", "repair-unsupported", "repair-work-limit",
+    "retained-proof-capacity", "same-root-repair-limit",
+  ]);
   const ROOT_IDENTITY_KEYS = Object.freeze([
     "source_fingerprint", "kernel_sha256", "module_js_sha256", "certificate_id",
     "runtime_variant", "thread_count", "engine_version", "ruleset_version", "profile_id",
@@ -57,6 +69,30 @@
 
   function exactInteger(value, minimum, maximum = Number.MAX_SAFE_INTEGER) {
     return Number.isSafeInteger(value) && value >= minimum && value <= maximum;
+  }
+
+  function classifyRootFailure(error, lastSafeWork) {
+    const codes = new Set();
+    const seen = new Set();
+    let attemptedWork = lastSafeWork;
+    let current = error;
+    while (
+      current !== null
+      && (typeof current === "object" || typeof current === "function")
+      && !seen.has(current)
+    ) {
+      seen.add(current);
+      if (typeof current.code === "string") codes.add(current.code);
+      if (exactInteger(current.work?.committed_work, 0)) {
+        attemptedWork = Math.max(attemptedWork, current.work.committed_work);
+      }
+      current = current.cause;
+    }
+    const timedOut = codes.has("root-deadline") || codes.has("browser-root-deadline");
+    const workLimitReached = !timedOut && (
+      codes.has("root-work-limit") || codes.has("browser-root-work-limit")
+    );
+    return Object.freeze({ timedOut, workLimitReached, attemptedWork });
   }
 
   function normalizeAspirationReceipt(
@@ -281,6 +317,69 @@
   function sameJson(left, right) {
     return JSON.stringify(canonicalJsonValue(left))
       === JSON.stringify(canonicalJsonValue(right));
+  }
+
+  function normalizeSameRootRepairPolicy(value) {
+    if (
+      !value
+      || typeof value !== "object"
+      || Array.isArray(value)
+      || !sameJson(Object.keys(value).sort(), [
+        "maximum_successful_same_root_repairs", "schema",
+      ])
+      || value.schema !== SAME_ROOT_REPAIR_POLICY.schema
+      || value.maximum_successful_same_root_repairs
+        !== MAX_SAME_ROOT_HORIZON_REPAIRS
+    ) return null;
+    return SAME_ROOT_REPAIR_POLICY;
+  }
+
+  function normalizePvHorizonPolicyVetoes(
+    value,
+    { candidateIds, expectedCount, maximumProofs },
+  ) {
+    if (!Array.isArray(value) || value.length !== expectedCount) return null;
+    const expectedKeys = [
+      "candidate_identity", "distinct_proofs_observed",
+      "maximum_successful_same_root_repairs", "reason", "repairs_before_veto",
+      "retained_proofs_before_veto", "schema",
+    ];
+    const seen = new Set();
+    const normalized = [];
+    for (const entry of value) {
+      if (
+        !entry
+        || typeof entry !== "object"
+        || Array.isArray(entry)
+        || !sameJson(Object.keys(entry).sort(), expectedKeys)
+        || entry.schema !== "spc-pv-horizon-candidate-veto-v1"
+        || typeof entry.candidate_identity !== "string"
+        || !candidateIds.has(entry.candidate_identity)
+        || seen.has(entry.candidate_identity)
+        || !PV_HORIZON_POLICY_VETO_REASONS.has(entry.reason)
+        || entry.maximum_successful_same_root_repairs
+          !== MAX_SAME_ROOT_HORIZON_REPAIRS
+        || !exactInteger(
+          entry.repairs_before_veto,
+          0,
+          MAX_SAME_ROOT_HORIZON_REPAIRS,
+        )
+        || !exactInteger(entry.retained_proofs_before_veto, 0, maximumProofs)
+        || !exactInteger(entry.distinct_proofs_observed, 0, maximumProofs + 1)
+        || entry.distinct_proofs_observed < entry.retained_proofs_before_veto
+        || (
+          entry.reason === "same-root-repair-limit"
+          && (
+            entry.repairs_before_veto !== 1
+            || entry.retained_proofs_before_veto !== 1
+            || entry.distinct_proofs_observed !== 2
+          )
+        )
+      ) return null;
+      seen.add(entry.candidate_identity);
+      normalized.push(Object.freeze({ ...entry }));
+    }
+    return Object.freeze(normalized);
   }
 
   function canonicalBoundary(payload) {
@@ -1524,6 +1623,8 @@
         pv_horizon_line_rejections: 0,
         pv_horizon_native_repairs: 0,
         pv_horizon_candidate_vetoes: 0,
+        same_root_repair_policy: SAME_ROOT_REPAIR_POLICY,
+        pv_horizon_policy_vetoes: EMPTY_PV_HORIZON_POLICY_VETOES,
         exact_width: false,
         timed_out: false,
         work_limit_reached: false,
@@ -1541,6 +1642,8 @@
           pv_horizon_line_rejections: 0,
           pv_horizon_native_repairs: 0,
           pv_horizon_candidate_vetoes: 0,
+          same_root_repair_policy: SAME_ROOT_REPAIR_POLICY,
+          pv_horizon_policy_vetoes: EMPTY_PV_HORIZON_POLICY_VETOES,
           mate_cache_hits: mateCacheHits,
           mate_cache_misses: mateCacheMisses,
           mate_cache_entries: this.mateProofCache.size,
@@ -1577,6 +1680,8 @@
           pv_horizon_line_rejections: 0,
           pv_horizon_native_repairs: 0,
           pv_horizon_candidate_vetoes: 0,
+          same_root_repair_policy: SAME_ROOT_REPAIR_POLICY,
+          pv_horizon_policy_vetoes: EMPTY_PV_HORIZON_POLICY_VETOES,
           terminal_mate_rescue: {
             trigger,
             status: "found",
@@ -2161,22 +2266,47 @@
                 mateCacheMisses,
               });
             }
+            const maximumHorizonProofs = identity.root_session_contract
+              ?.hard_limits?.maximum_horizon_proofs;
+            const maximumHorizonRepairs = payload.max_series
+              * MAX_SAME_ROOT_HORIZON_REPAIRS;
+            const maximumHorizonVetoes = payload.max_series;
+            const sameRootRepairPolicy = normalizeSameRootRepairPolicy(
+              iteration.same_root_repair_policy,
+            );
+            const pvHorizonPolicyVetoes = normalizePvHorizonPolicyVetoes(
+              iteration.pv_horizon_policy_vetoes,
+              {
+                candidateIds: new Set(manifest.candidates.map(
+                  (candidate) => candidate.candidate_identity,
+                )),
+                expectedCount: iteration.pv_horizon_candidate_vetoes,
+                maximumProofs: maximumHorizonProofs,
+              },
+            );
             if (
               iteration.status !== "complete"
               || iteration.coverage_complete !== true
               || iteration.safety_certified !== true
               || iteration.selection_policy !== CHECKED_PV_SELECTION_POLICY
-              || !exactInteger(iteration.pv_horizon_line_rejections, 0)
+              || !exactInteger(maximumHorizonProofs, 1, 30)
+              || !exactInteger(
+                iteration.pv_horizon_line_rejections,
+                0,
+                maximumHorizonRepairs + maximumHorizonVetoes,
+              )
               || !exactInteger(
                 iteration.pv_horizon_native_repairs,
                 0,
-                iteration.pv_horizon_line_rejections,
+                maximumHorizonRepairs,
               )
               || !exactInteger(
                 iteration.pv_horizon_candidate_vetoes,
                 0,
-                iteration.pv_horizon_line_rejections,
+                maximumHorizonVetoes,
               )
+              || sameRootRepairPolicy === null
+              || pvHorizonPolicyVetoes === null
               || iteration.pv_horizon_native_repairs
                 + iteration.pv_horizon_candidate_vetoes
                 !== iteration.pv_horizon_line_rejections
@@ -2293,6 +2423,8 @@
               pv_horizon_line_rejections: iteration.pv_horizon_line_rejections,
               pv_horizon_native_repairs: iteration.pv_horizon_native_repairs,
               pv_horizon_candidate_vetoes: iteration.pv_horizon_candidate_vetoes,
+              same_root_repair_policy: sameRootRepairPolicy,
+              pv_horizon_policy_vetoes: pvHorizonPolicyVetoes,
               exact_width: iteration.width_complete,
               timed_out: false,
               work_limit_reached: false,
@@ -2309,6 +2441,8 @@
                 pv_horizon_line_rejections: iteration.pv_horizon_line_rejections,
                 pv_horizon_native_repairs: iteration.pv_horizon_native_repairs,
                 pv_horizon_candidate_vetoes: iteration.pv_horizon_candidate_vetoes,
+                same_root_repair_policy: sameRootRepairPolicy,
+                pv_horizon_policy_vetoes: pvHorizonPolicyVetoes,
                 mate_cache_hits: mateCacheHits,
                 mate_cache_misses: mateCacheMisses,
                 mate_cache_entries: this.mateProofCache.size,
@@ -2357,6 +2491,8 @@
                 pv_horizon_line_rejections: iteration.pv_horizon_line_rejections,
                 pv_horizon_native_repairs: iteration.pv_horizon_native_repairs,
                 pv_horizon_candidate_vetoes: iteration.pv_horizon_candidate_vetoes,
+                same_root_repair_policy: sameRootRepairPolicy,
+                pv_horizon_policy_vetoes: pvHorizonPolicyVetoes,
                 aspiration: {
                   ...aspiration,
                   owner_worker_id: aspirationOwnerId,
@@ -2428,19 +2564,23 @@
         if (this.lastSafe) {
           if (this.crashError) this._closePool(this.crashError);
           if (lastFailure) {
-            const interrupted = [
-              lastFailure.code,
-              lastFailure.name,
-            ].some((value) => /deadline|timeout/i.test(String(value || "")));
-            const capped = /work|cap/i.test(String(lastFailure.code || ""));
+            const failure = classifyRootFailure(lastFailure, this.lastSafe.work);
+            const attemptedWallTimeSeconds = Math.max(
+              0,
+              (monotonicNow() - hostStarted) / 1_000,
+            );
             return Object.freeze({
               ...this.lastSafe,
-              timed_out: interrupted,
-              work_limit_reached: capped,
+              timed_out: failure.timedOut,
+              work_limit_reached: failure.workLimitReached,
+              attempted_work: failure.attemptedWork,
+              attempted_wall_time_seconds: attemptedWallTimeSeconds,
               runtime_receipt: Object.freeze({
                 ...this.lastSafe.runtime_receipt,
-                timed_out: interrupted,
-                work_limit_reached: capped,
+                timed_out: failure.timedOut,
+                work_limit_reached: failure.workLimitReached,
+                attempted_work: failure.attemptedWork,
+                attempted_wall_time_seconds: attemptedWallTimeSeconds,
                 interruption_code: String(lastFailure.code || "root-iteration-interrupted"),
               }),
             });

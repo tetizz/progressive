@@ -754,7 +754,10 @@ async function testCheckedPvPolicyVeto() {
   assert.equal(result.selected.candidate_identity, "b");
   assert.equal(result.selected.score, 90);
   assert.equal(result.selected.safety_override, false);
-  assert.equal(result.selection_policy, "reject-adverse-checked-pv-mates-v1");
+  assert.equal(
+    result.selection_policy,
+    "repair-once-then-veto-adverse-checked-pv-mates-v1",
+  );
   assert.equal(result.selection_policy_filtered, true);
   assert.equal(result.pv_horizon_line_rejections, 1);
   assert.equal(result.coverage_scope, "selection-eligible-candidates");
@@ -1031,7 +1034,7 @@ async function testFailedRepairedWinnerRecertificationReclassifiesTheLastRepair(
 }
 
 
-async function runSecondCheckedPvProofScenario({ impossibleReceipt = false } = {}) {
+async function runSecondCheckedPvProofScenario({ invalidReceipt = null } = {}) {
   const definitions = [
     { id: "a", key: "a2a3", score: 100 },
     { id: "b", key: "b2b3", score: 90 },
@@ -1069,7 +1072,7 @@ async function runSecondCheckedPvProofScenario({ impossibleReceipt = false } = {
         proofSetCalls.push(task.horizon_proofs);
         const proofCount = task.horizon_proofs.length;
         const firstForSet = proofSetCalls.filter((set) => set.length === proofCount).length === 1;
-        const impossibleBitCount = impossibleReceipt && proofCount === 2 && firstForSet;
+        const invalidFirstReceipt = invalidReceipt !== null && proofCount === 1 && firstForSet;
         return {
           ...reply,
           schema: "spc-root-horizon-research-result-v1",
@@ -1077,9 +1080,11 @@ async function runSecondCheckedPvProofScenario({ impossibleReceipt = false } = {
           child_pv: proofCount === 1 ? secondPv : [],
           horizon_proof_set_identity: `spc-horizon-proof-set-v1|${proofCount}`,
           horizon_proofs_validated: proofCount,
-          horizon_proof_hits: firstForSet ? 1 : 0,
-          horizon_proof_hit_mask: impossibleBitCount
-            ? 3
+          horizon_proof_hits: invalidFirstReceipt && invalidReceipt === "population"
+            ? 2
+            : firstForSet ? 1 : 0,
+          horizon_proof_hit_mask: invalidFirstReceipt && invalidReceipt === "mask"
+            ? 0x1_0000
             : firstForSet ? 2 ** (proofCount - 1) : 0,
         };
       }
@@ -1120,7 +1125,7 @@ async function runSecondCheckedPvProofScenario({ impossibleReceipt = false } = {
     },
   });
 
-  if (impossibleReceipt) {
+  if (invalidReceipt !== null) {
     await assert.rejects(resultPromise, (error) => {
       assert.equal(error?.code, "root-worker-result-invalid");
       return true;
@@ -1128,26 +1133,41 @@ async function runSecondCheckedPvProofScenario({ impossibleReceipt = false } = {
     return proofSetCalls;
   }
   const result = await resultPromise;
-  assert.equal(result.selected.candidate_identity, "a");
-  assert.equal(result.selected.score, 92);
+  assert.equal(result.selected.candidate_identity, "b");
+  assert.equal(result.selected.score, 90);
   assert.equal(result.pv_horizon_line_rejections, 2);
-  assert.equal(result.pv_horizon_native_repairs, 2);
-  assert.equal(result.pv_horizon_candidate_vetoes, 0);
-  assert.deepEqual(proofSetCalls.map((set) => set.length), [1, 1, 2, 2]);
-  assert.deepEqual(proofSetCalls[2][0], proofSetCalls[0][0]);
-  assert.deepEqual(proofSetCalls[2][1].rooted_path.slice(1), secondPv);
+  assert.equal(result.pv_horizon_native_repairs, 1);
+  assert.equal(result.pv_horizon_candidate_vetoes, 1);
+  assert.deepEqual(
+    proofSetCalls.map((set) => set.length),
+    [1, 1],
+    "the second distinct checked-PV mate must veto before a second repair dispatch",
+  );
+  assert.deepEqual(result.same_root_repair_policy, {
+    schema: "spc-same-root-horizon-repair-policy-v1",
+    maximum_successful_same_root_repairs: 1,
+  });
+  assert.deepEqual(result.pv_horizon_policy_vetoes, [{
+    schema: "spc-pv-horizon-candidate-veto-v1",
+    candidate_identity: "a",
+    reason: "same-root-repair-limit",
+    maximum_successful_same_root_repairs: 1,
+    repairs_before_veto: 1,
+    retained_proofs_before_veto: 1,
+    distinct_proofs_observed: 2,
+  }]);
   return proofSetCalls;
 }
 
 
-async function testSecondCheckedPvProofUsesItsRequestOrderHitBit() {
+async function testSecondDistinctCheckedPvProofVetoesAtSameRootRepairLimit() {
   await runSecondCheckedPvProofScenario();
 }
 
 
 async function testImpossibleProofHitPopulationFailsClosed() {
-  const calls = await runSecondCheckedPvProofScenario({ impossibleReceipt: true });
-  assert.deepEqual(calls.map((set) => set.length), [1, 1, 2]);
+  const calls = await runSecondCheckedPvProofScenario({ invalidReceipt: "population" });
+  assert.deepEqual(calls.map((set) => set.length), [1]);
 }
 
 
@@ -1227,92 +1247,13 @@ async function testDuplicateCheckedPvProofFallsBackToCandidateVeto() {
 }
 
 
-async function testSixteenthProofIsTheLocalResearchCapacity() {
-  const definitions = [
-    { id: "a", key: "a2a3", score: 100 },
-    { id: "b", key: "b2b3", score: 90 },
-  ];
-  const firstMoves = [
-    "a7a6", "a7a5", "b7b6", "b7b5", "c7c6", "c7c5", "d7d6", "d7d5",
-    "e7e6", "e7e5", "f7f6", "f7f5", "g7g6", "g7g5", "h7h6", "h7h5",
-    "b8a6",
-  ];
-  const pvs = firstMoves.map((firstMove) => [
-    syntheticSeries([firstMove, "b8c6"], 3),
-    syntheticSeries(["g1f3", "b1c3", "f1b5"], 4),
-    syntheticSeries(["d7d6", "c8d7", "d8c8", "e8d8"], 5),
-    syntheticSeries(["b5c6", "f3e5", "c3d5", "d1h5", "h5f7"], 6, {
-      endedByCheck: true,
-    }),
-  ]);
-  const mateReply = syntheticSeries(
-    ["d8e7", "c8c1", "c1e1", "e1e2", "e2e1", "e1h1"],
-    7,
-    { outcome: "checkmate", endedByCheck: true },
+async function testSixteenBitProofMaskProtocolLimitRemainsFailClosed() {
+  const calls = await runSecondCheckedPvProofScenario({ invalidReceipt: "mask" });
+  assert.deepEqual(
+    calls.map((set) => set.length),
+    [1],
+    "a proof hit outside the retained-proof protocol mask must fail closed",
   );
-  const proofSetCounts = new Map();
-  let horizonCalls = 0;
-  const pool = workers(1, definitions, {
-    mutate: (task, reply) => {
-      if (task.schema === "spc-root-horizon-research-task-v1") {
-        horizonCalls += 1;
-        const proofCount = task.horizon_proofs.length;
-        const callsForSet = (proofSetCounts.get(proofCount) ?? 0) + 1;
-        proofSetCounts.set(proofCount, callsForSet);
-        const repair = callsForSet === 1;
-        return {
-          ...reply,
-          schema: "spc-root-horizon-research-result-v1",
-          score: 100,
-          child_pv: pvs[proofCount],
-          horizon_proof_set_identity: `spc-horizon-proof-set-v1|capacity-${proofCount}`,
-          horizon_proofs_validated: proofCount,
-          horizon_proof_hits: repair ? 1 : 0,
-          horizon_proof_hit_mask: repair ? 2 ** (proofCount - 1) : 0,
-        };
-      }
-      if (task.candidate_identity === "a") return { ...reply, child_pv: pvs[0] };
-      return reply;
-    },
-  });
-  let aSafetyCalls = 0;
-  const result = await api.runRootIteration({
-    request: request(1, { iteration_id: "checked-pv-proof-capacity" }),
-    manifest: manifest(definitions),
-    workers: pool,
-    safetyProbe: async (task) => {
-      if (task.candidate_identity !== "a" || aSafetyCalls >= pvs.length) {
-        return safetyReply(task, { status: "exhausted", work_used: 1 });
-      }
-      const pv = pvs[aSafetyCalls];
-      aSafetyCalls += 1;
-      assert.deepEqual(task.candidate.child_pv, pv);
-      return safetyReply(task, {
-        status: "line-rejected",
-        safety_scope: "pv-horizon",
-        work_used: 2,
-        line_rejection: {
-          schema: "spc-pv-horizon-line-rejection-v1",
-          reason: "adverse-immediate-series-mate",
-          mate_ply: 6,
-          horizon_series: pv.at(-1).machine_notation,
-        },
-        reply_mate: mateReply,
-        horizon_proof: {
-          schema: "spc-retained-root-horizon-proof-v1",
-          rooted_path: [task.candidate.root_series, ...pv],
-          mate_reply: mateReply,
-        },
-      });
-    },
-  });
-
-  assert.equal(result.selected.candidate_identity, "b");
-  assert.equal(result.pv_horizon_line_rejections, 17);
-  assert.equal(result.pv_horizon_native_repairs, 16);
-  assert.equal(result.pv_horizon_candidate_vetoes, 1);
-  assert.equal(horizonCalls, 32, "the seventeenth proof must fall back before dispatch");
-  assert.equal(Math.max(...proofSetCounts.keys()), 16);
 }
 
 
@@ -1351,10 +1292,10 @@ async function testHorizonResearchFallbacksAndMalformedReceipt() {
             horizon_proof_hits: mode === "zero-hit" ? 0 : 1,
             horizon_proof_hit_mask: mode === "zero-hit" ? 0 : 1,
           };
-          if (mode === "work-limit" || mode === "unsupported") {
+          if (["work-limit", "unsupported", "deadline"].includes(mode)) {
             return {
               ...common,
-              status: mode === "work-limit" ? "work_limit" : "unsupported",
+              status: mode === "work-limit" ? "work_limit" : mode,
               bound: "unknown",
               score: 0,
               child_pv: [],
@@ -1373,7 +1314,7 @@ async function testHorizonResearchFallbacksAndMalformedReceipt() {
           if (mode === "identity-mismatch") {
             return { ...common, kernel_sha256: "f".repeat(64) };
           }
-          if (mode === "deadline") {
+          if (mode === "malformed-deadline") {
             return { ...common, status: "deadline", bound: "unknown" };
           }
           return common;
@@ -1423,13 +1364,20 @@ async function testHorizonResearchFallbacksAndMalformedReceipt() {
     assert.equal(rejected.selection_eligible, false);
   }
 
-  for (const mode of ["malformed", "stale", "identity-mismatch", "deadline"]) {
+  for (const mode of ["malformed", "stale", "identity-mismatch", "malformed-deadline"]) {
     const { resultPromise } = await run(mode);
     await assert.rejects(resultPromise, (error) => {
       assert.equal(error?.code, "root-worker-result-invalid", mode);
       return true;
     });
   }
+  const { pool: deadlinePool, resultPromise: deadline } = await run("deadline");
+  await assert.rejects(deadline, (error) => {
+    assert.equal(error?.code, "root-deadline");
+    assert.equal(error?.work?.within_cap, true);
+    return true;
+  });
+  assert.equal(deadlinePool[0].cancelCalls.length, 1);
   const { resultPromise: lost } = await run("lost");
   await assert.rejects(lost, (error) => {
     assert.equal(error?.code, "root-worker-lost");
@@ -2035,6 +1983,27 @@ async function testCancellationAndDeadline() {
   }), "root-deadline");
   assert.equal(deadlinePool[0].cancelCalls.length, 1);
 
+  const nativeDeadlinePool = workers(1, single, {
+    mutate: (_task, reply) => ({
+      ...reply,
+      status: "deadline",
+      bound: "unknown",
+      score: 0,
+      child_pv: [],
+    }),
+  });
+  await assert.rejects(api.runRootIteration({
+    request: request(1),
+    manifest: manifest(single),
+    workers: nativeDeadlinePool,
+    safetyProbe: exhaustedSafety(),
+  }), (error) => {
+    assert.equal(error?.code, "root-deadline");
+    assert.equal(error?.work?.within_cap, true);
+    return true;
+  });
+  assert.equal(nativeDeadlinePool[0].cancelCalls.length, 1);
+
   const receiptPool = workers(1, single);
   const receiptSearchDeadline = performance.now() + 50;
   let safetyStartedBeforeSearchDeadline = false;
@@ -2156,10 +2125,10 @@ await testSafetyRevisionAndBoundInvalidation();
 await testCheckedPvProofRepairsOnlyTheSelectedCandidate();
 await testRepairedWinnerRecertifiesWithTheSameProofSet();
 await testFailedRepairedWinnerRecertificationReclassifiesTheLastRepair();
-await testSecondCheckedPvProofUsesItsRequestOrderHitBit();
+await testSecondDistinctCheckedPvProofVetoesAtSameRootRepairLimit();
 await testImpossibleProofHitPopulationFailsClosed();
 await testDuplicateCheckedPvProofFallsBackToCandidateVeto();
-await testSixteenthProofIsTheLocalResearchCapacity();
+await testSixteenBitProofMaskProtocolLimitRemainsFailClosed();
 await testHorizonResearchFallbacksAndMalformedReceipt();
 await testNoSearchCreditFallsBackWithoutSpendingHeldSafetyWork();
 await testBlackCheckedPvRepairReversesTheCorrectionDirection();
@@ -2189,12 +2158,13 @@ process.stdout.write(`${JSON.stringify({
   checked_pv_native_candidate_repair: true,
   checked_pv_repaired_winner_same_owner_recertified: true,
   checked_pv_failed_warm_recertification_accounting_balanced: true,
-  checked_pv_second_proof_request_order_hit_bit: true,
+  checked_pv_second_distinct_proof_vetoes_after_one_repair: true,
   checked_pv_impossible_hit_population_fail_closed: true,
   checked_pv_duplicate_proof_veto_fallback: true,
-  checked_pv_maximum_16_proofs_veto_fallback: true,
+  checked_pv_16_bit_protocol_mask_limit_fail_closed: true,
   checked_pv_zero_hit_work_limit_and_unsupported_veto_fallback: true,
-  checked_pv_malformed_stale_identity_deadline_and_lost_fail_closed: true,
+  checked_pv_malformed_stale_identity_and_lost_fail_closed: true,
+  checked_pv_native_deadline_maps_to_root_deadline: true,
   checked_pv_no_search_credit_veto_fallback: true,
   checked_pv_black_repair_direction: true,
   checked_pv_policy_veto_without_score_forgery: true,
@@ -2213,6 +2183,7 @@ process.stdout.write(`${JSON.stringify({
   memory_admission_and_receipt_caps: true,
   cancellation_generation_invalidated: true,
   deadline_generation_invalidated: true,
+  native_search_deadline_maps_to_root_deadline: true,
   deadline_receipt_grace_without_extra_dispatch: true,
   monotonic_deadline_contract: true,
   full_artifact_identity_bound: true,

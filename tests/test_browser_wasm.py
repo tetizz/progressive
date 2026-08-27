@@ -968,6 +968,14 @@ const accepted = [
     horizon_proof_hits: 0,
     horizon_proof_hit_mask: 0,
   },
+  {
+    ...base,
+    status: "deadline",
+    horizon_proof_set_identity: "",
+    horizon_proofs_validated: 0,
+    horizon_proof_hits: 0,
+    horizon_proof_hit_mask: 0,
+  },
 ].every((receipt) => api.validateHorizonResearchReceipt(receipt, 2) === receipt);
 const invalid = [
   { ...base, horizon_proof_hits: 1, horizon_proof_hit_mask: 3 },
@@ -979,7 +987,7 @@ const invalid = [
   {
     ...base,
     status: "deadline",
-    horizon_proof_set_identity: "",
+    horizon_proof_set_identity: "spc-horizon-proof-set-v1|malformed-deadline",
     horizon_proofs_validated: 0,
     horizon_proof_hits: 0,
     horizon_proof_hit_mask: 0,

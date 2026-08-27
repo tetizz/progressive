@@ -84,7 +84,7 @@ EVIDENCE_SPECS = (
     (
         "opera_checked_horizon",
         "evidence/opera-checked-pv-horizon-receipt.json",
-        "spc-opera-checked-pv-horizon-receipt-v3",
+        "spc-opera-checked-pv-horizon-receipt-v4",
     ),
 )
 
@@ -1471,7 +1471,9 @@ def validate_promoted_release(
     if (
         not 0 < checked_elapsed < 60
         or checked_work > default_generation_positions
-        or candidate_vetoes != 0
+        or line_rejections != 3
+        or native_repairs != 2
+        or candidate_vetoes != 1
         or native_repairs + candidate_vetoes != line_rejections
         or not isinstance(local_asset_set, str)
         or HEX_64.fullmatch(local_asset_set) is None

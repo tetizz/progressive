@@ -42,6 +42,12 @@ const SOURCE = "a".repeat(16);
 const WASM = "b".repeat(64);
 const MODULE = "c".repeat(64);
 const KERNEL = "d".repeat(64);
+const CHECKED_PV_SELECTION_POLICY =
+  "repair-once-then-veto-adverse-checked-pv-mates-v1";
+const SAME_ROOT_REPAIR_POLICY = Object.freeze({
+  schema: "spc-same-root-horizon-repair-policy-v1",
+  maximum_successful_same_root_repairs: 1,
+});
 const MEMORY = Object.freeze({
   initial_bytes: 16 * 1024 * 1024,
   maximum_bytes: 32 * 1024 * 1024,
@@ -197,6 +203,17 @@ function sameJson(left, right) {
 
 function strictKeys(value, expected) {
   assert.deepEqual(Object.keys(value).sort(), [...new Set(expected)].sort());
+}
+
+function assertPolicyReceiptSurfaces(result, expectedVetoes) {
+  assert.equal(result.selection_policy, CHECKED_PV_SELECTION_POLICY);
+  for (const surface of [result, result.stats, result.runtime_receipt]) {
+    assert.deepEqual(surface.same_root_repair_policy, SAME_ROOT_REPAIR_POLICY);
+    assert.deepEqual(surface.pv_horizon_policy_vetoes, expectedVetoes);
+  }
+  assert.equal(result.pv_horizon_candidate_vetoes, expectedVetoes.length);
+  assert.equal(result.stats.pv_horizon_candidate_vetoes, expectedVetoes.length);
+  assert.equal(result.runtime_receipt.pv_horizon_candidate_vetoes, expectedVetoes.length);
 }
 
 function exactState(boundary) {
@@ -406,6 +423,7 @@ class MockWorld {
     searchDelayMs = 2,
     policyDrift = null,
     horizonMateFirst = false,
+    horizonMateTwice = false,
     favorableHorizonFirst = false,
   } = {}) {
     this.foundFirst = foundFirst;
@@ -418,6 +436,7 @@ class MockWorld {
     this.searchDelayMs = searchDelayMs;
     this.policyDrift = policyDrift;
     this.horizonMateFirst = horizonMateFirst;
+    this.horizonMateTwice = horizonMateTwice;
     this.favorableHorizonFirst = favorableHorizonFirst;
     this.workers = [];
     this.live = 0;
@@ -633,8 +652,9 @@ class MockWorld {
       if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
       const index = Number(payload.candidate_identity.slice(1));
       const white = worker.boundary.series % 2 === 1;
+      const horizonScore = this.horizonMateTwice ? 100 : 80;
       const score = horizonResearch
-        ? white ? 80 : -80
+        ? white ? horizonScore : -horizonScore
         : white ? 100 - index * 10 : -100 + index * 10;
       const bound = payload.purpose === "scout" || payload.purpose === "aspiration"
         ? score <= payload.alpha ? "upper" : score >= payload.beta ? "lower" : "exact"
@@ -642,16 +662,25 @@ class MockWorld {
       const work = setupWork(worker, payload, 1);
       let childPv = [];
       const pvLength = payload.candidate_identity === "c0"
-        ? this.horizonMateFirst && payload.child_depth === 4
+        ? this.horizonMateFirst
+          && payload.child_depth === 4
+          && (!horizonResearch || this.horizonMateTwice)
           ? 4
           : this.favorableHorizonFirst && payload.child_depth === 3 ? 3 : 0
         : 0;
-      if (pvLength > 0 && !horizonResearch) {
+      if (pvLength > 0) {
         let start = worker.manifest.candidates[0].root_series.child_boundary;
         childPv = Array.from({ length: pvLength }, (_, pvIndex) => {
           const series = start.series;
-          const moves = candidateMoves(series, 0);
-          const child = exactState(boundaryPayload(flipFen(start.fen), series + 1));
+          const moves = candidateMoves(series, horizonResearch ? 1 : 0);
+          const quietSeries = horizonResearch && this.horizonMateTwice && pvIndex === pvLength - 1
+            ? 1
+            : 0;
+          const child = exactState(boundaryPayload(
+            flipFen(start.fen),
+            series + 1,
+            quietSeries,
+          ));
           const endedByCheck = pvIndex === pvLength - 1;
           this.pvTransitions.set(
             JSON.stringify([start.fen, start.series, moves]),
@@ -1079,6 +1108,7 @@ async function testPersistentPoolTwoTurns() {
   assert.equal(first.root_bound_coverage_complete, true);
   assert.equal(first.runtime_receipt.safety_reserve_positions, 1_000_000);
   assert.equal(first.stats.safety_reserve_positions, 1_000_000);
+  assertPolicyReceiptSurfaces(first, []);
   assert.equal(first.runtime_receipt.worker_count, 8);
   assert.equal(world.peakLive, 8, "preflight heap must be dropped before admitting 8 roots");
   assert.equal(client.rootRunner.pool.length, 8);
@@ -1306,6 +1336,129 @@ async function testCrashReturnsLastSafeAndReprobes() {
   client.close();
 }
 
+async function interruptedAfterLastSafe(errorCode) {
+  const world = new MockWorld();
+  const base = world.handle.bind(world);
+  let failed = false;
+  world.handle = async (worker, type, request) => {
+    if (
+      !failed
+      && type === "root-search"
+      && request.child_depth + 1 === 3
+    ) {
+      failed = true;
+      const error = new Error(`synthetic ${errorCode}`);
+      error.code = errorCode;
+      throw error;
+    }
+    return base(worker, type, request);
+  };
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  const requestPayload = payload(boundaryPayload(WHITE_FEN, 1), 3);
+  const result = await client.analyzeRoot(requestPayload, {
+    deadlineMs: performance.now() + 20_000,
+  });
+  const identity = client.identity;
+  client.close();
+  return { identity, requestPayload, result };
+}
+
+async function testNestedDeadlineAndExactWorkLimitClassification() {
+  const deadlineRun = await interruptedAfterLastSafe("root-deadline");
+  const deadline = deadlineRun.result;
+  assert.equal(deadline.completed_depth, 2);
+  assert.equal(deadline.timed_out, true);
+  assert.equal(deadline.work_limit_reached, false);
+  assert.equal(deadline.runtime_receipt.timed_out, true);
+  assert.equal(deadline.runtime_receipt.work_limit_reached, false);
+  assert.equal(deadline.runtime_receipt.interruption_code, "root-worker-lost");
+  assert.equal(deadline.attempted_work, deadline.runtime_receipt.attempted_work);
+  assert(deadline.attempted_work > deadline.work);
+  assert.equal(
+    deadline.attempted_wall_time_seconds,
+    deadline.runtime_receipt.attempted_wall_time_seconds,
+  );
+  assert(deadline.attempted_wall_time_seconds >= deadline.runtime_receipt.wall_time_seconds);
+
+  const workLimitRun = await interruptedAfterLastSafe("root-work-limit");
+  const workLimit = workLimitRun.result;
+  assert.equal(workLimit.completed_depth, 2);
+  assert.equal(workLimit.timed_out, false);
+  assert.equal(workLimit.work_limit_reached, true);
+  assert.equal(workLimit.runtime_receipt.timed_out, false);
+  assert.equal(workLimit.runtime_receipt.work_limit_reached, true);
+  assert.equal(workLimit.runtime_receipt.interruption_code, "root-worker-lost");
+  assert.equal(workLimit.attempted_work, workLimit.runtime_receipt.attempted_work);
+  assert(workLimit.attempted_work > workLimit.work);
+  assert.equal(
+    workLimit.attempted_wall_time_seconds,
+    workLimit.runtime_receipt.attempted_wall_time_seconds,
+  );
+  assert(workLimit.attempted_wall_time_seconds >= workLimit.runtime_receipt.wall_time_seconds);
+
+  const assertInterruptedMutationRejected = (run, label, mutate) => {
+    const candidate = structuredClone(run.result);
+    mutate(candidate);
+    assert.throws(
+      () => browserClientApi.validatePublishedRootAnalysis(
+        candidate,
+        run.requestPayload,
+        run.identity,
+      ),
+      (error) => error?.code === "browser-root-result-invalid",
+      label,
+    );
+  };
+  for (const [label, mutate] of [
+    ["attempted work must be present top-level", (candidate) => {
+      delete candidate.attempted_work;
+    }],
+    ["attempted work must be an exact integer", (candidate) => {
+      candidate.attempted_work += 0.5;
+      candidate.runtime_receipt.attempted_work = candidate.attempted_work;
+    }],
+    ["attempted work cannot precede last-safe work", (candidate) => {
+      candidate.attempted_work = candidate.work - 1;
+      candidate.runtime_receipt.attempted_work = candidate.work - 1;
+    }],
+    ["attempted work surfaces cannot drift", (candidate) => {
+      candidate.runtime_receipt.attempted_work += 1;
+    }],
+    ["attempted work cannot exceed the safe-integer envelope", (candidate) => {
+      candidate.attempted_work = Number.MAX_SAFE_INTEGER + 1;
+      candidate.runtime_receipt.attempted_work = candidate.attempted_work;
+    }],
+    ["interrupted accounting requires its interruption code", (candidate) => {
+      delete candidate.runtime_receipt.interruption_code;
+    }],
+    ["interruption flags cannot drift across surfaces", (candidate) => {
+      candidate.runtime_receipt.timed_out = !candidate.timed_out;
+    }],
+  ]) assertInterruptedMutationRejected(deadlineRun, label, mutate);
+  for (const [label, mutate] of [
+    ["attempted wall time must be present top-level", (candidate) => {
+      delete candidate.attempted_wall_time_seconds;
+    }],
+    ["attempted wall time must be finite", (candidate) => {
+      candidate.attempted_wall_time_seconds = Number.POSITIVE_INFINITY;
+      candidate.runtime_receipt.attempted_wall_time_seconds =
+        candidate.attempted_wall_time_seconds;
+    }],
+    ["attempted wall time cannot precede last-safe wall time", (candidate) => {
+      candidate.attempted_wall_time_seconds = -1;
+      candidate.runtime_receipt.attempted_wall_time_seconds = -1;
+    }],
+    ["attempted wall-time surfaces cannot drift", (candidate) => {
+      candidate.runtime_receipt.attempted_wall_time_seconds += 0.001;
+    }],
+  ]) assertInterruptedMutationRejected(workLimitRun, label, mutate);
+}
+
 async function testMateProofCacheAcrossFiveDepthsAndBoundaries() {
   const world = new MockWorld();
   const client = browserClientApi.createClient({
@@ -1367,6 +1520,7 @@ async function testImmediateMatePublishesWithBoundCoverage() {
   assert.equal(result.root_bound_coverage_complete, true);
   assert.equal(result.checked_prefix.outcome, "checkmate");
   assert.equal(world.safetyReceipts.length, 0);
+  assertPolicyReceiptSurfaces(result, []);
   client.close();
 }
 
@@ -1401,20 +1555,23 @@ async function testCheckedPvHorizonMateRejectsTheProvisionalWinner() {
   assert.equal(result.pv_horizon_line_rejections, 1);
   assert.equal(result.pv_horizon_native_repairs, 1);
   assert.equal(result.pv_horizon_candidate_vetoes, 0);
-  const maximumHorizonProofs = IDENTITY.root_session_contract
-    .hard_limits.maximum_horizon_proofs;
-  const aboveRetainedWidth = structuredClone(result);
-  const validHighRejectionCount = requestPayload.max_series + 1;
-  aboveRetainedWidth.pv_horizon_line_rejections = validHighRejectionCount;
-  aboveRetainedWidth.pv_horizon_native_repairs = validHighRejectionCount;
-  aboveRetainedWidth.stats.pv_horizon_line_rejections = validHighRejectionCount;
-  aboveRetainedWidth.stats.pv_horizon_native_repairs = validHighRejectionCount;
-  aboveRetainedWidth.runtime_receipt.pv_horizon_line_rejections = validHighRejectionCount;
-  aboveRetainedWidth.runtime_receipt.pv_horizon_native_repairs = validHighRejectionCount;
-  browserClientApi.validatePublishedRootAnalysis(
-    aboveRetainedWidth,
-    requestPayload,
-    client.identity,
+  assertPolicyReceiptSurfaces(result, []);
+  const tooManySameRootRepairs = structuredClone(result);
+  const invalidRepairCount = requestPayload.max_series + 1;
+  tooManySameRootRepairs.pv_horizon_line_rejections = invalidRepairCount;
+  tooManySameRootRepairs.pv_horizon_native_repairs = invalidRepairCount;
+  tooManySameRootRepairs.stats.pv_horizon_line_rejections = invalidRepairCount;
+  tooManySameRootRepairs.stats.pv_horizon_native_repairs = invalidRepairCount;
+  tooManySameRootRepairs.runtime_receipt.pv_horizon_line_rejections = invalidRepairCount;
+  tooManySameRootRepairs.runtime_receipt.pv_horizon_native_repairs = invalidRepairCount;
+  assert.throws(
+    () => browserClientApi.validatePublishedRootAnalysis(
+      tooManySameRootRepairs,
+      requestPayload,
+      client.identity,
+    ),
+    (error) => error?.code === "browser-root-result-invalid",
+    "one successful same-root repair per retained candidate is the publication cap",
   );
   const horizonResearch = world.searchDispatches.find(({ task }) => (
     task.schema === "spc-root-horizon-research-task-v1"
@@ -1447,7 +1604,7 @@ async function testCheckedPvHorizonMateRejectsTheProvisionalWinner() {
       candidate.runtime_receipt.pv_horizon_line_rejections = 1.5;
     }],
     ["aligned excessive rejection count", (candidate) => {
-      const maximumRepairs = requestPayload.max_series * maximumHorizonProofs;
+      const maximumRepairs = requestPayload.max_series;
       const maximumVetoes = requestPayload.max_series;
       const excessive = maximumRepairs + maximumVetoes + 1;
       candidate.pv_horizon_line_rejections = excessive;
@@ -1510,6 +1667,83 @@ async function testCheckedPvHorizonMateRejectsTheProvisionalWinner() {
   ]) {
     assertFilteredMutationRejected(label, mutate);
   }
+  client.close();
+}
+
+async function testSecondDistinctCheckedPvMatePublishesExactPolicyVeto() {
+  const world = new MockWorld({ horizonMateFirst: true, horizonMateTwice: true });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  const requestPayload = payload(boundaryPayload(WHITE_FEN, 1), 5);
+  const result = await client.analyzeRoot(requestPayload, {
+    deadlineMs: performance.now() + 20_000,
+  });
+  const expectedVetoes = [{
+    schema: "spc-pv-horizon-candidate-veto-v1",
+    candidate_identity: "c0",
+    reason: "same-root-repair-limit",
+    maximum_successful_same_root_repairs: 1,
+    repairs_before_veto: 1,
+    retained_proofs_before_veto: 1,
+    distinct_proofs_observed: 2,
+  }];
+  assert.equal(
+    result.completed_depth,
+    5,
+    String(result.runtime_receipt?.interruption_code || "D5 did not complete"),
+  );
+  assert.notDeepEqual(result.best_full_series, candidateMoves(1, 0));
+  assert.equal(result.pv_horizon_line_rejections, 2);
+  assert.equal(result.pv_horizon_native_repairs, 1);
+  assert.equal(result.pv_horizon_candidate_vetoes, 1);
+  assert.equal(result.selection_policy_filtered, true);
+  assertPolicyReceiptSurfaces(result, expectedVetoes);
+
+  const assertMutationRejected = (label, mutate) => {
+    const candidate = structuredClone(result);
+    mutate(candidate);
+    assert.throws(
+      () => browserClientApi.validatePublishedRootAnalysis(
+        candidate,
+        requestPayload,
+        client.identity,
+      ),
+      (error) => error?.code === "browser-root-result-invalid",
+      label,
+    );
+  };
+  for (const [label, mutate] of [
+    ["aligned repair-policy drift must fail closed", (candidate) => {
+      for (const surface of [candidate, candidate.stats, candidate.runtime_receipt]) {
+        surface.same_root_repair_policy.maximum_successful_same_root_repairs = 2;
+      }
+    }],
+    ["policy-veto surface mismatch must fail closed", (candidate) => {
+      candidate.stats.pv_horizon_policy_vetoes = [];
+    }],
+    ["aligned policy-veto extension must fail exact-key validation", (candidate) => {
+      for (const surface of [candidate, candidate.stats, candidate.runtime_receipt]) {
+        surface.pv_horizon_policy_vetoes[0].unexpected = true;
+      }
+    }],
+    ["aligned threshold-accounting drift must fail closed", (candidate) => {
+      for (const surface of [candidate, candidate.stats, candidate.runtime_receipt]) {
+        surface.pv_horizon_policy_vetoes[0].distinct_proofs_observed = 3;
+      }
+    }],
+    ["candidate-veto count must equal the policy-veto array length", (candidate) => {
+      candidate.pv_horizon_line_rejections = 3;
+      candidate.pv_horizon_candidate_vetoes = 2;
+      candidate.stats.pv_horizon_line_rejections = 3;
+      candidate.stats.pv_horizon_candidate_vetoes = 2;
+      candidate.runtime_receipt.pv_horizon_line_rejections = 3;
+      candidate.runtime_receipt.pv_horizon_candidate_vetoes = 2;
+    }],
+  ]) assertMutationRejected(label, mutate);
   client.close();
 }
 
@@ -1615,6 +1849,7 @@ async function testAllMatingFrontierRescuesTerminalRootMate() {
     assert.equal(result.stats.terminal_mate_rescues, 1);
     assert.equal(result.stats.safety_status, "terminal-mate-rescue");
     assert.equal(result.runtime_receipt.terminal_mate_rescue.status, "found");
+    assertPolicyReceiptSurfaces(result, []);
     assert.equal(world.terminalMateReceipts.length, 1);
     assert(world.safetyReceipts.length >= 8);
     client.close();
@@ -1671,6 +1906,7 @@ async function testNativePromotionMateDeferralRescuesExactRootMate() {
     "native-promotion-frontier-deferred",
   );
   assert.equal(result.runtime_receipt.terminal_mate_rescue.status, "found");
+  assertPolicyReceiptSurfaces(result, []);
   assert.equal(world.searchDispatches.length, 0);
   assert.equal(world.safetyReceipts.length, 0);
   assert.equal(world.terminalMateReceipts.length, 1);
@@ -1829,9 +2065,11 @@ testAspirationAggregateAndAffinityContract();
 await testPersistentPoolTwoTurns();
 await testWhiteAndBlackMateMapping();
 await testCheckedPvHorizonMateRejectsTheProvisionalWinner();
+await testSecondDistinctCheckedPvMatePublishesExactPolicyVeto();
 await testCheckedPvHorizonIsRootedAndFailClosed();
 await testFavorableCheckedHorizonIsNotVetoed();
 await testCrashReturnsLastSafeAndReprobes();
+await testNestedDeadlineAndExactWorkLimitClassification();
 await testMateProofCacheAcrossFiveDepthsAndBoundaries();
 await testUnknownMateProofNeverCaches();
 await testImmediateMatePublishesWithBoundCoverage();
@@ -1860,6 +2098,7 @@ process.stdout.write(JSON.stringify({
   white_black_mate_mapping: true,
   checked_pv_horizon_mate_rejected: true,
   checked_pv_horizon_native_repaired: true,
+  checked_pv_second_distinct_mate_policy_veto: true,
   checked_pv_horizon_dedicated_schema: true,
   checked_pv_horizon_root_chain_fail_closed: true,
   stale_horizon_safety_reply_fail_closed: true,

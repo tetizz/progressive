@@ -1172,6 +1172,23 @@ def _opera_checked_horizon_fixture(
             "side_to_move": "white" if mover == "w" else "black",
         }
 
+    def boundary_from_state(state: promoter.ProgressiveState) -> dict[str, object]:
+        fen = state.board.fen(en_passant="fen")
+        ep_targets = [promoter.chess.square_name(square) for square in state.ep_targets]
+        return {
+            "board_fen": fen,
+            "chess960": bool(state.board.chess960),
+            "ep_targets": ep_targets,
+            "fen": fen,
+            "progressive_ep": ep_targets,
+            "promoted_hex": f"{state.board.promoted:016x}",
+            "quiet_draw_pending": state.quiet_draw_pending,
+            "quiet_series": state.quiet_series,
+            "series": state.series_number,
+            "series_number": state.series_number,
+            "side_to_move": "white" if state.board.turn == promoter.chess.WHITE else "black",
+        }
+
     def series(
         moves: list[str],
         child: dict[str, object],
@@ -1276,6 +1293,11 @@ def _opera_checked_horizon_fixture(
     fixture_specs = {
         "f3": {
             "root_move": "f2f3",
+            "child_moves": [
+                ["e7e5", "f8b4"],
+                ["a2a3", "a3b4", "e2e4"],
+                ["a7a5", "d8g5", "g5g2", "g2h1"],
+            ],
             "unsafe_moves": ["d1e2", "e2c4", "c4c7", "f1c4", "c7c8"],
             "child_fen": "rnQ1k1nr/1p1p1ppp/8/p3p3/1PB1P3/5P2/1PPP3P/RNB1K1Nq b Qkq - 0 7",
             "candidate": "candidate-f3",
@@ -1283,6 +1305,11 @@ def _opera_checked_horizon_fixture(
         },
         "b3": {
             "root_move": "b2b3",
+            "child_moves": [
+                ["f7f5", "e8f7"],
+                ["c1b2", "e2e3", "f1c4"],
+                ["e7e6", "f5f4", "f4e3", "e3f2"],
+            ],
             "unsafe_moves": ["e1f2", "d1g4", "f2e3", "g1h3", "g4h5"],
             "child_fen": "rnbq1bnr/pppp1kpp/4p3/7Q/2B5/1P2K2N/PBPP2PP/RN5R b - - 4 7",
             "candidate": "candidate-b3",
@@ -1293,13 +1320,33 @@ def _opera_checked_horizon_fixture(
     repair_traces: dict[str, object] = {}
     research_traces: list[dict[str, object]] = []
     for fixture_name, spec in fixture_specs.items():
-        child = boundary(6, str(spec["child_fen"]))
-        root = series([str(spec["root_move"])], boundary(2))
-        second = series(["a7a6", "a6a5"], boundary(3))
-        third = series(["a2a3", "a3a4", "a4a5"], boundary(4))
-        fourth = series(["h7h6", "h6h5", "h5h4", "h4h3"], boundary(5))
-        unsafe = series(list(spec["unsafe_moves"]), child, ended_by_check=True)
-        raw_child = [second, third, fourth, unsafe]
+        state = promoter.ProgressiveState.initial()
+        rooted_path = []
+        path_moves = [
+            [str(spec["root_move"])],
+            *copy.deepcopy(spec["child_moves"]),
+            list(spec["unsafe_moves"]),
+        ]
+        for moves in path_moves:
+            result = promoter.play_series(state, moves)
+            outcome = (
+                None
+                if result.outcome is None
+                else str(result.outcome.value).replace("-", "_")
+            )
+            rooted_path.append(
+                series(
+                    list(moves),
+                    boundary_from_state(result.final_state),
+                    ended_by_check=result.ended_by_check,
+                    outcome=outcome,
+                )
+            )
+            state = result.final_state
+        root, *raw_child = rooted_path
+        unsafe = raw_child[-1]
+        child = unsafe["child_boundary"]
+        assert child["fen"] == spec["child_fen"]
         iteration_id = f"checked-{fixture_name}:d5"
         request_id = f"checked-{fixture_name}"
         safety_revision = 3
@@ -1316,7 +1363,7 @@ def _opera_checked_horizon_fixture(
             child=child,
             mate=False,
         )
-        root_replay["boundary_state"] = fourth["child_boundary"]
+        root_replay["boundary_state"] = raw_child[-2]["child_boundary"]
         candidate_record = {
             "candidate_identity": spec["candidate"],
             "order_index": int(spec["worker"]),
@@ -1365,7 +1412,7 @@ def _opera_checked_horizon_fixture(
         trace_worker = worker(int(spec["worker"]))
         safety_trace = {
             "worker": trace_worker,
-            "request_sequence": 1 + 2 * int(spec["worker"]),
+            "request_sequence": 1 + 4 * int(spec["worker"]),
             "posted_monotonic_ms": 100.0 + 300 * int(spec["worker"]),
             "received_monotonic_ms": 150.0 + 300 * int(spec["worker"]),
             "request": safety_request,
@@ -1441,7 +1488,7 @@ def _opera_checked_horizon_fixture(
         }
         repair_trace = {
             "worker": trace_worker,
-            "request_sequence": 2 + 2 * int(spec["worker"]),
+            "request_sequence": 2 + 4 * int(spec["worker"]),
             "posted_monotonic_ms": safety_trace["received_monotonic_ms"],
             "received_monotonic_ms": safety_trace["received_monotonic_ms"] + 50,
             "request": repair_request,
@@ -1500,7 +1547,96 @@ def _opera_checked_horizon_fixture(
         },
         *[worker(index) for index in range(8)],
     ]
-    line_rejections = 2
+    same_root_repair_policy = {
+        "schema": "spc-same-root-horizon-repair-policy-v1",
+        "maximum_successful_same_root_repairs": 1,
+    }
+    policy_veto = {
+        "schema": "spc-pv-horizon-candidate-veto-v1",
+        "candidate_identity": fixture_specs["f3"]["candidate"],
+        "reason": "same-root-repair-limit",
+        "maximum_successful_same_root_repairs": 1,
+        "repairs_before_veto": 1,
+        "retained_proofs_before_veto": 1,
+        "distinct_proofs_observed": 2,
+    }
+    second_f3_safety = copy.deepcopy(safety_traces["f3"])
+    second_f3_safety["request_sequence"] = 3
+    second_f3_safety["posted_monotonic_ms"] = 250.0
+    second_f3_safety["received_monotonic_ms"] = 300.0
+    second_request = second_f3_safety["request"]
+    second_request["safety_revision"] = repair_traces["f3"]["request"]["safety_revision"]
+    second_request["incumbent_epoch"] = repair_traces["f3"]["request"]["incumbent_epoch"] + 1
+    second_request["remaining_time_ms"] = 48_000
+    second_request["authoritative_root_replay"]["request_id"] = (
+        f"{second_request['iteration_id']}:{second_request['safety_revision']}:pv-horizon-replay-4"
+    )
+    second_response = copy.deepcopy(second_request)
+    second_response.update(copy.deepcopy(safety_traces["f3"]["response"]))
+    for key, value in second_request.items():
+        second_response[key] = copy.deepcopy(value)
+    second_response["reply_mate"]["moves"] = ["h8h2"]
+    second_response["reply_mate"]["machine_notation"] = "h8h2"
+    second_checked = second_response["reply_mate"]["checked_prefix"]
+    second_checked["request_id"] = (
+        f"{second_request['iteration_id']}:{second_request['safety_revision']}:mate-replay"
+    )
+    second_checked["prefix"] = ["h8h2"]
+    second_checked["current_prefix"] = ["h8h2"]
+    second_checked["frames"][0]["uci"] = "h8h2"
+    second_f3_safety["response"] = second_response
+    first_proof = repair_traces["f3"]["request"]["horizon_proofs"][0]
+    second_proof = {
+        "schema": "spc-retained-root-horizon-proof-v1",
+        "rooted_path": [
+            copy.deepcopy(first_proof["rooted_path"][0]),
+            *copy.deepcopy(second_request["candidate"]["child_pv"]),
+        ],
+        "mate_reply": {
+            "child_boundary": copy.deepcopy(second_checked["next_state"]),
+            "ended_by_check": True,
+            "machine_notation": "h8h2",
+            "moves": ["h8h2"],
+            "outcome": "checkmate",
+            "transposition_count": 1,
+        },
+    }
+    threshold_veto_witness = {
+        "schema": "spc-opera-same-root-repair-limit-witness-v1",
+        "root_series": "f2f3",
+        "candidate_identity": fixture_specs["f3"]["candidate"],
+        "first_repair_request_sequence": repair_traces["f3"]["request_sequence"],
+        "second_safety_request_sequence": second_f3_safety["request_sequence"],
+        "first_proof_sha256": promoter._canonical_sha256(first_proof),
+        "second_proof_sha256": promoter._canonical_sha256(second_proof),
+        "proof_count_2_research_dispatched": False,
+        "policy_veto": copy.deepcopy(policy_veto),
+        "second_safety_trace": second_f3_safety,
+    }
+    warm_b3 = copy.deepcopy(repair_traces["b3"])
+    warm_b3["request_sequence"] = 7
+    warm_b3["posted_monotonic_ms"] = repair_traces["b3"]["received_monotonic_ms"]
+    warm_b3["received_monotonic_ms"] = warm_b3["posted_monotonic_ms"] + 20
+    warm_b3["request"]["task_id"] = "warm-b3"
+    warm_b3["request"]["incumbent_epoch"] += 1
+    warm_b3["request"]["remaining_time_ms"] -= 100
+    warm_b3["request"]["native_work_before"] = 10
+    for key in promoter._HORIZON_ECHO_KEYS:
+        warm_b3["response"][key] = copy.deepcopy(warm_b3["request"][key])
+    warm_b3["response"]["horizon_proof_hits"] = 0
+    warm_b3["response"]["horizon_proof_hit_mask"] = 0
+    warm_b3["response"]["work"].update(
+        {
+            "native_work_before": 10,
+            "native_work_after": 20,
+            "call_native_work": 10,
+            "total_accounted_work": 20,
+            "call_stats": {"tt_hits": 1},
+            "cumulative_stats": {"tt_hits": 1},
+        }
+    )
+    research_traces.append(copy.deepcopy(warm_b3))
+    line_rejections = 3
     work_count = 20_000
     result_summary = {
         "ok": True,
@@ -1510,19 +1646,21 @@ def _opera_checked_horizon_fixture(
         "publishable": True,
         "safety_certified": True,
         "coverage_complete": True,
-        "coverage_scope": "all-retained-candidates",
+        "coverage_scope": "selection-eligible-candidates",
         "root_scores_complete": True,
         "width_complete": True,
         "legal_series_certified": True,
         "authoritative_replay_certified": True,
         "legal_validation_runtime": "compiled-wasm",
         "root_search_mode": "streaming-root-iteration",
-        "selection_policy": "reject-adverse-checked-pv-mates-v1",
-        "selection_policy_filtered": False,
+        "selection_policy": "repair-once-then-veto-adverse-checked-pv-mates-v1",
+        "selection_policy_filtered": True,
         "unfiltered_score_winner_selected": False,
         "pv_horizon_line_rejections": line_rejections,
         "pv_horizon_native_repairs": 2,
-        "pv_horizon_candidate_vetoes": 0,
+        "pv_horizon_candidate_vetoes": 1,
+        "same_root_repair_policy": same_root_repair_policy,
+        "pv_horizon_policy_vetoes": [policy_veto],
         "timed_out": False,
         "work_limit_reached": False,
         "work": work_count,
@@ -1538,7 +1676,7 @@ def _opera_checked_horizon_fixture(
         "engine_profile_id": build.engine["profile_id"],
         "engine_version": build.engine["engine_version"],
         "ruleset_version": build.engine["ruleset_version"],
-        "best_full_series": ["e2e4"],
+        "best_full_series": ["b2b3"],
         "score": 250,
         "proof_bounds": [-1, 1],
     }
@@ -1552,13 +1690,15 @@ def _opera_checked_horizon_fixture(
         "canonical_replay_certified": True,
         "mate_safety_certified": True,
         "root_bound_coverage_complete": True,
-        "root_bound_coverage_scope": "all-retained-candidates",
+        "root_bound_coverage_scope": "selection-eligible-candidates",
         "selection_policy": result_summary["selection_policy"],
-        "selection_policy_filtered": False,
+        "selection_policy_filtered": True,
         "unfiltered_score_winner_selected": False,
         "pv_horizon_line_rejections": line_rejections,
         "pv_horizon_native_repairs": 2,
-        "pv_horizon_candidate_vetoes": 0,
+        "pv_horizon_candidate_vetoes": 1,
+        "same_root_repair_policy": same_root_repair_policy,
+        "pv_horizon_policy_vetoes": [policy_veto],
         "work": work_count,
         "source_fingerprint": build.identity["source_fingerprint"],
         "artifact_fingerprint": build.identity["wasm_sha256"],
@@ -1574,7 +1714,7 @@ def _opera_checked_horizon_fixture(
         "generation_positions": work_count,
         "pv_horizon_line_rejections": line_rejections,
         "pv_horizon_native_repairs": 2,
-        "pv_horizon_candidate_vetoes": 0,
+        "pv_horizon_candidate_vetoes": 1,
     }
     manifest_binding = {
         "source_fingerprint": build.identity["source_fingerprint"],
@@ -1620,7 +1760,7 @@ def _opera_checked_horizon_fixture(
         "prefix_contract_sha256": manifest_binding["prefix_contract_sha256"],
     }
     payload = {
-        "schema": promoter.OPERA_CHECKED_HORIZON_SCHEMA,
+        "schema": "spc-opera-checked-pv-horizon-receipt-v4",
         "status": "passed-not-certified",
         "product_publishable": False,
         "safety_certified": False,
@@ -1658,11 +1798,14 @@ def _opera_checked_horizon_fixture(
         "selection_policy": result_summary["selection_policy"],
         "pv_horizon_line_rejections": line_rejections,
         "pv_horizon_native_repairs": 2,
-        "pv_horizon_candidate_vetoes": 0,
+        "pv_horizon_candidate_vetoes": 1,
+        "same_root_repair_policy": same_root_repair_policy,
+        "pv_horizon_policy_vetoes": [policy_veto],
+        "threshold_veto_witness": threshold_veto_witness,
         "horizon_safety_traces": safety_traces,
         "horizon_research_traces": research_traces,
         "certified_repair_traces": repair_traces,
-        "final_winner_warm_recertification": {"f3": None, "b3": None},
+        "final_winner_warm_recertification": {"f3": None, "b3": warm_b3},
         "runtime_receipt": runtime_receipt,
         "stats": stats,
         "cdp": {
@@ -1853,6 +1996,133 @@ def test_checked_horizon_rejects_resigned_accounting_drift(tmp_path: Path) -> No
         _validate_checked_fixture(context)
 
 
+def test_checked_horizon_rejects_legacy_v3_receipt(tmp_path: Path) -> None:
+    context = _checked_promotion_fixture(tmp_path)
+    _rewrite_checked(
+        context,
+        lambda payload: payload.update(
+            schema="spc-opera-checked-pv-horizon-receipt-v3"
+        ),
+    )
+
+    with pytest.raises(promoter.ReleaseGateError, match="pre-certification evidence"):
+        _validate_checked_fixture(context)
+
+
+def test_checked_horizon_rejects_resigned_repair_policy_drift(tmp_path: Path) -> None:
+    context = _checked_promotion_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        for container in (
+            payload,
+            payload["result_summary"],
+            payload["runtime_receipt"],
+        ):
+            container["same_root_repair_policy"][
+                "maximum_successful_same_root_repairs"
+            ] = 2
+
+    _rewrite_checked(context, mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="bounded same-root repair policy"):
+        _validate_checked_fixture(context)
+
+
+def test_checked_horizon_rejects_resigned_policy_veto_drift(tmp_path: Path) -> None:
+    context = _checked_promotion_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        for veto in (
+            payload["pv_horizon_policy_vetoes"][0],
+            payload["result_summary"]["pv_horizon_policy_vetoes"][0],
+            payload["runtime_receipt"]["pv_horizon_policy_vetoes"][0],
+            payload["threshold_veto_witness"]["policy_veto"],
+        ):
+            veto["repairs_before_veto"] = 0
+
+    _rewrite_checked(context, mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="one-repair threshold veto"):
+        _validate_checked_fixture(context)
+
+
+def test_checked_horizon_rejects_re_signed_duplicate_second_f3_proof(
+    tmp_path: Path,
+) -> None:
+    context = _checked_promotion_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        witness = payload["threshold_veto_witness"]
+        second = witness["second_safety_trace"]
+        second_mate = copy.deepcopy(
+            payload["horizon_safety_traces"]["f3"]["response"]["reply_mate"]
+        )
+        second_mate["checked_prefix"]["request_id"] = (
+            f"{second['request']['iteration_id']}:"
+            f"{second['request']['safety_revision']}:mate-replay"
+        )
+        second["response"]["reply_mate"] = second_mate
+        witness["second_proof_sha256"] = witness["first_proof_sha256"]
+
+    _rewrite_checked(context, mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="not distinct and hash-bound"):
+        _validate_checked_fixture(context)
+
+
+def test_checked_horizon_rejects_re_signed_same_length_second_f3_path_tamper(
+    tmp_path: Path,
+) -> None:
+    context = _checked_promotion_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        witness = payload["threshold_veto_witness"]
+        second = witness["second_safety_trace"]
+        request = second["request"]
+        response = second["response"]
+        first_child_series = request["candidate"]["child_pv"][0]
+        first_child_series["moves"][0] = "a7a6"
+        first_child_series["machine_notation"] = "/".join(first_child_series["moves"])
+        response["candidate"] = copy.deepcopy(request["candidate"])
+        first_root = payload["certified_repair_traces"]["f3"]["request"][
+            "horizon_proofs"
+        ][0]["rooted_path"][0]
+        mate = response["reply_mate"]
+        second_proof = {
+            "schema": "spc-retained-root-horizon-proof-v1",
+            "rooted_path": [
+                copy.deepcopy(first_root),
+                *copy.deepcopy(request["candidate"]["child_pv"]),
+            ],
+            "mate_reply": {
+                "child_boundary": copy.deepcopy(mate["checked_prefix"]["next_state"]),
+                "ended_by_check": mate["ended_by_check"],
+                "machine_notation": mate["machine_notation"],
+                "moves": copy.deepcopy(mate["moves"]),
+                "outcome": mate["outcome"],
+                "transposition_count": 1,
+            },
+        }
+        witness["second_proof_sha256"] = promoter._canonical_sha256(second_proof)
+
+    _rewrite_checked(context, mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="failed authoritative replay"):
+        _validate_checked_fixture(context)
+
+
+def test_checked_horizon_rejects_f3_proof_count_2_dispatch(tmp_path: Path) -> None:
+    context = _checked_promotion_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        dispatched = copy.deepcopy(payload["certified_repair_traces"]["f3"])
+        dispatched["request_sequence"] = 8
+        dispatched["request"]["horizon_proofs"].append(
+            copy.deepcopy(dispatched["request"]["horizon_proofs"][0])
+        )
+        payload["horizon_research_traces"].append(dispatched)
+
+    _rewrite_checked(context, mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="proof-count-2 research"):
+        _validate_checked_fixture(context)
+
+
 def test_checked_horizon_rejects_cross_fixture_trace_substitution(tmp_path: Path) -> None:
     context = _checked_promotion_fixture(tmp_path)
 
@@ -1866,45 +2136,12 @@ def test_checked_horizon_rejects_cross_fixture_trace_substitution(tmp_path: Path
         _validate_checked_fixture(context)
 
 
-def _select_f3_with_warm_recertification(payload: dict[str, object]) -> None:
-    payload["result_summary"]["best_full_series"] = ["f2f3"]
-    payload["best_full_series"] = ["f2f3"]
-    repair = payload["certified_repair_traces"]["f3"]
-    warm = copy.deepcopy(repair)
-    warm["request_sequence"] = 20
-    warm["posted_monotonic_ms"] = repair["received_monotonic_ms"]
-    warm["received_monotonic_ms"] = repair["received_monotonic_ms"] + 20
-    warm["request"]["task_id"] = "warm-f3"
-    warm["request"]["incumbent_epoch"] = repair["request"]["incumbent_epoch"] + 1
-    warm["request"]["remaining_time_ms"] = repair["request"]["remaining_time_ms"] - 100
-    warm["request"]["native_work_before"] = 10
-    for key in promoter._HORIZON_ECHO_KEYS:
-        warm["response"][key] = copy.deepcopy(warm["request"][key])
-    warm["response"]["horizon_proof_hits"] = 0
-    warm["response"]["horizon_proof_hit_mask"] = 0
-    warm["response"]["work"].update(
-        {
-            "external_work": 0,
-            "native_work_before": 10,
-            "native_work_after": 20,
-            "call_native_work": 10,
-            "total_accounted_work": 20,
-            "call_stats": {"tt_hits": 1},
-            "cumulative_stats": {"tt_hits": 1},
-        }
-    )
-    payload["final_winner_warm_recertification"]["f3"] = copy.deepcopy(warm)
-    payload["horizon_research_traces"].append(copy.deepcopy(warm))
-
-
 def test_checked_horizon_rejects_warm_recertification_drift(tmp_path: Path) -> None:
     context = _checked_promotion_fixture(tmp_path)
-    _rewrite_checked(context, _select_f3_with_warm_recertification)
-    context["receipt"] = json.loads(Path(context["receipt_path"]).read_text(encoding="utf-8"))
-    assert _validate_checked_fixture(context).selected_root_series == "f2f3"
+    assert _validate_checked_fixture(context).selected_root_series == "b2b3"
 
     def drift(payload: dict[str, object]) -> None:
-        payload["final_winner_warm_recertification"]["f3"]["response"]["score"] += 1
+        payload["final_winner_warm_recertification"]["b3"]["response"]["score"] += 1
         payload["horizon_research_traces"][-1]["response"]["score"] += 1
 
     _rewrite_checked(context, drift)

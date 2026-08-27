@@ -50,6 +50,13 @@ const probeExpression = String.raw`(async () => {
   const START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
   const MATE_SCORE = 1_000_000;
   const AUTHENTICITY_SCOPE = "local-checkout-hash-bound-unsigned-v1";
+  const CHECKED_PV_SELECTION_POLICY =
+    "repair-once-then-veto-adverse-checked-pv-mates-v1";
+  const SAME_ROOT_REPAIR_POLICY_SCHEMA = "spc-same-root-horizon-repair-policy-v1";
+  const POLICY_VETO_SCHEMA = "spc-pv-horizon-candidate-veto-v1";
+  const THRESHOLD_VETO_WITNESS_SCHEMA =
+    "spc-opera-same-root-repair-limit-witness-v1";
+  const MAXIMUM_SUCCESSFUL_SAME_ROOT_REPAIRS = 1;
   const EXPECTED_WITNESSES = Object.freeze([
     Object.freeze({
       label: "f3",
@@ -153,6 +160,16 @@ const probeExpression = String.raw`(async () => {
     && sameBoundary(left.child_boundary, right.child_boundary)
     && left.outcome === right.outcome
     && left.ended_by_check === right.ended_by_check;
+  const contiguousRootedPath = (path) => Array.isArray(path)
+    && path.length > 0
+    && path.every((series, index) => {
+      const expectedSeries = index + 1;
+      return canonicalSeries(series)
+        && series.moves.length <= expectedSeries
+        && (series.moves.length === expectedSeries || series.ended_by_check === true)
+        && series.child_boundary.series === expectedSeries + 1
+        && (index === path.length - 1 || series.outcome === null);
+    });
   const pathSignature = (path) => Array.isArray(path)
     && path.every(canonicalSeries)
     ? path.map((series) => series.machine_notation).join("|")
@@ -611,7 +628,10 @@ const probeExpression = String.raw`(async () => {
       && preflight.prefix_ready === true
       && sameJson(preflight.root_session_contract, rootCertificate.root_session_contract)
       && sameJson(preflight.root_geometry, rootCertificate.geometry)
-      && sameJson(preflight.prefix_contract, prefixCertificate.prefix_contract)
+      // The compiled facade and manifest may serialize the same contract with
+      // a different property order; compare their canonical value instead.
+      && canonicalJson(preflight.prefix_contract)
+        === canonicalJson(prefixCertificate.prefix_contract)
       && preflightIdentity.root_contract_sha256 === manifestBinding.root_contract_sha256
       && preflightIdentity.root_geometry_sha256 === manifestBinding.root_geometry_sha256
       && preflightIdentity.prefix_contract_sha256 === manifestBinding.prefix_contract_sha256
@@ -670,6 +690,8 @@ const probeExpression = String.raw`(async () => {
       pv_horizon_line_rejections: result.pv_horizon_line_rejections,
       pv_horizon_native_repairs: result.pv_horizon_native_repairs,
       pv_horizon_candidate_vetoes: result.pv_horizon_candidate_vetoes,
+      same_root_repair_policy: result.same_root_repair_policy,
+      pv_horizon_policy_vetoes: result.pv_horizon_policy_vetoes,
       timed_out: result.timed_out,
       work_limit_reached: result.work_limit_reached,
       work: result.work,
@@ -864,6 +886,7 @@ const probeExpression = String.raw`(async () => {
       && proof.rooted_path.length === childDepth + 1
       && proof.rooted_path.length <= 8
       && proof.rooted_path.every(canonicalSeries)
+      && contiguousRootedPath(proof.rooted_path)
       && proof.rooted_path[0].machine_notation === rootSeries
       && canonicalSeries(proof.mate_reply)
       && proof.mate_reply.transposition_count === 1
@@ -951,7 +974,7 @@ const probeExpression = String.raw`(async () => {
         || !exactInteger(response.horizon_proof_hits, 0, proofs.length)
         || !exactInteger(response.horizon_proof_hit_mask, 0, 0xffff)
         || response.horizon_proof_hit_mask >= 2 ** proofs.length
-        || bitCount16(response.horizon_proof_hit_mask) > response.horizon_proof_hits
+        || bitCount16(response.horizon_proof_hit_mask) !== response.horizon_proof_hits
         || (response.horizon_proof_hits === 0)
           !== (response.horizon_proof_hit_mask === 0)
         || (
@@ -1102,11 +1125,134 @@ const probeExpression = String.raw`(async () => {
     const finalRootSeries = Array.isArray(result.best_full_series)
       ? result.best_full_series.join("/")
       : null;
+    const f3Witness = repairWitnesses[0];
+    const b3Witness = repairWitnesses[1];
     const warmRecertifications = repairWitnesses.map((witness) => {
       if (witness === null || witness.expected.root_series !== finalRootSeries) return null;
       return horizonResearchTrace.find((entry) => exactWarmRecertification(entry, witness))
         || null;
     });
+    const exactRepairPolicy = (value) => plainObject(value)
+      && sameStrings(
+        Object.keys(value).sort(),
+        ["maximum_successful_same_root_repairs", "schema"],
+      )
+      && value.schema === SAME_ROOT_REPAIR_POLICY_SCHEMA
+      && value.maximum_successful_same_root_repairs
+        === MAXIMUM_SUCCESSFUL_SAME_ROOT_REPAIRS;
+    const exactPolicyVeto = (value, candidateIdentity) => plainObject(value)
+      && sameStrings(
+        Object.keys(value).sort(),
+        [
+          "candidate_identity", "distinct_proofs_observed",
+          "maximum_successful_same_root_repairs", "reason",
+          "repairs_before_veto", "retained_proofs_before_veto", "schema",
+        ],
+      )
+      && value.schema === POLICY_VETO_SCHEMA
+      && value.candidate_identity === candidateIdentity
+      && value.reason === "same-root-repair-limit"
+      && value.maximum_successful_same_root_repairs
+        === MAXIMUM_SUCCESSFUL_SAME_ROOT_REPAIRS
+      && value.repairs_before_veto === MAXIMUM_SUCCESSFUL_SAME_ROOT_REPAIRS
+      && value.retained_proofs_before_veto === MAXIMUM_SUCCESSFUL_SAME_ROOT_REPAIRS
+      && value.distinct_proofs_observed === 2;
+    const retainedProofFromSafety = (entry, rootSeries) => {
+      const candidate = entry?.request?.candidate;
+      const mate = entry?.response?.reply_mate;
+      const checked = mate?.checked_prefix;
+      if (
+        !canonicalSeries(rootSeries)
+        || !Array.isArray(candidate?.child_pv)
+        || candidate.child_pv.length !== 4
+        || !candidate.child_pv.every(canonicalSeries)
+        || !sameSeries(candidate.root_series, candidate.child_pv.at(-1))
+        || !plainObject(mate)
+        || !exactBoundary(checked?.next_state)
+      ) return null;
+      const proof = {
+        schema: "spc-retained-root-horizon-proof-v1",
+        rooted_path: [rootSeries, ...candidate.child_pv],
+        mate_reply: {
+          child_boundary: checked.next_state,
+          ended_by_check: mate.ended_by_check,
+          machine_notation: mate.machine_notation,
+          moves: [...mate.moves],
+          outcome: mate.outcome,
+          transposition_count: 1,
+        },
+      };
+      return retainedProof(proof, rootSeries.machine_notation, 4) ? proof : null;
+    };
+    const sameRootRepairPolicy = result.same_root_repair_policy;
+    const policyVetoes = result.pv_horizon_policy_vetoes;
+    const f3FirstProof = f3Witness?.repair?.request?.horizon_proofs?.at(-1) || null;
+    const f3RootSeries = f3FirstProof?.rooted_path?.[0] || null;
+    const f3FirstProofSha256 = f3FirstProof === null
+      ? null
+      : await canonicalSha256(f3FirstProof);
+    let secondF3Safety = null;
+    let secondF3ProofSha256 = null;
+    if (f3Witness !== null && f3FirstProof !== null && canonicalSeries(f3RootSeries)) {
+      for (const entry of safetyTrace) {
+        if (
+          entry.request_sequence <= f3Witness.repair.request_sequence
+          || entry.posted_monotonic_ms < f3Witness.repair.received_monotonic_ms
+          || entry.worker !== f3Witness.repair.worker
+          || entry.request?.session_id !== f3Witness.repair.request.session_id
+          || entry.request?.request_id !== f3Witness.repair.request.request_id
+          || entry.request?.iteration_id !== f3Witness.repair.request.iteration_id
+          || entry.request?.generation !== f3Witness.repair.request.generation
+          || entry.request?.deadline_monotonic_ms
+            !== f3Witness.repair.request.deadline_monotonic_ms
+          || entry.request?.deadline_epoch_ms !== f3Witness.repair.request.deadline_epoch_ms
+          || entry.request?.candidate_identity
+            !== f3Witness.repair.request.candidate_identity
+          || entry.request?.candidate?.candidate_identity
+            !== f3Witness.repair.request.candidate_identity
+          || entry.request?.candidate?.order_index !== f3Witness.repair.request.order_index
+          || entry.request?.candidate?.order_key !== f3Witness.expected.root_series
+          || entry.request?.safety_revision !== f3Witness.repair.request.safety_revision
+          || !exactInteger(
+            entry.request?.incumbent_epoch,
+            f3Witness.repair.request.incumbent_epoch,
+          )
+          || entry.request?.remaining_time_ms > f3Witness.repair.request.remaining_time_ms
+          || !exactPrefixMateReplay(entry)
+        ) continue;
+        const derivedProof = retainedProofFromSafety(entry, f3RootSeries);
+        if (derivedProof === null) continue;
+        const derivedSha256 = await canonicalSha256(derivedProof);
+        if (derivedSha256 === f3FirstProofSha256) continue;
+        secondF3Safety = entry;
+        secondF3ProofSha256 = derivedSha256;
+        break;
+      }
+    }
+    const f3CandidateIdentity = f3Witness?.repair?.request?.candidate_identity || null;
+    const f3PolicyVeto = Array.isArray(policyVetoes)
+      ? policyVetoes.find((value) => exactPolicyVeto(value, f3CandidateIdentity)) || null
+      : null;
+    const f3ProofCount2ResearchDispatched = f3CandidateIdentity !== null
+      && horizonResearchTrace.some((entry) => (
+        entry.request?.candidate_identity === f3CandidateIdentity
+        && Array.isArray(entry.request?.horizon_proofs)
+        && entry.request.horizon_proofs.length >= 2
+      ));
+    const thresholdVetoWitness = secondF3Safety === null || f3PolicyVeto === null
+      ? null
+      : Object.freeze({
+        schema: THRESHOLD_VETO_WITNESS_SCHEMA,
+        root_series: "f2f3",
+        candidate_identity: f3CandidateIdentity,
+        first_repair_request_sequence: f3Witness.repair.request_sequence,
+        second_safety_request_sequence: secondF3Safety.request_sequence,
+        first_proof_sha256: f3FirstProofSha256,
+        second_proof_sha256: secondF3ProofSha256,
+        proof_count_2_research_dispatched: f3ProofCount2ResearchDispatched,
+        policy_veto: f3PolicyVeto,
+        second_safety_trace: secondF3Safety,
+      });
     const workerCount = result.runtime_receipt?.worker_count;
     const mainWorkerCalls = workerFactoryCalls.filter(
       (worker) => worker.name === "scottish-progressive-engine",
@@ -1134,8 +1280,6 @@ const probeExpression = String.raw`(async () => {
     const lineRejections = result.pv_horizon_line_rejections;
     const nativeRepairs = result.pv_horizon_native_repairs;
     const candidateVetoes = result.pv_horizon_candidate_vetoes;
-    const f3Witness = repairWitnesses[0];
-    const b3Witness = repairWitnesses[1];
     const checks = {
       authenticity_scope_is_local_checkout: AUTHENTICITY_SCOPE
         === "local-checkout-hash-bound-unsigned-v1",
@@ -1161,22 +1305,35 @@ const probeExpression = String.raw`(async () => {
         && result.authoritative_replay_certified === true
         && result.legal_validation_runtime === "compiled-wasm",
       policy_is_explicit: result.selection_policy
-        === "reject-adverse-checked-pv-mates-v1",
-      all_fixture_rejections_repaired_without_veto: exactInteger(lineRejections, 2)
-        && exactInteger(nativeRepairs, 2, lineRejections)
-        && candidateVetoes === 0
+        === CHECKED_PV_SELECTION_POLICY,
+      repair_once_then_veto_policy_bound: lineRejections === 3
+        && nativeRepairs === 2
+        && candidateVetoes === 1
         && nativeRepairs + candidateVetoes === lineRejections
-        && result.selection_policy_filtered === false
+        && result.selection_policy_filtered === true
+        && result.root_bound_coverage_scope === "selection-eligible-candidates"
+        && exactRepairPolicy(sameRootRepairPolicy)
+        && Array.isArray(policyVetoes)
+        && policyVetoes.length === 1
+        && f3PolicyVeto === policyVetoes[0]
         && result.runtime_receipt?.pv_horizon_line_rejections === lineRejections
         && result.runtime_receipt?.pv_horizon_native_repairs === nativeRepairs
         && result.runtime_receipt?.pv_horizon_candidate_vetoes === candidateVetoes
         && result.runtime_receipt?.selection_policy === result.selection_policy
         && result.runtime_receipt?.selection_policy_filtered
           === result.selection_policy_filtered
+        && canonicalJson(result.runtime_receipt?.same_root_repair_policy)
+          === canonicalJson(sameRootRepairPolicy)
+        && canonicalJson(result.runtime_receipt?.pv_horizon_policy_vetoes)
+          === canonicalJson(policyVetoes)
         && result.stats?.pv_horizon_line_rejections === lineRejections
         && result.stats?.pv_horizon_native_repairs === nativeRepairs
         && result.stats?.pv_horizon_candidate_vetoes === candidateVetoes,
       f3_exact_raw_mate_and_same_root_repair: f3Witness !== null,
+      f3_second_distinct_proof_vetoed_without_research: thresholdVetoWitness !== null
+        && thresholdVetoWitness.first_proof_sha256
+          !== thresholdVetoWitness.second_proof_sha256
+        && thresholdVetoWitness.proof_count_2_research_dispatched === false,
       b3_exact_raw_mate_and_same_root_repair: b3Witness !== null,
       repaired_candidates_are_distinct: f3Witness !== null
         && b3Witness !== null
@@ -1188,6 +1345,8 @@ const probeExpression = String.raw`(async () => {
         && b3Witness !== null
         && preflight.root_session_contract?.horizon_research?.hit_mask_order
           === "request-order",
+      selected_b3_after_f3_policy_veto: finalRootSeries === "b2b3"
+        && f3PolicyVeto !== null,
       final_repaired_winner_warm_recertified: repairWitnesses.every(
         (witness, index) => witness === null
           || witness.expected.root_series !== finalRootSeries
@@ -1227,7 +1386,7 @@ const probeExpression = String.raw`(async () => {
       }));
     }
     return {
-      schema: "spc-opera-checked-pv-horizon-receipt-v3",
+      schema: "spc-opera-checked-pv-horizon-receipt-v4",
       status: "passed-not-certified",
       product_publishable: false,
       safety_certified: false,
@@ -1265,6 +1424,9 @@ const probeExpression = String.raw`(async () => {
       pv_horizon_line_rejections: result.pv_horizon_line_rejections,
       pv_horizon_native_repairs: result.pv_horizon_native_repairs,
       pv_horizon_candidate_vetoes: result.pv_horizon_candidate_vetoes,
+      same_root_repair_policy: sameRootRepairPolicy,
+      pv_horizon_policy_vetoes: policyVetoes,
+      threshold_veto_witness: thresholdVetoWitness,
       horizon_safety_traces: {
         f3: f3Witness?.safety,
         b3: b3Witness?.safety,

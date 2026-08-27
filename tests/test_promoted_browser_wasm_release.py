@@ -275,10 +275,10 @@ def _build_fixture(
             "opera_checked_horizon": {
                 "elapsed_seconds": 8.5,
                 "work": 75_000_000,
-                "selected_root_series": "f2f3",
-                "pv_horizon_line_rejections": 2,
+                "selected_root_series": "b2b3",
+                "pv_horizon_line_rejections": 3,
                 "pv_horizon_native_repairs": 2,
-                "pv_horizon_candidate_vetoes": 0,
+                "pv_horizon_candidate_vetoes": 1,
                 "local_checkout_asset_set_sha256": "5" * 64,
             },
         },
@@ -482,7 +482,7 @@ def test_rejects_backslash_git_path_aliases() -> None:
         ),
         (
             lambda receipt: receipt["measured"]["opera_checked_horizon"].update(
-                pv_horizon_candidate_vetoes=1
+                pv_horizon_candidate_vetoes=0
             ),
             "independently satisfy",
         ),
