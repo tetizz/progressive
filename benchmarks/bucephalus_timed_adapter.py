@@ -151,6 +151,7 @@ class ExternalAnalysis:
     process_count: int = 1
     selection_root_prefix_ply: int | None = None
     terminal_stage_ply: int | None = None
+    selected_terminal_stage_index: int | None = None
 
 
 _PLY_LINE = re.compile(
@@ -343,6 +344,7 @@ def _run_bucephalus_live_checkpoint(
     creationflags: int,
     soft_timeout_seconds: float,
     hard_timeout_seconds: float,
+    cleanup_timeout_seconds: float,
     snapshot_has_complete_root: Callable[[str], bool],
 ) -> tuple[str, str, bool, int | None, float, str, int, bool]:
     """Drains one live process and conditionally carries it past a soft gate."""
@@ -350,6 +352,7 @@ def _run_bucephalus_live_checkpoint(
     started = time.perf_counter()
     soft_deadline = started + soft_timeout_seconds
     hard_deadline = started + hard_timeout_seconds
+    cleanup_deadline = hard_deadline + cleanup_timeout_seconds
     try:
         process = subprocess.Popen(
             [str(executable)],
@@ -365,7 +368,14 @@ def _run_bucephalus_live_checkpoint(
         ) from error
     if process.stdin is None or process.stdout is None or process.stderr is None:
         process.kill()
-        process.wait()
+        try:
+            process.wait(
+                timeout=max(0.0, cleanup_deadline - time.perf_counter())
+            )
+        except subprocess.TimeoutExpired as error:
+            raise ExternalEngineTimeout(
+                "Bucephalus checkpoint cleanup could not reap the process"
+            ) from error
         raise ExternalEngineConfigurationError(
             "Bucephalus checkpoint process did not expose all standard pipes"
         )
@@ -396,6 +406,22 @@ def _run_bucephalus_live_checkpoint(
     stop_reason = "process-exit"
     same_process_continued = False
     deadline_reached = False
+
+    def bounded_reap() -> None:
+        if process.poll() is not None:
+            return
+        remaining = cleanup_deadline - time.perf_counter()
+        if remaining <= 0:
+            raise ExternalEngineTimeout(
+                "Bucephalus checkpoint cleanup deadline was exhausted"
+            )
+        try:
+            process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired as error:
+            raise ExternalEngineTimeout(
+                "Bucephalus checkpoint cleanup could not reap the process"
+            ) from error
+
     try:
         process.stdin.write(script.encode("utf-8"))
         process.stdin.flush()
@@ -422,13 +448,15 @@ def _run_bucephalus_live_checkpoint(
                 process.kill()
         if process.poll() is None:
             process.kill()
-        process.wait()
+        bounded_reap()
     finally:
         if process.poll() is None:
             process.kill()
-            process.wait()
-        stdout_thread.join(timeout=2.0)
-        stderr_thread.join(timeout=2.0)
+            bounded_reap()
+        for thread in (stdout_thread, stderr_thread):
+            thread.join(
+                timeout=max(0.0, cleanup_deadline - time.perf_counter())
+            )
         process.stdout.close()
         process.stderr.close()
     if stdout_thread.is_alive() or stderr_thread.is_alive():
@@ -486,7 +514,12 @@ def _parse_deepest_legal_incomplete_prefix(
     for completed_ply in sorted(observed, reverse=True):
         try:
             score, pv = _parse_requested_ply(stdout, completed_ply)
-            prefix = tuple(pv[: state.moves_available - 1])
+            if len(pv) >= state.moves_available:
+                raise ExternalEngineProtocolError(
+                    "emitted PV reached the root-series budget without a legal "
+                    "complete root series"
+                )
+            prefix = tuple(pv)
             if not prefix:
                 raise ExternalEngineProtocolError("no root-series prefix was emitted")
             try:
@@ -1040,6 +1073,7 @@ def _analyze_bucephalus_with_continuation(
             process_count=len(stages),
             selection_root_prefix_ply=1,
             terminal_stage_ply=1,
+            selected_terminal_stage_index=len(stages),
         )
 
     remaining_searchable = searchable_deadline - elapsed_total()
@@ -1068,6 +1102,7 @@ def _analyze_bucephalus_with_continuation(
         creationflags=creationflags,
         soft_timeout_seconds=deep_timeout,
         hard_timeout_seconds=deep_hard_timeout,
+        cleanup_timeout_seconds=cleanup_margin,
         snapshot_has_complete_root=snapshot_has_complete_root,
     )
     deep_process = (live[0], live[1], live[2], live[3], live[4], deep_script)
@@ -1076,6 +1111,7 @@ def _analyze_bucephalus_with_continuation(
     selected = anchor_result
     selected_score = anchor_score
     selected_completed_ply = 1
+    selected_stage_index = len(stages)
     selection_mode = "anchor-fallback"
     try:
         _validate_output_identity_and_boundary(deep_stdout, state)
@@ -1164,6 +1200,7 @@ def _analyze_bucephalus_with_continuation(
                 selected_score = stitched_score
                 selected_completed_ply = prefix_ply
                 selection_mode = "deep-prefix-continuation"
+                selected_stage_index = len(stages)
     else:
         append_stage(
             "deep-max-ply", (), tuple(complete.moves), BUCEPHALUS_MAX_PLY,
@@ -1177,6 +1214,7 @@ def _analyze_bucephalus_with_continuation(
         selected_score = score
         selected_completed_ply = completed_ply
         selection_mode = "deep-complete-live"
+        selected_stage_index = len(stages)
 
     total_elapsed = elapsed_total()
     if total_elapsed > wall_timeout_seconds:
@@ -1212,7 +1250,6 @@ def _analyze_bucephalus_with_continuation(
             if selection_mode == "deep-prefix-continuation"
             else None
         ),
-        terminal_stage_ply=(
-            stages[-1].completed_ply if stages and stages[-1].usable else None
-        ),
+        terminal_stage_ply=stages[selected_stage_index - 1].completed_ply,
+        selected_terminal_stage_index=selected_stage_index,
     )

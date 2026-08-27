@@ -1006,15 +1006,45 @@ class ExternalMatchConfig:
                     self.external_wall_timeout_seconds
                 ),
                 "deadline_result": (
-                    "deepest-fully-emitted-legal-iteration"
+                    "bucephalus-only-live-complete-or-validated-stitched-or-anchor"
                     if self.external_ply_policy == TIMED_ITERATIVE_PLY_POLICY
                     else "technical-incomplete-*"
+                ),
+                "completion_controller": (
+                    {
+                        "version": BUCEPHALUS_TIMED_ITERATIVE_ADAPTER_VERSION,
+                        "moves_source": "pinned-bucephalus-output-only",
+                        "anchor": {
+                            "method": "repeated-exact-ply1",
+                            "phase_fraction": 0.10,
+                            "phase_ceiling_seconds": 12.0,
+                        },
+                        "deep": {
+                            "requested_ply": BUCEPHALUS_MAX_PLY,
+                            "soft_checkpoint_fraction_of_searchable_wall": 0.75,
+                            "complete_at_soft_action": "same-pid-continue-to-hard-deadline",
+                            "incomplete_at_soft_action": "kill-drain-then-suffix",
+                        },
+                        "suffix": {
+                            "method": "repeated-max-ply-then-exact-ply1-rescue",
+                            "allocation": "remaining-wall-divided-by-remaining-root-moves",
+                            "restart_clears_transposition_table": True,
+                        },
+                        "cleanup_reserve_seconds": 1.0,
+                        "fallback": "precomputed-bucephalus-ply1-anchor",
+                    }
+                    if self.external_ply_policy == TIMED_ITERATIVE_PLY_POLICY
+                    else None
                 ),
                 "node_limit": None,
                 "native_time_control": None,
                 "threads": 1,
                 "thread_control": "none-in-upstream-bucephalus",
-                "timeout_without_complete_iteration": "technical-incomplete-*",
+                "timeout_without_complete_iteration": (
+                    "validated-suffix-or-bucephalus-anchor; technical-only-if-anchor-unavailable"
+                    if self.external_ply_policy == TIMED_ITERATIVE_PLY_POLICY
+                    else "technical-incomplete-*"
+                ),
             },
             "common_control": {
                 "enabled": self.common_wall_timeout_seconds is not None,
@@ -1288,6 +1318,10 @@ def _continuation_chain_selects_analysis(
         or analysis.global_deadline_seconds != wall_seconds
         or analysis.terminal_stage_score != analysis.score_text
         or analysis.process_count != len(analysis.continuation_stages)
+        or type(analysis.selected_terminal_stage_index) is not int
+        or not 1
+        <= analysis.selected_terminal_stage_index
+        <= len(analysis.continuation_stages)
     ):
         return False
     anchor: tuple[str, ...] = ()
@@ -1336,6 +1370,25 @@ def _continuation_chain_selects_analysis(
             stage.soft_checkpoint_seconds is not None
             or stage.hard_deadline_seconds is not None
             or stage.same_process_continued
+        ):
+            return False
+        if (
+            stage.stop_reason == "hard-deadline"
+            and (not stage.same_process_continued or not stage.deadline_reached)
+        ) or (
+            stage.stop_reason == "soft-checkpoint-incomplete"
+            and (stage.same_process_continued or not stage.deadline_reached)
+        ) or (
+            stage.stop_reason == "process-exit" and stage.deadline_reached
+        ) or (
+            stage.stop_reason == "stage-deadline" and not stage.deadline_reached
+        ) or (
+            stage.process_exit_recovered
+            and (
+                stage.stop_reason != "process-exit"
+                or stage.process_exit_code in (None, 0)
+                or not stage.usable
+            )
         ):
             return False
         elapsed += stage.elapsed_seconds
@@ -1412,9 +1465,25 @@ def _continuation_chain_selects_analysis(
         if analysis.selection_mode in {"anchor-fallback", "anchor-terminal"}
         else stitched_terminal_score
     )
+    selected_stage = analysis.continuation_stages[
+        analysis.selected_terminal_stage_index - 1
+    ]
+    expected_selected_purpose = (
+        "anchor-ply1"
+        if analysis.selection_mode in {"anchor-fallback", "anchor-terminal"}
+        else "deep-max-ply"
+        if analysis.selection_mode == "deep-complete-live"
+        else None
+    )
     return (
         tuple(analysis.best_series.moves) == evidence
         and analysis.terminal_stage_score == evidence_score
+        and selected_stage.usable
+        and analysis.terminal_stage_ply == selected_stage.completed_ply
+        and (
+            expected_selected_purpose is None
+            or selected_stage.purpose == expected_selected_purpose
+        )
         and elapsed <= wall_seconds + COMMON_WALL_OVERRUN_GRACE_SECONDS
         and analysis.elapsed_seconds + 1e-9 >= elapsed
         and analysis.elapsed_seconds
@@ -2010,6 +2079,9 @@ def _play_external_game(
                     "external_process_count": external_analysis.process_count,
                     "selection_root_prefix_ply": external_analysis.selection_root_prefix_ply,
                     "terminal_stage_ply": external_analysis.terminal_stage_ply,
+                    "selected_terminal_stage_index": (
+                        external_analysis.selected_terminal_stage_index
+                    ),
                     "continuation_stages": [
                         {
                             "stage_index": stage.stage_index,
@@ -2310,6 +2382,12 @@ def _summarize(
     local_internal_selective_limit_moves = 0
     local_deadline_completed_iteration_moves = 0
     external_process_exit_recoveries = 0
+    external_processes = 0
+    external_selection_modes: dict[str, int] = {}
+    external_stage_stop_reasons: dict[str, int] = {}
+    external_soft_cutoffs = 0
+    external_same_pid_continuations = 0
+    external_anchor_fallbacks = 0
     failure_reasons: dict[str, int] = {}
     failure_owners: dict[str, int] = {}
     for record in records:
@@ -2318,6 +2396,23 @@ def _summarize(
                 external_process_exit_recoveries += int(
                     bool(entry.get("process_exit_recovered"))
                 )
+                external_processes += int(entry.get("external_process_count") or 0)
+                mode = str(entry.get("selection_mode") or "single-stage")
+                external_selection_modes[mode] = (
+                    external_selection_modes.get(mode, 0) + 1
+                )
+                external_anchor_fallbacks += int(mode == "anchor-fallback")
+                for stage in entry.get("continuation_stages") or ():
+                    reason = str(stage.get("stop_reason") or "unknown")
+                    external_stage_stop_reasons[reason] = (
+                        external_stage_stop_reasons.get(reason, 0) + 1
+                    )
+                    external_soft_cutoffs += int(
+                        reason == "soft-checkpoint-incomplete"
+                    )
+                    external_same_pid_continuations += int(
+                        bool(stage.get("same_process_continued"))
+                    )
             if entry.get("engine") != "local" or not entry.get("played"):
                 continue
             local_move_only_fallbacks += int(
@@ -2437,6 +2532,16 @@ def _summarize(
             "external_process_exit_recoveries": (
                 external_process_exit_recoveries
             ),
+            "external_completion_controller": {
+                "processes": external_processes,
+                "selection_modes": dict(sorted(external_selection_modes.items())),
+                "stage_stop_reasons": dict(
+                    sorted(external_stage_stop_reasons.items())
+                ),
+                "soft_checkpoint_cutoffs": external_soft_cutoffs,
+                "same_pid_hard_continuations": external_same_pid_continuations,
+                "anchor_fallbacks": external_anchor_fallbacks,
+            },
         },
         tuple(pairs),
     )
@@ -3047,6 +3152,9 @@ def _validate_journal_record_replay(
                     process_count=item["external_process_count"],
                     selection_root_prefix_ply=item.get("selection_root_prefix_ply"),
                     terminal_stage_ply=item.get("terminal_stage_ply"),
+                    selected_terminal_stage_index=item.get(
+                        "selected_terminal_stage_index"
+                    ),
                 )
                 if not _continuation_chain_selects_analysis(
                     state,

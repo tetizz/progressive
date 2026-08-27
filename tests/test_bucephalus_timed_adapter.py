@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import hashlib
+import io
 from pathlib import Path
 import subprocess
 import sys
@@ -23,6 +24,7 @@ from benchmarks.bucephalus_timed_adapter import (
     analyze_bucephalus_timed_iterative,
     replay_series_history,
     _run_bucephalus_live_checkpoint,
+    _parse_deepest_legal_incomplete_prefix,
 )
 from scottish_progressive.league import OPENING_SUITE
 from scottish_progressive.model import Outcome, ProgressiveState
@@ -307,6 +309,25 @@ def test_wrong_boundary_partial_deep_output_cannot_drive_a_stitch(
     assert "boundary" in (analysis.continuation_stages[-1].error or "")
 
 
+def test_full_budget_pv_with_illegal_last_move_cannot_salvage_prefix() -> None:
+    state = replay_series_history(SERIES_NINE_HISTORY)
+    stdout = _timed_stdout(
+        9,
+        1,
+        ((
+            9,
+            "f1-b5 b5-e8 e8-f7 f7-c4 g1-f3 h1-c1 c4-d3 c1-c8 a2-a3",
+        ),),
+    )
+    with pytest.raises(
+        ExternalEngineProtocolError,
+        match="root-series budget",
+    ):
+        _parse_deepest_legal_incomplete_prefix(
+            stdout, requested_ply=30, state=state
+        )
+
+
 def test_timed_turn_uses_terminal_ply1_anchor_before_deep_search(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -401,6 +422,7 @@ def test_live_checkpoint_drains_small_partial_transcript_then_kills_for_suffix(
         creationflags=0,
         soft_timeout_seconds=0.15,
         hard_timeout_seconds=0.6,
+        cleanup_timeout_seconds=0.2,
         snapshot_has_complete_root=lambda stdout: "complete-root" in stdout,
     )
     assert "PLY-partial" in result[0]
@@ -425,6 +447,7 @@ def test_live_checkpoint_keeps_same_pid_and_drains_until_hard_deadline(
         creationflags=0,
         soft_timeout_seconds=0.15,
         hard_timeout_seconds=0.65,
+        cleanup_timeout_seconds=0.2,
         snapshot_has_complete_root=lambda stdout: "complete-root" in stdout,
     )
     assert "deeper-complete-root" in result[0]
@@ -443,6 +466,7 @@ def test_live_checkpoint_records_clean_early_process_exit(tmp_path: Path) -> Non
         creationflags=0,
         soft_timeout_seconds=0.5,
         hard_timeout_seconds=1.0,
+        cleanup_timeout_seconds=0.2,
         snapshot_has_complete_root=lambda stdout: False,
     )
     assert "early-exit" in result[0]
@@ -450,6 +474,49 @@ def test_live_checkpoint_records_clean_early_process_exit(tmp_path: Path) -> Non
     assert result[3] == 0
     assert result[5] == "process-exit"
     assert result[7] is False
+
+
+def test_live_checkpoint_cleanup_is_bounded_for_unreapable_process(
+    tmp_path: Path, monkeypatch
+) -> None:
+    waits: list[float] = []
+
+    class StuckProcess:
+        pid = 8181
+        returncode = None
+
+        def __init__(self) -> None:
+            self.stdin = io.BytesIO()
+            self.stdout = io.BytesIO(b"partial")
+            self.stderr = io.BytesIO()
+
+        def wait(self, *, timeout):
+            waits.append(timeout)
+            raise subprocess.TimeoutExpired(["stuck"], timeout)
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            return None
+
+    monkeypatch.setattr(
+        "benchmarks.bucephalus_timed_adapter.subprocess.Popen",
+        lambda *args, **kwargs: StuckProcess(),
+    )
+    with pytest.raises(ExternalEngineTimeout, match="cleanup"):
+        _run_bucephalus_live_checkpoint(
+            Path("stuck.exe"),
+            "ignored",
+            cwd=tmp_path,
+            creationflags=0,
+            soft_timeout_seconds=0.01,
+            hard_timeout_seconds=0.02,
+            cleanup_timeout_seconds=0.01,
+            snapshot_has_complete_root=lambda stdout: False,
+        )
+    assert waits
+    assert all(0 <= timeout <= 0.03 for timeout in waits)
 
 
 def test_all_league_openings_have_exact_canonical_replay_histories() -> None:

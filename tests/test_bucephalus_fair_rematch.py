@@ -433,6 +433,62 @@ def test_color_swapped_pair_groups_real_legal_results(tmp_path: Path) -> None:
     assert local_trace["promotion_mate_replay_rejects"] == 2
 
 
+def test_live_completion_controller_is_frozen_in_config_receipt() -> None:
+    limits = replace(
+        _timed_config(),
+        external_wall_timeout_seconds=120.0,
+        common_wall_timeout_seconds=120.0,
+    ).as_dict()["external_limits"]
+    assert limits["deadline_result"] == (
+        "bucephalus-only-live-complete-or-validated-stitched-or-anchor"
+    )
+    controller = limits["completion_controller"]
+    assert controller["version"] == BUCEPHALUS_TIMED_ITERATIVE_ADAPTER_VERSION
+    assert controller["anchor"]["phase_ceiling_seconds"] == 12.0
+    assert controller["deep"]["soft_checkpoint_fraction_of_searchable_wall"] == 0.75
+    assert controller["cleanup_reserve_seconds"] == 1.0
+
+
+def test_summary_counts_completion_controller_modes_and_stops(tmp_path: Path) -> None:
+    record = _build_jobs(baseline_profile(), _spec(tmp_path), _config())[0]
+    played = _play_external_game(
+        record,
+        external_adapter=lambda state, history, spec, **kwargs: _external_result(
+            state, PUBLISHED_MATE, requested_ply=4
+        ),
+    )
+    trace = dict(played.trace[0])
+    trace.update(
+        {
+            "external_process_count": 3,
+            "selection_mode": "anchor-fallback",
+            "continuation_stages": [
+                {
+                    "stop_reason": "soft-checkpoint-incomplete",
+                    "same_process_continued": False,
+                },
+                {
+                    "stop_reason": "hard-deadline",
+                    "same_process_continued": True,
+                },
+            ],
+        }
+    )
+    summary, _ = _summarize((replace(played, trace=(trace,)),))
+    controller = summary["external_completion_controller"]
+    assert controller == {
+        "processes": 3,
+        "selection_modes": {"anchor-fallback": 1},
+        "stage_stop_reasons": {
+            "hard-deadline": 1,
+            "soft-checkpoint-incomplete": 1,
+        },
+        "soft_checkpoint_cutoffs": 1,
+        "same_pid_hard_continuations": 1,
+        "anchor_fallbacks": 1,
+    }
+
+
 def test_equal_wall_local_plays_deepest_completed_iteration_after_deadline(
     tmp_path: Path,
 ) -> None:
