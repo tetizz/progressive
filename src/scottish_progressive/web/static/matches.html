@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#262522">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <title>Scottish Progressive · Match Viewer</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body class="match-viewer-page">
+    <a class="skip-link" href="#match-board-pane">Skip to match board</a>
+    <header class="app-header">
+      <a class="brand" href="./" aria-label="Scottish Progressive home"><span class="brand-long">Scottish Progressive</span><span class="brand-short">Progressive</span></a>
+      <nav class="mode-switch" aria-label="Site section">
+        <a class="mode-button mode-link" href="./">Play</a>
+        <a class="mode-button mode-link" href="./?workspace=analyze">Analyze</a>
+        <a class="mode-button mode-link is-active" href="./matches.html" aria-current="page">Matches</a>
+      </nav>
+      <div class="header-actions">
+        <span class="engine-status is-online" role="status"><span class="status-dot" aria-hidden="true"></span><span>Recorded benchmark</span></span>
+      </div>
+    </header>
+
+    <main class="analysis-workspace match-viewer-workspace" id="workspace">
+      <section class="board-pane match-board-pane" id="match-board-pane" aria-label="Recorded match board">
+        <div class="position-strip">
+          <div class="turn-copy">
+            <p class="turn-label" id="match-position-label">Loading recorded match…</p>
+            <div class="series-heading"><h1 id="match-position-title">Preparing replay</h1><span class="boundary-pill" id="match-phase">Recorded</span></div>
+            <p class="series-subtitle" id="match-position-detail">Verifying the immutable benchmark data.</p>
+          </div>
+          <span class="series-number" aria-label="Displayed series"><small>SERIES</small><b id="match-series-number">–</b></span>
+        </div>
+        <div class="series-ledger" aria-label="Moves in the displayed series">
+          <span class="ledger-label">Current series</span>
+          <div class="move-chips" id="match-move-chips"><span class="empty-chip">No moves yet</span></div>
+        </div>
+
+        <div class="play-player-strip play-top-player" id="match-top-player" aria-label="Top player">
+          <span class="player-color" id="match-top-color" aria-hidden="true"></span>
+          <span class="player-identity"><strong id="match-top-name">—</strong><small id="match-top-meta">Recorded engine</small></span>
+          <span class="player-clock" id="match-top-turn">Waiting</span>
+        </div>
+
+        <div class="board-layout match-board-layout">
+          <div class="board-shell" id="board-shell">
+            <div class="board" id="board" role="group" aria-label="Recorded chess position. White pieces at the bottom. Input is locked." aria-busy="true"></div>
+            <div class="board-loading" id="board-loading"><span class="spinner" aria-hidden="true"></span><span id="board-loading-text">Verifying replay…</span></div>
+          </div>
+        </div>
+
+        <div class="play-player-strip play-bottom-player" id="match-bottom-player" aria-label="Bottom player">
+          <span class="player-color" id="match-bottom-color" aria-hidden="true"></span>
+          <span class="player-identity"><strong id="match-bottom-name">—</strong><small id="match-bottom-meta">Recorded engine</small></span>
+          <span class="player-clock" id="match-bottom-turn">Waiting</span>
+        </div>
+
+        <div class="board-toolbar match-replay-toolbar" aria-label="Replay controls">
+          <button class="tool-button" id="replay-previous" type="button" aria-label="Previous move" title="Previous move (Left Arrow)" disabled><span aria-hidden="true">←</span><span>Previous</span></button>
+          <button class="tool-button match-play-button" id="replay-play" type="button" aria-label="Play replay" title="Play or pause (Space)" disabled><span aria-hidden="true">▶</span><span>Play</span></button>
+          <button class="tool-button" id="replay-next" type="button" aria-label="Next move" title="Next move (Right Arrow)" disabled><span>Next</span><span aria-hidden="true">→</span></button>
+          <span class="toolbar-divider" aria-hidden="true"></span>
+          <button class="tool-button" id="replay-start" type="button" title="Jump to the benchmark start" disabled><span aria-hidden="true">◆</span><span>Match start</span></button>
+          <button class="tool-button" id="replay-flip" type="button" title="Flip board (F)" disabled><span aria-hidden="true">↻</span><span>Flip</span></button>
+        </div>
+        <div class="match-progress-wrap">
+          <label class="match-progress-label" for="replay-progress"><span id="replay-position">Position 0 of 0</span><span id="replay-move-label">Recorded replay</span></label>
+          <input id="replay-progress" type="range" min="0" max="0" value="0" step="1" disabled aria-label="Replay position">
+        </div>
+        <div class="boundary-notice is-ready" id="match-board-notice" role="status" aria-live="polite"><span class="notice-mark" aria-hidden="true"></span><span id="match-board-notice-text">Loading the recorded match.</span></div>
+      </section>
+
+      <aside class="inspector match-inspector" aria-label="Match information">
+        <div class="match-panel">
+          <div class="play-heading match-heading">
+            <p class="section-kicker">RECORDED ENGINE MATCH</p>
+            <h1>Scottish Progressive vs Bucephalus</h1>
+            <p>Replay every recorded move on the live-site board. Benchmark results and failures are shown exactly as recorded.</p>
+          </div>
+
+          <section class="match-picker" aria-labelledby="match-picker-title">
+            <div class="play-section-heading"><h2 id="match-picker-title">Game</h2><span id="match-game-count">100 games</span></div>
+            <div class="match-game-controls">
+              <button class="tree-tool" id="match-previous-game" type="button" aria-label="Previous game" disabled>←</button>
+              <label class="visually-hidden" for="match-game">Choose recorded game</label>
+              <select id="match-game" disabled><option>Loading games…</option></select>
+              <button class="tree-tool" id="match-next-game" type="button" aria-label="Next game" disabled>→</button>
+            </div>
+            <p class="match-pair-label" id="match-pair-label">Pair — · opening —</p>
+          </section>
+
+          <section class="match-status-card" id="match-status" aria-live="polite">
+            <span class="match-status-mark" aria-hidden="true"></span>
+            <span><strong id="match-status-title">Verifying replay</strong><small id="match-status-detail">Checking the content hash and replay bundle.</small></span>
+          </section>
+
+          <section class="match-scoreboard" aria-label="Match summary">
+            <div><span>Completed</span><strong id="summary-completed">—</strong></div>
+            <div><span>SPC W–D–L</span><strong id="summary-wdl">—</strong></div>
+            <div><span>Incomplete</span><strong id="summary-incomplete">—</strong></div>
+          </section>
+
+          <section class="match-series-section" aria-labelledby="match-series-title">
+            <div class="play-section-heading"><h2 id="match-series-title">Recorded series</h2><span id="match-series-count">—</span></div>
+            <div class="match-series-list" id="match-series-list"><span class="empty-chip">Loading replay…</span></div>
+          </section>
+
+          <details class="match-failure-details" id="match-failure-details" hidden>
+            <summary>Incomplete-game details</summary>
+            <p id="match-failure-copy"></p>
+          </details>
+
+          <details class="search-details match-provenance-details">
+            <summary>Replay provenance</summary>
+            <dl id="match-provenance"></dl>
+          </details>
+        </div>
+      </aside>
+    </main>
+
+    <div class="toast" id="match-toast" role="status" aria-live="polite" hidden></div>
+    <script src="./board-renderer.js" defer></script>
+    <script src="./match-viewer.js" defer></script>
+  </body>
+</html>

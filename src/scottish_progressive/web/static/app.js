@@ -52,6 +52,7 @@
   const API_ORIGIN = isPublicPagesSite ? configuredApiOrigin : "";
   const BROWSER_PREFIX = globalThis.ScottishProgressiveBrowserPrefix;
   const BROWSER_ENGINE_API = globalThis.ScottishProgressiveBrowserEngine;
+  const BOARD_RENDERER = globalThis.ScottishProgressiveBoard;
   const browserEngineClient = staticHostCanRunLocalEngine && BROWSER_ENGINE_API
     ? BROWSER_ENGINE_API.createClient()
     : null;
@@ -72,9 +73,7 @@
     strong: { label: "Strong", minimumDepth: 5, seconds: 30, generationPositions: PLAY_TECHNICAL_WORK_CEILING },
     faster: { label: "Faster", minimumDepth: 1, seconds: 5, generationPositions: PLAY_TECHNICAL_WORK_CEILING },
   };
-  const PIECE_NAMES = {
-    p: "pawn", n: "knight", b: "bishop", r: "rook", q: "queen", k: "king",
-  };
+  const PIECE_NAMES = BOARD_RENDERER.PIECE_NAMES;
 
   const dom = Object.fromEntries([
     "board", "board-shell", "board-arrows", "board-loading", "board-loading-text", "drag-piece",
@@ -800,31 +799,11 @@
   }
 
   function parseFen(fen) {
-    const text = String(fen || START_FEN).trim();
-    const fields = text.split(/\s+/);
-    const rows = (fields[0] || START_FEN.split(" ")[0]).split("/");
-    const pieces = new Map();
-    rows.slice(0, 8).forEach((row, rowIndex) => {
-      let file = 0;
-      for (const token of row) {
-        if (/\d/.test(token)) {
-          file += Number(token);
-        } else if (file < 8) {
-          const rank = 7 - rowIndex;
-          pieces.set(`${FILES[file]}${rank + 1}`, {
-            type: token.toLowerCase(),
-            color: token === token.toUpperCase() ? "white" : "black",
-          });
-          file += 1;
-        }
-      }
-    });
-    return { pieces, turn: fields[1] === "b" ? "black" : "white" };
+    return BOARD_RENDERER.parseFen(fen);
   }
 
   function pieceAsset(piece) {
-    const prefix = piece.color === "white" ? "w" : "b";
-    return `./pieces/cburnett/${prefix}${piece.type.toUpperCase()}.svg`;
+    return BOARD_RENDERER.pieceAsset(piece);
   }
 
   function activeBoardFen() {
@@ -3008,77 +2987,29 @@
     const review = state.mode === "play" ? playReviewPosition(timeline) : null;
     const reviewing = Boolean(review);
     const interactive = !previewing && !reviewing && boardInputAllowed();
-    const { pieces } = parseFen(activeBoardFen());
     const sources = interactive ? currentLegalSources() : new Set();
     const destinations = new Set(
       state.selected && !previewing
         ? state.legalMoves.filter((move) => move.from === state.selected).map((move) => move.to)
         : [],
     );
-    const rankOrder = state.flipped ? [0, 1, 2, 3, 4, 5, 6, 7] : [7, 6, 5, 4, 3, 2, 1, 0];
-    const fileOrder = state.flipped ? [7, 6, 5, 4, 3, 2, 1, 0] : [0, 1, 2, 3, 4, 5, 6, 7];
     const visibleLastMove = review?.lastMove || state.lastMove;
-    const lastFrom = previewing ? null : visibleLastMove?.slice(0, 2);
-    const lastTo = previewing ? null : visibleLastMove?.slice(2, 4);
-    const fragment = document.createDocumentFragment();
-
-    rankOrder.forEach((rank, rowIndex) => {
-      fileOrder.forEach((file, columnIndex) => {
-        const name = squareName(file, rank);
-        const piece = pieces.get(name);
-        const button = document.createElement("button");
-        const light = (file + rank) % 2 === 1;
-        button.type = "button";
-        button.className = `square ${light ? "light" : "dark"}`;
-        button.dataset.square = name;
-        button.tabIndex = interactive && name === state.focusSquare ? 0 : -1;
-        button.setAttribute("aria-disabled", String(!interactive));
-        if (piece) button.classList.add("has-piece");
-        if (sources.has(name)) button.classList.add("is-legal-from");
-        if (name === state.selected) button.classList.add("is-selected");
-        if (name === lastFrom || name === lastTo) button.classList.add("is-last");
-        if (destinations.has(name)) {
-          button.classList.add("is-legal");
-          if (piece) button.classList.add("is-capture");
-        }
-        const contents = piece ? `${piece.color} ${PIECE_NAMES[piece.type]}` : "empty square";
-        const action = destinations.has(name) ? ", legal destination" : sources.has(name) ? ", movable" : "";
-        button.setAttribute("aria-label", `${name}, ${contents}${action}`);
-        if (piece) {
-          const image = document.createElement("img");
-          image.className = `piece ${piece.color}`;
-          image.src = pieceAsset(piece);
-          image.alt = "";
-          image.draggable = false;
-          image.setAttribute("aria-hidden", "true");
-          button.append(image);
-        }
-        if (rowIndex === 7) {
-          const coordinate = document.createElement("span");
-          coordinate.className = "coordinate file";
-          coordinate.textContent = FILES[file];
-          coordinate.setAttribute("aria-hidden", "true");
-          button.append(coordinate);
-        }
-        if (columnIndex === 0) {
-          const coordinate = document.createElement("span");
-          coordinate.className = "coordinate rank";
-          coordinate.textContent = String(rank + 1);
-          coordinate.setAttribute("aria-hidden", "true");
-          button.append(coordinate);
-        }
-        fragment.append(button);
-      });
-    });
-    dom.board.replaceChildren(fragment);
-    dom.board.setAttribute(
-      "aria-label",
-      previewing
+    const ariaLabel = previewing
         ? `Principal variation preview, series ${state.previewIndex + 1} of ${state.pvFrames.length}. ${state.flipped ? "Black" : "White"} pieces at the bottom.`
         : reviewing
           ? `Game history review, position ${review.index + 1} of ${timeline.length}, after ${review.lastSan || "the initial setup"}. ${state.flipped ? "Black" : "White"} pieces at the bottom. Input is locked.`
-        : `Chess board. ${state.flipped ? "Black" : "White"} pieces at the bottom.${interactive ? " Ready for input." : " Input is locked."}`,
-    );
+          : `Chess board. ${state.flipped ? "Black" : "White"} pieces at the bottom.${interactive ? " Ready for input." : " Input is locked."}`;
+    BOARD_RENDERER.render(dom.board, {
+      fen: activeBoardFen(),
+      flipped: state.flipped,
+      lastMove: previewing ? null : visibleLastMove,
+      selected: state.selected,
+      legalSources: sources,
+      legalDestinations: destinations,
+      focusSquare: state.focusSquare,
+      interactive,
+      ariaLabel,
+    });
     dom.board_shell.classList.toggle("is-previewing", previewing);
     dom.board_shell.classList.toggle("is-reviewing", reviewing);
     if (boardHadFocus) {
@@ -5988,6 +5919,7 @@
   }
 
   async function initialize() {
+    const requestedWorkspace = new URLSearchParams(window.location.search).get("workspace");
     const savedCursor = restoreStudy();
     restoreSavedPositions();
     bindEvents();
@@ -6035,6 +5967,9 @@
     state.analysisWorkspace = captureWorkspace();
     if (!await restorePersistedPlaySession()) {
       await startNewPlayGame({ announce: false });
+    }
+    if (requestedWorkspace === "analyze") {
+      await switchWorkspaceMode("analyze");
     }
   }
 

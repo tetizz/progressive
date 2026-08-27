@@ -35,6 +35,7 @@ where = ["src"]
     "static/*",
     "static/engine/*",
     "static/engine/*/*",
+    "static/matches/*",
     "static/pieces/cburnett/*.svg",
 ]
 
