@@ -507,6 +507,39 @@ def test_native_wasm_receipt_sources_are_forced_to_lf() -> None:
         assert checkout_bytes == revision_bytes
 
 
+def test_checked_horizon_browser_sources_are_forced_to_lf() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    sources = sorted(
+        "src/scottish_progressive/web/static/" + filename
+        for filename in validator.evidence_producer.CHECKED_HORIZON_STATIC_ASSETS.values()
+    )
+    completed = subprocess.run(
+        ["git", "check-attr", "--cached", "-z", "text", "eol", "--", *sources],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    fields = [item.decode("utf-8") for item in completed.stdout.split(b"\0") if item]
+    assert len(fields) == len(sources) * 2 * 3
+    resolved = {
+        (fields[index], fields[index + 1]): fields[index + 2]
+        for index in range(0, len(fields), 3)
+    }
+
+    for relative in sources:
+        assert resolved[(relative, "text")] == "set"
+        assert resolved[(relative, "eol")] == "lf"
+        checkout_bytes = (repository / relative).read_bytes()
+        revision_bytes = subprocess.run(
+            ["git", "show", f"HEAD:{relative}"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        ).stdout
+        assert b"\r" not in checkout_bytes
+        assert checkout_bytes == revision_bytes
+
+
 def test_rejects_backslash_git_path_aliases() -> None:
     with pytest.raises(validator.PromotedReleaseError, match="backslash"):
         validator._zero_paths(
