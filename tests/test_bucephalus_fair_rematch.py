@@ -337,14 +337,14 @@ def test_equal_wall_local_internal_selective_limit_plays_legal_move(
     assert record.trace[0]["hard_work_reserve_reached"] is False
 
 
-def test_equal_wall_local_hard_work_reserve_invalidates_game(
+def test_equal_wall_local_nested_work_limit_hit_does_not_exhaust_outer_reserve(
     tmp_path: Path,
 ) -> None:
     job = _build_jobs(
         baseline_profile(), _spec(tmp_path), _timed_config()
     )[1]
 
-    def hard_work_capped(state, limits, profile):
+    def nested_work_capped(state, limits, profile):
         completed = _local_result(state, PUBLISHED_MATE)
         return SimpleNamespace(
             **{
@@ -358,12 +358,47 @@ def test_equal_wall_local_hard_work_reserve_invalidates_game(
             }
         )
 
-    record = _play_external_game(job, local_analyzer=hard_work_capped)
+    record = _play_external_game(job, local_analyzer=nested_work_capped)
+
+    assert record.result == "0-1"
+    assert record.winner == "local"
+    assert record.technical_failure_owner is None
+    assert record.trace[0]["hard_work_reserve_reached"] is False
+    assert record.trace[0]["internal_selective_limit_reached"] is True
+
+
+def test_equal_wall_local_outer_work_reserve_still_invalidates_game(
+    tmp_path: Path,
+) -> None:
+    job = _build_jobs(
+        baseline_profile(), _spec(tmp_path), _timed_config()
+    )[1]
+
+    def outer_work_capped(state, limits, profile):
+        completed = _local_result(state, PUBLISHED_MATE)
+        return SimpleNamespace(
+            **{
+                **vars(completed),
+                "stats": SimpleNamespace(
+                    **{
+                        **vars(completed.stats),
+                        "work_positions": limits.max_generation_positions,
+                        "generation_positions": limits.max_generation_positions,
+                        "generation_work_limit_hits": 1,
+                    }
+                ),
+                "work_limit_reached": True,
+                "elapsed_seconds": 0.5,
+            }
+        )
+
+    record = _play_external_game(job, local_analyzer=outer_work_capped)
 
     assert record.result == "*"
     assert record.technical_failure_owner == "local"
     assert record.terminal_reason == "technical-local-hard-work-reserve-reached"
     assert record.trace[0]["hard_work_reserve_reached"] is True
+    assert record.trace[0]["internal_selective_limit_reached"] is False
 
 
 def test_equal_wall_local_deadline_without_completed_iteration_is_incomplete(

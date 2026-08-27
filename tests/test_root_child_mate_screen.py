@@ -535,6 +535,91 @@ def test_all_mating_widening_interruption_keeps_best_safe_move_without_score(
     assert searcher.stats.root_safety_unknown_fallbacks == 0
 
 
+def test_only_legal_root_series_is_played_when_every_child_is_mating() -> None:
+    state = ProgressiveState.from_fen(
+        "1nb1kbnr/ppNR2pp/4P3/8/5q2/2K5/PPP1PP2/5BN1 b k - 0 13",
+        8,
+    )
+
+    result = analyze(
+        state,
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            max_generation_positions=4_000_000_000,
+            time_limit_seconds=30.0,
+            collect_all_root_scores=False,
+            native_threads=1,
+        ),
+        PROFILE,
+    )
+
+    assert result.best_series is not None
+    assert result.best_series.moves == ("f4c7",)
+    assert result.completed_depth == 1
+    assert not result.work_limit_reached
+    assert result.principal_variation[0] == result.best_series
+    reply = result.principal_variation[1]
+    assert reply.outcome is Outcome.CHECKMATE
+    assert play_series(result.best_series.final_state, reply.moves).outcome is (
+        Outcome.CHECKMATE
+    )
+    assert result.proof == "white"
+
+
+def test_capped_all_mating_widening_keeps_play_live_without_forced_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = ProgressiveState.from_fen(
+        "1nb1kbnr/ppNR2pp/4P3/8/5q2/2K5/PPP1PP2/5BN1 b k - 0 13",
+        8,
+    )
+    adverse = play_series(state, ("f4c7",))
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            max_generation_positions=4_000_000_000,
+            collect_all_root_scores=False,
+            native_threads=1,
+        ),
+        PROFILE,
+    )
+    reply = searcher._root_child_immediate_mate(adverse.final_state)
+    assert reply is not None
+    score = searcher._terminal_score(reply, adverse.final_state.board.turn, 2)
+    assert score is not None
+    retained = (
+        search_module.ScoredSeries(
+            adverse,
+            score,
+            (reply,),
+            searcher._terminal_proof_bounds(
+                reply,
+                adverse.final_state.board.turn,
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        SeriesSearcher,
+        "_generate",
+        lambda *_args, **_kwargs: ([adverse], False),
+    )
+
+    selected_score, pv, alternatives, proof = searcher._root_all_mating_widening(
+        state,
+        1,
+        (),
+        retained,
+    )
+
+    assert selected_score == score
+    assert pv == (adverse, reply)
+    assert alternatives == retained
+    assert proof is None
+    assert searcher._selective
+
+
 def test_series_two_cap32_miss_cannot_hide_authoritative_native_mate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

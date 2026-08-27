@@ -2946,7 +2946,7 @@ class SeriesSearcher:
         self._selective = True
         work_before = self.stats.generation_positions
         try:
-            generated, _width_complete = self._generate(
+            generated, width_complete = self._generate(
                 state,
                 ply_from_root=1,
                 required_prefix=required_prefix,
@@ -2996,6 +2996,11 @@ class SeriesSearcher:
         exact_unscored_fallback: SeriesResult | None = None
         pending_interruption: _Timeout | _WorkLimit | None = None
         safe_scored: list[ScoredSeries] = []
+        adverse_scored_by_child = {
+            item.series.final_state.transposition_key: item
+            for item in retained
+            if _root_candidate_is_proven_adverse(mover, item)
+        }
         for candidate in candidates:
             try:
                 self._check_deadline()
@@ -3012,7 +3017,7 @@ class SeriesSearcher:
                     self.stats.root_safety_widened_exact_children += 1
                 continue
             child_key = candidate.final_state.transposition_key
-            if child_key in retained_keys or child_key in self._root_child_proven_mate_keys:
+            if child_key in retained_keys:
                 continue
             materialized = self._materialize_series(candidate)
             try:
@@ -3032,6 +3037,24 @@ class SeriesSearcher:
                     break
                 continue
             if reply_mate is not None:
+                score = self._terminal_score(
+                    reply_mate,
+                    materialized.final_state.board.turn,
+                    2,
+                )
+                if score is None:  # pragma: no cover - replay invariant
+                    raise RuntimeError(
+                        "replay-proven root reply mate has no terminal score"
+                    )
+                adverse_scored_by_child[child_key] = ScoredSeries(
+                    materialized,
+                    score,
+                    (reply_mate,),
+                    self._terminal_proof_bounds(
+                        reply_mate,
+                        materialized.final_state.board.turn,
+                    ),
+                )
                 continue
             if child_key not in self._root_child_native_mate_exhausted_keys:
                 if unknown_fallback is None:
@@ -3086,6 +3109,53 @@ class SeriesSearcher:
                 (best.series,) + best.principal_variation,
                 tuple(safe_scored),
                 None,
+            )
+
+        # Every widened child is replay-proven to allow an immediate mate.
+        # There is no safe move to preserve, so refusing to return a series
+        # would turn a forced chess loss into a technical engine failure. Keep
+        # the least-bad exact line. A complete widened frontier may expose its
+        # proof; a capped frontier remains explicitly selective with UNKNOWN
+        # bounds, but still keeps engine play live.
+        candidate_child_keys = {
+            candidate.final_state.transposition_key
+            for candidate in candidates
+            if candidate.outcome is None
+        }
+        if (
+            pending_interruption is None
+            and exact_unscored_fallback is None
+            and unknown_fallback is None
+            and candidate_child_keys
+            and candidate_child_keys.issubset(adverse_scored_by_child)
+        ):
+            adverse_scored = list(
+                _proof_safe_root_order(
+                    mover,
+                    tuple(adverse_scored_by_child.values()),
+                )
+            )
+            best = adverse_scored[0]
+            if required_prefix:
+                # A constrained analysis describes whether the already-chosen
+                # prefix remains acceptable; it is not an engine-play
+                # liveness request. Preserve the certified safety contract by
+                # rejecting a prefix whose every legal completion has a
+                # replay-proven mate reply, but do not mislabel that semantic
+                # rejection as work exhaustion.
+                self._root_scores_complete = False
+                return self._evaluate(state).total, (), (), None
+            self._root_scores_complete = True
+            proof_bounds = self._combine_proof_bounds(
+                mover,
+                [item.proof_bounds for item in adverse_scored],
+                all_branches_visited=width_complete,
+            )
+            return (
+                best.score,
+                (best.series,) + best.principal_variation,
+                tuple(adverse_scored),
+                _proof_from_bounds(proof_bounds),
             )
 
         error = pending_interruption or _WorkLimit()

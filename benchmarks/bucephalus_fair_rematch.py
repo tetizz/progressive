@@ -1072,7 +1072,6 @@ def _play_external_game(
             )
             hard_work_reserve_reached = analysis_work_limit_reached and (
                 search_work >= search_work_limit
-                or int(getattr(stats, "generation_work_limit_hits", 0)) > 0
             )
             local_work_positions += search_work
             selected = getattr(analysis, "best_series", None)

@@ -457,6 +457,7 @@ def test_nonmating_promotion_check_with_proven_reply_mate_is_rejected(
     assert searched.best_series is None
     assert searched.proof is None
     assert searched.forced is None
+    assert not searched.work_limit_reached
     assert searched.stats.root_safety_proven_mate_children >= 1
     assert searched.stats.promotion_mate_mates == 0
 
