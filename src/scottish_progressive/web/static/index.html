@@ -146,7 +146,6 @@
 
         <div class="tabs" id="workspace-tabs" role="tablist" aria-label="Workspace views" tabindex="-1" hidden>
           <button class="tab is-active" id="tab-analysis" role="tab" aria-selected="true" aria-controls="analysis-panel" tabindex="0">Analysis</button>
-          <button class="tab" id="tab-theory" role="tab" aria-selected="false" aria-controls="theory-panel" tabindex="-1">Theory</button>
           <button class="tab" id="tab-setup" role="tab" aria-selected="false" aria-controls="setup-panel" tabindex="-1">Setup</button>
         </div>
         <section class="tab-panel analysis-panel" id="analysis-panel" role="tabpanel" aria-labelledby="tab-analysis" hidden>
@@ -198,12 +197,6 @@
             <p class="tree-help" id="tree-help">Play on the board to add moves. Select any move to reopen that server-checked position.</p>
             <div class="analysis-tree" id="analysis-tree" role="tree" aria-label="Saved progressive analysis variations" aria-describedby="tree-help"></div>
           </section>
-        </section>
-
-        <section class="tab-panel theory-panel" id="theory-panel" role="tabpanel" aria-labelledby="tab-theory" hidden>
-          <div class="panel-heading"><div><p class="section-kicker">ENGINE EVIDENCE</p><h2>Opening explorer</h2></div><button class="subtle-button" id="refresh-openings" type="button">Refresh</button></div>
-          <p class="panel-intro">Dated engine results, not solved opening truth. Select a row to load its first move.</p><div class="theory-meta" id="theory-meta"></div>
-          <div class="theory-loading" id="theory-loading"><span class="spinner" aria-hidden="true"></span> Loading opening evidence…</div><div class="theory-error" id="theory-error" hidden role="alert"></div><div class="opening-list" id="opening-list"></div>
         </section>
 
         <section class="tab-panel setup-panel" id="setup-panel" role="tabpanel" aria-labelledby="tab-setup" hidden>

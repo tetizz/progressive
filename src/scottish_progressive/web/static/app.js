@@ -91,8 +91,7 @@
     "result-choice-heading",
     "pv-controls", "pv-previous", "pv-next", "pv-exit", "pv-indicator",
     "alternatives-count", "alternatives-list", "evaluation-breakdown", "reach-status",
-    "warnings-section", "warnings-list", "search-stats", "theory-meta", "theory-loading",
-    "theory-error", "opening-list", "refresh-openings", "setup-form", "fen-input",
+    "warnings-section", "warnings-list", "search-stats", "setup-form", "fen-input",
     "series-input", "quiet-input", "ep-input", "load-start", "setup-error",
     "analysis-progress", "analysis-progress-fill", "analysis-progress-text",
     "save-position", "load-position", "saved-dialog", "saved-dialog-close",
@@ -107,7 +106,7 @@
     "play-history-previous", "play-history-next", "play-history-position",
     "play-new-game", "play-retry-engine", "play-analyze-position", "play-resign", "play-engine-name", "play-engine-id",
     "play-engine-version", "play-runtime-status", "play-strength-strong", "play-strength-faster", "play-strength-status",
-    "play-search-depth", "play-search-status", "workspace-tabs", "analysis-panel", "theory-panel", "setup-panel",
+    "play-search-depth", "play-search-status", "workspace-tabs", "analysis-panel", "setup-panel",
   ].map((id) => [id.replaceAll("-", "_"), document.getElementById(id)]));
 
   const state = {
@@ -5035,108 +5034,6 @@
     updateAnalysisProgress();
   }
 
-  function reportData(report) {
-    return first(report?.data, report?.payload, report);
-  }
-
-  function findOpeningResults(payload) {
-    if (Array.isArray(payload)) return payload;
-    if (Array.isArray(payload?.results)) return payload.results;
-    if (Array.isArray(payload?.openings)) return payload.openings;
-    const reports = payload?.reports || {};
-    const preferred = first(reports.initial_ranking, reports.initial, reports.ranking);
-    const data = reportData(preferred);
-    return first(data?.results, data?.openings, []);
-  }
-
-  function renderTheory(payload) {
-    const reports = payload?.reports || {};
-    const initialReport = first(reports.initial_ranking, reports.initial, reports.ranking);
-    const data = reportData(initialReport) || payload;
-    const rows = findOpeningResults(payload);
-    const badges = [];
-    const current = first(initialReport?.current, payload.current);
-    if (current !== undefined) badges.push(proofChip(current ? "Current fingerprint" : "Stale fingerprint", current ? "good" : "warning"));
-    if (data?.total_series_horizon !== undefined) badges.push(proofChip(`${data.total_series_horizon}-series horizon`));
-    if (data?.all_reply_searches_exact !== undefined) badges.push(proofChip(data.all_reply_searches_exact ? "Exact width" : "Selective width", data.all_reply_searches_exact ? "good" : "warning"));
-    if (data?.generated_at) badges.push(proofChip(new Date(data.generated_at).toLocaleDateString()));
-    dom.theory_meta.replaceChildren(...badges);
-    dom.theory_loading.hidden = true;
-    dom.theory_error.hidden = true;
-    if (!rows.length) {
-      dom.opening_list.replaceChildren(Object.assign(document.createElement("div"), { className: "analysis-empty", textContent: payload?.available === false ? "No opening reports are available yet." : "No opening rows were returned." }));
-      return;
-    }
-    const nodes = rows.map((opening, index) => {
-      const row = document.createElement("button");
-      row.type = "button";
-      row.className = "opening-row";
-      const rank = document.createElement("span");
-      rank.className = "opening-rank";
-      rank.textContent = String(first(opening.rank, index + 1));
-      const main = document.createElement("span");
-      main.className = "opening-main";
-      const title = document.createElement("strong");
-      title.textContent = String(first(opening.move_san, opening.san, opening.move_uci, opening.uci, "Unknown move"));
-      const reply = document.createElement("span");
-      reply.textContent = first(opening.best_black_notation, opening.best_reply, opening.principal_variation, opening.classification, "No reply line reported");
-      main.append(title, reply);
-      const score = document.createElement("span");
-      score.className = "opening-score";
-      const value = document.createElement("strong");
-      const evaluation = describeEvaluation(first(opening.score, opening.value), opening);
-      value.textContent = evaluation.label;
-      value.title = `${evaluation.spoken}. ${EVALUATION_SCALE_HELP}`;
-      const unit = document.createElement("small");
-      unit.textContent = evaluation.plain;
-      score.append(value, unit);
-      row.append(rank, main, score);
-      const uci = first(opening.move_uci, opening.uci, extractUci(opening.move));
-      row.disabled = !uci;
-      row.setAttribute("aria-label", `Load ${title.textContent}, ${evaluation.spoken}`);
-      row.addEventListener("click", () => loadOpeningMove(String(uci)));
-      return row;
-    });
-    dom.opening_list.replaceChildren(...nodes);
-  }
-
-  async function loadOpenings() {
-    dom.theory_loading.hidden = false;
-    dom.theory_error.hidden = true;
-    dom.opening_list.replaceChildren();
-    try {
-      renderTheory(await requestJson("/api/openings"));
-    } catch (error) {
-      dom.theory_loading.hidden = true;
-      dom.theory_error.hidden = false;
-      dom.theory_error.textContent = displayError(error);
-    }
-  }
-
-  async function loadOpeningMove(uci) {
-    state.boundary = {
-      fen: START_FEN,
-      series: 1,
-      quiet_series: 0,
-      ep_targets: [],
-      promoted_hex: ZERO_PROMOTED_HEX,
-      chess960: false,
-    };
-    state.history = [];
-    state.prefix = [];
-    state.prefixSan = [];
-    resetStudy(state.boundary);
-    switchTab("analysis");
-    const payload = await refreshPrefix([uci], [uci]);
-    if (payload) {
-      attachMoveToStudy({ uci, san: notationArray(payload, [uci], [uci])[0] }, payload, state.boundary, null, null);
-      if (payload.complete && payload.next_state && !payload.outcome) {
-        await advanceSeries(true);
-      }
-      showToast(`Loaded opening move ${uci}`);
-    }
-  }
-
   function syncSetupFields() {
     if (document.activeElement?.closest("#setup-form")) return;
     dom.fen_input.value = state.boundary.fen;
@@ -6043,7 +5940,6 @@
     dom.pv_previous.addEventListener("click", () => stepPv(-1));
     dom.pv_next.addEventListener("click", () => stepPv(1));
     dom.pv_exit.addEventListener("click", () => exitPvPreview());
-    dom.refresh_openings.addEventListener("click", loadOpenings);
     dom.setup_form.addEventListener("submit", loadSetup);
     dom.load_start.addEventListener("click", () => {
       dom.fen_input.value = START_FEN;
@@ -6099,7 +5995,6 @@
     renderAll();
     clearAnalysisDisplay();
     await checkHealth();
-    loadOpenings();
     const cursorNode = state.currentTreeNodeId ? state.study?.nodes[state.currentTreeNodeId] : null;
     const cursorIsOnNode = Boolean(
       cursorNode

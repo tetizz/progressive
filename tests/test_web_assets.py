@@ -60,6 +60,35 @@ def test_public_assets_are_project_pages_safe_and_keep_local_same_origin() -> No
     assert 'PUBLIC_ENGINE_RECONNECT_DELAYS_MS[reconnectAttempt]' in app
 
 
+def test_public_site_is_engine_first_without_a_theory_surface() -> None:
+    index = (STATIC / "index.html").read_text(encoding="utf-8")
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC / "styles.css").read_text(encoding="utf-8")
+
+    assert 'id="mode-play"' in index
+    assert 'id="mode-analyze"' in index
+    assert 'id="tab-analysis"' in index
+    assert 'id="tab-setup"' in index
+    assert ".tabs { display: grid; grid-template-columns: repeat(2, 1fr);" in styles
+
+    for theory_surface in (
+        'id="tab-theory"',
+        'id="theory-panel"',
+        'id="refresh-openings"',
+        'id="opening-list"',
+        "Opening explorer",
+        "Loading opening evidence",
+    ):
+        assert theory_surface not in index
+    assert 'requestJson("/api/openings")' not in app
+    assert "function renderTheory" not in app
+    assert "function loadOpenings" not in app
+    assert "function loadOpeningMove" not in app
+    assert ".theory-" not in styles
+    assert ".opening-" not in styles
+    assert ".subtle-button" not in styles
+
+
 def test_pages_uses_the_local_certified_bundle_without_waiting_for_render() -> None:
     render = (ROOT / "render.yaml").read_text(encoding="utf-8")
     workflow = (ROOT / ".github" / "workflows" / "pages.yml").read_text(
@@ -410,7 +439,6 @@ def test_visible_evaluation_surfaces_share_the_human_formatter() -> None:
     assert "dom.result_raw_score.textContent = evaluation.rawLabel" in app
     assert "dom.eval_marker.textContent = evaluation.compact" in app
     assert "score.textContent = evaluation.label" in app
-    assert "value.textContent = evaluation.label" in app
     assert "number.textContent = evaluation.label" in app
     assert 'aria-label", evaluation.spoken' in app
 
