@@ -1047,6 +1047,10 @@ const probeExpression = String.raw`(async () => {
         === expected.unsafe_horizon
       && entry.request.authoritative_child_boundary.fen === expected.unsafe_child_fen
       && exactPrefixMateReplay(entry);
+    const matchesD5RootSafety = (entry, rootSeries) => entry?.request
+      ?.iteration_id === entry.request?.request_id + ":d5"
+      && entry.request.candidate?.order_key === rootSeries
+      && exactPrefixMateReplay(entry);
     const exactRepairPair = (safety, repair, expected) => {
       const newestProof = repair?.request?.horizon_proofs?.at(-1);
       const rawMate = safety?.response?.reply_mate;
@@ -1248,7 +1252,7 @@ const probeExpression = String.raw`(async () => {
     ) {
       for (const entry of safetyTrace) {
         if (
-          !matchesExpectedSafety(entry, f3Witness.expected)
+          !matchesD5RootSafety(entry, f3Witness.expected.root_series)
           || entry === f3Witness.safety
           || entry.request_sequence <= f3WarmRecertification.request_sequence
           || entry.posted_monotonic_ms < f3WarmRecertification.received_monotonic_ms
@@ -1323,7 +1327,7 @@ const probeExpression = String.raw`(async () => {
         second_safety_trace: secondF3Safety,
       });
     const f3AdverseSafetyTraces = safetyTrace.filter((entry) => (
-      matchesExpectedSafety(entry, EXPECTED_WITNESSES[0])
+      matchesD5RootSafety(entry, EXPECTED_WITNESSES[0].root_series)
     ));
     const principalVariation = Array.isArray(result.principal_variation)
       ? result.principal_variation
