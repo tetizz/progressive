@@ -161,10 +161,21 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
     repository = tmp_path / "repository"
     package = repository / "src" / "scottish_progressive"
     package.mkdir(parents=True)
+    (repository / ".gitattributes").write_text(
+        "src/scottish_progressive/*.cpp text eol=lf\n"
+        "src/scottish_progressive/*.hpp text eol=lf\n"
+        "src/scottish_progressive/*.h text eol=lf\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     for index, relative in enumerate(promoter.KERNEL_SOURCES):
         path = repository / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"// source {index}: {relative}\n", encoding="utf-8")
+        path.write_text(
+            f"// source {index}: {relative}\n",
+            encoding="utf-8",
+            newline="\n",
+        )
     static_directory = package / "web" / "static"
     static_directory.mkdir(parents=True, exist_ok=True)
     for index, filename in enumerate(promoter.CHECKED_HORIZON_STATIC_ASSETS.values()):
@@ -175,7 +186,7 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
     _git(repository, "init", "-q")
     _git(repository, "config", "user.name", "tetizz")
     _git(repository, "config", "user.email", "tetizz@users.noreply.github.com")
-    _git(repository, "add", "src/scottish_progressive")
+    _git(repository, "add", ".gitattributes", "src/scottish_progressive")
     _git(repository, "commit", "-q", "-m", "fixture source")
     revision = _git(repository, "rev-parse", "HEAD")
     source_fingerprint = promoter.bundle_builder.engine_source_fingerprint(package)
@@ -1117,6 +1128,33 @@ def test_rejects_untracked_release_verifier_outside_engine_package(
 
     with pytest.raises(promoter.ReleaseGateError, match="release checkout is dirty"):
         _validate(fixture)
+
+
+def test_rejects_clean_checkout_with_platform_transformed_native_source(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    for index, relative in enumerate(promoter.KERNEL_SOURCES):
+        path = repository / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"// source {index}: {relative}\n".encode("utf-8"))
+    _git(repository, "init", "-q")
+    _git(repository, "config", "user.name", "tetizz")
+    _git(repository, "config", "user.email", "tetizz@users.noreply.github.com")
+    _git(repository, "config", "core.autocrlf", "false")
+    _git(repository, "add", "src/scottish_progressive")
+    _git(repository, "commit", "-q", "-m", "fixture source")
+    revision = _git(repository, "rev-parse", "HEAD")
+    _git(repository, "config", "core.autocrlf", "true")
+    for relative in promoter.KERNEL_SOURCES:
+        (repository / relative).unlink()
+    _git(repository, "reset", "--hard", "HEAD")
+
+    assert b"\r\n" in (repository / promoter.KERNEL_SOURCES[0]).read_bytes()
+    assert _git(repository, "status", "--porcelain=v1") == ""
+    with pytest.raises(promoter.ReleaseGateError, match="source revision Git blob"):
+        promoter._validate_kernel_source_bytes(repository, revision)
 
 
 def _opera_checked_horizon_fixture(

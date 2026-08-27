@@ -423,14 +423,34 @@ def test_release_tree_is_forced_binary_in_git_attributes() -> None:
     assert "release/browser-wasm/** -text -diff" in attributes
 
 
-def test_native_wasm_sources_are_forced_to_lf_in_git_attributes() -> None:
-    attributes = (
-        Path(__file__).resolve().parents[1] / ".gitattributes"
-    ).read_text(encoding="utf-8").splitlines()
+def test_native_wasm_receipt_sources_are_forced_to_lf() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    sources = sorted(validator.evidence_producer.KERNEL_SOURCES)
+    completed = subprocess.run(
+        ["git", "check-attr", "--cached", "-z", "text", "eol", "--", *sources],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    fields = [item.decode("utf-8") for item in completed.stdout.split(b"\0") if item]
+    assert len(fields) == len(sources) * 2 * 3
+    resolved = {
+        (fields[index], fields[index + 1]): fields[index + 2]
+        for index in range(0, len(fields), 3)
+    }
 
-    assert "src/scottish_progressive/*.cpp text eol=lf" in attributes
-    assert "src/scottish_progressive/*.hpp text eol=lf" in attributes
-    assert "src/scottish_progressive/*.h text eol=lf" in attributes
+    for relative in sources:
+        assert resolved[(relative, "text")] == "set"
+        assert resolved[(relative, "eol")] == "lf"
+        checkout_bytes = (repository / relative).read_bytes()
+        revision_bytes = subprocess.run(
+            ["git", "show", f"HEAD:{relative}"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        ).stdout
+        assert b"\r" not in checkout_bytes
+        assert checkout_bytes == revision_bytes
 
 
 def test_rejects_backslash_git_path_aliases() -> None:

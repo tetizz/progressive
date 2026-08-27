@@ -1508,6 +1508,7 @@ def _validate_source_checkout(
         raise ReleaseGateError(
             f"engine fingerprint includes untracked inputs: {missing_tracked}"
         )
+    _validate_kernel_source_bytes(repository, head)
     calculated_fingerprint = bundle_builder.engine_source_fingerprint(source_package)
     if build.get("source_fingerprint") != calculated_fingerprint:
         raise ReleaseGateError("build source fingerprint does not match the checkout")
@@ -1542,6 +1543,22 @@ def _validate_source_checkout(
         "missing_from_clean_checkout": [],
     }
     return calculated_fingerprint, closure
+
+
+def _validate_kernel_source_bytes(repository: Path, source_revision: str) -> None:
+    for relative in sorted(KERNEL_SOURCES):
+        checkout_bytes = (repository / relative).read_bytes()
+        revision_bytes = _run_git(
+            repository,
+            "show",
+            f"{source_revision}:{relative}",
+            text=False,
+        )
+        if checkout_bytes != revision_bytes:
+            raise ReleaseGateError(
+                "native WASM source bytes differ from the source revision Git blob: "
+                f"{relative}"
+            )
 
 
 def _validate_build_receipt(
