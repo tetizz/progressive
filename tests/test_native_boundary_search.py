@@ -132,6 +132,16 @@ def _evaluation_tuple(result: object) -> tuple[object, ...]:
             3,
             ep_targets=(chess.A6, chess.C6),
         ),
+        ProgressiveState.from_fen(
+            "rnbq1bnr/pppp1kpp/4p3/4B2Q/2B5/1P5N/P1PP1KPP/RN5R "
+            "b - - 4 7",
+            6,
+        ),
+        ProgressiveState.from_fen(
+            "rn5r/p1pp1kpp/1p5n/2b5/4b2q/4P3/PPPP1KPP/RNBQ1BNR "
+            "w - - 4 7",
+            7,
+        ),
     ],
 )
 @pytest.mark.parametrize("max_reach_positions", [0, 1, 17, 127, 128, 129, 256])

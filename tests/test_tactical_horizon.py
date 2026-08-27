@@ -2,8 +2,17 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
+import chess
+import pytest
+
 from scottish_progressive.evaluation import evaluate
 from scottish_progressive.model import ProgressiveState
+from scottish_progressive.native_subtree import (
+    SUBTREE_STAT_FIELDS,
+    NativeSubtreeSession,
+    native_subtree_available,
+)
+from scottish_progressive.profiles import EvaluationWeights, baseline_profile
 from scottish_progressive.rules import play_series
 from scottish_progressive.search import (
     MATE_SCORE,
@@ -19,6 +28,18 @@ TACTICAL_HORIZON_FEN = "r5k1/6B1/8/8/7Q/8/8/1K6 w - - 0 1"
 TACTICAL_HORIZON_SERIES = 1
 DELAYED_QUEEN_CAPTURE_FEN = "k5n1/8/8/7p/8/8/8/3QK3 w - - 0 1"
 FAKE_PROMOTION_CORRIDOR_FEN = "3kr3/6n1/P7/7P/8/8/8/1K6 w - - 0 1"
+CERTIFIED_CHECKED_MIDDLEGAME_FEN = (
+    "rnbq1bnr/pppp1kpp/4p3/4B2Q/2B5/1P5N/P1PP1KPP/RN5R b - - 4 7"
+)
+CERTIFIED_CHECKED_MIDDLEGAME_SERIES = 6
+CERTIFIED_CHECKED_MIDDLEGAME_REPLY = (
+    "f7e7",
+    "d8e8",
+    "e8h5",
+    "e7e8",
+    "h5e5",
+    "e5a1",
+)
 
 
 def _analyze_anchor(
@@ -208,6 +229,106 @@ def test_tactical_extension_is_one_token_without_tt_or_hidden_pv() -> None:
     assert proof_bounds == UNKNOWN_PROOF_BOUNDS
     assert searcher.stats.tactical_leaf_extensions == 1
     assert searcher._tt == {}
+
+
+def test_checked_middlegame_leaf_searches_one_real_reply_series() -> None:
+    """The certified b3 D5 horizon must see Black evade check and win Ra1."""
+
+    leaf = ProgressiveState.from_fen(
+        CERTIFIED_CHECKED_MIDDLEGAME_FEN,
+        CERTIFIED_CHECKED_MIDDLEGAME_SERIES,
+    )
+    breakdown = evaluate(leaf)
+    assert breakdown.total == 522
+    assert breakdown.boundary_check == 170
+    assert breakdown.total - breakdown.boundary_check == 352
+    assert breakdown.tactical_unstable
+    reply = play_series(leaf, CERTIFIED_CHECKED_MIDDLEGAME_REPLY)
+    assert reply.machine_notation == "/".join(CERTIFIED_CHECKED_MIDDLEGAME_REPLY)
+    assert evaluate(reply.final_state).total == -2641
+
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            max_generation_positions=250_000,
+        )
+    )
+    assert searcher._native_subtree_session is None
+    score, pv, proof_bounds = searcher._minimax(
+        leaf,
+        0,
+        -MATE_SCORE * 2,
+        MATE_SCORE * 2,
+        1,
+    )
+
+    assert score == -2641
+    assert pv == ()
+    assert proof_bounds == UNKNOWN_PROOF_BOUNDS
+    assert searcher.stats.tactical_leaf_extensions == 1
+    assert 0 < searcher.stats.work_positions <= 3_000
+    assert searcher._tt == {}
+
+
+def test_checked_middlegame_trigger_is_color_symmetric() -> None:
+    leaf = ProgressiveState.from_fen(
+        CERTIFIED_CHECKED_MIDDLEGAME_FEN,
+        CERTIFIED_CHECKED_MIDDLEGAME_SERIES,
+    )
+    mirrored = ProgressiveState(leaf.board.mirror(), series_number=7)
+
+    original = evaluate(leaf)
+    opposite = evaluate(mirrored)
+    assert opposite.total == -original.total == -522
+    assert opposite.material == -original.material == 100
+    assert opposite.boundary_check == -original.boundary_check == -170
+    assert opposite.total - opposite.boundary_check == -352
+    assert original.tactical_unstable
+    assert opposite.tactical_unstable
+
+    scaled_material = evaluate(leaf, EvaluationWeights(material=73))
+    assert scaled_material.material == -73
+    assert scaled_material.total == 549
+    assert scaled_material.tactical_unstable
+
+
+def test_checked_middlegame_extension_matches_native_depth_zero() -> None:
+    if not native_subtree_available():
+        pytest.skip("source-matched native subtree API is unavailable")
+    leaf = ProgressiveState.from_fen(
+        CERTIFIED_CHECKED_MIDDLEGAME_FEN,
+        CERTIFIED_CHECKED_MIDDLEGAME_SERIES,
+    )
+    session = NativeSubtreeSession(
+        max_series_per_node=32,
+        max_work=250_000,
+        requested_depth=1,
+        mate_score=MATE_SCORE,
+        cache_capacity=16_384,
+        external_cache_weight=0,
+        native_threads=1,
+        root_tactical_protection=False,
+        profile=baseline_profile(),
+    )
+    native = session.search(
+        leaf,
+        depth=0,
+        alpha=-MATE_SCORE * 2,
+        beta=MATE_SCORE * 2,
+        ply_from_root=1,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    stats = dict(zip(SUBTREE_STAT_FIELDS, native.stats, strict=True))
+
+    assert native.status == 0
+    assert native.score == -2641
+    assert native.principal_variation == ()
+    assert native.proof_bounds == UNKNOWN_PROOF_BOUNDS
+    assert native.selective
+    assert stats["tactical_leaf_extensions"] == 1
+    assert 0 < stats["generation_positions"] <= 3_000
 
 
 def test_tactical_extension_native_and_python_subtrees_match(monkeypatch) -> None:

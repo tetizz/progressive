@@ -57,6 +57,9 @@ constexpr int ROOK = 4;
 constexpr int QUEEN = 5;
 constexpr int KING = 6;
 constexpr std::uint64_t CAPTURE_REACH_POSITION_LIMIT = 256;
+constexpr std::int64_t CHECKED_LEAF_EXTENSION_MIN_SERIES = 6;
+constexpr std::int64_t CHECKED_LEAF_EXTENSION_MIN_ADVANTAGE = 500;
+constexpr std::int64_t CHECKED_LEAF_EXTENSION_MATERIAL_DEFICIT = 100;
 
 #ifdef SPC_NATIVE_SERIAL_POOL
 class BoundedNativePool {
@@ -2256,8 +2259,9 @@ std::optional<FullEvaluation> full_evaluate(
         )) {
         return std::nullopt;
     }
+    const bool checked_boundary = is_check(position);
     if (
-        is_check(position)
+        checked_boundary
         && !assign_scaled(
             board.white_to_move == WHITE ? -170 : 170,
             weights.boundary_check,
@@ -2268,19 +2272,6 @@ std::optional<FullEvaluation> full_evaluate(
     }
     const Bitboard capture_targets = immediate_capture.targets
         | two_move_capture.targets;
-    // The two-move vulnerability term already prices ordinary capture
-    // swings. Extend only when a capture route competes with a promotion
-    // corridor, which cannot be combined safely in one static score. Exact
-    // continuation stays in low-material promotion races so ordinary
-    // middlegame leaves do not widen.
-    result.tactical_unstable = low_material
-        && promotable_pawn_is_reachable(
-            position,
-            board,
-            capture_targets,
-            series_number
-        );
-
     const std::array<std::int64_t, 7> terms = {
         result.material,
         result.king_space,
@@ -2295,6 +2286,47 @@ std::optional<FullEvaluation> full_evaluate(
             return std::nullopt;
         }
     }
+    // A check whose static bonus creates an apparent rook-value advantage for
+    // an attacker one pawn down is a high-risk stand-pat illusion. From
+    // Series 6 onward the two-move probe covers at most one third of the reply.
+    // Requiring the check term itself to cross the threshold avoids widening
+    // positions whose advantage does not depend on that bonus.
+    const bool checker_favored = board.white_to_move == WHITE
+        ? result.total <= -CHECKED_LEAF_EXTENSION_MIN_ADVANTAGE
+        : result.total >= CHECKED_LEAF_EXTENSION_MIN_ADVANTAGE;
+    std::int64_t scaled_pawn_deficit = 0;
+    if (!assign_scaled(
+            CHECKED_LEAF_EXTENSION_MATERIAL_DEFICIT,
+            weights.material,
+            scaled_pawn_deficit
+        )) {
+        return std::nullopt;
+    }
+    const bool checker_has_pawn_deficit = board.white_to_move == WHITE
+        ? result.material == scaled_pawn_deficit
+        : result.material == -scaled_pawn_deficit;
+    std::int64_t score_without_check = 0;
+    if (!checked_add(result.total, -result.boundary_check, score_without_check)) {
+        return std::nullopt;
+    }
+    const bool checker_favored_without_check = board.white_to_move == WHITE
+        ? score_without_check <= -CHECKED_LEAF_EXTENSION_MIN_ADVANTAGE
+        : score_without_check >= CHECKED_LEAF_EXTENSION_MIN_ADVANTAGE;
+    result.tactical_unstable = (
+        checked_boundary
+        && series_number >= CHECKED_LEAF_EXTENSION_MIN_SERIES
+        && checker_favored
+        && checker_has_pawn_deficit
+        && !checker_favored_without_check
+    ) || (
+        low_material
+        && promotable_pawn_is_reachable(
+            position,
+            board,
+            capture_targets,
+            series_number
+        )
+    );
     return result;
 }
 

@@ -8,5 +8,6 @@ src/scottish_progressive/*.h text eol=lf
 # Checked-horizon receipts bind these browser source bytes as served by Pages.
 # Keep Windows captures byte-identical to Linux deployment checkouts.
 src/scottish_progressive/web/static/*.js text eol=lf
+root-iteration-coordinator.js text eol=lf
 experiments/neural-ordering-s3-network.json -text -diff
 reports/neural-ordering-s3-final-fair-seeded20-seed730194821.json -text -diff

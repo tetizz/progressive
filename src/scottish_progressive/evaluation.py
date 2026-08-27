@@ -77,6 +77,9 @@ _NATIVE_WEIGHT_MIN = 25
 _NATIVE_WEIGHT_MAX = 300
 _CHECK_REACH_POSITION_LIMIT = 256
 _CAPTURE_REACH_POSITION_LIMIT = 256
+_CHECKED_LEAF_EXTENSION_MIN_SERIES = 6
+_CHECKED_LEAF_EXTENSION_MIN_ADVANTAGE = 500
+_CHECKED_LEAF_EXTENSION_MATERIAL_DEFICIT = 100
 _EVALUATION_PROBE_POSITION_LIMIT = (
     _CHECK_REACH_POSITION_LIMIT + _CAPTURE_REACH_POSITION_LIMIT
 )
@@ -602,23 +605,14 @@ def _python_evaluate(
         * 2,
     )
 
+    checked_boundary = board.is_check()
     boundary_check = 0
-    if board.is_check():
+    if checked_boundary:
         boundary_check = weights.scale(
             "boundary_check", 170 if board.turn == chess.BLACK else -170
         )
 
     capture_targets = immediate_capture.targets | two_move_capture.targets
-    # Ordinary capture swings are already represented by the bounded
-    # two-move vulnerability term above.  Extend only when a capture route and
-    # a promotion corridor are mutually exclusive: a single static score
-    # cannot safely combine those alternatives.  Full-series continuation is
-    # confined to low-material promotion races, where branching is bounded;
-    # ordinary middlegames retain the metered static signal.
-    tactical_unstable = (
-        low_material and _promotable_pawn_is_reachable(state, capture_targets)
-    )
-
     total = (
         material
         + king_space
@@ -627,6 +621,41 @@ def _python_evaluate(
         + immediate_vulnerability
         + useful_mobility
         + boundary_check
+    )
+    # A check whose static bonus creates an apparent rook-value advantage for
+    # an attacker one pawn down is a high-risk stand-pat illusion. Search
+    # exactly one real reply series there: later moves in the evasion series
+    # can refute a flashy sacrifice even when the bounded two-move capture
+    # probe sees nothing. From Series 6 onward that probe covers at most one
+    # third of the reply. Requiring the check term itself to cross the threshold
+    # avoids widening positions whose advantage does not depend on that bonus.
+    checker_favored = (
+        total <= -_CHECKED_LEAF_EXTENSION_MIN_ADVANTAGE
+        if board.turn == chess.WHITE
+        else total >= _CHECKED_LEAF_EXTENSION_MIN_ADVANTAGE
+    )
+    scaled_pawn_deficit = weights.scale(
+        "material", _CHECKED_LEAF_EXTENSION_MATERIAL_DEFICIT
+    )
+    checker_has_pawn_deficit = (
+        material == scaled_pawn_deficit
+        if board.turn == chess.WHITE
+        else material == -scaled_pawn_deficit
+    )
+    score_without_check = total - boundary_check
+    checker_favored_without_check = (
+        score_without_check <= -_CHECKED_LEAF_EXTENSION_MIN_ADVANTAGE
+        if board.turn == chess.WHITE
+        else score_without_check >= _CHECKED_LEAF_EXTENSION_MIN_ADVANTAGE
+    )
+    tactical_unstable = (
+        checked_boundary
+        and state.series_number >= _CHECKED_LEAF_EXTENSION_MIN_SERIES
+        and checker_favored
+        and checker_has_pawn_deficit
+        and not checker_favored_without_check
+    ) or (
+        low_material and _promotable_pawn_is_reachable(state, capture_targets)
     )
     return EvaluationBreakdown(
         total=total,
