@@ -4,6 +4,8 @@ from dataclasses import replace
 import hashlib
 from pathlib import Path
 import subprocess
+import sys
+import threading
 
 import pytest
 
@@ -20,6 +22,7 @@ from benchmarks.bucephalus_timed_adapter import (
     analyze_bucephalus,
     analyze_bucephalus_timed_iterative,
     replay_series_history,
+    _run_bucephalus_live_checkpoint,
 )
 from scottish_progressive.league import OPENING_SUITE
 from scottish_progressive.model import Outcome, ProgressiveState
@@ -112,6 +115,18 @@ def test_series_nine_stitches_replay_validated_ply7_then_continuation(
     )
     monkeypatch.setattr("benchmarks.bucephalus_timed_adapter.subprocess.run", fake_run)
 
+    def fake_live(*args, **kwargs):
+        clock["now"] += kwargs["soft_timeout_seconds"]
+        return (
+            _timed_stdout(9, 1, ((7, prefix),)), "", True, -9,
+            kwargs["soft_timeout_seconds"], "soft-checkpoint-incomplete", 4242, False,
+        )
+
+    monkeypatch.setattr(
+        "benchmarks.bucephalus_timed_adapter._run_bucephalus_live_checkpoint",
+        fake_live,
+    )
+
     analysis = analyze_bucephalus_timed_iterative(
         state, SERIES_NINE_HISTORY, spec, wall_timeout_seconds=120.0
     )
@@ -119,9 +134,8 @@ def test_series_nine_stitches_replay_validated_ply7_then_continuation(
     assert analysis.best_series.machine_notation == (
         "b1a3/a3b1/b1a3/a3b1/b1a3/a3b1/b1a3/a3b1/b1a3"
     )
-    assert len(calls) == 11
-    assert calls[9]["timeout"] > 85.0
-    assert calls[10]["timeout"] > 10.0
+    assert len(calls) == 10
+    assert calls[9]["timeout"] > 10.0
     assert analysis.elapsed_seconds < 120.0
     assert len(analysis.continuation_stages) == 11
     assert analysis.continuation_stages[9].emitted_prefix == tuple(
@@ -132,6 +146,11 @@ def test_series_nine_stitches_replay_validated_ply7_then_continuation(
     )
     assert analysis.continuation_stages[10].completed_ply == 2
     assert analysis.selection_mode == "deep-prefix-continuation"
+    assert analysis.deadline_reached is True
+    assert analysis.global_deadline_reached is False
+    assert analysis.continuation_stages[9].stop_reason == (
+        "soft-checkpoint-incomplete"
+    )
 
     from benchmarks.bucephalus_fair_rematch import (
         _continuation_chain_selects_analysis,
@@ -142,6 +161,14 @@ def test_series_nine_stitches_replay_validated_ply7_then_continuation(
     )
     altered = list(analysis.continuation_stages)
     altered[-1] = replace(altered[-1], emitted_prefix=("a3b1",))
+    assert not _continuation_chain_selects_analysis(
+        state,
+        SERIES_NINE_HISTORY,
+        replace(analysis, continuation_stages=tuple(altered)),
+        120.0,
+    )
+    altered = list(analysis.continuation_stages)
+    altered[9] = replace(altered[9], process_id=-1)
     assert not _continuation_chain_selects_analysis(
         state,
         SERIES_NINE_HISTORY,
@@ -192,6 +219,13 @@ def test_series_nine_continuation_falls_back_to_bucephalus_only_anchor(
         lambda: clock["now"],
     )
     monkeypatch.setattr("benchmarks.bucephalus_timed_adapter.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "benchmarks.bucephalus_timed_adapter._run_bucephalus_live_checkpoint",
+        lambda *args, **kwargs: (
+            _timed_stdout(9, 1, ((7, prefix),)), "", True, -9,
+            kwargs["soft_timeout_seconds"], "soft-checkpoint-incomplete", 5252, False,
+        ),
+    )
     analysis = analyze_bucephalus_timed_iterative(
         state, SERIES_NINE_HISTORY, spec, wall_timeout_seconds=120.0
     )
@@ -256,13 +290,13 @@ def test_timed_turn_uses_terminal_ply1_anchor_before_deep_search(
     assert launched == 4
 
 
-def test_complete_deep_stage_spends_reserved_window_on_refinement(
+def test_complete_soft_checkpoint_keeps_same_process_to_hard_deadline(
     tmp_path: Path, monkeypatch
 ) -> None:
     state = replay_series_history(SERIES_NINE_HISTORY)
     spec = _dummy_spec(tmp_path)
     line = ("b1a3", "a3b1", "b1a3", "a3b1", "b1a3", "a3b1", "b1a3", "a3b1", "b1a3")
-    clock = {"now": 0.0, "anchor": 0, "deep": 0}
+    clock = {"now": 0.0, "anchor": 0}
 
     def fake_run(*args, **kwargs):
         if kwargs["input"].endswith("p\ne\n1\nt\nq\n"):
@@ -275,30 +309,98 @@ def test_complete_deep_stage_spends_reserved_window_on_refinement(
                 stdout=_timed_stdout(9, index + 1, ((1, move[:2] + "-" + move[2:]),)),
                 stderr="",
             )
-        clock["deep"] += 1
-        clock["now"] += kwargs["timeout"]
-        if clock["deep"] == 1:
-            raise subprocess.TimeoutExpired(
-                args[0], kwargs["timeout"],
-                output=_timed_stdout(9, 1, ((10, " ".join(move[:2] + "-" + move[2:] for move in line)),)),
-                stderr="",
-            )
-        raise subprocess.TimeoutExpired(
-            args[0], kwargs["timeout"],
-            output=_timed_stdout(9, 1, ((9, " ".join(move[:2] + "-" + move[2:] for move in line)),)),
-            stderr="",
-        )
+        raise AssertionError("deep search must use the live checkpoint helper")
 
     monkeypatch.setattr("benchmarks.bucephalus_timed_adapter.time.perf_counter", lambda: clock["now"])
     monkeypatch.setattr("benchmarks.bucephalus_timed_adapter.subprocess.run", fake_run)
+
+    def fake_live(*args, **kwargs):
+        clock["now"] += kwargs["hard_timeout_seconds"]
+        stdout = _timed_stdout(
+            9, 1, ((10, " ".join(move[:2] + "-" + move[2:] for move in line)),)
+        )
+        return (
+            stdout, "drained stderr", True, -9,
+            kwargs["hard_timeout_seconds"], "hard-deadline", 6262, True,
+        )
+
+    monkeypatch.setattr(
+        "benchmarks.bucephalus_timed_adapter._run_bucephalus_live_checkpoint",
+        fake_live,
+    )
     analysis = analyze_bucephalus_timed_iterative(
         state, SERIES_NINE_HISTORY, spec, wall_timeout_seconds=120.0
     )
-    assert analysis.selection_mode == "deep-complete-retained"
-    assert analysis.continuation_stages[-1].purpose == "deep-refinement"
+    assert analysis.selection_mode == "deep-complete-live"
+    assert analysis.continuation_stages[-1].purpose == "deep-max-ply"
     assert analysis.continuation_stages[-1].usable is True
+    assert analysis.continuation_stages[-1].same_process_continued is True
+    assert analysis.continuation_stages[-1].process_id == 6262
     assert analysis.completed_ply == 10
-    assert analysis.process_count == 11
+    assert analysis.process_count == 10
+
+
+def test_live_checkpoint_drains_small_partial_transcript_then_kills_for_suffix(
+    tmp_path: Path,
+) -> None:
+    before = {thread.ident for thread in threading.enumerate()}
+    result = _run_bucephalus_live_checkpoint(
+        Path(sys.executable),
+        "import sys,time\nprint('Bucephalus v test PLY-partial', flush=True)\n"
+        "print('stderr-partial', file=sys.stderr, flush=True)\ntime.sleep(5)\n",
+        cwd=tmp_path,
+        creationflags=0,
+        soft_timeout_seconds=0.15,
+        hard_timeout_seconds=0.6,
+        snapshot_has_complete_root=lambda stdout: "complete-root" in stdout,
+    )
+    assert "PLY-partial" in result[0]
+    assert "stderr-partial" in result[1]
+    assert result[2] is True
+    assert result[5] == "soft-checkpoint-incomplete"
+    assert result[7] is False
+    assert not {
+        thread.ident for thread in threading.enumerate()
+    }.difference(before)
+
+
+def test_live_checkpoint_keeps_same_pid_and_drains_until_hard_deadline(
+    tmp_path: Path,
+) -> None:
+    result = _run_bucephalus_live_checkpoint(
+        Path(sys.executable),
+        "import sys,time\nprint('complete-root', flush=True)\n"
+        "time.sleep(.25)\nprint('deeper-complete-root', flush=True)\n"
+        "print('deep-stderr', file=sys.stderr, flush=True)\ntime.sleep(5)\n",
+        cwd=tmp_path,
+        creationflags=0,
+        soft_timeout_seconds=0.15,
+        hard_timeout_seconds=0.65,
+        snapshot_has_complete_root=lambda stdout: "complete-root" in stdout,
+    )
+    assert "deeper-complete-root" in result[0]
+    assert "deep-stderr" in result[1]
+    assert result[2] is True
+    assert result[5] == "hard-deadline"
+    assert isinstance(result[6], int)
+    assert result[7] is True
+
+
+def test_live_checkpoint_records_clean_early_process_exit(tmp_path: Path) -> None:
+    result = _run_bucephalus_live_checkpoint(
+        Path(sys.executable),
+        "print('early-exit', flush=True)\n",
+        cwd=tmp_path,
+        creationflags=0,
+        soft_timeout_seconds=0.5,
+        hard_timeout_seconds=1.0,
+        snapshot_has_complete_root=lambda stdout: False,
+    )
+    assert "early-exit" in result[0]
+    assert result[2] is False
+    assert result[3] == 0
+    assert result[5] == "process-exit"
+    assert result[7] is False
 
 
 def test_all_league_openings_have_exact_canonical_replay_histories() -> None:

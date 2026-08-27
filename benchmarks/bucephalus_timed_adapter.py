@@ -7,9 +7,10 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import threading
 import time
 from types import MappingProxyType
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 import chess
 
@@ -18,7 +19,7 @@ from scottish_progressive.rules import SeriesLegalityError, play_series
 
 
 BUCEPHALUS_ADAPTER_VERSION = "bucephalus-terminal-v1"
-BUCEPHALUS_TIMED_ITERATIVE_ADAPTER_VERSION = "bucephalus-timed-continuation-v2"
+BUCEPHALUS_TIMED_ITERATIVE_ADAPTER_VERSION = "bucephalus-timed-live-checkpoint-v3"
 BUCEPHALUS_MAX_PLY = 30
 BUCEPHALUS_MAX_GAME_RECORD = 200
 
@@ -119,6 +120,11 @@ class ExternalAnalysisStage:
     process_exit_recovered: bool
     usable: bool = True
     error: str | None = None
+    stop_reason: str = "process-exit"
+    process_id: int | None = None
+    same_process_continued: bool = False
+    soft_checkpoint_seconds: float | None = None
+    hard_deadline_seconds: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -327,6 +333,121 @@ def _decode_process_output(output: str | bytes | None) -> str:
     if isinstance(output, bytes):
         return output.decode("utf-8", errors="replace")
     return output
+
+
+def _run_bucephalus_live_checkpoint(
+    executable: Path,
+    script: str,
+    *,
+    cwd: Path,
+    creationflags: int,
+    soft_timeout_seconds: float,
+    hard_timeout_seconds: float,
+    snapshot_has_complete_root: Callable[[str], bool],
+) -> tuple[str, str, bool, int | None, float, str, int, bool]:
+    """Drains one live process and conditionally carries it past a soft gate."""
+
+    started = time.perf_counter()
+    soft_deadline = started + soft_timeout_seconds
+    hard_deadline = started + hard_timeout_seconds
+    try:
+        process = subprocess.Popen(
+            [str(executable)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=str(cwd),
+            creationflags=creationflags,
+        )
+    except OSError as error:
+        raise ExternalEngineConfigurationError(
+            f"cannot start external executable: {executable}"
+        ) from error
+    if process.stdin is None or process.stdout is None or process.stderr is None:
+        process.kill()
+        process.wait()
+        raise ExternalEngineConfigurationError(
+            "Bucephalus checkpoint process did not expose all standard pipes"
+        )
+    lock = threading.Lock()
+    stdout_chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
+
+    def drain(stream, chunks: list[bytes]) -> None:
+        try:
+            while True:
+                reader = getattr(stream, "read1", stream.read)
+                chunk = reader(8192)
+                if not chunk:
+                    break
+                with lock:
+                    chunks.append(chunk)
+        except OSError:
+            return
+
+    stdout_thread = threading.Thread(
+        target=drain, args=(process.stdout, stdout_chunks), daemon=True
+    )
+    stderr_thread = threading.Thread(
+        target=drain, args=(process.stderr, stderr_chunks), daemon=True
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+    stop_reason = "process-exit"
+    same_process_continued = False
+    deadline_reached = False
+    try:
+        process.stdin.write(script.encode("utf-8"))
+        process.stdin.flush()
+        process.stdin.close()
+        try:
+            process.wait(timeout=max(0.0, soft_deadline - time.perf_counter()))
+        except subprocess.TimeoutExpired:
+            with lock:
+                snapshot = b"".join(stdout_chunks).decode(
+                    "utf-8", errors="replace"
+                )
+            if snapshot_has_complete_root(snapshot):
+                same_process_continued = True
+                remaining = max(0.0, hard_deadline - time.perf_counter())
+                try:
+                    process.wait(timeout=remaining)
+                except subprocess.TimeoutExpired:
+                    stop_reason = "hard-deadline"
+                    deadline_reached = True
+                    process.kill()
+            else:
+                stop_reason = "soft-checkpoint-incomplete"
+                deadline_reached = True
+                process.kill()
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        stdout_thread.join(timeout=2.0)
+        stderr_thread.join(timeout=2.0)
+        process.stdout.close()
+        process.stderr.close()
+    if stdout_thread.is_alive() or stderr_thread.is_alive():
+        raise ExternalEngineProtocolError(
+            "Bucephalus checkpoint drain thread did not terminate"
+        )
+    with lock:
+        stdout = b"".join(stdout_chunks).decode("utf-8", errors="replace")
+        stderr = b"".join(stderr_chunks).decode("utf-8", errors="replace")
+    return (
+        stdout,
+        stderr,
+        deadline_reached,
+        process.returncode,
+        time.perf_counter() - started,
+        stop_reason,
+        process.pid,
+        same_process_continued,
+    )
 
 
 def _validate_output_identity_and_boundary(
@@ -815,13 +936,23 @@ def _analyze_bucephalus_with_continuation(
         *,
         usable: bool = True,
         error: str | None = None,
+        stop_reason: str | None = None,
+        process_id: int | None = None,
+        same_process_continued: bool = False,
+        soft_checkpoint_seconds: float | None = None,
+        hard_deadline_seconds: float | None = None,
     ) -> None:
         stdout, stderr, timed, exit_code, elapsed, script = process
         stages.append(
             ExternalAnalysisStage(
                 len(stages) + 1, purpose, prefix, emitted, requested, completed,
                 timeout, elapsed, script, stdout, stderr, timed, exit_code,
-                bool(exit_code not in (None, 0)), usable, error,
+                bool(exit_code not in (None, 0) and not timed), usable, error,
+                stop_reason or ("stage-deadline" if timed else "process-exit"),
+                process_id,
+                same_process_continued,
+                soft_checkpoint_seconds,
+                hard_deadline_seconds,
             )
         )
 
@@ -917,10 +1048,30 @@ def _analyze_bucephalus_with_continuation(
         raise ExternalEngineTimeout(
             "Bucephalus anchor left no deep-search budget inside the common wall"
         )
-    deep_process = run_stage(
-        purpose="deep-max-ply", prefix=(),
-        requested_ply=BUCEPHALUS_MAX_PLY - 1, timeout=deep_timeout,
+    deep_script = _request_script(history, BUCEPHALUS_MAX_PLY)
+
+    def snapshot_has_complete_root(snapshot: str) -> bool:
+        try:
+            _validate_output_identity_and_boundary(snapshot, state)
+            _parse_deepest_completed_ply(
+                snapshot, requested_ply=BUCEPHALUS_MAX_PLY, state=state
+            )
+        except ExternalEngineProtocolError:
+            return False
+        return True
+
+    deep_hard_timeout = searchable_deadline - elapsed_total()
+    live = _run_bucephalus_live_checkpoint(
+        executable,
+        deep_script,
+        cwd=executable.parent,
+        creationflags=creationflags,
+        soft_timeout_seconds=deep_timeout,
+        hard_timeout_seconds=deep_hard_timeout,
+        snapshot_has_complete_root=snapshot_has_complete_root,
     )
+    deep_process = (live[0], live[1], live[2], live[3], live[4], deep_script)
+    deep_stop_reason, deep_process_id, deep_continued = live[5], live[6], live[7]
     deep_stdout = deep_process[0]
     selected = anchor_result
     selected_score = anchor_score
@@ -929,23 +1080,31 @@ def _analyze_bucephalus_with_continuation(
     try:
         _validate_output_identity_and_boundary(deep_stdout, state)
         completed_ply, score, complete = _parse_deepest_completed_ply(
-            deep_stdout, requested_ply=BUCEPHALUS_MAX_PLY - 1, state=state
+            deep_stdout, requested_ply=BUCEPHALUS_MAX_PLY, state=state
         )
     except ExternalEngineProtocolError:
         try:
             prefix_ply, score, deep_prefix = _parse_deepest_legal_incomplete_prefix(
-                deep_stdout, requested_ply=BUCEPHALUS_MAX_PLY - 1, state=state
+                deep_stdout, requested_ply=BUCEPHALUS_MAX_PLY, state=state
             )
         except ExternalEngineProtocolError as error:
             append_stage(
-                "deep-max-ply", (), (), BUCEPHALUS_MAX_PLY - 1, 0,
-                deep_timeout, deep_process, usable=False, error=str(error),
+                "deep-max-ply", (), (), BUCEPHALUS_MAX_PLY, 0,
+                deep_hard_timeout, deep_process, usable=False, error=str(error),
+                stop_reason=deep_stop_reason, process_id=deep_process_id,
+                same_process_continued=deep_continued,
+                soft_checkpoint_seconds=deep_timeout,
+                hard_deadline_seconds=deep_hard_timeout,
             )
             deep_prefix = ()
         else:
             append_stage(
-                "deep-max-ply", (), deep_prefix, BUCEPHALUS_MAX_PLY - 1,
-                prefix_ply, deep_timeout, deep_process,
+                "deep-max-ply", (), deep_prefix, BUCEPHALUS_MAX_PLY,
+                prefix_ply, deep_hard_timeout, deep_process,
+                stop_reason=deep_stop_reason, process_id=deep_process_id,
+                same_process_continued=deep_continued,
+                soft_checkpoint_seconds=deep_timeout,
+                hard_deadline_seconds=deep_hard_timeout,
             )
             stitched = deep_prefix
             stitched_result: SeriesResult | None = None
@@ -1006,44 +1165,17 @@ def _analyze_bucephalus_with_continuation(
                 selection_mode = "deep-prefix-continuation"
     else:
         append_stage(
-            "deep-max-ply", (), tuple(complete.moves), BUCEPHALUS_MAX_PLY - 1,
-            completed_ply, deep_timeout, deep_process,
+            "deep-max-ply", (), tuple(complete.moves), BUCEPHALUS_MAX_PLY,
+            completed_ply, deep_hard_timeout, deep_process,
+            stop_reason=deep_stop_reason, process_id=deep_process_id,
+            same_process_continued=deep_continued,
+            soft_checkpoint_seconds=deep_timeout,
+            hard_deadline_seconds=deep_hard_timeout,
         )
         selected = complete
         selected_score = score
         selected_completed_ply = completed_ply
-        selection_mode = "deep-complete-retained"
-        refinement_timeout = searchable_deadline - elapsed_total()
-        if refinement_timeout > 0:
-            refinement = run_stage(
-                purpose="deep-refinement", prefix=(),
-                requested_ply=BUCEPHALUS_MAX_PLY,
-                timeout=refinement_timeout,
-            )
-            try:
-                _validate_output_identity_and_boundary(refinement[0], state)
-                refined_ply, refined_score, refined = _parse_deepest_completed_ply(
-                    refinement[0],
-                    requested_ply=BUCEPHALUS_MAX_PLY,
-                    state=state,
-                )
-            except ExternalEngineProtocolError as error:
-                append_stage(
-                    "deep-refinement", (), (), BUCEPHALUS_MAX_PLY, 0,
-                    refinement_timeout, refinement, usable=False,
-                    error=str(error),
-                )
-            else:
-                append_stage(
-                    "deep-refinement", (), tuple(refined.moves),
-                    BUCEPHALUS_MAX_PLY, refined_ply,
-                    refinement_timeout, refinement,
-                )
-                if refined_ply >= completed_ply:
-                    selected = refined
-                    selected_score = refined_score
-                    selected_completed_ply = refined_ply
-                    selection_mode = "deep-refined"
+        selection_mode = "deep-complete-live"
 
     total_elapsed = elapsed_total()
     if total_elapsed > wall_timeout_seconds:

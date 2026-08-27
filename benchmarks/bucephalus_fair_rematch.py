@@ -1312,6 +1312,30 @@ def _continuation_chain_selects_analysis(
             )
         ):
             return False
+        if stage.purpose == "deep-max-ply":
+            if (
+                type(stage.process_id) is not int
+                or stage.process_id <= 0
+                or stage.soft_checkpoint_seconds is None
+                or stage.hard_deadline_seconds is None
+                or not 0 < stage.soft_checkpoint_seconds < stage.hard_deadline_seconds
+                or stage.hard_deadline_seconds > wall_seconds
+                or stage.wall_timeout_seconds != stage.hard_deadline_seconds
+                or stage.stop_reason not in {
+                    "soft-checkpoint-incomplete", "hard-deadline", "process-exit"
+                }
+                or (
+                    stage.same_process_continued
+                    and stage.stop_reason == "soft-checkpoint-incomplete"
+                )
+            ):
+                return False
+        elif (
+            stage.soft_checkpoint_seconds is not None
+            or stage.hard_deadline_seconds is not None
+            or stage.same_process_continued
+        ):
+            return False
         elapsed += stage.elapsed_seconds
         if stage.usable:
             try:
@@ -1992,6 +2016,11 @@ def _play_external_game(
                             "process_exit_recovered": stage.process_exit_recovered,
                             "usable": stage.usable,
                             "error": stage.error,
+                            "stop_reason": stage.stop_reason,
+                            "process_id": stage.process_id,
+                            "same_process_continued": stage.same_process_continued,
+                            "soft_checkpoint_seconds": stage.soft_checkpoint_seconds,
+                            "hard_deadline_seconds": stage.hard_deadline_seconds,
                         }
                         for stage in external_analysis.continuation_stages
                     ],
@@ -2056,8 +2085,7 @@ def _play_external_game(
                     "single-stage",
                     "anchor-fallback",
                     "anchor-terminal",
-                    "deep-complete-retained",
-                    "deep-refined",
+                    "deep-complete-live",
                     "deep-prefix-continuation",
                 }
                 or not _continuation_chain_selects_analysis(
@@ -2814,7 +2842,7 @@ def _validate_journal_record_replay(
             selection_mode = item.get("selection_mode", "single-stage")
             if selection_mode not in {
                 "single-stage", "anchor-fallback", "anchor-terminal",
-                "deep-complete-retained", "deep-refined",
+                "deep-complete-live",
                 "deep-prefix-continuation",
             }:
                 raise ValueError("journal Bucephalus selection mode is invalid")
@@ -2831,6 +2859,11 @@ def _validate_journal_record_replay(
                 elapsed = stage.get("elapsed_seconds")
                 purpose = stage.get("purpose")
                 usable = stage.get("usable")
+                stop_reason = stage.get("stop_reason")
+                process_id = stage.get("process_id")
+                same_process_continued = stage.get("same_process_continued")
+                soft_checkpoint = stage.get("soft_checkpoint_seconds")
+                hard_deadline = stage.get("hard_deadline_seconds")
                 expected_prefix = (
                     anchor_prefix if purpose == "anchor-ply1"
                     else [] if purpose in {"deep-max-ply", "deep-refinement"}
@@ -2853,15 +2886,28 @@ def _validate_journal_record_replay(
                         and stage.get("requested_ply") != 1
                     )
                     or (
-                        purpose == "deep-max-ply"
-                        and stage.get("requested_ply") != expected_requested_ply - 1
-                    )
-                    or (
-                        purpose in {"deep-refinement", "suffix-max-ply"}
+                        purpose in {"deep-max-ply", "deep-refinement", "suffix-max-ply"}
                         and stage.get("requested_ply") != expected_requested_ply
                     )
                     or not 0 <= stage.get("completed_ply") <= stage.get("requested_ply")
                     or type(usable) is not bool
+                    or stop_reason not in {
+                        "process-exit", "stage-deadline",
+                        "soft-checkpoint-incomplete", "hard-deadline",
+                    }
+                    or (
+                        process_id is not None
+                        and (type(process_id) is not int or process_id <= 0)
+                    )
+                    or type(same_process_continued) is not bool
+                    or (
+                        soft_checkpoint is not None
+                        and not isinstance(soft_checkpoint, (int, float))
+                    )
+                    or (
+                        hard_deadline is not None
+                        and not isinstance(hard_deadline, (int, float))
+                    )
                     or (
                         stage.get("error") is not None
                         and not isinstance(stage.get("error"), str)
@@ -2904,6 +2950,11 @@ def _validate_journal_record_replay(
                         process_exit_recovered=stage["process_exit_recovered"],
                         usable=usable,
                         error=stage.get("error"),
+                        stop_reason=stop_reason,
+                        process_id=process_id,
+                        same_process_continued=same_process_continued,
+                        soft_checkpoint_seconds=soft_checkpoint,
+                        hard_deadline_seconds=hard_deadline,
                     )
                 )
                 if usable and purpose == "anchor-ply1":
@@ -2942,6 +2993,9 @@ def _validate_journal_record_replay(
                 if (
                     item.get("global_deadline_seconds")
                     != job.config.common_wall_timeout_seconds
+                    or type(item.get("global_deadline_reached")) is not bool
+                    or type(item.get("external_process_count")) is not int
+                    or item.get("external_process_count") != len(parsed_stages)
                     or item.get("terminal_stage_score") != item.get("score_text")
                     or not isinstance(external_elapsed, (int, float))
                     or external_elapsed < 0
@@ -2977,8 +3031,8 @@ def _validate_journal_record_replay(
                     selection_mode=selection_mode,
                     terminal_stage_score=item.get("terminal_stage_score"),
                     global_deadline_seconds=item.get("global_deadline_seconds"),
-                    global_deadline_reached=bool(item.get("global_deadline_reached")),
-                    process_count=item.get("external_process_count", 0),
+                    global_deadline_reached=item["global_deadline_reached"],
+                    process_count=item["external_process_count"],
                     selection_root_prefix_ply=item.get("selection_root_prefix_ply"),
                     terminal_stage_ply=item.get("terminal_stage_ply"),
                 )
