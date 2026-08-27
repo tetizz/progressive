@@ -1,0 +1,126 @@
+{
+  "artifact": {
+    "artifact_set_sha256": "3d125891e4d4bf07a182505397c089019eebe17130b24e59333db6190f5e0354",
+    "kernel_sha256": "fcd6d1e2b9213af1a229c73f156a620e2fa1f69a023a22fe91e793d11338687f",
+    "module_js_sha256": "858b069e50a068291a636befea2d16ea13e9e300874544b724cfaec75cc642f9",
+    "source_fingerprint": "9e76dd9e4f0429bd",
+    "source_revision": "d059e8c82b78b3cdbb262f177f2dd118e7b6013c",
+    "wasm_sha256": "2a96d76682063a0a5053310f3c0958c8c6999a8af6ac7beb73994fa44c30abd6"
+  },
+  "case_set_sha256": "dfb6946433f324c9c5a998921287b785492031a67c54b3c9823faac84327223a",
+  "cases": [
+    {
+      "exact_match": true,
+      "input_sha256": "976cc4ea05f5dbdf05c2a74fa7ad427e99e38b42d92663638deeb010dc97621c",
+      "name": "initial-legal",
+      "oracle_output_sha256": "e76ea99f18eae4afc20d5454812521289139072e5c81a72dc8d51fdf5385a7af",
+      "wasm_output_sha256": "e76ea99f18eae4afc20d5454812521289139072e5c81a72dc8d51fdf5385a7af"
+    },
+    {
+      "exact_match": true,
+      "input_sha256": "cce5956e57245b573b6e4c791b64d7a11bd353a56473acaa19c3f60ab7aae55b",
+      "name": "initial-e4-handoff",
+      "oracle_output_sha256": "313ce19349275f22eed27496b731991ce991d1daebf02e4d128af45577cd7944",
+      "wasm_output_sha256": "313ce19349275f22eed27496b731991ce991d1daebf02e4d128af45577cd7944"
+    },
+    {
+      "exact_match": true,
+      "input_sha256": "143095a9fbc1d66689e2f7d014c5e54833f043b70105565f690ee75961b5017e",
+      "name": "early-countercheck",
+      "oracle_output_sha256": "d264617250ef683b7a42fb60e4da96c50a4817a40fe16813a4d0c7de0a98874f",
+      "wasm_output_sha256": "d264617250ef683b7a42fb60e4da96c50a4817a40fe16813a4d0c7de0a98874f"
+    },
+    {
+      "exact_match": true,
+      "input_sha256": "bd31c8d3bfe7d0a915d2dce1b0a1f2eb4eb0a2c1b008adbaefe3b882360157ed",
+      "name": "two-progressive-ep-targets",
+      "oracle_output_sha256": "408e43362188fdc9cf563eafdc13e136867c4b972420b1e4eda571a807107289",
+      "wasm_output_sha256": "408e43362188fdc9cf563eafdc13e136867c4b972420b1e4eda571a807107289"
+    },
+    {
+      "exact_match": true,
+      "input_sha256": "ab41a9e4d0779033d449278451b2574af4efec508ed0a0786812c8e2eff79b70",
+      "name": "two-progressive-ep-replies",
+      "oracle_output_sha256": "6f8edc17d256d1b9c51998a1f74616f05e4c35d206f7a26a87d5739ad6081a83",
+      "wasm_output_sha256": "6f8edc17d256d1b9c51998a1f74616f05e4c35d206f7a26a87d5739ad6081a83"
+    },
+    {
+      "exact_match": true,
+      "input_sha256": "74921b7e61ac444fbaf2127a2baa86e544247e050358397f9935185c9f1a9116",
+      "name": "progressive-ep-first-move",
+      "oracle_output_sha256": "26ba94be61f1a76503f7b265389a0241c685caf0df69a6284f378cc59f599e2a",
+      "wasm_output_sha256": "26ba94be61f1a76503f7b265389a0241c685caf0df69a6284f378cc59f599e2a"
+    },
+    {
+      "exact_match": true,
+      "input_sha256": "fbde265fd0ddcb849a458b18d1a9def5d5bb82dc690a376a22d33c5f6de0309b",
+      "name": "castling-micro-move",
+      "oracle_output_sha256": "5eb464b1d818675c0c5724e2508b497011b2a1bbc060e064e6f8ca72b5d4db65",
+      "wasm_output_sha256": "5eb464b1d818675c0c5724e2508b497011b2a1bbc060e064e6f8ca72b5d4db65"
+    },
+    {
+      "exact_match": true,
+      "input_sha256": "b93427ca8e7be034c447cc7e696999fc49d2ca6bfeca27ba9ee27e552a75c242",
+      "name": "promotion-check",
+      "oracle_output_sha256": "c2f558453063bbbb1f6975ea0038a63651f3da14251093cd32f4105dcec305b1",
+      "wasm_output_sha256": "c2f558453063bbbb1f6975ea0038a63651f3da14251093cd32f4105dcec305b1"
+    },
+    {
+      "exact_match": true,
+      "input_sha256": "d2289412149ff59cd454273178e34aefcb7ed4ae3e53d05bc67f0d7edbf22b65",
+      "name": "native-mate-proof-replay",
+      "oracle_output_sha256": "71274b0b19fb622473d15c65015c37d7d922129c28a0571f12072300807cf71d",
+      "wasm_output_sha256": "71274b0b19fb622473d15c65015c37d7d922129c28a0571f12072300807cf71d"
+    },
+    {
+      "exact_match": true,
+      "input_sha256": "2bd212ee54cb3e694625c5570d50173b45c14aff8d5901950d1a8e43aac03c32",
+      "name": "progressive-ep-legal-next-suffix-parity",
+      "oracle_output_sha256": "e811561c6719039b2e9a218dd9a175d18ddd4665f16e5c08ab1f931ab42c176d",
+      "wasm_output_sha256": "e811561c6719039b2e9a218dd9a175d18ddd4665f16e5c08ab1f931ab42c176d"
+    },
+    {
+      "exact_match": true,
+      "input_sha256": "1f04546ae45effded0f17c27f289bb31b91902557821d0f28827fb4eb1abe7f3",
+      "name": "progressive-ep-check-suffix-parity",
+      "oracle_output_sha256": "3ad8395bb50f7490eb11d47c3bfb67b88962c5d5fb861c53254f51e4dea0b9b5",
+      "wasm_output_sha256": "3ad8395bb50f7490eb11d47c3bfb67b88962c5d5fb861c53254f51e4dea0b9b5"
+    },
+    {
+      "exact_match": true,
+      "input_sha256": "ce28e085c3078977aa379eb7db4d1ca6a5c228426b2de1c5935b6bbbde3abeaf",
+      "name": "illegal-prefix-fails-closed",
+      "oracle_output_sha256": "48b9caa66117c569749ecb5263e45f59189c830c906a22e19bbd18d0281577f1",
+      "wasm_output_sha256": "48b9caa66117c569749ecb5263e45f59189c830c906a22e19bbd18d0281577f1"
+    },
+    {
+      "exact_match": true,
+      "input_sha256": "5b67384085ffba7025f912c50d7b2db37230b48af71017e72942787eb5e3bd73",
+      "name": "overlong-prefix-fails-closed",
+      "oracle_output_sha256": "a590b80f14c7bf75c79e82570aafa3fdf48109eb337c0b2149bb6934b2593180",
+      "wasm_output_sha256": "a590b80f14c7bf75c79e82570aafa3fdf48109eb337c0b2149bb6934b2593180"
+    },
+    {
+      "exact_match": true,
+      "input_sha256": "1de17c2acb164e94b79327fd49ad1c525f31485c0df00a700872c74487b524ea",
+      "name": "turn-parity-fails-closed",
+      "oracle_output_sha256": "cb813fa292f45359e15706c768c78d30d0fe72cf40fa4526c5990b05d053e01c",
+      "wasm_output_sha256": "cb813fa292f45359e15706c768c78d30d0fe72cf40fa4526c5990b05d053e01c"
+    }
+  ],
+  "fail_closed_errors": 3,
+  "failures": 0,
+  "gates": {
+    "case_input_output_hashes": true,
+    "compiled_prefix_replay": true,
+    "exact_python_parity": true,
+    "illegal_prefix_fail_closed": true,
+    "multi_ep_san": true
+  },
+  "mate_replay": "checkmate",
+  "multi_ep": "covered",
+  "progressive_san_corrections": 0,
+  "progressive_san_exact_parity": 2,
+  "schema": "spc-prefix-parity-receipt-v2",
+  "status": "passed"
+}

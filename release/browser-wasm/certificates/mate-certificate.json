@@ -1,0 +1,73 @@
+{
+  "abi_version": 1,
+  "allocator": "dlmalloc",
+  "certificate_id": "spc-mate-b70ade7cb43408a9",
+  "contract_version": 1,
+  "engine": {
+    "engine_version": "spc-0.9.0",
+    "profile_id": "spc-68942034c41b4cc4",
+    "ruleset_version": "scottish-modern-common-v1"
+  },
+  "evidence": {
+    "authoritative_replay": true,
+    "black_found": true,
+    "browser_worker_smoke": true,
+    "combined_artifact": true,
+    "deadline_receipts": true,
+    "deadline_unknown": true,
+    "differential_cases": 6,
+    "exhausted": true,
+    "failures": 0,
+    "proof_bounds": true,
+    "python_parity": true,
+    "signed_mate_distance_overrides": true,
+    "white_found": true,
+    "work_limit_unknown": true,
+    "work_receipts": true
+  },
+  "exception_strategy": "emscripten",
+  "exports": [
+    "_spc_start_kernel_search_json",
+    "_spc_boundary_kernel_search_json",
+    "_spc_boundary_prefix_json",
+    "_spc_boundary_prefix_contract_json",
+    "_spc_start_kernel_abi_version",
+    "_spc_root_session_contract_json",
+    "_spc_root_session_create_json",
+    "_spc_root_session_enumerate_json",
+    "_spc_root_session_import_json",
+    "_spc_root_session_search_json",
+    "_spc_root_session_destroy",
+    "_spc_root_session_abi_version",
+    "_spc_series_mate_search_json",
+    "_spc_series_mate_abi_version",
+    "_malloc",
+    "_free"
+  ],
+  "kernel_sha256": "fcd6d1e2b9213af1a229c73f156a620e2fa1f69a023a22fe91e793d11338687f",
+  "mate_capability_certified": true,
+  "memory": {
+    "estimated_peak_bytes": 134217728,
+    "growth_enabled": true,
+    "initial_bytes": 67108864,
+    "maximum_bytes": 134217728
+  },
+  "module_js_sha256": "858b069e50a068291a636befea2d16ea13e9e300874544b724cfaec75cc642f9",
+  "product_publishable": false,
+  "reply_mate_safety": true,
+  "runtime_requirements": {
+    "cross_origin_isolated": false,
+    "native_wasm_exception_handling": false,
+    "ordinary_module_worker": true,
+    "pthreads": false,
+    "wasm_simd": false
+  },
+  "runtime_variant": "single",
+  "schema": "spc-series-mate-certificate-v1",
+  "source_fingerprint": "9e76dd9e4f0429bd",
+  "status": "certified",
+  "support_files": [],
+  "thread_count": 1,
+  "wasm_sha256": "2a96d76682063a0a5053310f3c0958c8c6999a8af6ac7beb73994fa44c30abd6",
+  "wasm_simd": false
+}

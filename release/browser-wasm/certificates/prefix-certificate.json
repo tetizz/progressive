@@ -1,0 +1,46 @@
+{
+  "certificate_id": "spc-prefix-8f5fb6844672f36e",
+  "contract_version": 1,
+  "engine": {
+    "engine_version": "spc-0.9.0",
+    "ruleset_version": "scottish-modern-common-v1"
+  },
+  "evidence": {
+    "compiled_prefix_replay": true,
+    "differential_cases": 14,
+    "failures": 0,
+    "illegal_prefix_fail_closed": true,
+    "multi_ep_san": true
+  },
+  "memory": {
+    "estimated_peak_bytes": 134217728,
+    "growth_enabled": true,
+    "initial_bytes": 67108864,
+    "maximum_bytes": 134217728
+  },
+  "module_js_sha256": "858b069e50a068291a636befea2d16ea13e9e300874544b724cfaec75cc642f9",
+  "prefix_contract": {
+    "abi_version": 1,
+    "chess960": false,
+    "limits": {
+      "maximum_ep_targets": 8,
+      "maximum_ep_utf8_bytes": 23,
+      "maximum_fen_utf8_bytes": 512,
+      "maximum_prefix_moves": 256,
+      "maximum_prefix_utf8_bytes": 1535,
+      "maximum_promoted_hex_bytes": 18,
+      "maximum_quiet_series": 1000000,
+      "maximum_series_number": 256,
+      "maximum_uci_move_bytes": 5
+    },
+    "promoted_hex_required_for_product": true,
+    "result_schema": "spc-boundary-prefix-v1",
+    "schema": "spc-boundary-prefix-contract-v1"
+  },
+  "runtime_variant": "single",
+  "source_fingerprint": "9e76dd9e4f0429bd",
+  "status": "certified",
+  "support_files": [],
+  "thread_count": 1,
+  "wasm_sha256": "2a96d76682063a0a5053310f3c0958c8c6999a8af6ac7beb73994fa44c30abd6"
+}
