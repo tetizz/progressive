@@ -423,6 +423,16 @@ def test_release_tree_is_forced_binary_in_git_attributes() -> None:
     assert "release/browser-wasm/** -text -diff" in attributes
 
 
+def test_native_wasm_sources_are_forced_to_lf_in_git_attributes() -> None:
+    attributes = (
+        Path(__file__).resolve().parents[1] / ".gitattributes"
+    ).read_text(encoding="utf-8").splitlines()
+
+    assert "src/scottish_progressive/*.cpp text eol=lf" in attributes
+    assert "src/scottish_progressive/*.hpp text eol=lf" in attributes
+    assert "src/scottish_progressive/*.h text eol=lf" in attributes
+
+
 def test_rejects_backslash_git_path_aliases() -> None:
     with pytest.raises(validator.PromotedReleaseError, match="backslash"):
         validator._zero_paths(

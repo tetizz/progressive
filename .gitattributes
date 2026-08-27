@@ -1,4 +1,9 @@
 src/scottish_progressive/web/static/engine/** -text -diff
 release/browser-wasm/** -text -diff
+# Root-session build receipts bind the exact native source bytes. Keep those
+# bytes identical in Windows development worktrees and Linux release runners.
+src/scottish_progressive/*.cpp text eol=lf
+src/scottish_progressive/*.hpp text eol=lf
+src/scottish_progressive/*.h text eol=lf
 experiments/neural-ordering-s3-network.json -text -diff
 reports/neural-ordering-s3-final-fair-seeded20-seed730194821.json -text -diff
