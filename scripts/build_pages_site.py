@@ -6,7 +6,7 @@ import re
 import shutil
 
 
-ASSET_REFERENCES = (
+INDEX_ASSET_REFERENCES = (
     ("href=\"./styles.css\"", "href=\"./styles.css?v={version}\""),
     ("src=\"./study-safety.js\"", "src=\"./study-safety.js?v={version}\""),
     (
@@ -31,8 +31,39 @@ ASSET_REFERENCES = (
         "src=\"./browser-engine-client.js\"",
         "src=\"./browser-engine-client.js?v={version}\"",
     ),
+    (
+        "src=\"./board-renderer.js\"",
+        "src=\"./board-renderer.js?v={version}\"",
+    ),
     ("src=\"./app.js\"", "src=\"./app.js?v={version}\""),
+    (
+        "href=\"./matches.html\"",
+        "href=\"./matches.html?v={version}\"",
+    ),
 )
+MATCH_ASSET_REFERENCES = (
+    ("href=\"./styles.css\"", "href=\"./styles.css?v={version}\""),
+    (
+        "src=\"./board-renderer.js\"",
+        "src=\"./board-renderer.js?v={version}\"",
+    ),
+    (
+        "src=\"./match-viewer.js\"",
+        "src=\"./match-viewer.js?v={version}\"",
+    ),
+)
+
+
+def _version_page(path: Path, references: tuple[tuple[str, str], ...], version: str) -> None:
+    page = path.read_text(encoding="utf-8")
+    for original, versioned in references:
+        count = page.count(original)
+        if count != 1:
+            raise ValueError(
+                f"expected one {original!r} reference in {path.name}, found {count}"
+            )
+        page = page.replace(original, versioned.format(version=version))
+    path.write_text(page, encoding="utf-8")
 
 
 def build_pages_site(source: Path, output: Path, version: str) -> None:
@@ -42,14 +73,8 @@ def build_pages_site(source: Path, output: Path, version: str) -> None:
         raise FileExistsError(f"output already exists: {output}")
 
     shutil.copytree(source, output)
-    index_path = output / "index.html"
-    index = index_path.read_text(encoding="utf-8")
-    for original, versioned in ASSET_REFERENCES:
-        count = index.count(original)
-        if count != 1:
-            raise ValueError(f"expected one {original!r} reference, found {count}")
-        index = index.replace(original, versioned.format(version=version))
-    index_path.write_text(index, encoding="utf-8")
+    _version_page(output / "index.html", INDEX_ASSET_REFERENCES, version)
+    _version_page(output / "matches.html", MATCH_ASSET_REFERENCES, version)
 
 
 def main() -> None:

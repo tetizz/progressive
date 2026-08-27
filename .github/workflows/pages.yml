@@ -55,6 +55,10 @@ jobs:
               "root-iteration-coordinator.js",
               "browser-root-iteration-client.js",
               "browser-engine-client.js",
+              "board-renderer.js",
+              "matches.html",
+              "match-viewer.js",
+              "matches/match-viewer-manifest.json",
               "browser-engine-worker.js",
               "wasm-kernel-adapter.js",
               "engine/browser-engine-manifest.json",
@@ -70,6 +74,9 @@ jobs:
               raise SystemExit("public API routing is not enabled")
           if 'src="/' in index or 'href="/styles.css"' in index:
               raise SystemExit("root-relative assets would break the project Pages path")
+
+      - name: Validate immutable match viewer replay bundle
+        run: python scripts/build_match_viewer_data.py --check
 
       # Pages may consume only the separately promoted, parent-source-bound
       # browser release. The gate also proves that the checked-in static mirror

@@ -38,6 +38,9 @@ def test_public_assets_are_project_pages_safe_and_keep_local_same_origin() -> No
         'src="./browser-engine-client.js"'
     )
     assert index.index('src="./browser-engine-client.js"') < index.index(
+        'src="./board-renderer.js"'
+    )
+    assert index.index('src="./board-renderer.js"') < index.index(
         'src="./app.js"'
     )
     assert "Checking legal moves" not in index
@@ -46,7 +49,8 @@ def test_public_assets_are_project_pages_safe_and_keep_local_same_origin() -> No
     assert "certified single-thread Workers" in app
     assert 'analysis.legal_validation_runtime !== "compiled-wasm"' in app
     assert "? analysis.checked_prefix" in app
-    assert 'return `./pieces/cburnett/' in app
+    assert "return BOARD_RENDERER.pieceAsset(piece)" in app
+    assert 'href="./matches.html"' in index
     assert 'const PUBLIC_SITE_HOST = "tetizz.github.io"' in app
     assert 'const PUBLIC_SITE_PATH = "/progressive"' in app
     assert 'const API_ORIGIN = isPublicPagesSite ? configuredApiOrigin : ""' in app
@@ -113,6 +117,10 @@ def test_pages_uses_the_local_certified_bundle_without_waiting_for_render() -> N
         "root-iteration-coordinator.js",
         "browser-root-iteration-client.js",
         "browser-engine-client.js",
+        "board-renderer.js",
+        "matches.html",
+        "match-viewer.js",
+        "matches/match-viewer-manifest.json",
         "browser-engine-worker.js",
         "wasm-kernel-adapter.js",
         "engine/browser-engine-manifest.json",
@@ -273,12 +281,14 @@ def test_pages_artifact_versions_every_executable_asset(
         ("src", "root-iteration-coordinator.js"),
         ("src", "browser-root-iteration-client.js"),
         ("src", "browser-engine-client.js"),
+        ("src", "board-renderer.js"),
         ("src", "app.js"),
     )
     for attribute, asset in assets:
         assert f'{attribute}="./{asset}"' in source_index
         assert f'{attribute}="./{asset}?v={version}"' in deployed_index
-    assert deployed_index.count(f"?v={version}") == len(assets)
+    assert f'href="./matches.html?v={version}"' in deployed_index
+    assert deployed_index.count(f"?v={version}") == len(assets) + 1
     assert (output / "app.js").read_bytes() == (STATIC / "app.js").read_bytes()
     assert (output / "browser-prefix-contract.js").read_bytes() == (
         STATIC / "browser-prefix-contract.js"
@@ -288,6 +298,9 @@ def test_pages_artifact_versions_every_executable_asset(
     ).read_bytes()
     assert (output / "browser-root-iteration-client.js").read_bytes() == (
         STATIC / "browser-root-iteration-client.js"
+    ).read_bytes()
+    assert (output / "board-renderer.js").read_bytes() == (
+        STATIC / "board-renderer.js"
     ).read_bytes()
     assert (output / "browser-engine-worker.js").is_file()
     assert (output / "wasm-kernel-adapter.js").is_file()
