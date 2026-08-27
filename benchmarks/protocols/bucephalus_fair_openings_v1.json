@@ -1,0 +1,1651 @@
+{
+  "cases": [
+    {
+      "case_id": "seeded-001-s5-7991c25c3db5",
+      "ep_targets": [],
+      "fen": "rnbqkb1r/1pp1pppp/2n5/pB1p4/4P3/1P6/P1PP1PPP/RNBQK1NR w KQkq - 0 7",
+      "pfen": "rnbqkb1r/1pp1pppp/2n5/pB1p4/4P3/1P6/P1PP1PPP/RNBQK1NR w KQkq - 0 7 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "7991c25c3db5e74198047e5e96217e35",
+      "quiet_series": 0,
+      "series_number": 5,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=0; history=e2e4 | g8f6/f6g4 | f1a6/a6b5/b2b3 | g4e5/e5c6/a7a5/d7d5"
+    },
+    {
+      "case_id": "seeded-002-s6-15d0a51f4924",
+      "ep_targets": [],
+      "fen": "1nbqkb1r/rppppppp/P7/7n/P3P1P1/2P5/R2P1P1P/1NBQKBNR b K - 0 7",
+      "pfen": "1nbqkb1r/rppppppp/P7/7n/P3P1P1/2P5/R2P1P1P/1NBQKBNR b K - 0 7 | series=6 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "15d0a51f4924b62629ed188c06c6b828",
+      "quiet_series": 0,
+      "series_number": 6,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=1; history=b2b4 | g8f6/f6h5 | a2a3/c2c3/g2g4 | h8g8/g8h8/a7a5/a8a7 | b4a5/a5a6/a3a4/a1a2/e2e4"
+    },
+    {
+      "case_id": "seeded-003-s3-3d109b760939",
+      "ep_targets": [],
+      "fen": "rnbqkbnr/ppppppp1/8/7p/8/P7/1PPPPPPP/RNBQKBNR w KQkq - 0 3",
+      "pfen": "rnbqkbnr/ppppppp1/8/7p/8/P7/1PPPPPPP/RNBQKBNR w KQkq - 0 3 | series=3 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "3d109b76093924caa3ff95fddd7d5e5b",
+      "quiet_series": 0,
+      "series_number": 3,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=2; history=a2a3 | h7h6/h6h5"
+    },
+    {
+      "case_id": "seeded-004-s4-4435f6cd6aab",
+      "ep_targets": [],
+      "fen": "rnbqkbnr/ppp1pp1p/3p2p1/8/1P1P4/P7/R1P1PPPP/1NBQKBNR b Kkq - 0 3",
+      "pfen": "rnbqkbnr/ppp1pp1p/3p2p1/8/1P1P4/P7/R1P1PPPP/1NBQKBNR b Kkq - 0 3 | series=4 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "4435f6cd6aab09bc648f92072424a874",
+      "quiet_series": 0,
+      "series_number": 4,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=3; history=a2a3 | d7d6/g7g6 | a1a2/b2b4/d2d4"
+    },
+    {
+      "case_id": "seeded-005-s5-6a8063443c45",
+      "ep_targets": [],
+      "fen": "r1bqkbnr/1p1n1ppp/3pp3/p5B1/2pP4/1N6/PPP1PPPP/R2QKBNR w KQkq - 0 7",
+      "pfen": "r1bqkbnr/1p1n1ppp/3pp3/p5B1/2pP4/1N6/PPP1PPPP/R2QKBNR w KQkq - 0 7 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "6a8063443c45e21014b89dac945e01dd",
+      "quiet_series": 0,
+      "series_number": 5,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=4; history=d2d4 | c7c5/e7e6 | c1g5/b1d2/d2b3 | d7d6/b8d7/a7a5/c5c4"
+    },
+    {
+      "case_id": "seeded-006-s6-23661300eb9d",
+      "ep_targets": [],
+      "fen": "rnb2bnr/1ppp1kpp/8/p3pp2/P4PqP/N1P5/RP1PP1P1/2BQKBNR b K - 0 7",
+      "pfen": "rnb2bnr/1ppp1kpp/8/p3pp2/P4PqP/N1P5/RP1PP1P1/2BQKBNR b K - 0 7 | series=6 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "23661300eb9d4fb21c677aa4c82595be",
+      "quiet_series": 0,
+      "series_number": 6,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=5; history=f2f4 | e7e5/d8g5 | a2a3/a3a4/c2c3 | f7f5/e8f7/a7a5/g5g4 | a1a2/a2a1/a1a2/b1a3/h2h4"
+    },
+    {
+      "case_id": "seeded-007-s3-792262e696c5",
+      "ep_targets": [],
+      "fen": "r1bqkbnr/ppppp1pp/n4p2/8/8/7P/PPPPPPP1/RNBQKBNR w KQkq - 0 3",
+      "pfen": "r1bqkbnr/ppppp1pp/n4p2/8/8/7P/PPPPPPP1/RNBQKBNR w KQkq - 0 3 | series=3 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "792262e696c5ccc571e789dcce2c89b8",
+      "quiet_series": 0,
+      "series_number": 3,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=6; history=h2h3 | b8a6/f7f6"
+    },
+    {
+      "case_id": "seeded-008-s4-c2593cfc99e5",
+      "ep_targets": [],
+      "fen": "rnbqkbnr/pppp2pp/4pp2/8/6P1/7N/PPPPPPBP/RNBQKR2 b Qkq - 2 3",
+      "pfen": "rnbqkbnr/pppp2pp/4pp2/8/6P1/7N/PPPPPPBP/RNBQKR2 b Qkq - 2 3 | series=4 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "c2593cfc99e5f94bdf435eaecd4433a7",
+      "quiet_series": 0,
+      "series_number": 4,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=7; history=g1h3 | e7e6/f7f6 | g2g4/f1g2/h1f1"
+    },
+    {
+      "case_id": "seeded-009-s5-109af59bddf0",
+      "ep_targets": [],
+      "fen": "rnbqkbnr/1p3ppp/2pp4/p3p3/1PP1P3/8/P2PQPPP/RNB1KBNR w KQkq - 1 7",
+      "pfen": "rnbqkbnr/1p3ppp/2pp4/p3p3/1PP1P3/8/P2PQPPP/RNB1KBNR w KQkq - 1 7 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "109af59bddf02a6b5fa4175b3941919e",
+      "quiet_series": 0,
+      "series_number": 5,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=8; history=b2b4 | c7c6/d7d6 | e2e4/d1e2/c2c4 | e7e5/c8e6/a7a5/e6c8"
+    },
+    {
+      "case_id": "seeded-010-s6-c90e66c06f5c",
+      "ep_targets": [],
+      "fen": "r1bqk2r/1ppp1Qpp/2n4n/p3p3/8/4P1P1/RbPP1P1P/2BNKBNR b Kkq - 0 7",
+      "pfen": "r1bqk2r/1ppp1Qpp/2n4n/p3p3/8/4P1P1/RbPP1P1P/2BNKBNR b Kkq - 0 7 | series=6 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "c90e66c06f5c7e903ca874a3c158453c",
+      "quiet_series": 0,
+      "series_number": 6,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=9; history=g2g3 | b8c6/e7e5 | a2a3/b1c3/e2e3 | f8a3/a3b2/a7a5/g8h6 | d1f3/c3d1/a1a2/f3f7"
+    },
+    {
+      "case_id": "seeded-011-s3-32733d5fda47",
+      "ep_targets": [],
+      "fen": "1nbqkbnr/rppppppp/8/p7/8/N7/PPPPPPPP/R1BQKBNR w KQk - 1 3",
+      "pfen": "1nbqkbnr/rppppppp/8/p7/8/N7/PPPPPPPP/R1BQKBNR w KQk - 1 3 | series=3 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "32733d5fda47eb76afdb9d7adf8107f8",
+      "quiet_series": 0,
+      "series_number": 3,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=10; history=b1a3 | a7a5/a8a7"
+    },
+    {
+      "case_id": "seeded-012-s4-7c7377a51a18",
+      "ep_targets": [],
+      "fen": "rnbqkbnr/ppp1ppp1/7p/3p4/6P1/3P3P/PPPNPP2/R1BQKBNR b KQkq - 0 3",
+      "pfen": "rnbqkbnr/ppp1ppp1/7p/3p4/6P1/3P3P/PPPNPP2/R1BQKBNR b KQkq - 0 3 | series=4 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "7c7377a51a18acf620447abc8ef1c016",
+      "quiet_series": 0,
+      "series_number": 4,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=11; history=h2h3 | d7d5/h7h6 | d2d3/b1d2/g2g4"
+    },
+    {
+      "case_id": "seeded-013-s5-fbcef7dbc0f8",
+      "ep_targets": [],
+      "fen": "1rbqkbnr/p3pppp/2pp4/1pn5/8/1P3N2/P1PPPPPP/RNBQKB1R w Qk - 0 7",
+      "pfen": "1rbqkbnr/p3pppp/2pp4/1pn5/8/1P3N2/P1PPPPPP/RNBQKB1R w Qk - 0 7 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "fbcef7dbc0f88a38d91b1fa71f9c8aad",
+      "quiet_series": 0,
+      "series_number": 5,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=12; history=g1f3 | b8a6/d7d6 | h1g1/g1h1/b2b3 | a8b8/b7b5/a6c5/c7c6"
+    },
+    {
+      "case_id": "seeded-014-s6-378f746089f2",
+      "ep_targets": [],
+      "fen": "r3kbnr/1ppnpppp/q3b3/p2P4/1P2Q1P1/P7/R2PPPBP/1NB1K1NR b Kkq - 0 7",
+      "pfen": "r3kbnr/1ppnpppp/q3b3/p2P4/1P2Q1P1/P7/R2PPPBP/1NB1K1NR b Kkq - 0 7 | series=6 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "378f746089f2a85a194e06fe4a4c97c4",
+      "quiet_series": 0,
+      "series_number": 6,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=13; history=c2c4 | d7d5/c8e6 | g2g4/f1g2/b2b4 | d8d6/b8d7/a7a5/d6a6 | d1c2/c2e4/a2a3/a1a2/c4d5"
+    },
+    {
+      "case_id": "seeded-015-s3-07f5c11a9ff7",
+      "ep_targets": [],
+      "fen": "rnbqkbnr/p1pppppp/8/1p6/2P5/8/PP1PPPPP/RNBQKBNR w KQkq - 0 3",
+      "pfen": "rnbqkbnr/p1pppppp/8/1p6/2P5/8/PP1PPPPP/RNBQKBNR w KQkq - 0 3 | series=3 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "07f5c11a9ff71dc7f975aeca235ecb80",
+      "quiet_series": 0,
+      "series_number": 3,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=14; history=c2c4 | b7b6/b6b5"
+    },
+    {
+      "case_id": "seeded-016-s4-5a25e00b13b0",
+      "ep_targets": [],
+      "fen": "rnbqkb1r/ppp1pppp/3p1n2/8/P7/2N3P1/1PPPPP1P/1RBQKBNR b Kkq - 0 3",
+      "pfen": "rnbqkb1r/ppp1pppp/3p1n2/8/P7/2N3P1/1PPPPP1P/1RBQKBNR b Kkq - 0 3 | series=4 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "5a25e00b13b0de0ea786ae90eda0d9ff",
+      "quiet_series": 0,
+      "series_number": 4,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=15; history=g2g3 | d7d6/g8f6 | b1c3/a1b1/a2a4"
+    },
+    {
+      "case_id": "seeded-017-s5-ed6d41c0716b",
+      "ep_targets": [],
+      "fen": "r1bq1bnr/pppppk1p/5p2/6p1/2P5/P4P2/1PnPP1PP/RNBQKBNR w KQ - 3 7",
+      "pfen": "r1bq1bnr/pppppk1p/5p2/6p1/2P5/P4P2/1PnPP1PP/RNBQKBNR w KQ - 3 7 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "ed6d41c0716b6f3239d44f62de59cda7",
+      "quiet_series": 0,
+      "series_number": 5,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=16; history=a2a3 | b8a6/g7g5 | c2c3/c3c4/f2f3 | f7f6/e8f7/a6b4/b4c2"
+    },
+    {
+      "case_id": "seeded-018-s6-4934369500be",
+      "ep_targets": [
+        "d3"
+      ],
+      "fen": "rnbq1knr/1p1ppp1p/7b/p5p1/P1pP4/2N2P1P/1PP1P1P1/R1BQKBNR b K d3 0 7",
+      "pfen": "rnbq1knr/1p1ppp1p/7b/p5p1/P1pP4/2N2P1P/1PP1P1P1/R1BQKBNR b K d3 0 7 | series=6 quiet=0 progressive_ep=d3 rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "4934369500bedc6c5b2ac613c8d04720",
+      "quiet_series": 0,
+      "series_number": 6,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=17; history=f2f3 | c7c5/g7g5 | a2a3/b1c3/h2h3 | f8h6/e8f8/a7a5/c5c4 | a3a4/a1a3/a3a2/a2a1/d2d4"
+    },
+    {
+      "case_id": "seeded-019-s3-7247f671caf3",
+      "ep_targets": [],
+      "fen": "rnbqkbnr/p1pppp1p/6p1/1p6/8/7P/PPPPPPP1/RNBQKBNR w KQkq - 0 3",
+      "pfen": "rnbqkbnr/p1pppp1p/6p1/1p6/8/7P/PPPPPPP1/RNBQKBNR w KQkq - 0 3 | series=3 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "7247f671caf368707304316557acb3de",
+      "quiet_series": 0,
+      "series_number": 3,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=18; history=h2h3 | b7b5/g7g6"
+    },
+    {
+      "case_id": "seeded-020-s4-d3370509a78a",
+      "ep_targets": [],
+      "fen": "rnbqkb1r/ppppp1pp/5n2/5p2/2PP1B2/8/PP1NPPPP/R2QKBNR b KQkq - 0 3",
+      "pfen": "rnbqkb1r/ppppp1pp/5n2/5p2/2PP1B2/8/PP1NPPPP/R2QKBNR b KQkq - 0 3 | series=4 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "d3370509a78a349092d59a16927f5b43",
+      "quiet_series": 0,
+      "series_number": 4,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=19; history=d2d4 | f7f5/g8f6 | c1f4/b1d2/c2c4"
+    },
+    {
+      "case_id": "seeded-021-s5-b8b3e36e6743",
+      "ep_targets": [],
+      "fen": "rnb2bnr/1ppp1kpp/3qpp2/p7/1P4P1/P3P3/2PP1P1P/RNBQKBNR w KQ - 1 7",
+      "pfen": "rnb2bnr/1ppp1kpp/3qpp2/p7/1P4P1/P3P3/2PP1P1P/RNBQKBNR w KQ - 1 7 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "b8b3e36e67431fd862a09b26b317d581",
+      "quiet_series": 0,
+      "series_number": 5,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=20; history=b2b4 | f7f6/e8f7 | a2a3/e2e3/g2g4 | e7e6/d8e7/a7a5/e7d6"
+    },
+    {
+      "case_id": "seeded-022-s6-be56a0c3722f",
+      "ep_targets": [],
+      "fen": "1nbqkbnr/2pppp2/r5pp/p4N2/1pP5/P3P3/RP1P1PPP/1NBQKB1R b k - 0 7",
+      "pfen": "1nbqkbnr/2pppp2/r5pp/p4N2/1pP5/P3P3/RP1P1PPP/1NBQKB1R b k - 0 7 | series=6 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "be56a0c3722f837c9857a5f8e9159f47",
+      "quiet_series": 0,
+      "series_number": 6,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=21; history=c2c4 | a7a5/g7g6 | g1f3/f3d4/d4f5 | b7b5/b5b4/a8a6/h7h6 | h1g1/g1h1/a2a3/a1a2/e2e3"
+    },
+    {
+      "case_id": "seeded-023-s3-ee68e253d6b6",
+      "ep_targets": [],
+      "fen": "rnb1kbnr/pppp1ppp/4pq2/8/2P5/8/PP1PPPPP/RNBQKBNR w KQkq - 1 3",
+      "pfen": "rnb1kbnr/pppp1ppp/4pq2/8/2P5/8/PP1PPPPP/RNBQKBNR w KQkq - 1 3 | series=3 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "ee68e253d6b6f64c2a55e39f83e29d72",
+      "quiet_series": 0,
+      "series_number": 3,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=22; history=c2c4 | e7e6/d8f6"
+    },
+    {
+      "case_id": "seeded-024-s4-e5fd91a27849",
+      "ep_targets": [],
+      "fen": "rnbqkbnr/pppp2pp/4p3/5p2/8/4PP1N/PPPP1KPP/RNBQ1B1R b kq - 0 3",
+      "pfen": "rnbqkbnr/pppp2pp/4p3/5p2/8/4PP1N/PPPP1KPP/RNBQ1B1R b kq - 0 3 | series=4 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "e5fd91a27849d4e8c5ea9e8b2afdfdfb",
+      "quiet_series": 0,
+      "series_number": 4,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=23; history=g1h3 | e7e6/f7f5 | f2f3/e1f2/e2e3"
+    },
+    {
+      "case_id": "seeded-025-s5-74b9fd38fefb",
+      "ep_targets": [],
+      "fen": "rnbq1knr/1ppppp1p/6pb/8/pP6/2P4P/P2PPPPR/RNBQKBN1 w Q - 0 7",
+      "pfen": "rnbq1knr/1ppppp1p/6pb/8/pP6/2P4P/P2PPPPR/RNBQKBN1 w Q - 0 7 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "74b9fd38fefb9b07952329a1c1d6c117",
+      "quiet_series": 0,
+      "series_number": 5,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=24; history=c2c3 | a7a6/g7g6 | h2h3/h1h2/b2b4 | f8h6/e8f8/a6a5/a5a4"
+    },
+    {
+      "case_id": "seeded-026-s6-9e1fa0552e2c",
+      "ep_targets": [],
+      "fen": "rnbqkb1r/4ppp1/2p4n/pp1P3Q/8/PP1P2P1/R1P2PBP/1NB1K1NR b Kkq - 0 7",
+      "pfen": "rnbqkb1r/4ppp1/2p4n/pp1P3Q/8/PP1P2P1/R1P2PBP/1NB1K1NR b Kkq - 0 7 | series=6 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "9e1fa0552e2ce3b608fc8f170551973e",
+      "quiet_series": 0,
+      "series_number": 6,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=25; history=e2e4 | b7b5/d7d5 | g2g3/f1g2/e4d5 | h7h5/g8h6/a7a5/c7c6 | d1h5/d2d3/a2a3/a1a2/b2b3"
+    },
+    {
+      "case_id": "seeded-027-s3-43896aa63cf8",
+      "ep_targets": [],
+      "fen": "rnbqkbnr/1ppppp1p/p5p1/8/8/7N/PPPPPPPP/RNBQKB1R w KQkq - 0 3",
+      "pfen": "rnbqkbnr/1ppppp1p/p5p1/8/8/7N/PPPPPPPP/RNBQKB1R w KQkq - 0 3 | series=3 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "43896aa63cf89bb98901db010227a820",
+      "quiet_series": 0,
+      "series_number": 3,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=26; history=g1h3 | a7a6/g7g6"
+    },
+    {
+      "case_id": "seeded-028-s4-e598b52fbe18",
+      "ep_targets": [],
+      "fen": "rnbqkbnr/p1ppp1pp/1p3p2/8/5P1P/1P6/P1PPPKP1/RNBQ1BNR b kq - 0 3",
+      "pfen": "rnbqkbnr/p1ppp1pp/1p3p2/8/5P1P/1P6/P1PPPKP1/RNBQ1BNR b kq - 0 3 | series=4 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "e598b52fbe18fe15c1f8dca688ce4d88",
+      "quiet_series": 0,
+      "series_number": 4,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=27; history=h2h4 | b7b6/f7f6 | f2f4/e1f2/b2b3"
+    },
+    {
+      "case_id": "seeded-029-s5-60b50ae1a80f",
+      "ep_targets": [],
+      "fen": "rn1q1bnr/2pppk1p/b7/pp3pB1/3P4/8/PPPNPPPP/R1Q1KBNR w KQ - 1 7",
+      "pfen": "rn1q1bnr/2pppk1p/b7/pp3pB1/3P4/8/PPPNPPPP/R1Q1KBNR w KQ - 1 7 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "60b50ae1a80f5af14fc0306c2bc5da99",
+      "quiet_series": 0,
+      "series_number": 5,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=28; history=d2d4 | b7b5/g7g5 | c1g5/b1d2/d1c1 | f7f5/e8f7/a7a5/c8a6"
+    },
+    {
+      "case_id": "seeded-030-s6-81705549d6fa",
+      "ep_targets": [],
+      "fen": "1rbqkb1r/2ppppp1/p1n2n2/1p5p/P3PP1P/6P1/1PPPQK2/RNB2BNR b k - 0 7",
+      "pfen": "1rbqkb1r/2ppppp1/p1n2n2/1p5p/P3PP1P/6P1/1PPPQK2/RNB2BNR b k - 0 7 | series=6 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "81705549d6fab47b389beff32cab76f8",
+      "quiet_series": 0,
+      "series_number": 6,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=29; history=h2h4 | g8f6/h7h5 | f2f4/e1f2/a2a4 | b8c6/a8b8/a7a6/b7b5 | e2e4/d1e2/a1a2/a2a1/g2g3"
+    },
+    {
+      "case_id": "seeded-031-s3-842bf6c621ef",
+      "ep_targets": [],
+      "fen": "rnbqkbnr/p1ppppp1/1p5p/8/8/5P2/PPPPP1PP/RNBQKBNR w KQkq - 0 3",
+      "pfen": "rnbqkbnr/p1ppppp1/1p5p/8/8/5P2/PPPPP1PP/RNBQKBNR w KQkq - 0 3 | series=3 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "842bf6c621ef9f0b4b8190992222b9a0",
+      "quiet_series": 0,
+      "series_number": 3,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=30; history=f2f3 | b7b6/h7h6"
+    },
+    {
+      "case_id": "seeded-032-s4-e8539699a9f6",
+      "ep_targets": [],
+      "fen": "rn1qkbnr/ppp1pppp/4b3/3p4/2P5/4P3/PP1PBPPP/RNBQ1KNR b kq - 0 3",
+      "pfen": "rn1qkbnr/ppp1pppp/4b3/3p4/2P5/4P3/PP1PBPPP/RNBQ1KNR b kq - 0 3 | series=4 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "e8539699a9f6b6f21e183e9183b71964",
+      "quiet_series": 0,
+      "series_number": 4,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=31; history=e2e3 | d7d5/c8e6 | f1e2/e1f1/c2c4"
+    },
+    {
+      "case_id": "seeded-033-s5-ec995cda8409",
+      "ep_targets": [],
+      "fen": "r2qkbnr/1pp1pppp/n7/p2p4/2P5/1Q6/PP1PPPPP/RbBK1BNR w kq - 1 7",
+      "pfen": "r2qkbnr/1pp1pppp/n7/p2p4/2P5/1Q6/PP1PPPPP/RbBK1BNR w kq - 1 7 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "ec995cda8409d967dba11f4845ee6731",
+      "quiet_series": 0,
+      "series_number": 5,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=32; history=c2c4 | d7d5/c8f5 | d1c2/c2b3/e1d1 | f5d3/d3b1/a7a5/b8a6"
+    },
+    {
+      "case_id": "seeded-034-s6-7e59c17db400",
+      "ep_targets": [],
+      "fen": "rnbq1bnr/1pp2kpp/4pp2/p7/3p2P1/P1NP3P/1PPKPPB1/R1BQ2NR b - - 4 7",
+      "pfen": "rnbq1bnr/1pp2kpp/4pp2/p7/3p2P1/P1NP3P/1PPKPPB1/R1BQ2NR b - - 4 7 | series=6 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "7e59c17db400d367a6f3c2e15a79d520",
+      "quiet_series": 0,
+      "series_number": 6,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=33; history=h2h3 | d7d5/d5d4 | a2a3/b1c3/d2d3 | f7f6/e8f7/a7a5/e7e6 | g2g4/f1g2/a1a2/a2a1/e1d2"
+    },
+    {
+      "case_id": "seeded-035-s3-07656bc7ea8b",
+      "ep_targets": [],
+      "fen": "rnbqk1nr/ppppbppp/4p3/8/8/2P5/PP1PPPPP/RNBQKBNR w KQkq - 1 3",
+      "pfen": "rnbqk1nr/ppppbppp/4p3/8/8/2P5/PP1PPPPP/RNBQKBNR w KQkq - 1 3 | series=3 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "07656bc7ea8bbdb11f7026b8d20f43ec",
+      "quiet_series": 0,
+      "series_number": 3,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=34; history=c2c3 | e7e6/f8e7"
+    },
+    {
+      "case_id": "seeded-036-s4-34a0763735a2",
+      "ep_targets": [],
+      "fen": "rnbqkbnr/ppppp1p1/8/5p1p/1P6/1N1P4/P1P1PPPP/R1BQKBNR b KQkq - 2 3",
+      "pfen": "rnbqkbnr/ppppp1p1/8/5p1p/1P6/1N1P4/P1P1PPPP/R1BQKBNR b KQkq - 2 3 | series=4 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "34a0763735a22f28dad544d9857481b2",
+      "quiet_series": 0,
+      "series_number": 4,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=35; history=b2b4 | f7f5/h7h5 | d2d3/b1d2/d2b3"
+    },
+    {
+      "case_id": "seeded-037-s5-d3c63a355045",
+      "ep_targets": [],
+      "fen": "r1bq1bnr/2ppkppp/2n5/pp2p3/4P1P1/P7/1PPPNP1P/RNBQKB1R w KQ - 0 7",
+      "pfen": "r1bq1bnr/2ppkppp/2n5/pp2p3/4P1P1/P7/1PPPNP1P/RNBQKB1R w KQ - 0 7 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "d3c63a35504508d831c49fc721524fe3",
+      "quiet_series": 0,
+      "series_number": 5,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=36; history=g2g4 | b8c6/e7e6 | a2a3/e2e4/g1e2 | e6e5/e8e7/a7a5/b7b5"
+    },
+    {
+      "case_id": "seeded-038-s6-157d99412051",
+      "ep_targets": [],
+      "fen": "r1bqkb1r/pp2pppp/2pp4/3Q4/1n3P1P/P2PP3/RPP3P1/1NB1KBNR b Kkq - 0 7",
+      "pfen": "r1bqkb1r/pp2pppp/2pp4/3Q4/1n3P1P/P2PP3/RPP3P1/1NB1KBNR b Kkq - 0 7 | series=6 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "157d99412051ace7a781aef89d6c2e2e",
+      "quiet_series": 0,
+      "series_number": 6,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=37; history=f2f4 | b8a6/d7d6 | e2e3/d1e2/e2d3 | g8f6/f6d5/a6b4/c7c6 | d3d5/d2d3/a2a3/a1a2/h2h4"
+    },
+    {
+      "case_id": "seeded-039-s3-52b1fe5b0859",
+      "ep_targets": [],
+      "fen": "rnbqkbnr/pppp2pp/4pp2/8/8/2N5/PPPPPPPP/R1BQKBNR w KQkq - 0 3",
+      "pfen": "rnbqkbnr/pppp2pp/4pp2/8/8/2N5/PPPPPPPP/R1BQKBNR w KQkq - 0 3 | series=3 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "52b1fe5b08598b003240ec6ea9e3632a",
+      "quiet_series": 0,
+      "series_number": 3,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=38; history=b1c3 | e7e6/f7f6"
+    },
+    {
+      "case_id": "seeded-040-s4-a18dee76dadd",
+      "ep_targets": [],
+      "fen": "r1bqkb1r/pppppppp/2n4n/8/1P6/N7/P1PPPPPP/R1BQKBNR b Kkq - 0 3",
+      "pfen": "r1bqkb1r/pppppppp/2n4n/8/1P6/N7/P1PPPPPP/R1BQKBNR b Kkq - 0 3 | series=4 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "a18dee76dadd96ce60618cc0a2d4dddd",
+      "quiet_series": 0,
+      "series_number": 4,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=39; history=b1a3 | b8c6/g8h6 | a1b1/b1a1/b2b4"
+    },
+    {
+      "case_id": "seeded-041-s5-09a2ae08b9dd",
+      "ep_targets": [],
+      "fen": "r1bqkbn1/1ppnpppr/3p4/p6p/7P/P1N5/RPPPPPP1/2BQKBNR w Kq - 0 7",
+      "pfen": "r1bqkbn1/1ppnpppr/3p4/p6p/7P/P1N5/RPPPPPP1/2BQKBNR w Kq - 0 7 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "09a2ae08b9ddd8f220ba60b9214470ce",
+      "quiet_series": 0,
+      "series_number": 5,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=40; history=b1c3 | h7h5/h8h7 | a2a3/a1a2/h2h4 | d7d6/b8d7/a7a6/a6a5"
+    },
+    {
+      "case_id": "seeded-042-s6-9629c79c7f5c",
+      "ep_targets": [],
+      "fen": "rn1qkb1r/2p1nppp/4b3/pp1Np3/4P3/P1PP4/1P1B1PPP/2RQKBNR b Kkq - 1 7",
+      "pfen": "rn1qkb1r/2p1nppp/4b3/pp1Np3/4P3/P1PP4/1P1B1PPP/2RQKBNR b Kkq - 1 7 | series=6 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "9629c79c7f5cedb1ad3f16e02a5bd330",
+      "quiet_series": 0,
+      "series_number": 6,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=41; history=b1c3 | b7b5/d7d5 | c3d5/c2c3/e2e4 | e7e5/c8e6/a7a5/g8e7 | d2d3/c1d2/a1b1/a2a3/b1c1"
+    },
+    {
+      "case_id": "seeded-043-s3-6ce65e4a8a6b",
+      "ep_targets": [],
+      "fen": "rnbqkbnr/ppppp2p/8/5pp1/8/7N/PPPPPPPP/RNBQKB1R w KQkq - 0 3",
+      "pfen": "rnbqkbnr/ppppp2p/8/5pp1/8/7N/PPPPPPPP/RNBQKB1R w KQkq - 0 3 | series=3 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "6ce65e4a8a6b237a0a2f0ec7eca4767b",
+      "quiet_series": 0,
+      "series_number": 3,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=42; history=g1h3 | f7f5/g7g5"
+    },
+    {
+      "case_id": "seeded-044-s4-6f8874566aa1",
+      "ep_targets": [],
+      "fen": "rnbqk1nr/pppp1ppp/4p3/8/P7/3P3N/P1P1PPPP/RNBQKB1R b KQkq - 0 3",
+      "pfen": "rnbqk1nr/pppp1ppp/4p3/8/P7/3P3N/P1P1PPPP/RNBQKB1R b KQkq - 0 3 | series=4 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "6f8874566aa1b776715838d59dfe0b24",
+      "quiet_series": 0,
+      "series_number": 4,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=43; history=g1h3 | e7e6/f8a3 | b2a3/a3a4/d2d3"
+    },
+    {
+      "case_id": "seeded-045-s5-b91f39e3f615",
+      "ep_targets": [],
+      "fen": "rnbqkb1r/2ppnpp1/4p3/pp6/3P1P1p/5K2/PPP1P1PP/RNBQ1BNR w kq - 0 7",
+      "pfen": "rnbqkb1r/2ppnpp1/4p3/pp6/3P1P1p/5K2/PPP1P1PP/RNBQ1BNR w kq - 0 7 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "b91f39e3f615e188068fa8efb5786aa8",
+      "quiet_series": 0,
+      "series_number": 5,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=44; history=d2d4 | e7e6/g8e7 | f2f4/e1f2/f2f3 | h7h5/h5h4/a7a5/b7b5"
+    },
+    {
+      "case_id": "seeded-046-s6-e6697b591f8c",
+      "ep_targets": [],
+      "fen": "rnbqkbnr/3pp2p/p1p5/1p3pP1/P3P1P1/8/RPPPQP1N/1NB1KB1R b Kkq - 0 7",
+      "pfen": "rnbqkbnr/3pp2p/p1p5/1p3pP1/P3P1P1/8/RPPPQP1N/1NB1KB1R b Kkq - 0 7 | series=6 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "e6697b591f8c4b7cd595b13f44e31f70",
+      "quiet_series": 0,
+      "series_number": 6,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=45; history=g1f3 | f7f5/g7g5 | h2h4/f3h2/h4g5 | b7b6/b6b5/a7a6/c7c6 | e2e4/d1e2/a2a4/a1a2/g2g4"
+    },
+    {
+      "case_id": "seeded-047-s3-7a49c5a4ac04",
+      "ep_targets": [],
+      "fen": "rnbqkbnr/p1p1pppp/8/1p1p4/2P5/8/PP1PPPPP/RNBQKBNR w KQkq - 0 3",
+      "pfen": "rnbqkbnr/p1p1pppp/8/1p1p4/2P5/8/PP1PPPPP/RNBQKBNR w KQkq - 0 3 | series=3 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "7a49c5a4ac04d6e8d806d92df0239cce",
+      "quiet_series": 0,
+      "series_number": 3,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=46; history=c2c4 | b7b5/d7d5"
+    },
+    {
+      "case_id": "seeded-048-s4-8e72a3cdf294",
+      "ep_targets": [],
+      "fen": "rnbqkb1r/ppppppp1/5n1p/8/1P6/N4P2/P1PPP1PP/1RBQKBNR b Kkq - 0 3",
+      "pfen": "rnbqkb1r/ppppppp1/5n1p/8/1P6/N4P2/P1PPP1PP/1RBQKBNR b Kkq - 0 3 | series=4 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "8e72a3cdf294fdc26507c2c7c8291f48",
+      "quiet_series": 0,
+      "series_number": 4,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=47; history=f2f3 | g8f6/h7h6 | b1a3/a1b1/b2b4"
+    },
+    {
+      "case_id": "seeded-049-s5-799756ace822",
+      "ep_targets": [],
+      "fen": "1n1qkbnr/1b1ppppp/1rp5/pp6/P3P3/R7/1PPP1PPP/1NBQKBNR w Kk - 0 7",
+      "pfen": "1n1qkbnr/1b1ppppp/1rp5/pp6/P3P3/R7/1PPP1PPP/1NBQKBNR w Kk - 0 7 | series=5 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "799756ace82276e95c4d2dc41a322ea1",
+      "quiet_series": 0,
+      "series_number": 5,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=48; history=a2a4 | b7b5/c8b7 | a1a2/a2a3/e2e4 | a7a5/a8a6/a6b6/c7c6"
+    },
+    {
+      "case_id": "seeded-050-s6-4e37eff2d071",
+      "ep_targets": [],
+      "fen": "r1bqk1nr/1pppppbp/n2P4/6p1/p1P5/P7/RPQBPPPP/1N2KBNR b Kkq - 2 7",
+      "pfen": "r1bqk1nr/1pppppbp/n2P4/6p1/p1P5/P7/RPQBPPPP/1N2KBNR b Kkq - 2 7 | series=6 quiet=0 progressive_ep=- rules=scottish-modern-common-v1 quiet_draw=manual-proof-required",
+      "position_hash": "4e37eff2d0713e33ea282aa4356d879f",
+      "quiet_series": 0,
+      "series_number": 6,
+      "source": "neutral deterministic legal-series sampling v1; seed=20260827; attempt=49; history=d2d4 | a7a6/a6a5 | c2c3/c3c4/d1c2 | g7g5/f8g7/a5a4/b8a6 | d4d5/d5d6/a2a3/a1a2/c1d2"
+    }
+  ],
+  "count": 50,
+  "format": "spc-neutral-seeded-openings-v1",
+  "histories": [
+    {
+      "attempt": 0,
+      "case_id": "seeded-001-s5-7991c25c3db5",
+      "series": [
+        [
+          "e2e4"
+        ],
+        [
+          "g8f6",
+          "f6g4"
+        ],
+        [
+          "f1a6",
+          "a6b5",
+          "b2b3"
+        ],
+        [
+          "g4e5",
+          "e5c6",
+          "a7a5",
+          "d7d5"
+        ]
+      ],
+      "target_series": 5
+    },
+    {
+      "attempt": 1,
+      "case_id": "seeded-002-s6-15d0a51f4924",
+      "series": [
+        [
+          "b2b4"
+        ],
+        [
+          "g8f6",
+          "f6h5"
+        ],
+        [
+          "a2a3",
+          "c2c3",
+          "g2g4"
+        ],
+        [
+          "h8g8",
+          "g8h8",
+          "a7a5",
+          "a8a7"
+        ],
+        [
+          "b4a5",
+          "a5a6",
+          "a3a4",
+          "a1a2",
+          "e2e4"
+        ]
+      ],
+      "target_series": 6
+    },
+    {
+      "attempt": 2,
+      "case_id": "seeded-003-s3-3d109b760939",
+      "series": [
+        [
+          "a2a3"
+        ],
+        [
+          "h7h6",
+          "h6h5"
+        ]
+      ],
+      "target_series": 3
+    },
+    {
+      "attempt": 3,
+      "case_id": "seeded-004-s4-4435f6cd6aab",
+      "series": [
+        [
+          "a2a3"
+        ],
+        [
+          "d7d6",
+          "g7g6"
+        ],
+        [
+          "a1a2",
+          "b2b4",
+          "d2d4"
+        ]
+      ],
+      "target_series": 4
+    },
+    {
+      "attempt": 4,
+      "case_id": "seeded-005-s5-6a8063443c45",
+      "series": [
+        [
+          "d2d4"
+        ],
+        [
+          "c7c5",
+          "e7e6"
+        ],
+        [
+          "c1g5",
+          "b1d2",
+          "d2b3"
+        ],
+        [
+          "d7d6",
+          "b8d7",
+          "a7a5",
+          "c5c4"
+        ]
+      ],
+      "target_series": 5
+    },
+    {
+      "attempt": 5,
+      "case_id": "seeded-006-s6-23661300eb9d",
+      "series": [
+        [
+          "f2f4"
+        ],
+        [
+          "e7e5",
+          "d8g5"
+        ],
+        [
+          "a2a3",
+          "a3a4",
+          "c2c3"
+        ],
+        [
+          "f7f5",
+          "e8f7",
+          "a7a5",
+          "g5g4"
+        ],
+        [
+          "a1a2",
+          "a2a1",
+          "a1a2",
+          "b1a3",
+          "h2h4"
+        ]
+      ],
+      "target_series": 6
+    },
+    {
+      "attempt": 6,
+      "case_id": "seeded-007-s3-792262e696c5",
+      "series": [
+        [
+          "h2h3"
+        ],
+        [
+          "b8a6",
+          "f7f6"
+        ]
+      ],
+      "target_series": 3
+    },
+    {
+      "attempt": 7,
+      "case_id": "seeded-008-s4-c2593cfc99e5",
+      "series": [
+        [
+          "g1h3"
+        ],
+        [
+          "e7e6",
+          "f7f6"
+        ],
+        [
+          "g2g4",
+          "f1g2",
+          "h1f1"
+        ]
+      ],
+      "target_series": 4
+    },
+    {
+      "attempt": 8,
+      "case_id": "seeded-009-s5-109af59bddf0",
+      "series": [
+        [
+          "b2b4"
+        ],
+        [
+          "c7c6",
+          "d7d6"
+        ],
+        [
+          "e2e4",
+          "d1e2",
+          "c2c4"
+        ],
+        [
+          "e7e5",
+          "c8e6",
+          "a7a5",
+          "e6c8"
+        ]
+      ],
+      "target_series": 5
+    },
+    {
+      "attempt": 9,
+      "case_id": "seeded-010-s6-c90e66c06f5c",
+      "series": [
+        [
+          "g2g3"
+        ],
+        [
+          "b8c6",
+          "e7e5"
+        ],
+        [
+          "a2a3",
+          "b1c3",
+          "e2e3"
+        ],
+        [
+          "f8a3",
+          "a3b2",
+          "a7a5",
+          "g8h6"
+        ],
+        [
+          "d1f3",
+          "c3d1",
+          "a1a2",
+          "f3f7"
+        ]
+      ],
+      "target_series": 6
+    },
+    {
+      "attempt": 10,
+      "case_id": "seeded-011-s3-32733d5fda47",
+      "series": [
+        [
+          "b1a3"
+        ],
+        [
+          "a7a5",
+          "a8a7"
+        ]
+      ],
+      "target_series": 3
+    },
+    {
+      "attempt": 11,
+      "case_id": "seeded-012-s4-7c7377a51a18",
+      "series": [
+        [
+          "h2h3"
+        ],
+        [
+          "d7d5",
+          "h7h6"
+        ],
+        [
+          "d2d3",
+          "b1d2",
+          "g2g4"
+        ]
+      ],
+      "target_series": 4
+    },
+    {
+      "attempt": 12,
+      "case_id": "seeded-013-s5-fbcef7dbc0f8",
+      "series": [
+        [
+          "g1f3"
+        ],
+        [
+          "b8a6",
+          "d7d6"
+        ],
+        [
+          "h1g1",
+          "g1h1",
+          "b2b3"
+        ],
+        [
+          "a8b8",
+          "b7b5",
+          "a6c5",
+          "c7c6"
+        ]
+      ],
+      "target_series": 5
+    },
+    {
+      "attempt": 13,
+      "case_id": "seeded-014-s6-378f746089f2",
+      "series": [
+        [
+          "c2c4"
+        ],
+        [
+          "d7d5",
+          "c8e6"
+        ],
+        [
+          "g2g4",
+          "f1g2",
+          "b2b4"
+        ],
+        [
+          "d8d6",
+          "b8d7",
+          "a7a5",
+          "d6a6"
+        ],
+        [
+          "d1c2",
+          "c2e4",
+          "a2a3",
+          "a1a2",
+          "c4d5"
+        ]
+      ],
+      "target_series": 6
+    },
+    {
+      "attempt": 14,
+      "case_id": "seeded-015-s3-07f5c11a9ff7",
+      "series": [
+        [
+          "c2c4"
+        ],
+        [
+          "b7b6",
+          "b6b5"
+        ]
+      ],
+      "target_series": 3
+    },
+    {
+      "attempt": 15,
+      "case_id": "seeded-016-s4-5a25e00b13b0",
+      "series": [
+        [
+          "g2g3"
+        ],
+        [
+          "d7d6",
+          "g8f6"
+        ],
+        [
+          "b1c3",
+          "a1b1",
+          "a2a4"
+        ]
+      ],
+      "target_series": 4
+    },
+    {
+      "attempt": 16,
+      "case_id": "seeded-017-s5-ed6d41c0716b",
+      "series": [
+        [
+          "a2a3"
+        ],
+        [
+          "b8a6",
+          "g7g5"
+        ],
+        [
+          "c2c3",
+          "c3c4",
+          "f2f3"
+        ],
+        [
+          "f7f6",
+          "e8f7",
+          "a6b4",
+          "b4c2"
+        ]
+      ],
+      "target_series": 5
+    },
+    {
+      "attempt": 17,
+      "case_id": "seeded-018-s6-4934369500be",
+      "series": [
+        [
+          "f2f3"
+        ],
+        [
+          "c7c5",
+          "g7g5"
+        ],
+        [
+          "a2a3",
+          "b1c3",
+          "h2h3"
+        ],
+        [
+          "f8h6",
+          "e8f8",
+          "a7a5",
+          "c5c4"
+        ],
+        [
+          "a3a4",
+          "a1a3",
+          "a3a2",
+          "a2a1",
+          "d2d4"
+        ]
+      ],
+      "target_series": 6
+    },
+    {
+      "attempt": 18,
+      "case_id": "seeded-019-s3-7247f671caf3",
+      "series": [
+        [
+          "h2h3"
+        ],
+        [
+          "b7b5",
+          "g7g6"
+        ]
+      ],
+      "target_series": 3
+    },
+    {
+      "attempt": 19,
+      "case_id": "seeded-020-s4-d3370509a78a",
+      "series": [
+        [
+          "d2d4"
+        ],
+        [
+          "f7f5",
+          "g8f6"
+        ],
+        [
+          "c1f4",
+          "b1d2",
+          "c2c4"
+        ]
+      ],
+      "target_series": 4
+    },
+    {
+      "attempt": 20,
+      "case_id": "seeded-021-s5-b8b3e36e6743",
+      "series": [
+        [
+          "b2b4"
+        ],
+        [
+          "f7f6",
+          "e8f7"
+        ],
+        [
+          "a2a3",
+          "e2e3",
+          "g2g4"
+        ],
+        [
+          "e7e6",
+          "d8e7",
+          "a7a5",
+          "e7d6"
+        ]
+      ],
+      "target_series": 5
+    },
+    {
+      "attempt": 21,
+      "case_id": "seeded-022-s6-be56a0c3722f",
+      "series": [
+        [
+          "c2c4"
+        ],
+        [
+          "a7a5",
+          "g7g6"
+        ],
+        [
+          "g1f3",
+          "f3d4",
+          "d4f5"
+        ],
+        [
+          "b7b5",
+          "b5b4",
+          "a8a6",
+          "h7h6"
+        ],
+        [
+          "h1g1",
+          "g1h1",
+          "a2a3",
+          "a1a2",
+          "e2e3"
+        ]
+      ],
+      "target_series": 6
+    },
+    {
+      "attempt": 22,
+      "case_id": "seeded-023-s3-ee68e253d6b6",
+      "series": [
+        [
+          "c2c4"
+        ],
+        [
+          "e7e6",
+          "d8f6"
+        ]
+      ],
+      "target_series": 3
+    },
+    {
+      "attempt": 23,
+      "case_id": "seeded-024-s4-e5fd91a27849",
+      "series": [
+        [
+          "g1h3"
+        ],
+        [
+          "e7e6",
+          "f7f5"
+        ],
+        [
+          "f2f3",
+          "e1f2",
+          "e2e3"
+        ]
+      ],
+      "target_series": 4
+    },
+    {
+      "attempt": 24,
+      "case_id": "seeded-025-s5-74b9fd38fefb",
+      "series": [
+        [
+          "c2c3"
+        ],
+        [
+          "a7a6",
+          "g7g6"
+        ],
+        [
+          "h2h3",
+          "h1h2",
+          "b2b4"
+        ],
+        [
+          "f8h6",
+          "e8f8",
+          "a6a5",
+          "a5a4"
+        ]
+      ],
+      "target_series": 5
+    },
+    {
+      "attempt": 25,
+      "case_id": "seeded-026-s6-9e1fa0552e2c",
+      "series": [
+        [
+          "e2e4"
+        ],
+        [
+          "b7b5",
+          "d7d5"
+        ],
+        [
+          "g2g3",
+          "f1g2",
+          "e4d5"
+        ],
+        [
+          "h7h5",
+          "g8h6",
+          "a7a5",
+          "c7c6"
+        ],
+        [
+          "d1h5",
+          "d2d3",
+          "a2a3",
+          "a1a2",
+          "b2b3"
+        ]
+      ],
+      "target_series": 6
+    },
+    {
+      "attempt": 26,
+      "case_id": "seeded-027-s3-43896aa63cf8",
+      "series": [
+        [
+          "g1h3"
+        ],
+        [
+          "a7a6",
+          "g7g6"
+        ]
+      ],
+      "target_series": 3
+    },
+    {
+      "attempt": 27,
+      "case_id": "seeded-028-s4-e598b52fbe18",
+      "series": [
+        [
+          "h2h4"
+        ],
+        [
+          "b7b6",
+          "f7f6"
+        ],
+        [
+          "f2f4",
+          "e1f2",
+          "b2b3"
+        ]
+      ],
+      "target_series": 4
+    },
+    {
+      "attempt": 28,
+      "case_id": "seeded-029-s5-60b50ae1a80f",
+      "series": [
+        [
+          "d2d4"
+        ],
+        [
+          "b7b5",
+          "g7g5"
+        ],
+        [
+          "c1g5",
+          "b1d2",
+          "d1c1"
+        ],
+        [
+          "f7f5",
+          "e8f7",
+          "a7a5",
+          "c8a6"
+        ]
+      ],
+      "target_series": 5
+    },
+    {
+      "attempt": 29,
+      "case_id": "seeded-030-s6-81705549d6fa",
+      "series": [
+        [
+          "h2h4"
+        ],
+        [
+          "g8f6",
+          "h7h5"
+        ],
+        [
+          "f2f4",
+          "e1f2",
+          "a2a4"
+        ],
+        [
+          "b8c6",
+          "a8b8",
+          "a7a6",
+          "b7b5"
+        ],
+        [
+          "e2e4",
+          "d1e2",
+          "a1a2",
+          "a2a1",
+          "g2g3"
+        ]
+      ],
+      "target_series": 6
+    },
+    {
+      "attempt": 30,
+      "case_id": "seeded-031-s3-842bf6c621ef",
+      "series": [
+        [
+          "f2f3"
+        ],
+        [
+          "b7b6",
+          "h7h6"
+        ]
+      ],
+      "target_series": 3
+    },
+    {
+      "attempt": 31,
+      "case_id": "seeded-032-s4-e8539699a9f6",
+      "series": [
+        [
+          "e2e3"
+        ],
+        [
+          "d7d5",
+          "c8e6"
+        ],
+        [
+          "f1e2",
+          "e1f1",
+          "c2c4"
+        ]
+      ],
+      "target_series": 4
+    },
+    {
+      "attempt": 32,
+      "case_id": "seeded-033-s5-ec995cda8409",
+      "series": [
+        [
+          "c2c4"
+        ],
+        [
+          "d7d5",
+          "c8f5"
+        ],
+        [
+          "d1c2",
+          "c2b3",
+          "e1d1"
+        ],
+        [
+          "f5d3",
+          "d3b1",
+          "a7a5",
+          "b8a6"
+        ]
+      ],
+      "target_series": 5
+    },
+    {
+      "attempt": 33,
+      "case_id": "seeded-034-s6-7e59c17db400",
+      "series": [
+        [
+          "h2h3"
+        ],
+        [
+          "d7d5",
+          "d5d4"
+        ],
+        [
+          "a2a3",
+          "b1c3",
+          "d2d3"
+        ],
+        [
+          "f7f6",
+          "e8f7",
+          "a7a5",
+          "e7e6"
+        ],
+        [
+          "g2g4",
+          "f1g2",
+          "a1a2",
+          "a2a1",
+          "e1d2"
+        ]
+      ],
+      "target_series": 6
+    },
+    {
+      "attempt": 34,
+      "case_id": "seeded-035-s3-07656bc7ea8b",
+      "series": [
+        [
+          "c2c3"
+        ],
+        [
+          "e7e6",
+          "f8e7"
+        ]
+      ],
+      "target_series": 3
+    },
+    {
+      "attempt": 35,
+      "case_id": "seeded-036-s4-34a0763735a2",
+      "series": [
+        [
+          "b2b4"
+        ],
+        [
+          "f7f5",
+          "h7h5"
+        ],
+        [
+          "d2d3",
+          "b1d2",
+          "d2b3"
+        ]
+      ],
+      "target_series": 4
+    },
+    {
+      "attempt": 36,
+      "case_id": "seeded-037-s5-d3c63a355045",
+      "series": [
+        [
+          "g2g4"
+        ],
+        [
+          "b8c6",
+          "e7e6"
+        ],
+        [
+          "a2a3",
+          "e2e4",
+          "g1e2"
+        ],
+        [
+          "e6e5",
+          "e8e7",
+          "a7a5",
+          "b7b5"
+        ]
+      ],
+      "target_series": 5
+    },
+    {
+      "attempt": 37,
+      "case_id": "seeded-038-s6-157d99412051",
+      "series": [
+        [
+          "f2f4"
+        ],
+        [
+          "b8a6",
+          "d7d6"
+        ],
+        [
+          "e2e3",
+          "d1e2",
+          "e2d3"
+        ],
+        [
+          "g8f6",
+          "f6d5",
+          "a6b4",
+          "c7c6"
+        ],
+        [
+          "d3d5",
+          "d2d3",
+          "a2a3",
+          "a1a2",
+          "h2h4"
+        ]
+      ],
+      "target_series": 6
+    },
+    {
+      "attempt": 38,
+      "case_id": "seeded-039-s3-52b1fe5b0859",
+      "series": [
+        [
+          "b1c3"
+        ],
+        [
+          "e7e6",
+          "f7f6"
+        ]
+      ],
+      "target_series": 3
+    },
+    {
+      "attempt": 39,
+      "case_id": "seeded-040-s4-a18dee76dadd",
+      "series": [
+        [
+          "b1a3"
+        ],
+        [
+          "b8c6",
+          "g8h6"
+        ],
+        [
+          "a1b1",
+          "b1a1",
+          "b2b4"
+        ]
+      ],
+      "target_series": 4
+    },
+    {
+      "attempt": 40,
+      "case_id": "seeded-041-s5-09a2ae08b9dd",
+      "series": [
+        [
+          "b1c3"
+        ],
+        [
+          "h7h5",
+          "h8h7"
+        ],
+        [
+          "a2a3",
+          "a1a2",
+          "h2h4"
+        ],
+        [
+          "d7d6",
+          "b8d7",
+          "a7a6",
+          "a6a5"
+        ]
+      ],
+      "target_series": 5
+    },
+    {
+      "attempt": 41,
+      "case_id": "seeded-042-s6-9629c79c7f5c",
+      "series": [
+        [
+          "b1c3"
+        ],
+        [
+          "b7b5",
+          "d7d5"
+        ],
+        [
+          "c3d5",
+          "c2c3",
+          "e2e4"
+        ],
+        [
+          "e7e5",
+          "c8e6",
+          "a7a5",
+          "g8e7"
+        ],
+        [
+          "d2d3",
+          "c1d2",
+          "a1b1",
+          "a2a3",
+          "b1c1"
+        ]
+      ],
+      "target_series": 6
+    },
+    {
+      "attempt": 42,
+      "case_id": "seeded-043-s3-6ce65e4a8a6b",
+      "series": [
+        [
+          "g1h3"
+        ],
+        [
+          "f7f5",
+          "g7g5"
+        ]
+      ],
+      "target_series": 3
+    },
+    {
+      "attempt": 43,
+      "case_id": "seeded-044-s4-6f8874566aa1",
+      "series": [
+        [
+          "g1h3"
+        ],
+        [
+          "e7e6",
+          "f8a3"
+        ],
+        [
+          "b2a3",
+          "a3a4",
+          "d2d3"
+        ]
+      ],
+      "target_series": 4
+    },
+    {
+      "attempt": 44,
+      "case_id": "seeded-045-s5-b91f39e3f615",
+      "series": [
+        [
+          "d2d4"
+        ],
+        [
+          "e7e6",
+          "g8e7"
+        ],
+        [
+          "f2f4",
+          "e1f2",
+          "f2f3"
+        ],
+        [
+          "h7h5",
+          "h5h4",
+          "a7a5",
+          "b7b5"
+        ]
+      ],
+      "target_series": 5
+    },
+    {
+      "attempt": 45,
+      "case_id": "seeded-046-s6-e6697b591f8c",
+      "series": [
+        [
+          "g1f3"
+        ],
+        [
+          "f7f5",
+          "g7g5"
+        ],
+        [
+          "h2h4",
+          "f3h2",
+          "h4g5"
+        ],
+        [
+          "b7b6",
+          "b6b5",
+          "a7a6",
+          "c7c6"
+        ],
+        [
+          "e2e4",
+          "d1e2",
+          "a2a4",
+          "a1a2",
+          "g2g4"
+        ]
+      ],
+      "target_series": 6
+    },
+    {
+      "attempt": 46,
+      "case_id": "seeded-047-s3-7a49c5a4ac04",
+      "series": [
+        [
+          "c2c4"
+        ],
+        [
+          "b7b5",
+          "d7d5"
+        ]
+      ],
+      "target_series": 3
+    },
+    {
+      "attempt": 47,
+      "case_id": "seeded-048-s4-8e72a3cdf294",
+      "series": [
+        [
+          "f2f3"
+        ],
+        [
+          "g8f6",
+          "h7h6"
+        ],
+        [
+          "b1a3",
+          "a1b1",
+          "b2b4"
+        ]
+      ],
+      "target_series": 4
+    },
+    {
+      "attempt": 48,
+      "case_id": "seeded-049-s5-799756ace822",
+      "series": [
+        [
+          "a2a4"
+        ],
+        [
+          "b7b5",
+          "c8b7"
+        ],
+        [
+          "a1a2",
+          "a2a3",
+          "e2e4"
+        ],
+        [
+          "a7a5",
+          "a8a6",
+          "a6b6",
+          "c7c6"
+        ]
+      ],
+      "target_series": 5
+    },
+    {
+      "attempt": 49,
+      "case_id": "seeded-050-s6-4e37eff2d071",
+      "series": [
+        [
+          "d2d4"
+        ],
+        [
+          "a7a6",
+          "a6a5"
+        ],
+        [
+          "c2c3",
+          "c3c4",
+          "d1c2"
+        ],
+        [
+          "g7g5",
+          "f8g7",
+          "a5a4",
+          "b8a6"
+        ],
+        [
+          "d4d5",
+          "d5d6",
+          "a2a3",
+          "a1a2",
+          "c1d2"
+        ]
+      ],
+      "target_series": 6
+    }
+  ],
+  "max_frontier_states": 32,
+  "max_series": 6,
+  "min_series": 3,
+  "seed": 20260827,
+  "version": "spc-neutral-seeded-openings-v1-a292fa4db4e8b7d98248"
+}

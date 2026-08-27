@@ -1,3 +1,4 @@
+/.gitattributes text eol=lf
 src/scottish_progressive/web/static/engine/** -text -diff
 release/browser-wasm/** -text -diff
 # Root-session build receipts bind the exact native source bytes. Keep those
@@ -11,3 +12,9 @@ src/scottish_progressive/web/static/*.js text eol=lf
 root-iteration-coordinator.js text eol=lf
 experiments/neural-ordering-s3-network.json -text -diff
 reports/neural-ordering-s3-final-fair-seeded20-seed730194821.json -text -diff
+# Fair-rematch receipts and the flushed-Bucephalus patch are content addressed.
+# Keep their bytes, plus the executable benchmark harness, stable across hosts.
+benchmarks/*.py text eol=lf
+benchmarks/patches/*.patch text eol=lf whitespace=-trailing-space,-blank-at-eof
+benchmarks/protocols/*.json text eol=lf
+tests/test_bucephalus_*.py text eol=lf

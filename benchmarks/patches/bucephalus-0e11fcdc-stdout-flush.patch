@@ -1,0 +1,11 @@
+diff --git a/evaluate.c b/evaluate.c
+--- a/evaluate.c
++++ b/evaluate.c
+@@ -313,6 +313,7 @@
+   printf("[PLY %2d][SCORE %5.2f][TIME %d m %.2f s][LINE: ", i, (float)el->val/100.0, min, sec);
+   for(etmp = el; etmp->best.mtype != EMPTY; etmp = etmp->next) 
+     PrintMoveBrief(&(etmp->best));
+   printf("]\n");
++  fflush(stdout);
+ }    
+ 

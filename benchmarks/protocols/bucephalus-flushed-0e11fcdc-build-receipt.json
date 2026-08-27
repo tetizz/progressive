@@ -1,0 +1,92 @@
+{
+  "schema": "spc-bucephalus-flushed-build-receipt-v1",
+  "opponent": {
+    "name": "Bucephalus",
+    "upstream_commit": "0e11fcdc84e65122fd8b91cada71dad6323db417",
+    "upstream_tree": "53f7dcc4ffe20cc4de46b4a5e1fc3ac9d183b3fb"
+  },
+  "instrumentation": {
+    "purpose": "flush each completed iterative-deepening PLY record before the external wall-clock deadline",
+    "patch_path": "benchmarks/patches/bucephalus-0e11fcdc-stdout-flush.patch",
+    "patch_sha256": "286ecd99c18fda0e7a85f2488bb6006385bee216b27c6bcfefdd0d27a63efb55",
+    "source_file": "evaluate.c",
+    "source_before_sha256": "d5e521b7b2bad05ab416efc0270e2c7475d023621c9c627cbf331d732c2e9d00",
+    "source_after_sha256": "8c09adb6c90f9a4783e53615c0f6b6adde41ca8bf5c6ecdfa84134f0bbb706a0",
+    "semantic_change": "add fflush(stdout) immediately after each completed PLY line"
+  },
+  "windows_compatibility_header": {
+    "path": "wincompat/sys/time.h",
+    "bytes": 423,
+    "sha256": "55bfac0dc7cccd89ea3e8e3ed4e2799816ed25ba114b6d4afc901089ecfbd379"
+  },
+  "compiler": {
+    "family": "Microsoft C/C++ Optimizing Compiler",
+    "executable": "cl.exe",
+    "file_version": "19.44.35211.0",
+    "bytes": 677496,
+    "sha256": "67c5883d62b2db2f8d5aff0571ad0bdd6b446fed26d401f3173533b46c482a71"
+  },
+  "build": {
+    "platform": "windows-x86_64",
+    "command": [
+      "cl.exe",
+      "/nologo",
+      "/O2",
+      "/W3",
+      "/Iwincompat",
+      "/D_CRT_SECURE_NO_WARNINGS",
+      "/Fe:bucephalus-flushed.exe",
+      "main.c",
+      "misc.c",
+      "movegen.c",
+      "moveops.c",
+      "position.c",
+      "solve.c",
+      "evaluate.c"
+    ]
+  },
+  "output": {
+    "filename": "bucephalus-flushed.exe",
+    "bytes": 214016,
+    "sha256": "9d7b0b2c75d9cc01577e116a4afd0f17075339b242ff47e859bcf1adb7f7a7e0"
+  },
+  "reference_binary": {
+    "filename": "bucephalus-win.exe",
+    "bytes": 211456,
+    "sha256": "e3d9fadc55ecb834c06fd93ef4950075415bdaecac09bbee8fc0b16324462355"
+  },
+  "equivalence_check": {
+    "scope": "initial position, exact completed PLY 1 through 4",
+    "exact_best_line_and_score_match": true,
+    "results": [
+      {
+        "ply": 1,
+        "root_series": [
+          "e2e4"
+        ],
+        "score": "0.00"
+      },
+      {
+        "ply": 2,
+        "root_series": [
+          "e2e4"
+        ],
+        "score": "-0.70"
+      },
+      {
+        "ply": 3,
+        "root_series": [
+          "e2e3"
+        ],
+        "score": "0.05"
+      },
+      {
+        "ply": 4,
+        "root_series": [
+          "e2e3"
+        ],
+        "score": "0.90"
+      }
+    ]
+  }
+}
