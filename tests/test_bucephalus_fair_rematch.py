@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
@@ -8,6 +9,8 @@ from types import SimpleNamespace
 
 import chess
 import pytest
+
+import benchmarks.bucephalus_fair_rematch as rematch_module
 
 from benchmarks.bucephalus_timed_adapter import (
     BUCEPHALUS_ADAPTER_VERSION,
@@ -44,7 +47,8 @@ from scottish_progressive.league import OpeningCase
 from scottish_progressive.model import ProgressiveState, SeriesResult
 from scottish_progressive.profiles import baseline_profile
 from scottish_progressive.resources import ResourceBudget
-from scottish_progressive.rules import play_series
+from scottish_progressive.rules import generate_series, play_series
+from scottish_progressive.strength import build_seeded_opening_suite
 
 
 PINNED_HASH = "1" * 64
@@ -240,6 +244,143 @@ def test_fair_suite_schedules_100_games_as_50_color_swapped_pairs(
         assert (first.local_color, second.local_color) == (
             chess.WHITE,
             chess.BLACK,
+        )
+
+
+def test_best_settings_match_accepts_a_fresh_content_addressed_opening_suite(
+    tmp_path: Path,
+) -> None:
+    suite, qualification = rematch_module.build_engaged_opening_suite(
+        seed=2026082703,
+        count=2,
+        candidate_pool_count=4,
+        max_frontier_states=8,
+    )
+    payload = suite.as_dict()
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    config = ExternalMatchConfig(
+        pairs=2,
+        seed=2026082703,
+        match_intent="best-settings-head-to-head",
+        opening_suite_version=suite.version,
+        opening_suite_canonical_sha256=digest,
+        opening_qualification=qualification,
+        opening_case_ids=tuple(case.case_id for case in suite.cases),
+        local_depth_series=8,
+        local_max_series_per_node=32,
+        local_native_threads=16,
+        local_max_generation_positions=4_000_000_000,
+        local_max_game_work_positions=100_000_000_000,
+        external_ply_policy=TIMED_ITERATIVE_PLY_POLICY,
+        external_wall_timeout_seconds=120.0,
+        common_wall_timeout_seconds=120.0,
+    )
+
+    jobs = _build_jobs(
+        baseline_profile(),
+        _spec(tmp_path),
+        config,
+        opening_suite=suite,
+    )
+
+    assert len(jobs) == 4
+    assert {job.opening.case_id for job in jobs} == {
+        case.case_id for case in suite.cases
+    }
+    assert all(replay_series_history(job.history).pfen == job.opening.state().pfen for job in jobs)
+    assert all(job.opening.series_number == 3 for job in jobs)
+    assert config.as_dict()["match_intent"] == "best-settings-head-to-head"
+    assert config.as_dict()["opening_suite_canonical_sha256"] == digest
+    assert config.as_dict()["local_limits"]["native_threads"] == 16
+    assert config.as_dict()["opening_qualification"]["eligible_pool_count"] == 3
+    assert qualification.last_selected_candidate_index == 3
+    assert len(qualification.candidate_pool_canonical_sha256) == 64
+    assert [item.reason for item in qualification.rejected_candidates] == [
+        "immediate-terminal-series"
+    ]
+    assert all("candidate-" in case.case_id for case in suite.cases)
+    assert all(
+        not any(result.is_terminal for result in generate_series(case.state()))
+        for case in suite.cases
+    )
+
+    protocol = _journal_protocol(
+        baseline_profile(),
+        _spec(tmp_path),
+        config,
+        jobs,
+        executable=_spec(tmp_path).executable,
+        executable_hash=PINNED_HASH,
+        resources=_resources(),
+        identity_snapshot=_identity_snapshot(),
+        opening_suite=suite,
+    )
+    assert protocol["opening_suite_payload"] == suite.as_dict()
+    assert protocol["opening_suite_canonical_sha256"] == digest
+
+    forged_qualification = rematch_module.replace(
+        qualification,
+        candidate_pool_canonical_sha256="0" * 64,
+    )
+    forged_config = rematch_module.replace(
+        config,
+        opening_qualification=forged_qualification,
+    )
+    with pytest.raises(ValueError, match="qualification receipt is not reproducible"):
+        _build_jobs(
+            baseline_profile(),
+            _spec(tmp_path),
+            forged_config,
+            opening_suite=suite,
+        )
+
+
+def test_best_settings_match_cannot_relabel_the_legacy_30_second_protocol() -> None:
+    with pytest.raises(ValueError, match="fresh content-addressed opening suite"):
+        ExternalMatchConfig(
+            pairs=50,
+            match_intent="best-settings-head-to-head",
+            opening_suite_version=BUCEPHALUS_FAIR_OPENING_SUITE_VERSION,
+            opening_case_ids=tuple(
+                case.case_id for case in BUCEPHALUS_FAIR_OPENING_SUITE
+            ),
+            local_depth_series=8,
+            local_max_series_per_node=32,
+            local_max_generation_positions=4_000_000_000,
+            local_max_game_work_positions=100_000_000_000,
+            external_ply_policy=TIMED_ITERATIVE_PLY_POLICY,
+            external_wall_timeout_seconds=30.0,
+            common_wall_timeout_seconds=30.0,
+        )
+
+    suite, qualification = rematch_module.build_engaged_opening_suite(
+        seed=2026082703,
+        count=1,
+        candidate_pool_count=2,
+        max_frontier_states=8,
+    )
+    digest = hashlib.sha256(
+        json.dumps(
+            suite.as_dict(), sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    with pytest.raises(ValueError, match="legacy 30-second control"):
+        ExternalMatchConfig(
+            pairs=1,
+            match_intent="best-settings-head-to-head",
+            opening_suite_version=suite.version,
+            opening_suite_canonical_sha256=digest,
+            opening_qualification=qualification,
+            opening_case_ids=(suite.cases[0].case_id,),
+            local_depth_series=8,
+            local_max_series_per_node=32,
+            local_max_generation_positions=4_000_000_000,
+            local_max_game_work_positions=100_000_000_000,
+            external_ply_policy=TIMED_ITERATIVE_PLY_POLICY,
+            external_wall_timeout_seconds=30.0,
+            common_wall_timeout_seconds=30.0,
         )
 
 
@@ -806,7 +947,7 @@ def test_git_provenance_resolves_the_actual_repository() -> None:
     assert provenance["head_commit"] == expected
 
 
-def test_only_fair_equal_wall_100_game_protocol_can_support_superiority() -> None:
+def test_only_qualified_100_game_protocols_can_support_superiority() -> None:
     complete_winning_summary = {
         "scheduled_games": 100,
         "completed_games": 100,
@@ -845,27 +986,88 @@ def test_only_fair_equal_wall_100_game_protocol_can_support_superiority() -> Non
     assert _superiority_gate(
         fair,
         complete_winning_summary,
+        local_profile=baseline_profile(),
         approved_bucephalus_identity=True,
         identity_stable=True,
     ) == (True, True)
     assert _superiority_gate(
         fair,
         complete_winning_summary,
+        local_profile=baseline_profile(),
         approved_bucephalus_identity=False,
         identity_stable=True,
     ) == (True, False)
     assert _superiority_gate(
         fair,
         complete_winning_summary,
+        local_profile=baseline_profile(),
         approved_bucephalus_identity=True,
         identity_stable=False,
     ) == (True, False)
     assert _superiority_gate(
         asymmetric,
         complete_winning_summary,
+        local_profile=baseline_profile(),
         approved_bucephalus_identity=True,
         identity_stable=True,
     ) == (False, False)
+
+    best_qualification = rematch_module.OpeningQualification(
+        version="spc-engaged-openings-v2",
+        candidate_seed=2026082703,
+        candidate_pool_count=80,
+        candidate_pool_canonical_sha256="2" * 64,
+        candidate_max_frontier_states=32,
+        eligible_pool_count=72,
+        selected_count=50,
+        target_series=3,
+        rejected_material_imbalance=0,
+        rejected_immediate_terminal=8,
+        last_selected_candidate_index=55,
+        rejected_candidates=(),
+    )
+    best = ExternalMatchConfig(
+        pairs=50,
+        seed=2026082704,
+        match_intent="best-settings-head-to-head",
+        opening_suite_version="spc-neutral-seeded-openings-v1-test",
+        opening_suite_canonical_sha256="3" * 64,
+        opening_qualification=best_qualification,
+        opening_case_ids=tuple(f"engaged-{index:03d}" for index in range(50)),
+        local_depth_series=8,
+        local_max_series_per_node=32,
+        local_native_threads=16,
+        local_max_generation_positions=4_000_000_000,
+        local_max_game_work_positions=100_000_000_000,
+        external_ply_policy=TIMED_ITERATIVE_PLY_POLICY,
+        external_wall_timeout_seconds=120.0,
+        common_wall_timeout_seconds=120.0,
+    )
+    assert _superiority_gate(
+        best,
+        complete_winning_summary,
+        local_profile=baseline_profile(),
+        approved_bucephalus_identity=True,
+        identity_stable=True,
+    ) == (True, True)
+    altered_profile_metadata = replace(
+        baseline_profile(),
+        notes="Unapproved metadata mutation with the same derived profile ID.",
+    )
+    assert altered_profile_metadata.profile_id == baseline_profile().profile_id
+    assert _superiority_gate(
+        best,
+        complete_winning_summary,
+        local_profile=altered_profile_metadata,
+        approved_bucephalus_identity=True,
+        identity_stable=True,
+    ) == (False, False)
+    with pytest.raises(ValueError, match="exact approved local profile"):
+        rematch_module.run_external_match(
+            altered_profile_metadata,
+            _spec(Path("unverified-profile")),
+            config=best,
+        )
 
 
 def test_benchmark_cli_freezes_the_fair_timed_defaults() -> None:
@@ -887,6 +1089,54 @@ def test_benchmark_cli_freezes_the_fair_timed_defaults() -> None:
     assert args.depth == 8
     assert args.common_move_seconds == 30.0
     assert args.workers == 1
+
+
+def test_cli_freezes_an_explicit_best_settings_match_with_fresh_openings() -> None:
+    args = build_parser().parse_args(
+        [
+            "bucephalus-flushed.exe",
+            "--sha256",
+            PINNED_HASH,
+            "--upstream-commit",
+            "0e11fcdc",
+            "--external-build-receipt",
+            "build-receipt.json",
+            "--journal-directory",
+            "journal",
+            "--pairs",
+            "2",
+            "--seed",
+            "2026082703",
+            "--match-intent",
+            "best-settings-head-to-head",
+            "--fresh-opening-seed",
+            "2026082703",
+            "--fresh-opening-candidate-pool",
+            "4",
+            "--local-native-threads",
+            "16",
+            "--common-move-seconds",
+            "120",
+        ]
+    )
+
+    config, opening_suite = rematch_module._config_and_opening_suite_from_args(args)
+
+    assert opening_suite is not None
+    assert opening_suite.seed == 2026082703
+    assert len(opening_suite.cases) == 2
+    assert config.match_intent == "best-settings-head-to-head"
+    assert config.opening_suite_version == opening_suite.version
+    assert config.opening_suite_sha256 == hashlib.sha256(
+        json.dumps(
+            opening_suite.as_dict(), sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    assert config.common_wall_timeout_seconds == 120.0
+    assert config.local_native_threads == 16
+    assert config.opening_qualification is not None
+    assert config.opening_qualification.version == "spc-engaged-openings-v2"
+    assert config.opening_qualification.last_selected_candidate_index == 2
 
 
 def test_build_receipt_binds_executable_upstream_and_repository_patch(
@@ -954,6 +1204,8 @@ def test_atomic_game_journal_resumes_only_the_exact_frozen_protocol(
     )
     assert protocol["resource_execution_controls"]["workers"] == 1
     assert "backend" in protocol["local_engine"]
+    assert protocol["local_engine"]["approved_best_settings_profile"] is True
+    assert len(protocol["local_engine"]["profile_canonical_sha256"]) == 64
     assert len(protocol["benchmark_harness"]["artifact_set_sha256"]) == 64
     journal = tmp_path / "journal"
 
@@ -981,6 +1233,82 @@ def test_atomic_game_journal_resumes_only_the_exact_frozen_protocol(
     )
     assert resumed_sha256 == protocol_sha256
     assert resumed[record.game_id].as_dict() == record.as_dict()
+
+    synthetic = {
+        **record.as_dict(),
+        "result": "1-0",
+        "terminal_reason": "checkmate",
+        "winner": "local",
+        "winner_color": "white",
+        "technical_failure_owner": None,
+        "trace": [],
+        "external_calls": 0,
+    }
+    with pytest.raises(ValueError, match="completed record has no terminal replay"):
+        rematch_module._record_from_journal(synthetic, jobs[0])
+
+    tampered_trace = [dict(item) for item in record.trace]
+    tampered_trace[0]["before_pfen"] = ProgressiveState.initial().pfen
+    with pytest.raises(ValueError, match="before PFEN"):
+        rematch_module._record_from_journal(
+            {**record.as_dict(), "trace": tampered_trace}, jobs[0]
+        )
+
+    invalid_incomplete = {
+        **record.as_dict(),
+        "winner": "local",
+        "winner_color": "white",
+        "technical_failure_owner": "unknown",
+    }
+    with pytest.raises(ValueError, match="cannot name a winner"):
+        rematch_module._record_from_journal(invalid_incomplete, jobs[0])
+
+    tampered_request = [dict(item) for item in record.trace]
+    tampered_request[0]["requested_micro_ply"] += 1
+    with pytest.raises(ValueError, match="request controls"):
+        rematch_module._record_from_journal(
+            {**record.as_dict(), "trace": tampered_request}, jobs[0]
+        )
+
+    def external_mate(state, history, spec, *, search_ply, wall_timeout_seconds):
+        return _external_result(state, PUBLISHED_MATE, requested_ply=search_ply)
+
+    external_record = _play_external_game(
+        jobs[0], external_adapter=external_mate
+    )
+    assert external_record.result == "0-1"
+    rematch_module._record_from_journal(external_record.as_dict(), jobs[0])
+    for field in (
+        "selected_series",
+        "completed_micro_ply",
+        "executable_sha256",
+        "upstream_commit",
+        "adapter_version",
+        "request_script",
+    ):
+        tampered_payload = json.loads(json.dumps(external_record.as_dict()))
+        del tampered_payload["trace"][0][field]
+        with pytest.raises(ValueError):
+            rematch_module._record_from_journal(tampered_payload, jobs[0])
+
+    def local_mate(state, limits, profile):
+        return _local_result(state, PUBLISHED_MATE)
+
+    local_record = _play_external_game(jobs[1], local_analyzer=local_mate)
+    assert local_record.result == "0-1"
+    rematch_module._record_from_journal(local_record.as_dict(), jobs[1])
+    for field in (
+        "profile_id",
+        "requested_depth_series",
+        "branch_cap",
+        "native_threads",
+        "search_work_limit",
+    ):
+        tampered_payload = json.loads(json.dumps(local_record.as_dict()))
+        del tampered_payload["trace"][0][field]
+        with pytest.raises(ValueError):
+            rematch_module._record_from_journal(tampered_payload, jobs[1])
+
     with pytest.raises(ValueError, match="pass resume=True"):
         _prepare_journal(journal, protocol, jobs, resume=False)
 

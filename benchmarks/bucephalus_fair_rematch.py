@@ -46,14 +46,24 @@ from scottish_progressive.model import (
 )
 from scottish_progressive.profiles import EngineProfile
 from scottish_progressive.resources import MIB, ResourceBudget, detect_resource_budget
-from scottish_progressive.rules import SeriesLegalityError, play_series
+from scottish_progressive.rules import SeriesLegalityError, generate_series, play_series
 from scottish_progressive.search import SearchLimits, SearchResult, analyze
+from scottish_progressive.strength import (
+    SeededOpeningSuite,
+    SeededOpeningHistory,
+    _seeded_suite_version,
+    build_seeded_opening_suite,
+    verify_seeded_opening_suite,
+)
 
 
 EXTERNAL_MATCH_FORMAT = "spc-bucephalus-fixed-suite-v1"
 EXTERNAL_MATCH_JOURNAL_FORMAT = "spc-bucephalus-match-journal-v1"
 EXTERNAL_PLY_POLICY = "series-number-plus-fixed-lookahead-v1"
 TIMED_ITERATIVE_PLY_POLICY = "maximum-ply-best-completed-under-wall-budget-v1"
+FAIR_EQUAL_WALL_MATCH_INTENT = "fair-equal-wall"
+BEST_SETTINGS_MATCH_INTENT = "best-settings-head-to-head"
+ENGAGED_OPENING_QUALIFICATION_VERSION = "spc-engaged-openings-v2"
 BUCEPHALUS_FAIR_OPENING_SEED = 20260827
 BUCEPHALUS_FAIR_OPENING_SUITE_VERSION = (
     "spc-neutral-seeded-openings-v1-a292fa4db4e8b7d98248"
@@ -87,9 +97,52 @@ APPROVED_BUCEPHALUS_PATCH_SHA256 = (
 APPROVED_BUCEPHALUS_BUILD_RECEIPT_SHA256 = (
     "d880fe4b623e9d7993f4699e4625f46e6ec64ae73872d336c62713f8d64ddcb7"
 )
+APPROVED_BEST_SETTINGS_LOCAL_PROFILE_ID = "spc-68942034c41b4cc4"
+APPROVED_BEST_SETTINGS_LOCAL_PROFILE_SHA256 = (
+    "a8c698997f3a0acfa1777bae9723fa119684745be7ed2706269ac16905d500f8"
+)
 
 ExternalAdapter = Callable[..., ExternalAnalysis]
 LocalAnalyzer = Callable[..., SearchResult]
+
+
+@dataclass(frozen=True, slots=True)
+class RejectedOpeningCandidate:
+    candidate_index: int
+    case_id: str
+    position_hash: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class OpeningQualification:
+    version: str
+    candidate_seed: int
+    candidate_pool_count: int
+    candidate_pool_canonical_sha256: str
+    candidate_max_frontier_states: int
+    eligible_pool_count: int
+    selected_count: int
+    target_series: int
+    rejected_material_imbalance: int
+    rejected_immediate_terminal: int
+    last_selected_candidate_index: int
+    rejected_candidates: tuple[RejectedOpeningCandidate, ...]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            **asdict(self),
+            "material_gate": "equal-white-black-count-for-each-piece-type",
+            "engagement_gate": (
+                "exhaustive-complete-series-generation-no-immediate-terminal"
+            ),
+            "generation_merge_transpositions": True,
+            "generation_selective_frontier_cap": None,
+            "guarantee": (
+                "both engines receive at least one post-opening turn in each "
+                "color-swapped game"
+            ),
+        }
 
 
 def _load_fair_opening_suite() -> tuple[
@@ -187,6 +240,243 @@ BUCEPHALUS_OPENING_SUITE_SHA256: Mapping[str, str] = MappingProxyType(
 )
 
 
+@dataclass(frozen=True, slots=True)
+class _OpeningContext:
+    cases: tuple[OpeningCase, ...]
+    histories: Mapping[str, SeriesHistory]
+    canonical_sha256: str
+    generator: Mapping[str, int] | None
+    content_addressed: bool
+
+
+def _has_equal_per_piece_material(state: ProgressiveState) -> bool:
+    return all(
+        len(state.board.pieces(piece_type, chess.WHITE))
+        == len(state.board.pieces(piece_type, chess.BLACK))
+        for piece_type in range(chess.PAWN, chess.KING + 1)
+    )
+
+
+def _has_immediate_terminal_series(state: ProgressiveState) -> bool:
+    return any(
+        result.is_terminal
+        for result in generate_series(
+            state,
+            merge_transpositions=True,
+            max_frontier_states=None,
+        )
+    )
+
+
+def build_engaged_opening_suite(
+    *,
+    seed: int,
+    count: int,
+    candidate_pool_count: int,
+    max_frontier_states: int = 32,
+) -> tuple[SeededOpeningSuite, OpeningQualification]:
+    """Build an early, neutral suite that guarantees both engines a turn."""
+
+    if not 1 <= count <= candidate_pool_count <= 512:
+        raise ValueError(
+            "engaged opening counts must satisfy 1 <= selected <= pool <= 512"
+        )
+    candidates = build_seeded_opening_suite(
+        seed=seed,
+        count=candidate_pool_count,
+        min_series=3,
+        max_series=3,
+        max_frontier_states=max_frontier_states,
+    )
+    accepted: list[tuple[int, OpeningCase, SeededOpeningHistory]] = []
+    rejected_material = 0
+    rejected_terminal = 0
+    rejected_candidates: list[RejectedOpeningCandidate] = []
+    for candidate_index, (case, history) in enumerate(
+        zip(candidates.cases, candidates.histories, strict=True),
+        1,
+    ):
+        state = case.state()
+        if not _has_equal_per_piece_material(state):
+            rejected_material += 1
+            rejected_candidates.append(
+                RejectedOpeningCandidate(
+                    candidate_index,
+                    case.case_id,
+                    state.position_hash,
+                    "material-imbalance",
+                )
+            )
+            continue
+        if _has_immediate_terminal_series(state):
+            rejected_terminal += 1
+            rejected_candidates.append(
+                RejectedOpeningCandidate(
+                    candidate_index,
+                    case.case_id,
+                    state.position_hash,
+                    "immediate-terminal-series",
+                )
+            )
+            continue
+        accepted.append((candidate_index, case, history))
+    if len(accepted) < count:
+        raise RuntimeError(
+            f"only {len(accepted)}/{candidate_pool_count} candidates passed "
+            "the engagement qualification"
+        )
+
+    selected_cases: list[OpeningCase] = []
+    selected_histories: list[SeededOpeningHistory] = []
+    for selected_index, (candidate_index, case, history) in enumerate(
+        accepted[:count],
+        1,
+    ):
+        case_id = (
+            f"engaged-{selected_index:03d}-candidate-{candidate_index:03d}-"
+            f"s3-{case.state().position_hash[:12]}"
+        )
+        selected_cases.append(
+            OpeningCase(
+                case_id=case_id,
+                fen=case.fen,
+                series_number=case.series_number,
+                quiet_series=case.quiet_series,
+                ep_targets=case.ep_targets,
+                source=(
+                    f"{case.source}; qualification="
+                    f"{ENGAGED_OPENING_QUALIFICATION_VERSION}; "
+                    f"candidate_index={candidate_index}"
+                ),
+            )
+        )
+        selected_histories.append(
+            SeededOpeningHistory(
+                case_id=case_id,
+                target_series=history.target_series,
+                attempt=history.attempt,
+                series=history.series,
+            )
+        )
+    version = _seeded_suite_version(
+        seed=seed,
+        min_series=3,
+        max_series=3,
+        max_frontier_states=max_frontier_states,
+        cases=selected_cases,
+        histories=selected_histories,
+    )
+    suite = SeededOpeningSuite(
+        version=version,
+        seed=seed,
+        min_series=3,
+        max_series=3,
+        max_frontier_states=max_frontier_states,
+        cases=tuple(selected_cases),
+        histories=tuple(selected_histories),
+    )
+    verify_seeded_opening_suite(suite)
+    qualification = OpeningQualification(
+        version=ENGAGED_OPENING_QUALIFICATION_VERSION,
+        candidate_seed=seed,
+        candidate_pool_count=candidate_pool_count,
+        candidate_pool_canonical_sha256=_canonical_sha256(candidates.as_dict()),
+        candidate_max_frontier_states=max_frontier_states,
+        eligible_pool_count=len(accepted),
+        selected_count=count,
+        target_series=3,
+        rejected_material_imbalance=rejected_material,
+        rejected_immediate_terminal=rejected_terminal,
+        last_selected_candidate_index=accepted[count - 1][0],
+        rejected_candidates=tuple(rejected_candidates),
+    )
+    return suite, qualification
+
+
+def _resolve_opening_context(
+    config: ExternalMatchConfig,
+    opening_suite: SeededOpeningSuite | None,
+) -> _OpeningContext:
+    if opening_suite is None:
+        if config.opening_suite_version not in BUCEPHALUS_OPENING_SUITES:
+            raise ValueError(
+                "custom opening suite configuration requires opening_suite"
+            )
+        generator = (
+            MappingProxyType(
+                {
+                    "seed": BUCEPHALUS_FAIR_OPENING_METADATA["seed"],
+                    "count": BUCEPHALUS_FAIR_OPENING_METADATA["count"],
+                    "min_series": BUCEPHALUS_FAIR_OPENING_METADATA["min_series"],
+                    "max_series": BUCEPHALUS_FAIR_OPENING_METADATA["max_series"],
+                    "max_frontier_states": BUCEPHALUS_FAIR_OPENING_METADATA[
+                        "max_frontier_states"
+                    ],
+                }
+            )
+            if config.opening_suite_version
+            == BUCEPHALUS_FAIR_OPENING_SUITE_VERSION
+            else None
+        )
+        return _OpeningContext(
+            cases=BUCEPHALUS_OPENING_SUITES[config.opening_suite_version],
+            histories=BUCEPHALUS_OPENING_HISTORIES[
+                config.opening_suite_version
+            ],
+            canonical_sha256=config.opening_suite_sha256,
+            generator=generator,
+            content_addressed=(
+                config.opening_suite_version
+                == BUCEPHALUS_FAIR_OPENING_SUITE_VERSION
+            ),
+        )
+
+    verify_seeded_opening_suite(opening_suite)
+    payload = opening_suite.as_dict()
+    digest = _canonical_sha256(payload)
+    if opening_suite.version != config.opening_suite_version:
+        raise ValueError("opening suite version does not match match configuration")
+    if digest != config.opening_suite_sha256:
+        raise ValueError("opening suite digest does not match match configuration")
+    cases_by_id = {case.case_id: case for case in opening_suite.cases}
+    if set(config.opening_case_ids) != set(cases_by_id):
+        raise ValueError(
+            "opening suite cases do not match configured opening case ids"
+        )
+    histories = MappingProxyType(
+        {history.case_id: history.series for history in opening_suite.histories}
+    )
+    if config.opening_qualification is not None:
+        if any(case.series_number != 3 for case in opening_suite.cases):
+            raise ValueError("engaged opening suite must start immediately after S2")
+        qualification = config.opening_qualification
+        expected_suite, expected_qualification = build_engaged_opening_suite(
+            seed=qualification.candidate_seed,
+            count=qualification.selected_count,
+            candidate_pool_count=qualification.candidate_pool_count,
+            max_frontier_states=qualification.candidate_max_frontier_states,
+        )
+        if qualification != expected_qualification:
+            raise ValueError("opening qualification receipt is not reproducible")
+        if opening_suite.as_dict() != expected_suite.as_dict():
+            raise ValueError("engaged opening suite is not the qualified first-N set")
+    return _OpeningContext(
+        cases=opening_suite.cases,
+        histories=histories,
+        canonical_sha256=digest,
+        generator=MappingProxyType(
+            {
+                "seed": opening_suite.seed,
+                "count": len(opening_suite.cases),
+                "min_series": opening_suite.min_series,
+                "max_series": opening_suite.max_series,
+                "max_frontier_states": opening_suite.max_frontier_states,
+            }
+        ),
+        content_addressed=True,
+    )
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
@@ -198,6 +488,18 @@ def _stable_digest(*parts: object) -> str:
 
 def _stable_seed(*parts: object) -> int:
     return int(_stable_digest(*parts)[:16], 16) & 0x7FFFFFFF
+
+
+def _profile_canonical_sha256(profile: EngineProfile) -> str:
+    return _canonical_sha256(profile.as_dict())
+
+
+def _approved_best_settings_profile(profile: EngineProfile) -> bool:
+    return (
+        profile.profile_id == APPROVED_BEST_SETTINGS_LOCAL_PROFILE_ID
+        and _profile_canonical_sha256(profile)
+        == APPROVED_BEST_SETTINGS_LOCAL_PROFILE_SHA256
+    )
 
 
 def _runtime_provenance() -> dict[str, str]:
@@ -414,14 +716,19 @@ class ExternalMatchConfig:
 
     pairs: int = 10
     seed: int = 20260820
+    match_intent: str = FAIR_EQUAL_WALL_MATCH_INTENT
     opening_suite_version: str = OPENING_SUITE_VERSION
+    opening_suite_canonical_sha256: str | None = None
+    opening_qualification: OpeningQualification | None = None
     opening_case_ids: tuple[str, ...] = tuple(
         case.case_id for case in OPENING_SUITE
     )
     local_depth_series: int = 2
     local_max_series_per_node: int = 32
+    local_native_threads: int = 1
     local_max_generation_positions: int = 250_000
     local_max_game_work_positions: int = 5_000_000
+    requested_match_workers: int = 1
     external_ply_policy: str = EXTERNAL_PLY_POLICY
     external_lookahead_micro_plies: int = 0
     external_wall_timeout_seconds: float = 10.0
@@ -429,14 +736,52 @@ class ExternalMatchConfig:
     emergency_max_series: int = 18
 
     def __post_init__(self) -> None:
-        if self.opening_suite_version not in BUCEPHALUS_OPENING_SUITES:
+        supported_match_intents = {
+            FAIR_EQUAL_WALL_MATCH_INTENT,
+            BEST_SETTINGS_MATCH_INTENT,
+        }
+        if self.match_intent not in supported_match_intents:
+            raise ValueError(f"unsupported match intent {self.match_intent}")
+        built_in_suite = self.opening_suite_version in BUCEPHALUS_OPENING_SUITES
+        if (
+            not built_in_suite
+            and not self.opening_suite_version.startswith(
+                "spc-neutral-seeded-openings-v1-"
+            )
+        ):
             raise ValueError(
                 f"unsupported opening suite {self.opening_suite_version}"
             )
-        available = {
-            case.case_id
-            for case in BUCEPHALUS_OPENING_SUITES[self.opening_suite_version]
-        }
+        expected_suite_digest = BUCEPHALUS_OPENING_SUITE_SHA256.get(
+            self.opening_suite_version
+        )
+        if expected_suite_digest is not None:
+            if (
+                self.opening_suite_canonical_sha256 is not None
+                and self.opening_suite_canonical_sha256 != expected_suite_digest
+            ):
+                raise ValueError("built-in opening suite digest mismatch")
+        elif (
+            self.opening_suite_canonical_sha256 is None
+            or len(self.opening_suite_canonical_sha256) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in self.opening_suite_canonical_sha256.lower()
+            )
+        ):
+            raise ValueError(
+                "custom opening suite requires its canonical SHA-256"
+            )
+        available = (
+            {
+                case.case_id
+                for case in BUCEPHALUS_OPENING_SUITES[
+                    self.opening_suite_version
+                ]
+            }
+            if built_in_suite
+            else set(self.opening_case_ids)
+        )
         if not self.opening_case_ids:
             raise ValueError("opening_case_ids cannot be empty")
         if len(set(self.opening_case_ids)) != len(self.opening_case_ids):
@@ -453,10 +798,17 @@ class ExternalMatchConfig:
             raise ValueError(
                 "local_max_series_per_node must be between 1 and 512"
             )
+        if (
+            type(self.local_native_threads) is not int
+            or not 1 <= self.local_native_threads <= 64
+        ):
+            raise ValueError("local_native_threads must be between 1 and 64")
         if self.local_max_generation_positions < 1:
             raise ValueError("local_max_generation_positions must be positive")
         if self.local_max_game_work_positions < 1:
             raise ValueError("local_max_game_work_positions must be positive")
+        if type(self.requested_match_workers) is not int or self.requested_match_workers < 1:
+            raise ValueError("requested_match_workers must be a positive integer")
         supported_ply_policies = {
             EXTERNAL_PLY_POLICY,
             TIMED_ITERATIVE_PLY_POLICY,
@@ -519,6 +871,58 @@ class ExternalMatchConfig:
                 f"emergency_max_series must be between 1 and "
                 f"{BUCEPHALUS_MAX_PLY}"
             )
+        if (
+            self.match_intent == BEST_SETTINGS_MATCH_INTENT
+            and self.opening_suite_version
+            == BUCEPHALUS_FAIR_OPENING_SUITE_VERSION
+        ):
+            raise ValueError(
+                "best-settings matches require a fresh content-addressed "
+                "opening suite"
+            )
+        if self.match_intent == BEST_SETTINGS_MATCH_INTENT:
+            if (
+                self.opening_qualification is None
+                or self.opening_qualification.version
+                != ENGAGED_OPENING_QUALIFICATION_VERSION
+                or self.opening_qualification.target_series != 3
+                or self.opening_qualification.selected_count != self.pairs
+            ):
+                raise ValueError(
+                    "best-settings matches require the engaged S3 opening "
+                    "qualification receipt"
+                )
+            if (
+                self.external_ply_policy != TIMED_ITERATIVE_PLY_POLICY
+                or self.common_wall_timeout_seconds is None
+            ):
+                raise ValueError(
+                    "best-settings matches require timed iterative Bucephalus "
+                    "search under a common wall control"
+                )
+            if self.common_wall_timeout_seconds <= 30.0:
+                raise ValueError(
+                    "best-settings matches cannot relabel the legacy 30-second "
+                    "control or a weaker control"
+                )
+            if self.requested_match_workers != 1:
+                raise ValueError(
+                    "best-settings matches require exactly one match worker"
+                )
+            if (
+                self.local_depth_series != 8
+                or self.local_max_series_per_node != 32
+                or self.local_native_threads != 16
+                or self.local_max_generation_positions != 4_000_000_000
+                or self.local_max_game_work_positions != 100_000_000_000
+                or self.common_wall_timeout_seconds != 120.0
+                or self.external_wall_timeout_seconds != 120.0
+                or self.emergency_max_series != 18
+            ):
+                raise ValueError(
+                    "best-settings matches require frozen D8/width32/16-thread/"
+                    "4B-search/100B-game/120-second controls"
+                )
 
     def external_search_ply(self, series_number: int) -> int:
         if self.external_ply_policy == TIMED_ITERATIVE_PLY_POLICY:
@@ -531,20 +935,38 @@ class ExternalMatchConfig:
             return BUCEPHALUS_TIMED_ITERATIVE_ADAPTER_VERSION
         return BUCEPHALUS_ADAPTER_VERSION
 
+    @property
+    def opening_suite_sha256(self) -> str:
+        return (
+            self.opening_suite_canonical_sha256
+            or BUCEPHALUS_OPENING_SUITE_SHA256[self.opening_suite_version]
+        )
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "pairs": self.pairs,
             "games": self.pairs * 2,
             "seed": self.seed,
+            "match_intent": self.match_intent,
             "opening_suite_version": self.opening_suite_version,
-            "opening_suite_canonical_sha256": (
-                BUCEPHALUS_OPENING_SUITE_SHA256[self.opening_suite_version]
+            "opening_suite_canonical_sha256": self.opening_suite_sha256,
+            "opening_qualification": (
+                self.opening_qualification.as_dict()
+                if self.opening_qualification is not None
+                else None
             ),
             "opening_case_ids": list(self.opening_case_ids),
             "local_limits": {
                 "depth_series": self.local_depth_series,
                 "branch_cap_complete_series_per_node": (
                     self.local_max_series_per_node
+                ),
+                "native_threads": self.local_native_threads,
+                "native_threads_policy": (
+                    "frozen-16-thread-stable-host-configuration"
+                    if self.match_intent == BEST_SETTINGS_MATCH_INTENT
+                    and self.local_native_threads == 16
+                    else "explicit-configured-value"
                 ),
                 "max_work_positions_per_search": (
                     self.local_max_generation_positions
@@ -583,6 +1005,8 @@ class ExternalMatchConfig:
                 ),
                 "node_limit": None,
                 "native_time_control": None,
+                "threads": 1,
+                "thread_control": "none-in-upstream-bucephalus",
                 "timeout_without_complete_iteration": "technical-incomplete-*",
             },
             "common_control": {
@@ -609,6 +1033,7 @@ class ExternalMatchConfig:
                 ),
             },
             "emergency_max_series": self.emergency_max_series,
+            "requested_match_workers": self.requested_match_workers,
             "emergency_max_series_kind": "technical-watchdog-not-chess-rule",
         }
 
@@ -656,10 +1081,17 @@ class ExternalGameRecord:
         }
 
 
-def _ordered_openings(config: ExternalMatchConfig) -> tuple[OpeningCase, ...]:
+def _ordered_openings(
+    config: ExternalMatchConfig,
+    opening_cases: Sequence[OpeningCase] | None = None,
+) -> tuple[OpeningCase, ...]:
     by_id = {
         case.case_id: case
-        for case in BUCEPHALUS_OPENING_SUITES[config.opening_suite_version]
+        for case in (
+            opening_cases
+            if opening_cases is not None
+            else BUCEPHALUS_OPENING_SUITES[config.opening_suite_version]
+        )
     }
     cases = [by_id[case_id] for case_id in config.opening_case_ids]
     random.Random(
@@ -715,20 +1147,31 @@ def _build_jobs(
     local_profile: EngineProfile,
     external_spec: BucephalusSpec,
     config: ExternalMatchConfig,
+    *,
+    opening_suite: SeededOpeningSuite | None = None,
+    opening_context: _OpeningContext | None = None,
 ) -> tuple[ExternalGameJob, ...]:
+    resolved_openings = opening_context or _resolve_opening_context(
+        config, opening_suite
+    )
     config_json = json.dumps(
         config.as_dict(), sort_keys=True, separators=(",", ":")
     )
     match_id = "external-" + _stable_digest(
         EXTERNAL_MATCH_FORMAT,
+        ENGINE_VERSION,
+        ENGINE_SOURCE_FINGERPRINT,
         local_profile.profile_id,
+        _profile_canonical_sha256(local_profile),
         external_spec.sha256,
         external_spec.upstream_commit,
         config_json,
     )[:20]
     jobs: list[ExternalGameJob] = []
-    histories = BUCEPHALUS_OPENING_HISTORIES[config.opening_suite_version]
-    for pair_index, opening in enumerate(_ordered_openings(config)):
+    histories = resolved_openings.histories
+    for pair_index, opening in enumerate(
+        _ordered_openings(config, resolved_openings.cases)
+    ):
         history = histories[opening.case_id]
         pair_id = _stable_digest(match_id, pair_index, opening.case_id)[:24]
         for swap_index, local_color in enumerate((chess.WHITE, chess.BLACK)):
@@ -1045,6 +1488,7 @@ def _play_external_game(
                         time_limit_seconds=(
                             job.config.common_wall_timeout_seconds
                         ),
+                        native_threads=job.config.local_native_threads,
                         max_generation_positions=search_work_limit,
                         collect_all_root_scores=False,
                     ),
@@ -1093,6 +1537,7 @@ def _play_external_game(
                     analysis, "completed_depth", 0
                 ),
                 "branch_cap": job.config.local_max_series_per_node,
+                "native_threads": job.config.local_native_threads,
                 "search_work_limit": search_work_limit,
                 "search_work_positions": search_work,
                 "wall_budget_seconds": (
@@ -1782,12 +2227,10 @@ def _summarize(
     )
 
 
-def _superiority_gate(
+def _protocol_eligibility(
     config: ExternalMatchConfig,
-    summary: Mapping[str, Any],
     *,
-    approved_bucephalus_identity: bool,
-    identity_stable: bool,
+    local_profile: EngineProfile,
 ) -> tuple[bool, bool]:
     fair_equal_wall_protocol = (
         config.opening_suite_version == BUCEPHALUS_FAIR_OPENING_SUITE_VERSION
@@ -1796,8 +2239,45 @@ def _superiority_gate(
         and config.pairs == 50
         and len(config.opening_case_ids) == 50
     )
+    best_settings_protocol = (
+        config.match_intent == BEST_SETTINGS_MATCH_INTENT
+        and config.opening_suite_canonical_sha256 is not None
+        and config.opening_qualification is not None
+        and config.opening_qualification.version
+        == ENGAGED_OPENING_QUALIFICATION_VERSION
+        and config.opening_qualification.target_series == 3
+        and config.opening_qualification.selected_count == 50
+        and config.external_ply_policy == TIMED_ITERATIVE_PLY_POLICY
+        and config.common_wall_timeout_seconds == 120.0
+        and config.external_wall_timeout_seconds == 120.0
+        and config.local_depth_series == 8
+        and config.local_max_series_per_node == 32
+        and config.local_native_threads == 16
+        and config.local_max_generation_positions == 4_000_000_000
+        and config.local_max_game_work_positions == 100_000_000_000
+        and config.emergency_max_series == 18
+        and config.requested_match_workers == 1
+        and config.pairs == 50
+        and len(config.opening_case_ids) == 50
+        and _approved_best_settings_profile(local_profile)
+    )
+    return fair_equal_wall_protocol, best_settings_protocol
+
+
+def _superiority_gate(
+    config: ExternalMatchConfig,
+    summary: Mapping[str, Any],
+    *,
+    local_profile: EngineProfile,
+    approved_bucephalus_identity: bool,
+    identity_stable: bool,
+) -> tuple[bool, bool]:
+    fair_equal_wall_protocol, best_settings_protocol = _protocol_eligibility(
+        config,
+        local_profile=local_profile,
+    )
     strict_protocol_complete = (
-        fair_equal_wall_protocol
+        (fair_equal_wall_protocol or best_settings_protocol)
         and summary["scheduled_games"] == 100
         and summary["completed_games"] == 100
         and summary["scheduled_pairs"] == 50
@@ -1903,6 +2383,7 @@ def _journal_protocol(
     resources: ResourceBudget,
     identity_snapshot: Mapping[str, Any] | None = None,
     external_build_receipt: Mapping[str, Any] | None = None,
+    opening_suite: SeededOpeningSuite | None = None,
 ) -> dict[str, Any]:
     identity = dict(identity_snapshot or _run_identity_snapshot())
     return {
@@ -1912,6 +2393,10 @@ def _journal_protocol(
             "engine_version": identity["engine_version"],
             "source_fingerprint": identity["source_fingerprint"],
             "profile": local_profile.as_dict(),
+            "profile_canonical_sha256": _profile_canonical_sha256(local_profile),
+            "approved_best_settings_profile": (
+                _approved_best_settings_profile(local_profile)
+            ),
             "git": identity["git"],
             "runtime": identity["runtime"],
             "backend": identity["backend"],
@@ -1932,9 +2417,10 @@ def _journal_protocol(
         "config": config.as_dict(),
         "resource_execution_controls": _resource_execution_controls(resources),
         "benchmark_harness": identity["benchmark_harness"],
-        "opening_suite_canonical_sha256": BUCEPHALUS_OPENING_SUITE_SHA256[
-            config.opening_suite_version
-        ],
+        "opening_suite_canonical_sha256": config.opening_suite_sha256,
+        "opening_suite_payload": (
+            opening_suite.as_dict() if opening_suite is not None else None
+        ),
         "schedule": [
             {
                 "game_id": job.game_id,
@@ -1972,7 +2458,243 @@ def _record_from_journal(
             )
     if record.result not in {"1-0", "0-1", "1/2-1/2", "*"}:
         raise ValueError(f"journal record {job.game_id} has invalid result")
+    _validate_journal_record_replay(record, job)
     return record
+
+
+def _validate_journal_record_replay(
+    record: ExternalGameRecord,
+    job: ExternalGameJob,
+) -> None:
+    try:
+        replayed = replay_series_history(job.history)
+    except ExternalEngineError as error:
+        raise ValueError("journal opening history is not replayable") from error
+    state = job.opening.state()
+    if replayed.position_hash != state.position_hash:
+        raise ValueError("journal opening history does not reach its opening")
+    if record.start_pfen != state.pfen:
+        raise ValueError("journal record start PFEN does not match its opening")
+
+    history = tuple(tuple(series) for series in job.history)
+    played_count = 0
+    external_calls = 0
+    last_local_work = 0
+    played_engines: set[str] = set()
+    terminal: tuple[SeriesResult, chess.Color] | None = None
+    for index, item in enumerate(record.trace):
+        if not isinstance(item, dict):
+            raise ValueError("journal trace entry must be an object")
+        mover = state.board.turn
+        expected_engine = "local" if mover == job.local_color else "bucephalus"
+        if item.get("before_pfen") != state.pfen:
+            raise ValueError("journal trace before PFEN is not authoritative")
+        if item.get("series_number") != state.series_number:
+            raise ValueError("journal trace series number is not authoritative")
+        if item.get("side") != _color_name(mover):
+            raise ValueError("journal trace side is not authoritative")
+        if item.get("engine") != expected_engine:
+            raise ValueError("journal trace engine assignment is not authoritative")
+        if expected_engine == "bucephalus":
+            external_calls += 1
+            expected_requested_ply = job.config.external_search_ply(
+                state.series_number
+            )
+            if (
+                item.get("requested_micro_ply") != expected_requested_ply
+                or item.get("ply_policy") != job.config.external_ply_policy
+                or item.get("fixed_lookahead_micro_plies")
+                != job.config.external_lookahead_micro_plies
+                or item.get("wall_watchdog_seconds")
+                != job.config.external_wall_timeout_seconds
+            ):
+                raise ValueError(
+                    "journal Bucephalus request controls are not authoritative"
+                )
+        else:
+            if (
+                item.get("profile_id") != job.local_profile.profile_id
+                or item.get("requested_depth_series")
+                != job.config.local_depth_series
+                or item.get("branch_cap")
+                != job.config.local_max_series_per_node
+                or item.get("native_threads")
+                != job.config.local_native_threads
+                or item.get("wall_budget_seconds")
+                != job.config.common_wall_timeout_seconds
+            ):
+                raise ValueError(
+                    "journal local engine profile or search controls are not "
+                    "authoritative"
+                )
+            expected_search_work_limit = min(
+                job.config.local_max_generation_positions,
+                job.config.local_max_game_work_positions - last_local_work,
+            )
+            search_work_limit = item.get("search_work_limit")
+            search_work = item.get("search_work_positions")
+            work = item.get("game_local_work_positions")
+            if (
+                search_work_limit != expected_search_work_limit
+                or type(search_work) is not int
+                or not 0 <= search_work <= search_work_limit
+                or type(work) is not int
+                or work != last_local_work + search_work
+            ):
+                raise ValueError("journal local work accounting is invalid")
+            last_local_work = work
+
+        if not item.get("played"):
+            if index != len(record.trace) - 1 or record.result != "*":
+                raise ValueError("journal has a non-final unplayed trace entry")
+            continue
+        machine = item.get("authoritative_series")
+        if not isinstance(machine, str) or not machine:
+            raise ValueError("journal played trace has no authoritative series")
+        if item.get("selected_series") != machine:
+            raise ValueError(
+                "journal selected series does not match authoritative replay"
+            )
+        if expected_engine == "bucephalus":
+            completed_ply = item.get("completed_micro_ply")
+            deadline_reached = item.get("deadline_reached")
+            process_exit_recovered = item.get("process_exit_recovered")
+            process_exit_code = item.get("process_exit_code")
+            if (
+                type(completed_ply) is not int
+                or not 1 <= completed_ply <= expected_requested_ply
+                or type(deadline_reached) is not bool
+                or type(process_exit_recovered) is not bool
+                or (
+                    process_exit_code is not None
+                    and type(process_exit_code) is not int
+                )
+            ):
+                raise ValueError(
+                    "journal Bucephalus completion metadata is invalid"
+                )
+            if (
+                job.config.external_ply_policy == EXTERNAL_PLY_POLICY
+                and completed_ply != expected_requested_ply
+            ):
+                raise ValueError(
+                    "journal Bucephalus fixed-ply completion is inconsistent"
+                )
+            if (
+                completed_ply < expected_requested_ply
+                and not deadline_reached
+                and not process_exit_recovered
+            ):
+                raise ValueError(
+                    "journal Bucephalus partial iteration lacks a stop reason"
+                )
+            if process_exit_recovered and (
+                process_exit_code in (None, 0) or deadline_reached
+            ):
+                raise ValueError(
+                    "journal Bucephalus process-exit recovery is inconsistent"
+                )
+            if process_exit_code not in (None, 0) and not process_exit_recovered:
+                raise ValueError(
+                    "journal Bucephalus process exit was not accounted for"
+                )
+            if (
+                item.get("executable_sha256", "").lower()
+                != job.external_spec.sha256
+                or item.get("upstream_commit")
+                != job.external_spec.upstream_commit
+                or item.get("adapter_version")
+                != job.config.expected_external_adapter_version
+            ):
+                raise ValueError(
+                    "journal Bucephalus engine provenance is not authoritative"
+                )
+            if (
+                not isinstance(item.get("score_text"), str)
+                or not isinstance(item.get("request_script"), str)
+                or not isinstance(item.get("stdout"), str)
+                or not isinstance(item.get("stderr"), str)
+            ):
+                raise ValueError(
+                    "journal Bucephalus evidence transcript is incomplete"
+                )
+        try:
+            authoritative = play_series(state, tuple(machine.split("/")))
+        except SeriesLegalityError as error:
+            raise ValueError("journal trace series is illegal") from error
+        if item.get("after_pfen") != authoritative.final_state.pfen:
+            raise ValueError("journal trace after PFEN is not authoritative")
+        history = history + (authoritative.moves,)
+        if item.get("canonical_history_after") != [
+            list(series) for series in history
+        ]:
+            raise ValueError("journal trace canonical history is inconsistent")
+        expected_outcome = (
+            authoritative.outcome.value if authoritative.outcome is not None else None
+        )
+        if item.get("outcome") != expected_outcome:
+            raise ValueError("journal trace outcome is not authoritative")
+        played_count += 1
+        played_engines.add(expected_engine)
+        state = authoritative.final_state
+        if authoritative.is_terminal:
+            if index != len(record.trace) - 1:
+                raise ValueError("journal trace continues after a terminal series")
+            terminal = (authoritative, mover)
+
+    if record.final_pfen != state.pfen:
+        raise ValueError("journal final PFEN is not authoritative")
+    if record.series_played != played_count:
+        raise ValueError("journal series count is inconsistent")
+    if record.external_calls != external_calls:
+        raise ValueError("journal external call count is inconsistent")
+    if record.local_work_positions != last_local_work:
+        raise ValueError("journal local work total is inconsistent")
+
+    if record.result == "*":
+        if terminal is not None:
+            raise ValueError("journal marks a terminal game incomplete")
+        if not record.terminal_reason.startswith("technical-"):
+            raise ValueError("journal incomplete record lacks a technical reason")
+        if record.winner is not None or record.winner_color is not None:
+            raise ValueError("journal incomplete record cannot name a winner")
+        if record.technical_failure_owner not in {
+            "local",
+            "bucephalus",
+            "shared",
+        }:
+            raise ValueError(
+                "journal incomplete record has an invalid technical owner"
+            )
+        return
+    if terminal is None:
+        raise ValueError("journal completed record has no terminal replay")
+    terminal_result, terminal_mover = terminal
+    winner_color = _terminal_winner(terminal_result, terminal_mover)
+    expected_result = (
+        "1/2-1/2" if winner_color is None else _result_string(winner_color)
+    )
+    expected_winner = (
+        None
+        if winner_color is None
+        else "local" if winner_color == job.local_color else "bucephalus"
+    )
+    expected_winner_color = (
+        None if winner_color is None else _color_name(winner_color)
+    )
+    if (
+        record.result != expected_result
+        or record.winner != expected_winner
+        or record.winner_color != expected_winner_color
+        or record.terminal_reason != terminal_result.outcome.value
+        or record.technical_failure_owner is not None
+    ):
+        raise ValueError("journal terminal result metadata is not authoritative")
+    if (
+        job.config.opening_qualification is not None
+        and played_engines != {"local", "bucephalus"}
+    ):
+        raise ValueError("engaged completed game did not include both engines")
 
 
 def _prepare_journal(
@@ -2032,6 +2754,7 @@ def run_external_match(
     journal_directory: str | Path | None = None,
     resume: bool = False,
     external_build_receipt_path: str | Path | None = None,
+    opening_suite: SeededOpeningSuite | None = None,
 ) -> dict[str, Any]:
     """Runs a fixed, color-swapped local-profile versus Bucephalus match.
 
@@ -2041,6 +2764,16 @@ def run_external_match(
     """
 
     config = config or ExternalMatchConfig()
+    approved_local_profile = _approved_best_settings_profile(local_profile)
+    if (
+        config.match_intent == BEST_SETTINGS_MATCH_INTENT
+        and not approved_local_profile
+    ):
+        raise ValueError(
+            "best-settings matches require the exact approved local profile "
+            f"{APPROVED_BEST_SETTINGS_LOCAL_PROFILE_ID} with canonical SHA-256 "
+            f"{APPROVED_BEST_SETTINGS_LOCAL_PROFILE_SHA256}"
+        )
     if resume and journal_directory is None:
         raise ValueError("resume requires a journal_directory")
     if config.common_wall_timeout_seconds is not None and (
@@ -2073,7 +2806,14 @@ def run_external_match(
         == BUCEPHALUS_TIMED_ITERATIVE_ADAPTER_VERSION
     )
     identity_snapshot = _run_identity_snapshot()
-    jobs = _build_jobs(local_profile, external_spec, config)
+    opening_context = _resolve_opening_context(config, opening_suite)
+    jobs = _build_jobs(
+        local_profile,
+        external_spec,
+        config,
+        opening_suite=opening_suite,
+        opening_context=opening_context,
+    )
     for job in jobs[::2]:
         replayed = replay_series_history(job.history)
         if replayed.position_hash != job.opening.state().position_hash:
@@ -2087,6 +2827,22 @@ def run_external_match(
         reserve_memory_mb=reserve_memory_mb,
     )
     resources = replace(detected, workers=min(detected.workers, len(jobs)))
+    if config.match_intent == BEST_SETTINGS_MATCH_INTENT:
+        if (
+            requested_workers is not None
+            and requested_workers != config.requested_match_workers
+        ):
+            raise ValueError(
+                "requested workers do not match the frozen best-settings config"
+            )
+        if resources.workers != 1:
+            raise ValueError(
+                "best-settings head-to-head requires exactly one match worker"
+            )
+        if resources.detected_logical_cpus < config.local_native_threads:
+            raise ValueError(
+                "best-settings local native threads exceed detected logical CPUs"
+            )
     journal_root: Path | None = None
     protocol_sha256: str | None = None
     existing_records: dict[str, ExternalGameRecord] = {}
@@ -2102,6 +2858,7 @@ def run_external_match(
             resources=resources,
             identity_snapshot=identity_snapshot,
             external_build_receipt=external_build_receipt,
+            opening_suite=opening_suite,
         )
         journal_root, protocol_sha256, existing_records = _prepare_journal(
             journal_directory,
@@ -2137,18 +2894,17 @@ def run_external_match(
     strict_protocol_complete, superiority_supported = _superiority_gate(
         config,
         summary,
+        local_profile=local_profile,
         approved_bucephalus_identity=approved_bucephalus_identity,
         identity_stable=not identity_drift["detected"],
     )
-    fair_equal_wall_protocol = (
-        config.opening_suite_version == BUCEPHALUS_FAIR_OPENING_SUITE_VERSION
-        and config.external_ply_policy == TIMED_ITERATIVE_PLY_POLICY
-        and config.common_wall_timeout_seconds is not None
-        and config.pairs == 50
-        and len(config.opening_case_ids) == 50
+    fair_equal_wall_protocol, best_settings_protocol = _protocol_eligibility(
+        config,
+        local_profile=local_profile,
     )
     summary["strict_100_game_protocol_complete"] = strict_protocol_complete
     summary["fair_equal_wall_protocol"] = fair_equal_wall_protocol
+    summary["best_settings_protocol"] = best_settings_protocol
     selected_openings = [job.opening for job in jobs[::2]]
     match_id = jobs[0].game_id[:20]
     report = {
@@ -2163,6 +2919,8 @@ def run_external_match(
             "runtime": identity_snapshot["runtime"],
             "backend": identity_snapshot["backend"],
             "profile": local_profile.as_dict(),
+            "profile_canonical_sha256": _profile_canonical_sha256(local_profile),
+            "approved_best_settings_profile": approved_local_profile,
         },
         "external_engine": {
             "name": "Bucephalus",
@@ -2197,6 +2955,14 @@ def run_external_match(
                 DEFAULT_EXTERNAL_MATCH_MEMORY_PER_WORKER_MB * MIB
             ),
             "default_concurrency_accounts_for_external_process": True,
+            "best_settings_resource_gate": {
+                "single_match_worker": resources.workers == 1,
+                "local_native_threads_fit_detected_logical_cpus": (
+                    config.local_native_threads <= resources.detected_logical_cpus
+                ),
+                "local_native_threads": config.local_native_threads,
+                "detected_logical_cpus": resources.detected_logical_cpus,
+            },
         },
         "execution": {
             "wall_elapsed_seconds": elapsed_seconds,
@@ -2214,36 +2980,26 @@ def run_external_match(
         },
         "opening_suite": {
             "version": config.opening_suite_version,
-            "canonical_sha256": BUCEPHALUS_OPENING_SUITE_SHA256[
-                config.opening_suite_version
-            ],
-            "content_addressed": (
-                config.opening_suite_version
-                == BUCEPHALUS_FAIR_OPENING_SUITE_VERSION
-            ),
+            "canonical_sha256": opening_context.canonical_sha256,
+            "content_addressed": opening_context.content_addressed,
             "generator": (
-                {
-                    "seed": BUCEPHALUS_FAIR_OPENING_METADATA["seed"],
-                    "count": BUCEPHALUS_FAIR_OPENING_METADATA["count"],
-                    "min_series": BUCEPHALUS_FAIR_OPENING_METADATA["min_series"],
-                    "max_series": BUCEPHALUS_FAIR_OPENING_METADATA["max_series"],
-                    "max_frontier_states": BUCEPHALUS_FAIR_OPENING_METADATA[
-                        "max_frontier_states"
-                    ],
-                }
-                if config.opening_suite_version
-                == BUCEPHALUS_FAIR_OPENING_SUITE_VERSION
+                dict(opening_context.generator)
+                if opening_context.generator is not None
                 else None
             ),
+            "qualification": (
+                config.opening_qualification.as_dict()
+                if config.opening_qualification is not None
+                else None
+            ),
+            "payload": opening_suite.as_dict() if opening_suite is not None else None,
         },
         "selected_openings": [
             {
                 **opening.as_dict(),
                 "canonical_series_history": [
                     list(series)
-                    for series in BUCEPHALUS_OPENING_HISTORIES[
-                        config.opening_suite_version
-                    ][opening.case_id]
+                    for series in opening_context.histories[opening.case_id]
                 ],
             }
             for opening in selected_openings
@@ -2253,6 +3009,7 @@ def run_external_match(
         "games": [record.as_dict() for record in records],
         "rule_and_protocol_gaps": _rule_protocol_gaps(config),
         "claim_scope": {
+            "match_intent": config.match_intent,
             "independent_opponent": approved_bucephalus_identity,
             "exact_approved_bucephalus_baseline": approved_bucephalus_identity,
             "fixed_suite_only": True,
@@ -2279,15 +3036,35 @@ def run_external_match(
             "selective_reruns_forbidden": True,
             "local_engine_superiority_supported": superiority_supported,
             "local_engine_superiority_gate": {
-                "requires_content_addressed_fair_suite": True,
+                "eligible_protocol_classes": [
+                    "fair-equal-wall",
+                    "best-settings-head-to-head",
+                ],
+                "requires_content_addressed_opening_suite": True,
                 "requires_equal_end_to_end_common_wall": True,
                 "requires_timed_iterative_external_adapter": True,
                 "requires_exact_approved_bucephalus_binary_and_build_receipt": True,
+                "requires_exact_approved_local_profile": True,
                 "requires_no_start_to_finish_identity_drift": True,
                 "requires_100_completed_games": True,
                 "requires_50_completed_color_swapped_pairs": True,
                 "requires_local_pair_wins_above_losses": True,
                 "paired_two_sided_p_below": 0.05,
+                "best_settings_additional_requirements": {
+                    "engaged_s3_opening_qualification": True,
+                    "fresh_custom_suite": True,
+                    "minimum_wall_seconds_per_move": 120.0,
+                    "local_depth_series": 8,
+                    "local_branch_cap": 32,
+                    "local_native_threads": 16,
+                    "local_profile_id": APPROVED_BEST_SETTINGS_LOCAL_PROFILE_ID,
+                    "local_profile_canonical_sha256": (
+                        APPROVED_BEST_SETTINGS_LOCAL_PROFILE_SHA256
+                    ),
+                    "local_max_work_positions_per_search": 4_000_000_000,
+                    "local_max_work_positions_per_game": 100_000_000_000,
+                    "bucephalus_maximum_micro_ply": BUCEPHALUS_MAX_PLY,
+                },
             },
             "warning": (
                 "This is independent-engine game evidence, not calibrated Elo, "
@@ -2345,8 +3122,30 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--local-profile", default="baseline")
     parser.add_argument("--pairs", type=int, default=50)
     parser.add_argument("--seed", type=int, default=BUCEPHALUS_FAIR_OPENING_SEED)
+    parser.add_argument(
+        "--match-intent",
+        choices=(FAIR_EQUAL_WALL_MATCH_INTENT, BEST_SETTINGS_MATCH_INTENT),
+        default=FAIR_EQUAL_WALL_MATCH_INTENT,
+        help=(
+            "label the frozen protocol honestly; best-settings requires a "
+            "fresh deterministic opening suite"
+        ),
+    )
+    parser.add_argument(
+        "--fresh-opening-seed",
+        type=int,
+        help=(
+            "generate a new content-addressed neutral opening suite with one "
+            "unique boundary per color-swapped pair"
+        ),
+    )
+    parser.add_argument("--fresh-opening-min-series", type=int, default=3)
+    parser.add_argument("--fresh-opening-max-series", type=int, default=6)
+    parser.add_argument("--fresh-opening-frontier-cap", type=int, default=32)
+    parser.add_argument("--fresh-opening-candidate-pool", type=int, default=80)
     parser.add_argument("--depth", type=int, default=8)
     parser.add_argument("--branch-cap", type=int, default=32)
+    parser.add_argument("--local-native-threads", type=int, default=1)
     parser.add_argument(
         "--max-generation-positions", type=int, default=4_000_000_000
     )
@@ -2373,6 +3172,65 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _config_and_opening_suite_from_args(
+    args: argparse.Namespace,
+) -> tuple[ExternalMatchConfig, SeededOpeningSuite | None]:
+    opening_qualification: OpeningQualification | None = None
+    if (
+        args.match_intent == BEST_SETTINGS_MATCH_INTENT
+        and args.fresh_opening_seed is not None
+    ):
+        opening_suite, opening_qualification = build_engaged_opening_suite(
+            seed=args.fresh_opening_seed,
+            count=args.pairs,
+            candidate_pool_count=args.fresh_opening_candidate_pool,
+            max_frontier_states=args.fresh_opening_frontier_cap,
+        )
+    elif args.fresh_opening_seed is not None:
+        opening_suite = build_seeded_opening_suite(
+            seed=args.fresh_opening_seed,
+            count=args.pairs,
+            min_series=args.fresh_opening_min_series,
+            max_series=args.fresh_opening_max_series,
+            max_frontier_states=args.fresh_opening_frontier_cap,
+        )
+    else:
+        opening_suite = None
+    if opening_suite is None:
+        opening_suite_version = BUCEPHALUS_FAIR_OPENING_SUITE_VERSION
+        opening_case_ids = tuple(
+            case.case_id for case in BUCEPHALUS_FAIR_OPENING_SUITE
+        )
+        opening_suite_canonical_sha256 = None
+    else:
+        opening_suite_version = opening_suite.version
+        opening_case_ids = tuple(case.case_id for case in opening_suite.cases)
+        opening_suite_canonical_sha256 = _canonical_sha256(
+            opening_suite.as_dict()
+        )
+    config = ExternalMatchConfig(
+        pairs=args.pairs,
+        seed=args.seed,
+        match_intent=args.match_intent,
+        opening_suite_version=opening_suite_version,
+        opening_suite_canonical_sha256=opening_suite_canonical_sha256,
+        opening_qualification=opening_qualification,
+        opening_case_ids=opening_case_ids,
+        local_depth_series=args.depth,
+        local_max_series_per_node=args.branch_cap,
+        local_native_threads=args.local_native_threads,
+        local_max_generation_positions=args.max_generation_positions,
+        local_max_game_work_positions=args.max_game_work_positions,
+        requested_match_workers=args.workers,
+        external_ply_policy=TIMED_ITERATIVE_PLY_POLICY,
+        external_lookahead_micro_plies=0,
+        external_wall_timeout_seconds=args.common_move_seconds,
+        common_wall_timeout_seconds=args.common_move_seconds,
+        emergency_max_series=args.emergency_max_series,
+    )
+    return config, opening_suite
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     from scottish_progressive.strength import resolve_match_profile
 
@@ -2385,23 +3243,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.sha256,
             upstream_commit=args.upstream_commit,
         )
-        config = ExternalMatchConfig(
-            pairs=args.pairs,
-            seed=args.seed,
-            opening_suite_version=BUCEPHALUS_FAIR_OPENING_SUITE_VERSION,
-            opening_case_ids=tuple(
-                case.case_id for case in BUCEPHALUS_FAIR_OPENING_SUITE
-            ),
-            local_depth_series=args.depth,
-            local_max_series_per_node=args.branch_cap,
-            local_max_generation_positions=args.max_generation_positions,
-            local_max_game_work_positions=args.max_game_work_positions,
-            external_ply_policy=TIMED_ITERATIVE_PLY_POLICY,
-            external_lookahead_micro_plies=0,
-            external_wall_timeout_seconds=args.common_move_seconds,
-            common_wall_timeout_seconds=args.common_move_seconds,
-            emergency_max_series=args.emergency_max_series,
-        )
+        config, opening_suite = _config_and_opening_suite_from_args(args)
         progress = None if args.json else (lambda message: print(message, flush=True))
         report = run_external_match(
             local_profile,
@@ -2414,6 +3256,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             journal_directory=args.journal_directory,
             resume=args.resume,
             external_build_receipt_path=args.external_build_receipt,
+            opening_suite=opening_suite,
         )
         output = (
             write_external_match_report(report, args.output)
