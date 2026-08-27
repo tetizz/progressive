@@ -1,0 +1,107 @@
+{
+  "schema": "spc-selected-pv-horizon-budget-regression-v1",
+  "generated_at": "2026-08-27T21:49:16.3022992Z",
+  "classification": "accepted-fail-closed-performance-regression",
+  "position": {
+    "initial_fen": "rnbq1bnr/pppppkpp/5p2/8/3PP3/5N2/PPPK1PPP/RNBQ1B1R b - - 2 3",
+    "series_number": 4,
+    "authoritative_history": [
+      "e2e4",
+      "f7f6/e8f7",
+      "d2d4/e1d2/g1f3"
+    ]
+  },
+  "controls": {
+    "requested_depth_series": 4,
+    "max_series_per_node": 32,
+    "max_generation_positions": 10000000,
+    "time_limit_seconds": 30.0,
+    "native_threads": 16,
+    "collect_all_root_scores": false
+  },
+  "baseline": {
+    "source_commit": "b61496b8565f6b1ff86ad64626107fa724cae1a4",
+    "source_fingerprint": "26fe40a25f325fe4",
+    "best_series": "e7e5/f6f5/f5e4/f8b4",
+    "score": 730,
+    "completed_depth": 4,
+    "elapsed_seconds": 7.420779300038703,
+    "generation_positions": 6716498,
+    "root_safety_work": 2664354,
+    "work_limit_reached": false
+  },
+  "guarded_3m": {
+    "source_commit": "aa898801b20b137e3756f516ab10a31d074031aa",
+    "source_branch": "tetizz/shared-horizon-guard-20260827",
+    "source_fingerprint": "2a6c534ed4b41e4b",
+    "git_tree_clean_before_run": true,
+    "source_files_sha256": {
+      "src/scottish_progressive/search.py": "d1d1f1c102357f554ee700b5a23620ac34ca83a91fab966671a0a4b4767c6b5a",
+      "src/scottish_progressive/selected_pv_horizon.py": "6ab24759df42351214f2921e39f5a665e81e6303aa57408399e8026d09113903",
+      "src/scottish_progressive/native_subtree.cpp": "138bf4a1ecb2fe771193d81d40e61c827ad50972e58318f934c76e55995398a4",
+      "src/scottish_progressive/native_subtree.hpp": "a7dfd79ae0659fcff725c7fa79da98b296d7beb7ee2f530952bbc40d235bc335",
+      "src/scottish_progressive/native_subtree.py": "1e556879a56f2f67da83436f4e08552915e9e62223b114b0cf90904856a483f8"
+    },
+    "native_eval": {
+      "sha256": "5332e65561af65b93cda6f836c9609cc81924532d4bb1ae343806c3aba3bd5f1",
+      "loaded_source_identity": "e1a1743de14916f6da915de089d86b43920b06fdc2cc16134c7e7764d458d947",
+      "expected_source_identity": "e1a1743de14916f6da915de089d86b43920b06fdc2cc16134c7e7764d458d947"
+    },
+    "native_mate": {
+      "sha256": "fbd7fbf433382facc3ce486f29372b78a2694f17b6076bf954dcc159e2381c3a",
+      "loaded_source_identity": "dd75f0966860eabf1904d7bf8fc8b73f913d27cbe0fed4ca94ff79bd57743ffe",
+      "expected_source_identity": "dd75f0966860eabf1904d7bf8fc8b73f913d27cbe0fed4ca94ff79bd57743ffe"
+    },
+    "best_series": "d7d5/d5e4/c8g4/g4f3",
+    "principal_variation": [
+      "d7d5/d5e4/c8g4/g4f3",
+      "b1c3/c3e4/d1f3/f3f5/f1c4"
+    ],
+    "score": 625,
+    "completed_depth": 2,
+    "elapsed_seconds": 1.7113700000336394,
+    "generation_positions": 3181113,
+    "root_safety_work": 2833024,
+    "work_limit_reached": true,
+    "timed_out": false,
+    "root_scores_complete": false,
+    "selected_pv_horizon_found": 1,
+    "selected_pv_horizon_repairs": 1,
+    "selected_pv_horizon_vetoes": 0,
+    "selected_pv_horizon_unknown": 0,
+    "later_root_safety_unknown": 1,
+    "published_deeper_score_or_proof": false
+  },
+  "historical_bounded_budget_sweep": {
+    "source_fingerprint": "cabd696e0d8bd3ac",
+    "note": "Pre-freeze diagnostic retained as historical evidence; only the guarded_3m result above was recaptured against aa898801.",
+    "measurements": [
+      {
+        "actual_safety_budget": 3333333,
+        "completed_depth": 2,
+        "generation_positions": 3681422,
+        "root_safety_work": 3333333,
+        "selected_pv_horizon_unknown": 1
+      },
+      {
+        "actual_safety_budget": 4000000,
+        "completed_depth": 2,
+        "generation_positions": 4348089,
+        "root_safety_work": 4000000,
+        "selected_pv_horizon_unknown": 1
+      },
+      {
+        "actual_safety_budget": 9000000,
+        "completed_depth": 2,
+        "generation_positions": 9348089,
+        "root_safety_work": 9000000,
+        "selected_pv_horizon_unknown": 1
+      }
+    ]
+  },
+  "decision": {
+    "safety_budget_changed": false,
+    "reason": "No tested allowance through 9M restored depth 4 inside the unchanged 10M caller cap; UNKNOWN remains fail-closed.",
+    "pending_performance_gate": "Restore depth 4 under the same 10M/30s controls without publishing an unresolved selected PV or weakening UNKNOWN handling."
+  }
+}

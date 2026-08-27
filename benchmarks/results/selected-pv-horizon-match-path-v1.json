@@ -1,0 +1,579 @@
+{
+  "checks": {
+    "completed_depth_five": true,
+    "exact_expected_principal_variation": true,
+    "git_candidate_stable_during_capture": true,
+    "git_top_level_matches_capture_root": true,
+    "git_tree_clean_after_capture": true,
+    "git_tree_clean_before_capture": true,
+    "loaded_engine_fingerprint_matches_stable_source": true,
+    "native_artifacts_stable_during_capture": true,
+    "native_mate_source_matched": true,
+    "native_subtree_source_matched": true,
+    "no_unknown_horizon_probe": true,
+    "principal_variation_authoritatively_replayed": true,
+    "requested_depth_eight": true,
+    "root_safety_budget_respected": true,
+    "selected_b3": true,
+    "selected_horizon_exhaustively_certified": true,
+    "selected_root_not_vetoed_at_return": true,
+    "source_files_stable_during_capture": true,
+    "timeout_only_after_certified_depth_five": true,
+    "unsafe_candidate_repaired": true,
+    "unsafe_candidate_vetoed": true,
+    "work_limit_not_reached": true
+  },
+  "command": "python benchmarks/capture_selected_pv_horizon_gate.py --output benchmarks/results/selected-pv-horizon-match-path-v1.json",
+  "controls": {
+    "collect_all_root_scores": false,
+    "max_generation_positions": 4000000000,
+    "max_series_per_node": 32,
+    "native_threads": 16,
+    "profile_id": "spc-68942034c41b4cc4",
+    "profile_name": "Scottish Progressive baseline",
+    "requested_depth": 8,
+    "root_safety_budget": 3000000,
+    "state": {
+      "chess960": false,
+      "ep_targets": [],
+      "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+      "promoted_hex": "0000000000000000",
+      "quiet_series": 0,
+      "series_number": 1
+    },
+    "time_limit_seconds": 120
+  },
+  "generated_at": "2026-08-27T21:47:00.273730+00:00",
+  "passed": true,
+  "result": {
+    "best_series": "b2b3",
+    "completed_depth": 5,
+    "elapsed_seconds": 120.00069449993316,
+    "exact_width": false,
+    "principal_variation": [
+      {
+        "ended_by_check": false,
+        "final_state": {
+          "chess960": false,
+          "ep_targets": [],
+          "fen": "rnbqkbnr/pppppppp/8/8/8/1P6/P1PPPPPP/RNBQKBNR b KQkq - 0 1",
+          "promoted_hex": "0000000000000000",
+          "quiet_series": 0,
+          "series_number": 2
+        },
+        "machine_notation": "b2b3",
+        "moves": [
+          "b2b3"
+        ],
+        "outcome": null,
+        "san": [
+          "b3"
+        ],
+        "transposition_count": 1,
+        "unused_moves": 0
+      },
+      {
+        "ended_by_check": false,
+        "final_state": {
+          "chess960": false,
+          "ep_targets": [],
+          "fen": "rnbq1bnr/pppppkpp/8/5p2/8/1P6/P1PPPPPP/RNBQKBNR w KQ - 1 3",
+          "promoted_hex": "0000000000000000",
+          "quiet_series": 0,
+          "series_number": 3
+        },
+        "machine_notation": "f7f5/e8f7",
+        "moves": [
+          "f7f5",
+          "e8f7"
+        ],
+        "outcome": null,
+        "san": [
+          "f5",
+          "Kf7"
+        ],
+        "transposition_count": 1,
+        "unused_moves": 0
+      },
+      {
+        "ended_by_check": true,
+        "final_state": {
+          "chess960": false,
+          "ep_targets": [],
+          "fen": "rnbq1bnr/pppppkpp/8/5p2/2B5/1P2P3/PBPP1PPP/RN1QK1NR b KQ - 1 3",
+          "promoted_hex": "0000000000000000",
+          "quiet_series": 0,
+          "series_number": 4
+        },
+        "machine_notation": "c1b2/e2e3/f1c4",
+        "moves": [
+          "c1b2",
+          "e2e3",
+          "f1c4"
+        ],
+        "outcome": null,
+        "san": [
+          "Bb2",
+          "e3",
+          "Bc4+"
+        ],
+        "transposition_count": 2,
+        "unused_moves": 0
+      },
+      {
+        "ended_by_check": true,
+        "final_state": {
+          "chess960": false,
+          "ep_targets": [],
+          "fen": "rnbq1bnr/pppp1kpp/4p3/8/2B5/1P6/PBPP1pPP/RN1QK1NR w KQ - 0 7",
+          "promoted_hex": "0000000000000000",
+          "quiet_series": 0,
+          "series_number": 5
+        },
+        "machine_notation": "e7e6/f5f4/f4e3/e3f2",
+        "moves": [
+          "e7e6",
+          "f5f4",
+          "f4e3",
+          "e3f2"
+        ],
+        "outcome": null,
+        "san": [
+          "e6",
+          "f4",
+          "fxe3",
+          "exf2+"
+        ],
+        "transposition_count": 1,
+        "unused_moves": 0
+      },
+      {
+        "ended_by_check": true,
+        "final_state": {
+          "chess960": false,
+          "ep_targets": [],
+          "fen": "rnbq1bnr/pppp1kpp/4p3/7Q/2B5/1P6/PBPPK1PP/RN4NR b - - 3 7",
+          "promoted_hex": "0000000000000000",
+          "quiet_series": 0,
+          "series_number": 6
+        },
+        "machine_notation": "e1e2/e2f2/d1g4/f2e2/g4h5",
+        "moves": [
+          "e1e2",
+          "e2f2",
+          "d1g4",
+          "f2e2",
+          "g4h5"
+        ],
+        "outcome": null,
+        "san": [
+          "Ke2",
+          "Kxf2",
+          "Qg4",
+          "Ke2",
+          "Qh5+"
+        ],
+        "transposition_count": 9,
+        "unused_moves": 0
+      }
+    ],
+    "proof": null,
+    "requested_depth": 8,
+    "root_scores_complete": false,
+    "score": 482,
+    "timed_out": true,
+    "timeout_scope": "deeper-iteration-after-certified-d5",
+    "work_limit_reached": false
+  },
+  "runtime": {
+    "native_eval_after": {
+      "available": true,
+      "path": "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\shared-horizon-guard-20260827\\src\\scottish_progressive\\_native_eval.cp314-win_amd64.pyd",
+      "sha256": "5332e65561af65b93cda6f836c9609cc81924532d4bb1ae343806c3aba3bd5f1",
+      "source_identity": "e1a1743de14916f6da915de089d86b43920b06fdc2cc16134c7e7764d458d947"
+    },
+    "native_eval_before": {
+      "available": true,
+      "path": "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\shared-horizon-guard-20260827\\src\\scottish_progressive\\_native_eval.cp314-win_amd64.pyd",
+      "sha256": "5332e65561af65b93cda6f836c9609cc81924532d4bb1ae343806c3aba3bd5f1",
+      "source_identity": "e1a1743de14916f6da915de089d86b43920b06fdc2cc16134c7e7764d458d947"
+    },
+    "native_eval_expected_source_identity": "e1a1743de14916f6da915de089d86b43920b06fdc2cc16134c7e7764d458d947",
+    "native_eval_path_under_worktree": true,
+    "native_mate_after": {
+      "available": true,
+      "path": "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\shared-horizon-guard-20260827\\src\\scottish_progressive\\_native_mate.cp314-win_amd64.pyd",
+      "sha256": "fbd7fbf433382facc3ce486f29372b78a2694f17b6076bf954dcc159e2381c3a",
+      "source_identity": "dd75f0966860eabf1904d7bf8fc8b73f913d27cbe0fed4ca94ff79bd57743ffe"
+    },
+    "native_mate_before": {
+      "available": true,
+      "path": "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\shared-horizon-guard-20260827\\src\\scottish_progressive\\_native_mate.cp314-win_amd64.pyd",
+      "sha256": "fbd7fbf433382facc3ce486f29372b78a2694f17b6076bf954dcc159e2381c3a",
+      "source_identity": "dd75f0966860eabf1904d7bf8fc8b73f913d27cbe0fed4ca94ff79bd57743ffe"
+    },
+    "native_mate_expected_source_identity": "dd75f0966860eabf1904d7bf8fc8b73f913d27cbe0fed4ca94ff79bd57743ffe",
+    "native_mate_path_under_worktree": true,
+    "native_mate_runtime_identity": "dd75f0966860eabf1904d7bf8fc8b73f913d27cbe0fed4ca94ff79bd57743ffe",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.14.4 (tags/v3.14.4:23116f9, Apr  7 2026, 14:10:54) [MSC v.1944 64 bit (AMD64)]"
+  },
+  "schema": "spc-selected-pv-horizon-match-path-receipt-v1",
+  "selected_pv_horizon_probe_trace": [
+    {
+      "checking_series": 1401,
+      "checkmates": 1,
+      "elapsed_seconds": 0.008868100005201995,
+      "leaf": {
+        "chess960": false,
+        "ep_targets": [],
+        "fen": "rnbqkbnr/ppp1pppp/8/1B6/4Q3/8/PPPP1PPP/RNB1K1NR b KQkq - 1 3",
+        "promoted_hex": "0000000000000000",
+        "quiet_series": 0,
+        "series_number": 4
+      },
+      "mate_series": {
+        "ended_by_check": true,
+        "final_state": {
+          "chess960": false,
+          "ep_targets": [],
+          "fen": "rn2kbnr/ppp1pppp/8/1b6/4Q3/8/PPPP1PPP/RNB1KqNR w KQkq - 2 7",
+          "promoted_hex": "0000000000000000",
+          "quiet_series": 0,
+          "series_number": 5
+        },
+        "machine_notation": "c8d7/d7b5/d8d3/d3f1",
+        "moves": [
+          "c8d7",
+          "d7b5",
+          "d8d3",
+          "d3f1"
+        ],
+        "outcome": "checkmate",
+        "san": [
+          "Bd7",
+          "Bxb5",
+          "Qd3",
+          "Qf1#"
+        ],
+        "transposition_count": 1,
+        "unused_moves": 0
+      },
+      "max_depth_reached": 4,
+      "message": "native series mate found",
+      "moves_generated": 40244,
+      "peak_frontier": 265,
+      "positions_visited": 1318,
+      "root_safety_work_after": 42617,
+      "root_safety_work_before": 1055,
+      "sequence": 1,
+      "status": "found",
+      "total_work_after": 259942,
+      "total_work_before": 218380,
+      "transpositions_merged": 962,
+      "work_used": 41562
+    },
+    {
+      "checking_series": 273,
+      "checkmates": 0,
+      "elapsed_seconds": 0.006757099996320903,
+      "leaf": {
+        "chess960": false,
+        "ep_targets": [],
+        "fen": "rnbqkbnr/ppp2ppp/3ppQ2/1B6/8/4P3/PPPP1PPP/RNB1K1NR b KQkq - 3 3",
+        "promoted_hex": "0000000000000000",
+        "quiet_series": 1,
+        "series_number": 4
+      },
+      "mate_series": null,
+      "max_depth_reached": 3,
+      "message": "native series-mate state space exhausted",
+      "moves_generated": 34789,
+      "peak_frontier": 551,
+      "positions_visited": 1404,
+      "root_safety_work_after": 78810,
+      "root_safety_work_before": 42617,
+      "sequence": 2,
+      "status": "exhausted",
+      "total_work_after": 309000,
+      "total_work_before": 272807,
+      "transpositions_merged": 1033,
+      "work_used": 36193
+    },
+    {
+      "checking_series": 212,
+      "checkmates": 1,
+      "elapsed_seconds": 0.0012909999350085855,
+      "leaf": {
+        "chess960": false,
+        "ep_targets": [],
+        "fen": "rnQ1k1nr/1p1p1ppp/8/p3p3/1PB1P3/5P2/1PPP3P/RNB1K1Nq b Qkq - 0 7",
+        "promoted_hex": "0000000000000000",
+        "quiet_series": 0,
+        "series_number": 6
+      },
+      "mate_series": {
+        "ended_by_check": true,
+        "final_state": {
+          "chess960": false,
+          "ep_targets": [],
+          "fen": "rnQ3nr/1p1pkppp/8/4p3/1PB1P3/5q2/2PP3P/RNq1K1N1 w Q - 0 13",
+          "promoted_hex": "0000000000000004",
+          "quiet_series": 0,
+          "series_number": 7
+        },
+        "machine_notation": "e8e7/h1f3/a5a4/a4a3/a3b2/b2c1q",
+        "moves": [
+          "e8e7",
+          "h1f3",
+          "a5a4",
+          "a4a3",
+          "a3b2",
+          "b2c1q"
+        ],
+        "outcome": "checkmate",
+        "san": [
+          "Ke7",
+          "Qxf3",
+          "a4",
+          "a3",
+          "axb2",
+          "bxc1=Q#"
+        ],
+        "transposition_count": 1,
+        "unused_moves": 0
+      },
+      "max_depth_reached": 6,
+      "message": "native series mate found",
+      "moves_generated": 1281,
+      "peak_frontier": 160,
+      "positions_visited": 33,
+      "root_safety_work_after": 81178,
+      "root_safety_work_before": 79864,
+      "sequence": 3,
+      "status": "found",
+      "total_work_after": 16753846,
+      "total_work_before": 16752532,
+      "transpositions_merged": 0,
+      "work_used": 1314
+    },
+    {
+      "checking_series": 213,
+      "checkmates": 1,
+      "elapsed_seconds": 0.0011588999768719077,
+      "leaf": {
+        "chess960": false,
+        "ep_targets": [],
+        "fen": "rnQ1k1nr/1p1p1ppp/8/pB2p3/1P2P3/5P2/1PPP3P/RNB1K1Nq b Qkq - 0 7",
+        "promoted_hex": "0000000000000000",
+        "quiet_series": 0,
+        "series_number": 6
+      },
+      "mate_series": {
+        "ended_by_check": true,
+        "final_state": {
+          "chess960": false,
+          "ep_targets": [],
+          "fen": "rnQ3nr/1p1pkppp/8/1B2p3/1P2P3/5q2/2PP3P/RNq1K1N1 w Q - 0 13",
+          "promoted_hex": "0000000000000004",
+          "quiet_series": 0,
+          "series_number": 7
+        },
+        "machine_notation": "e8e7/h1f3/a5a4/a4a3/a3b2/b2c1q",
+        "moves": [
+          "e8e7",
+          "h1f3",
+          "a5a4",
+          "a4a3",
+          "a3b2",
+          "b2c1q"
+        ],
+        "outcome": "checkmate",
+        "san": [
+          "Ke7",
+          "Qxf3",
+          "a4",
+          "a3",
+          "axb2",
+          "bxc1=Q#"
+        ],
+        "transposition_count": 1,
+        "unused_moves": 0
+      },
+      "max_depth_reached": 6,
+      "message": "native series mate found",
+      "moves_generated": 1279,
+      "peak_frontier": 160,
+      "positions_visited": 33,
+      "root_safety_work_after": 82490,
+      "root_safety_work_before": 81178,
+      "sequence": 4,
+      "status": "found",
+      "total_work_after": 19914669,
+      "total_work_before": 19913357,
+      "transpositions_merged": 0,
+      "work_used": 1312
+    },
+    {
+      "checking_series": 117711,
+      "checkmates": 0,
+      "elapsed_seconds": 0.552667000098154,
+      "leaf": {
+        "chess960": false,
+        "ep_targets": [],
+        "fen": "rnbq1bnr/pppp1kpp/4p3/7Q/2B5/1P6/PBPPK1PP/RN4NR b - - 3 7",
+        "promoted_hex": "0000000000000000",
+        "quiet_series": 0,
+        "series_number": 6
+      },
+      "mate_series": null,
+      "max_depth_reached": 5,
+      "message": "native series-mate state space exhausted",
+      "moves_generated": 2228185,
+      "peak_frontier": 12272,
+      "positions_visited": 69256,
+      "root_safety_work_after": 2380458,
+      "root_safety_work_before": 83017,
+      "sequence": 5,
+      "status": "exhausted",
+      "total_work_after": 29281490,
+      "total_work_before": 26984049,
+      "transpositions_merged": 149843,
+      "work_used": 2297441
+    }
+  ],
+  "source": {
+    "capture_root": "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\shared-horizon-guard-20260827",
+    "computed_source_fingerprint_after": "2a6c534ed4b41e4b",
+    "computed_source_fingerprint_before": "2a6c534ed4b41e4b",
+    "engine_source_fingerprint": "2a6c534ed4b41e4b",
+    "engine_version": "spc-0.9.0",
+    "git_branch": "tetizz/shared-horizon-guard-20260827",
+    "git_branch_after": "tetizz/shared-horizon-guard-20260827",
+    "git_head": "aa898801b20b137e3756f516ab10a31d074031aa",
+    "git_head_after": "aa898801b20b137e3756f516ab10a31d074031aa",
+    "git_top_level": "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\shared-horizon-guard-20260827",
+    "git_top_level_after": "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\shared-horizon-guard-20260827",
+    "git_tree_clean_after_capture": true,
+    "git_tree_clean_before_capture": true,
+    "source_files_sha256_after": {
+      "src/scottish_progressive/_native_eval.cpp": "afd24385fabf8d21b9eb5d88b4302ee9707cbf032120718375c1acc7c84f3e85",
+      "src/scottish_progressive/_native_mate.cpp": "039ceb6d0f79dc48380665204e70ae7b1baee2aff874d6fc380717d962ae82c1",
+      "src/scottish_progressive/native_subtree.cpp": "138bf4a1ecb2fe771193d81d40e61c827ad50972e58318f934c76e55995398a4",
+      "src/scottish_progressive/native_subtree.hpp": "a7dfd79ae0659fcff725c7fa79da98b296d7beb7ee2f530952bbc40d235bc335",
+      "src/scottish_progressive/native_subtree.py": "1e556879a56f2f67da83436f4e08552915e9e62223b114b0cf90904856a483f8",
+      "src/scottish_progressive/search.py": "d1d1f1c102357f554ee700b5a23620ac34ca83a91fab966671a0a4b4767c6b5a",
+      "src/scottish_progressive/selected_pv_horizon.py": "6ab24759df42351214f2921e39f5a665e81e6303aa57408399e8026d09113903"
+    },
+    "source_files_sha256_before": {
+      "src/scottish_progressive/_native_eval.cpp": "afd24385fabf8d21b9eb5d88b4302ee9707cbf032120718375c1acc7c84f3e85",
+      "src/scottish_progressive/_native_mate.cpp": "039ceb6d0f79dc48380665204e70ae7b1baee2aff874d6fc380717d962ae82c1",
+      "src/scottish_progressive/native_subtree.cpp": "138bf4a1ecb2fe771193d81d40e61c827ad50972e58318f934c76e55995398a4",
+      "src/scottish_progressive/native_subtree.hpp": "a7dfd79ae0659fcff725c7fa79da98b296d7beb7ee2f530952bbc40d235bc335",
+      "src/scottish_progressive/native_subtree.py": "1e556879a56f2f67da83436f4e08552915e9e62223b114b0cf90904856a483f8",
+      "src/scottish_progressive/search.py": "d1d1f1c102357f554ee700b5a23620ac34ca83a91fab966671a0a4b4767c6b5a",
+      "src/scottish_progressive/selected_pv_horizon.py": "6ab24759df42351214f2921e39f5a665e81e6303aa57408399e8026d09113903"
+    }
+  },
+  "stats": {
+    "alpha_beta_cutoffs": 23540,
+    "branch_caps": 38640,
+    "evaluation_capture_positions": 0,
+    "evaluation_reach_positions": 5325582,
+    "frontier_paths_pruned": 136941445,
+    "frontier_prunes": 125761,
+    "frontier_score_positions": 69263659,
+    "frontier_states_pruned": 71673895,
+    "generated_raw_series": 81485730,
+    "generated_unique_series": 29925843,
+    "generation_positions": 81240931,
+    "generation_work_limit_hits": 0,
+    "incomplete_reach_evaluations": 31181,
+    "intra_series_transpositions": 51559695,
+    "leaf_evaluations": 147733,
+    "mate_proof_cache_errors": 0,
+    "mate_proof_cache_evictions": 0,
+    "mate_proof_cache_exhausted_hits": 0,
+    "mate_proof_cache_found_hits": 0,
+    "mate_proof_cache_hits": 0,
+    "mate_proof_cache_misses": 0,
+    "mate_proof_cache_store_attempts": 0,
+    "mate_proof_cache_work_saved": 0,
+    "native_series_mate_cache_hits": 3,
+    "native_series_mate_calls": 10,
+    "native_series_mate_deadline_hits": 0,
+    "native_series_mate_edges": 2308104,
+    "native_series_mate_exhausted": 7,
+    "native_series_mate_found": 3,
+    "native_series_mate_positions": 72149,
+    "native_series_mate_unsupported": 0,
+    "native_series_mate_work_limit_hits": 0,
+    "nodes": 214246,
+    "overlay_direct_move_variants": 0,
+    "overlay_evaluations": 0,
+    "overlay_reach_positions": 0,
+    "overlay_two_move_variants": 0,
+    "peak_frontier_states": 1535,
+    "promotion_mate_candidates": 0,
+    "promotion_mate_completion_probes": 0,
+    "promotion_mate_limit_hits": 0,
+    "promotion_mate_mates": 0,
+    "promotion_mate_positions": 0,
+    "promotion_mate_replay_rejects": 0,
+    "promotion_mate_setup_states": 0,
+    "pvs_researches": 153,
+    "pvs_tt_writes_rolled_back": 43036,
+    "pvs_zero_window_searches": 3229,
+    "quiet_adjudication_cache_hits": 0,
+    "quiet_adjudication_limit_hits": 0,
+    "quiet_adjudication_positions": 0,
+    "root_bound_candidates": 143,
+    "root_pvs_researches": 0,
+    "root_pvs_tt_writes_rolled_back": 0,
+    "root_pvs_zero_window_searches": 0,
+    "root_safety_all_mating_widenings": 0,
+    "root_safety_budget_interruptions": 0,
+    "root_safety_exact_exhausted_children": 5,
+    "root_safety_exhausted_fallbacks": 1,
+    "root_safety_passes": 9,
+    "root_safety_promotion_cache_hits": 0,
+    "root_safety_proven_mate_children": 0,
+    "root_safety_retries": 2,
+    "root_safety_screen_cache_hits": 3,
+    "root_safety_screen_calls": 5,
+    "root_safety_screen_positions": 2380458,
+    "root_safety_screen_stages": 5,
+    "root_safety_terminal_fallbacks": 0,
+    "root_safety_unknown_fallbacks": 0,
+    "root_safety_unknown_interruptions": 0,
+    "root_safety_widened_candidates": 0,
+    "root_safety_widened_exact_children": 0,
+    "root_safety_widened_terminal_mates": 0,
+    "root_safety_widening_positions": 0,
+    "selected_pv_horizon_all_vetoed_frontiers": 0,
+    "selected_pv_horizon_candidate_vetoes": 1,
+    "selected_pv_horizon_exhausted": 2,
+    "selected_pv_horizon_found": 3,
+    "selected_pv_horizon_line_rejections": 3,
+    "selected_pv_horizon_move_only_fallbacks": 0,
+    "selected_pv_horizon_native_repairs": 2,
+    "selected_pv_horizon_prior_depth_discards": 0,
+    "selected_pv_horizon_probe_calls": 5,
+    "selected_pv_horizon_repair_interruptions": 0,
+    "selected_pv_horizon_unknown": 0,
+    "selected_pv_horizon_widened_candidates": 0,
+    "selected_pv_horizon_widenings": 0,
+    "series_generation_cache_entries_peak": 2048,
+    "series_generation_cache_evictions": 22500,
+    "series_generation_cache_hits": 2823,
+    "series_generation_cache_peak": 65536,
+    "series_generation_positions": 4123704,
+    "static_evaluation_positions": 147733,
+    "tactical_final_reserve_drops": 0,
+    "tactical_final_series_retained": 0,
+    "tactical_frontier_reserve_drops": 0,
+    "tactical_frontier_states_retained": 0,
+    "tactical_leaf_extensions": 31,
+    "tt_hits": 3354
+  }
+}
