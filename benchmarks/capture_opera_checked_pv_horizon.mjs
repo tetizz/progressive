@@ -56,6 +56,14 @@ const probeExpression = String.raw`(async () => {
   const POLICY_VETO_SCHEMA = "spc-pv-horizon-candidate-veto-v1";
   const THRESHOLD_VETO_WITNESS_SCHEMA =
     "spc-opera-same-root-repair-limit-witness-v1";
+  const SELECTED_D5_HORIZON_WITNESS_SCHEMA =
+    "spc-opera-selected-d5-horizon-certification-v1";
+  const RAW_TRACE_ATTESTATION_SCHEMA =
+    "spc-opera-checked-pv-raw-trace-attestation-v1";
+  const SELECTED_D5_FIXTURE_ID =
+    "b3-known-adverse-series5-2026-08-26-v1";
+  const SAFETY_CALL_WORK_CREDIT = 4_000_000;
+  const HORIZON_CALL_WORK_CREDIT = 3_500_000;
   const MAXIMUM_SUCCESSFUL_SAME_ROOT_REPAIRS = 1;
   const EXPECTED_WITNESSES = Object.freeze([
     Object.freeze({
@@ -71,6 +79,38 @@ const probeExpression = String.raw`(async () => {
       unsafe_child_fen: "rnbq1bnr/pppp1kpp/4p3/7Q/2B5/1P2K2N/PBPP2PP/RN5R b - - 4 7",
     }),
   ]);
+  const INITIAL_BOUNDARY = Object.freeze({
+    fen: START_FEN,
+    board_fen: START_FEN,
+    series: 1,
+    series_number: 1,
+    side_to_move: "white",
+    quiet_series: 0,
+    quiet_draw_pending: false,
+    ep_targets: Object.freeze([]),
+    progressive_ep: Object.freeze([]),
+    promoted_hex: "0000000000000000",
+    chess960: false,
+  });
+  const KNOWN_ADVERSE_B3_SERIES5 = Object.freeze({
+    moves: Object.freeze(["e1f2", "d1g4", "f2e3", "g1h3", "g4h5"]),
+    machine_notation: "e1f2/d1g4/f2e3/g1h3/g4h5",
+    child_boundary: Object.freeze({
+      fen: "rnbq1bnr/pppp1kpp/4p3/7Q/2B5/1P2K2N/PBPP2PP/RN5R b - - 4 7",
+      board_fen: "rnbq1bnr/pppp1kpp/4p3/7Q/2B5/1P2K2N/PBPP2PP/RN5R b - - 4 7",
+      series: 6,
+      series_number: 6,
+      side_to_move: "black",
+      quiet_series: 0,
+      quiet_draw_pending: false,
+      ep_targets: Object.freeze([]),
+      progressive_ep: Object.freeze([]),
+      promoted_hex: "0000000000000000",
+      chess960: false,
+    }),
+    outcome: null,
+    ended_by_check: true,
+  });
   const SHA256 = /^[0-9a-f]{64}$/;
   const SOURCE_FINGERPRINT = /^[0-9a-f]{16}$/;
   const UCI_MOVE = /^[a-h][1-8][a-h][1-8][qrbn]?$/;
@@ -1072,20 +1112,30 @@ const probeExpression = String.raw`(async () => {
         && proofMate.ended_by_check === rawMate.ended_by_check
         && sameBoundary(proofMate.child_boundary, checkedMate.next_state);
     };
-    const repairWitnesses = EXPECTED_WITNESSES.map((expected) => {
+    const repairWitnessesFor = (expected) => {
+      const witnesses = [];
       for (const safety of safetyTrace) {
         if (!matchesExpectedSafety(safety, expected)) continue;
         for (const repair of horizonResearchTrace) {
           if (exactRepairPair(safety, repair, expected)) {
-            return Object.freeze({ expected, safety, repair });
+            witnesses.push(Object.freeze({ expected, safety, repair }));
           }
         }
       }
-      return null;
-    });
+      return witnesses;
+    };
+    const f3RepairWitnesses = repairWitnessesFor(EXPECTED_WITNESSES[0]);
+    const b3RepairWitnesses = repairWitnessesFor(EXPECTED_WITNESSES[1]);
+    const finalRootSeries = Array.isArray(result.best_full_series)
+      ? result.best_full_series.join("/")
+      : null;
+    const f3Witness = f3RepairWitnesses.length === 1
+      ? f3RepairWitnesses[0]
+      : null;
     const exactWarmRecertification = (entry, witness) => {
-      const repair = witness.repair;
-      return entry.request_sequence > repair.request_sequence
+      const repair = witness?.repair;
+      return repair !== undefined
+        && entry.request_sequence > repair.request_sequence
         && entry.posted_monotonic_ms >= repair.received_monotonic_ms
         && entry.worker === repair.worker
         && entry.worker.channel_id === repair.worker.channel_id
@@ -1122,16 +1172,14 @@ const probeExpression = String.raw`(async () => {
         && sameSeries(entry.response.root_series, repair.response.root_series)
         && sameJson(entry.response.child_pv, repair.response.child_pv);
     };
-    const finalRootSeries = Array.isArray(result.best_full_series)
-      ? result.best_full_series.join("/")
+    const f3WarmRecertifications = f3Witness === null
+      ? []
+      : horizonResearchTrace.filter((entry) => (
+        exactWarmRecertification(entry, f3Witness)
+      ));
+    const f3WarmRecertification = f3WarmRecertifications.length === 1
+      ? f3WarmRecertifications[0]
       : null;
-    const f3Witness = repairWitnesses[0];
-    const b3Witness = repairWitnesses[1];
-    const warmRecertifications = repairWitnesses.map((witness) => {
-      if (witness === null || witness.expected.root_series !== finalRootSeries) return null;
-      return horizonResearchTrace.find((entry) => exactWarmRecertification(entry, witness))
-        || null;
-    });
     const exactRepairPolicy = (value) => plainObject(value)
       && sameStrings(
         Object.keys(value).sort(),
@@ -1191,14 +1239,21 @@ const probeExpression = String.raw`(async () => {
     const f3FirstProofSha256 = f3FirstProof === null
       ? null
       : await canonicalSha256(f3FirstProof);
-    let secondF3Safety = null;
-    let secondF3ProofSha256 = null;
-    if (f3Witness !== null && f3FirstProof !== null && canonicalSeries(f3RootSeries)) {
+    const secondF3Candidates = [];
+    if (
+      f3Witness !== null
+      && f3WarmRecertification !== null
+      && f3FirstProof !== null
+      && canonicalSeries(f3RootSeries)
+    ) {
       for (const entry of safetyTrace) {
         if (
-          entry.request_sequence <= f3Witness.repair.request_sequence
-          || entry.posted_monotonic_ms < f3Witness.repair.received_monotonic_ms
+          !matchesExpectedSafety(entry, f3Witness.expected)
+          || entry === f3Witness.safety
+          || entry.request_sequence <= f3WarmRecertification.request_sequence
+          || entry.posted_monotonic_ms < f3WarmRecertification.received_monotonic_ms
           || entry.worker !== f3Witness.repair.worker
+          || entry.worker !== f3WarmRecertification.worker
           || entry.request?.session_id !== f3Witness.repair.request.session_id
           || entry.request?.request_id !== f3Witness.repair.request.request_id
           || entry.request?.iteration_id !== f3Witness.repair.request.iteration_id
@@ -1213,22 +1268,36 @@ const probeExpression = String.raw`(async () => {
           || entry.request?.candidate?.order_index !== f3Witness.repair.request.order_index
           || entry.request?.candidate?.order_key !== f3Witness.expected.root_series
           || entry.request?.safety_revision !== f3Witness.repair.request.safety_revision
-          || !exactInteger(
-            entry.request?.incumbent_epoch,
-            f3Witness.repair.request.incumbent_epoch,
+          || entry.request?.incumbent_epoch
+            !== f3WarmRecertification.request.incumbent_epoch
+          || entry.request?.remaining_time_ms
+            > f3WarmRecertification.request.remaining_time_ms
+          || entry.request?.candidate?.score !== f3WarmRecertification.response.score
+          || !sameJson(
+            entry.request?.candidate?.proof_bounds,
+            f3WarmRecertification.response.proof_bounds,
           )
-          || entry.request?.remaining_time_ms > f3Witness.repair.request.remaining_time_ms
-          || !exactPrefixMateReplay(entry)
+          || !sameJson(
+            entry.request?.candidate?.child_pv,
+            f3WarmRecertification.response.child_pv,
+          )
         ) continue;
         const derivedProof = retainedProofFromSafety(entry, f3RootSeries);
         if (derivedProof === null) continue;
         const derivedSha256 = await canonicalSha256(derivedProof);
         if (derivedSha256 === f3FirstProofSha256) continue;
-        secondF3Safety = entry;
-        secondF3ProofSha256 = derivedSha256;
-        break;
+        secondF3Candidates.push(Object.freeze({
+          safety: entry,
+          proof_sha256: derivedSha256,
+        }));
       }
     }
+    const secondF3Safety = secondF3Candidates.length === 1
+      ? secondF3Candidates[0].safety
+      : null;
+    const secondF3ProofSha256 = secondF3Candidates.length === 1
+      ? secondF3Candidates[0].proof_sha256
+      : null;
     const f3CandidateIdentity = f3Witness?.repair?.request?.candidate_identity || null;
     const f3PolicyVeto = Array.isArray(policyVetoes)
       ? policyVetoes.find((value) => exactPolicyVeto(value, f3CandidateIdentity)) || null
@@ -1253,6 +1322,293 @@ const probeExpression = String.raw`(async () => {
         policy_veto: f3PolicyVeto,
         second_safety_trace: secondF3Safety,
       });
+    const f3AdverseSafetyTraces = safetyTrace.filter((entry) => (
+      matchesExpectedSafety(entry, EXPECTED_WITNESSES[0])
+    ));
+    const principalVariation = Array.isArray(result.principal_variation)
+      ? result.principal_variation
+      : [];
+    const selectedPvCanonical = principalVariation.length === 5
+      && contiguousRootedPath(principalVariation)
+      && principalVariation[0]?.machine_notation === "b2b3";
+    const semanticSeries = (series, seriesIndex) => ({
+      series_index: seriesIndex,
+      moves: Array.isArray(series?.moves) ? [...series.moves] : null,
+      child_boundary: series?.child_boundary ?? null,
+      outcome: series?.outcome ?? null,
+      ended_by_check: series?.ended_by_check ?? null,
+    });
+    const selectedSeries5 = principalVariation[4] || null;
+    const selectedSeries5Semantic = semanticSeries(selectedSeries5, 5);
+    const knownAdverseSeries5Semantic = semanticSeries(
+      KNOWN_ADVERSE_B3_SERIES5,
+      5,
+    );
+    const knownAdversePresent = selectedSeries5?.machine_notation
+        === KNOWN_ADVERSE_B3_SERIES5.machine_notation
+      || selectedSeries5?.child_boundary?.fen
+        === KNOWN_ADVERSE_B3_SERIES5.child_boundary.fen
+      || safetyTrace.some((entry) => (
+        entry.request?.iteration_id === entry.request?.request_id + ":d5"
+        && entry.request?.candidate?.order_key === "b2b3"
+        && (
+          entry.request?.candidate?.root_series?.machine_notation
+            === KNOWN_ADVERSE_B3_SERIES5.machine_notation
+          || entry.request?.authoritative_child_boundary?.fen
+            === KNOWN_ADVERSE_B3_SERIES5.child_boundary.fen
+        )
+      ));
+    const SAFETY_REQUEST_KEYS = Object.freeze([
+      "authoritative_child_boundary", "authoritative_root_replay",
+      "call_work_credit", "candidate", "candidate_identity", "certificate_id",
+      "deadline_epoch_ms", "deadline_monotonic_ms", "engine_version",
+      "generation", "incumbent_epoch", "iteration_id", "kernel_sha256",
+      "module_js_sha256", "profile_id", "remaining_time_ms", "request_id",
+      "ruleset_version", "runtime_variant", "safety_revision", "schema",
+      "session_id", "source_fingerprint", "thread_count",
+    ]);
+    const SAFETY_CANDIDATE_KEYS = Object.freeze([
+      "candidate_identity", "child_pv", "order_index", "order_key",
+      "owner_worker_id", "proof_bounds", "root_series", "safety_override",
+      "score", "terminal",
+    ]);
+    const exhaustedResponseKeys = Object.freeze([
+      ...SAFETY_REQUEST_KEYS,
+      "memory_bytes", "memory_peak_bytes", "status", "work_used",
+    ].sort());
+    const exactSelectedCandidate = (entry, rootSeries) => {
+      const candidate = entry?.request?.candidate;
+      return plainObject(candidate)
+        && sameStrings(Object.keys(candidate).sort(), SAFETY_CANDIDATE_KEYS)
+        && candidate.candidate_identity === entry.request.candidate_identity
+        && typeof candidate.candidate_identity === "string"
+        && candidate.candidate_identity.startsWith("spc-root-candidate-v1|")
+        && exactInteger(candidate.order_index, 0, 31)
+        && candidate.order_key === "b2b3"
+        && candidate.owner_worker_id === entry.worker.channel_id
+        && candidate.terminal === false
+        && candidate.safety_override === false
+        && candidate.score === result.score
+        && sameJson(candidate.proof_bounds, result.proof_bounds)
+        && sameSeries(candidate.root_series, rootSeries)
+        && Array.isArray(candidate.child_pv)
+        && candidate.child_pv.length === 4
+        && candidate.child_pv.every((series, index) => (
+          sameSeries(series, principalVariation[index + 1])
+        ));
+    };
+    const exactExhaustedSafety = (entry, callWorkCredit) => {
+      const request = entry?.request;
+      const response = entry?.response;
+      return entry?.ok === true
+        && entry.worker?.channel_id !== null
+        && plainObject(request)
+        && sameStrings(Object.keys(request).sort(), SAFETY_REQUEST_KEYS)
+        && plainObject(response)
+        && sameStrings(Object.keys(response).sort(), exhaustedResponseKeys)
+        && request.schema === "spc-root-safety-task-v1"
+        && rootIdentityMatches(request)
+        && rootIdentityMatches(response)
+        && request.iteration_id === request.request_id + ":d5"
+        && request.generation === 1
+        && exactInteger(request.safety_revision, 0)
+        && exactInteger(request.incumbent_epoch, 1)
+        && exactInteger(request.session_id, 1)
+        && request.candidate_identity === request.candidate?.candidate_identity
+        && request.call_work_credit === callWorkCredit
+        && exactDeadline(entry)
+        && Object.keys(request).every((key) => (
+          own(response, key) && sameJson(response[key], request[key])
+        ))
+        && response.status === "exhausted"
+        && exactInteger(response.work_used, 1, callWorkCredit)
+        && exactInteger(
+          response.memory_bytes,
+          1,
+          preflight.memory_limits?.maximum_bytes,
+        )
+        && exactInteger(
+          response.memory_peak_bytes,
+          response.memory_bytes,
+          preflight.memory_limits?.maximum_bytes,
+        );
+    };
+    const exactSelectedReplay = (
+      entry,
+      { rootSeries, parentBoundary, scope, replayIndex },
+    ) => {
+      const request = entry?.request;
+      const replay = request?.authoritative_root_replay;
+      const child = rootSeries?.child_boundary;
+      const expectedCompletion = rootSeries?.ended_by_check ? "check" : "budget";
+      const remaining = Number(parentBoundary?.series) - Number(rootSeries?.moves?.length);
+      return canonicalSeries(rootSeries)
+        && sameBoundary(request?.authoritative_child_boundary, child)
+        && exactSelectedCandidate(entry, rootSeries)
+        && replay?.schema === "spc-boundary-prefix-v1"
+        && replay.abi_version === 1
+        && replay.ok === true
+        && replay.status === "complete"
+        && prefixIdentityMatches(replay)
+        && replay.request_id === request.iteration_id + ":"
+          + request.safety_revision + ":" + scope + "-replay-" + replayIndex
+        && sameBoundary(replay.boundary_state, parentBoundary)
+        && sameStrings(replay.prefix, rootSeries.moves)
+        && sameStrings(replay.current_prefix, rootSeries.moves)
+        && replay.complete === true
+        && replay.outcome === rootSeries.outcome
+        && replay.completion_reason === expectedCompletion
+        && replay.ended_by_check === rootSeries.ended_by_check
+        && replay.check === rootSeries.ended_by_check
+        && replay.in_check === rootSeries.ended_by_check
+        && replay.budget === parentBoundary.series
+        && replay.series === parentBoundary.series
+        && replay.series_number === parentBoundary.series
+        && replay.active_series_side === parentBoundary.side_to_move
+        && replay.side_to_move === child.side_to_move
+        && replay.fen === child.fen
+        && replay.board_fen === child.board_fen
+        && replay.remaining === remaining
+        && replay.moves_remaining === remaining
+        && replay.unused_moves === remaining
+        && Array.isArray(replay.san)
+        && replay.san.length === rootSeries.moves.length
+        && Array.isArray(replay.frames)
+        && replay.frames.length === rootSeries.moves.length
+        && replay.frames.every((frame, index) => (
+          frame?.index === index + 1
+          && frame.uci === rootSeries.moves[index]
+          && typeof frame.san === "string"
+          && frame.san === replay.san[index]
+          && typeof frame.board_fen === "string"
+          && frame.board_fen.split(" ").length === 6
+        ))
+        && sameFinalBoard(replay.frames.at(-1)?.board_fen, replay.board_fen)
+        && Array.isArray(replay.legal_next)
+        && replay.legal_next.length === 0
+        && Array.isArray(replay.legal_moves)
+        && replay.legal_moves.length === 0
+        && sameBoundary(replay.next_state, child);
+    };
+    const selectedHorizonMatches = selectedPvCanonical
+      ? safetyTrace.filter((entry) => (
+        exactExhaustedSafety(entry, HORIZON_CALL_WORK_CREDIT)
+        && exactSelectedReplay(entry, {
+          rootSeries: principalVariation[4],
+          parentBoundary: principalVariation[3].child_boundary,
+          scope: "pv-horizon",
+          replayIndex: 4,
+        })
+      ))
+      : [];
+    const selectedHorizonTrace = selectedHorizonMatches.length === 1
+      ? selectedHorizonMatches[0]
+      : null;
+    const selectedRootChildCredit = selectedHorizonTrace === null
+      ? null
+      : SAFETY_CALL_WORK_CREDIT - selectedHorizonTrace.response.work_used;
+    const selectedRootChildMatches = (
+      selectedPvCanonical
+      && exactInteger(selectedRootChildCredit, 1, SAFETY_CALL_WORK_CREDIT)
+    )
+      ? safetyTrace.filter((entry) => (
+        exactExhaustedSafety(entry, selectedRootChildCredit)
+        && exactSelectedReplay(entry, {
+          rootSeries: principalVariation[0],
+          parentBoundary: INITIAL_BOUNDARY,
+          scope: "root-child",
+          replayIndex: 0,
+        })
+      ))
+      : [];
+    const selectedRootChildTrace = selectedRootChildMatches.length === 1
+      ? selectedRootChildMatches[0]
+      : null;
+    const selectedTracePairBound = selectedHorizonTrace !== null
+      && selectedRootChildTrace !== null
+      && selectedRootChildTrace.request_sequence
+        > selectedHorizonTrace.request_sequence
+      && selectedRootChildTrace.posted_monotonic_ms
+        >= selectedHorizonTrace.received_monotonic_ms
+      && selectedRootChildTrace.worker === selectedHorizonTrace.worker
+      && selectedRootChildTrace.worker.channel_id
+        === selectedHorizonTrace.worker.channel_id
+      && selectedRootChildTrace.request.session_id
+        === selectedHorizonTrace.request.session_id
+      && selectedRootChildTrace.request.request_id
+        === selectedHorizonTrace.request.request_id
+      && selectedRootChildTrace.request.iteration_id
+        === selectedHorizonTrace.request.iteration_id
+      && selectedRootChildTrace.request.generation
+        === selectedHorizonTrace.request.generation
+      && selectedRootChildTrace.request.safety_revision
+        === selectedHorizonTrace.request.safety_revision
+      && selectedRootChildTrace.request.incumbent_epoch
+        === selectedHorizonTrace.request.incumbent_epoch
+      && selectedRootChildTrace.request.deadline_monotonic_ms
+        === selectedHorizonTrace.request.deadline_monotonic_ms
+      && selectedRootChildTrace.request.deadline_epoch_ms
+        === selectedHorizonTrace.request.deadline_epoch_ms
+      && selectedRootChildTrace.request.remaining_time_ms
+        <= selectedHorizonTrace.request.remaining_time_ms
+      && selectedRootChildTrace.request.candidate_identity
+        === selectedHorizonTrace.request.candidate_identity
+      && selectedRootChildTrace.request.candidate.order_index
+        === selectedHorizonTrace.request.candidate.order_index
+      && selectedRootChildTrace.request.candidate.order_key
+        === selectedHorizonTrace.request.candidate.order_key
+      && selectedRootChildTrace.request.candidate.owner_worker_id
+        === selectedHorizonTrace.request.candidate.owner_worker_id
+      && selectedRootChildTrace.request.candidate.score
+        === selectedHorizonTrace.request.candidate.score
+      && sameJson(
+        selectedRootChildTrace.request.candidate.proof_bounds,
+        selectedHorizonTrace.request.candidate.proof_bounds,
+      )
+      && sameJson(
+        selectedRootChildTrace.request.candidate.child_pv,
+        selectedHorizonTrace.request.candidate.child_pv,
+      );
+    const principalVariationSha256 = await canonicalSha256(principalVariation);
+    const selectedSeries5SemanticSha256 = await canonicalSha256(
+      selectedSeries5Semantic,
+    );
+    const knownAdverseSeries5SemanticSha256 = await canonicalSha256(
+      knownAdverseSeries5Semantic,
+    );
+    const selectedD5HorizonCertificationWitness = Object.freeze({
+      schema: SELECTED_D5_HORIZON_WITNESS_SCHEMA,
+      fixture_id: SELECTED_D5_FIXTURE_ID,
+      selected_root_series: "b2b3",
+      candidate_identity: selectedHorizonTrace?.request?.candidate_identity ?? null,
+      owner_worker_id: selectedHorizonTrace?.worker?.channel_id ?? null,
+      principal_variation_sha256: principalVariationSha256,
+      selected_series5_semantic_sha256: selectedSeries5SemanticSha256,
+      known_adverse_series5_semantic_sha256: knownAdverseSeries5SemanticSha256,
+      known_adverse_present: knownAdversePresent,
+      horizon_request_sequence: selectedHorizonTrace?.request_sequence ?? null,
+      horizon_status: selectedHorizonTrace?.response?.status ?? null,
+      horizon_call_work_credit:
+        selectedHorizonTrace?.request?.call_work_credit ?? null,
+      horizon_work_used: selectedHorizonTrace?.response?.work_used ?? null,
+      root_child_request_sequence: selectedRootChildTrace?.request_sequence ?? null,
+      root_child_status: selectedRootChildTrace?.response?.status ?? null,
+      root_child_call_work_credit:
+        selectedRootChildTrace?.request?.call_work_credit ?? null,
+      root_child_work_used: selectedRootChildTrace?.response?.work_used ?? null,
+      safety_work_used: selectedHorizonTrace !== null && selectedRootChildTrace !== null
+        ? selectedHorizonTrace.response.work_used
+          + selectedRootChildTrace.response.work_used
+        : null,
+      safety_call_work_credit: SAFETY_CALL_WORK_CREDIT,
+    });
+    const rawTraceAttestation = Object.freeze({
+      schema: RAW_TRACE_ATTESTATION_SCHEMA,
+      horizon_safety_trace_count: safetyTrace.length,
+      horizon_safety_trace_sha256: await canonicalSha256(safetyTrace),
+      horizon_research_trace_count: horizonResearchTrace.length,
+      horizon_research_trace_sha256: await canonicalSha256(horizonResearchTrace),
+    });
     const workerCount = result.runtime_receipt?.worker_count;
     const mainWorkerCalls = workerFactoryCalls.filter(
       (worker) => worker.name === "scottish-progressive-engine",
@@ -1306,8 +1662,8 @@ const probeExpression = String.raw`(async () => {
         && result.legal_validation_runtime === "compiled-wasm",
       policy_is_explicit: result.selection_policy
         === CHECKED_PV_SELECTION_POLICY,
-      repair_once_then_veto_policy_bound: lineRejections === 3
-        && nativeRepairs === 2
+      repair_once_then_veto_policy_bound: lineRejections === 2
+        && nativeRepairs === 1
         && candidateVetoes === 1
         && nativeRepairs + candidateVetoes === lineRejections
         && result.selection_policy_filtered === true
@@ -1329,29 +1685,100 @@ const probeExpression = String.raw`(async () => {
         && result.stats?.pv_horizon_line_rejections === lineRejections
         && result.stats?.pv_horizon_native_repairs === nativeRepairs
         && result.stats?.pv_horizon_candidate_vetoes === candidateVetoes,
-      f3_exact_raw_mate_and_same_root_repair: f3Witness !== null,
+      f3_exact_raw_mate_and_same_root_repair: f3Witness !== null
+        && f3RepairWitnesses.length === 1
+        && b3RepairWitnesses.length === 0,
+      f3_repair_warm_recertified: f3WarmRecertification !== null
+        && f3WarmRecertifications.length === 1
+        && secondF3Safety !== null
+        && f3WarmRecertification.received_monotonic_ms
+          <= secondF3Safety.posted_monotonic_ms,
       f3_second_distinct_proof_vetoed_without_research: thresholdVetoWitness !== null
+        && f3AdverseSafetyTraces.length === 2
+        && f3AdverseSafetyTraces.includes(f3Witness?.safety)
+        && f3AdverseSafetyTraces.includes(secondF3Safety)
+        && secondF3Safety.request_sequence > f3Witness.safety.request_sequence
         && thresholdVetoWitness.first_proof_sha256
           !== thresholdVetoWitness.second_proof_sha256
         && thresholdVetoWitness.proof_count_2_research_dispatched === false,
-      b3_exact_raw_mate_and_same_root_repair: b3Witness !== null,
-      repaired_candidates_are_distinct: f3Witness !== null
-        && b3Witness !== null
-        && f3Witness.repair.request.candidate_identity
-          !== b3Witness.repair.request.candidate_identity
-        && f3Witness.repair.response.root_series.machine_notation === "f2f3"
-        && b3Witness.repair.response.root_series.machine_notation === "b2b3",
-      newest_request_order_proofs_hit: f3Witness !== null
-        && b3Witness !== null
+      f3_newest_request_order_proof_hit: f3Witness !== null
         && preflight.root_session_contract?.horizon_research?.hit_mask_order
           === "request-order",
       selected_b3_after_f3_policy_veto: finalRootSeries === "b2b3"
         && f3PolicyVeto !== null,
-      final_repaired_winner_warm_recertified: repairWitnesses.every(
-        (witness, index) => witness === null
-          || witness.expected.root_series !== finalRootSeries
-          || warmRecertifications[index] !== null,
-      ),
+      selected_b3_full_d5_pv_bound_to_compiled_trace: selectedPvCanonical
+        && selectedTracePairBound
+        && selectedD5HorizonCertificationWitness.schema
+          === SELECTED_D5_HORIZON_WITNESS_SCHEMA
+        && selectedD5HorizonCertificationWitness.fixture_id
+          === SELECTED_D5_FIXTURE_ID
+        && selectedD5HorizonCertificationWitness.selected_root_series
+          === finalRootSeries
+        && selectedD5HorizonCertificationWitness.candidate_identity
+          === selectedHorizonTrace.request.candidate_identity
+        && selectedD5HorizonCertificationWitness.owner_worker_id
+          === selectedHorizonTrace.worker.channel_id
+        && selectedD5HorizonCertificationWitness.principal_variation_sha256
+          === principalVariationSha256
+        && rawTraceAttestation.horizon_safety_trace_count === safetyTrace.length
+        && rawTraceAttestation.horizon_safety_trace_sha256
+          === await canonicalSha256(safetyTrace)
+        && rawTraceAttestation.horizon_research_trace_count
+          === horizonResearchTrace.length
+        && rawTraceAttestation.horizon_research_trace_sha256
+          === await canonicalSha256(horizonResearchTrace),
+      selected_b3_known_adverse_series5_horizon_absent: knownAdversePresent === false
+        && selectedSeries5?.machine_notation
+          !== KNOWN_ADVERSE_B3_SERIES5.machine_notation
+        && selectedSeries5?.child_boundary?.fen
+          !== KNOWN_ADVERSE_B3_SERIES5.child_boundary.fen
+        && selectedSeries5SemanticSha256 !== knownAdverseSeries5SemanticSha256
+        && selectedD5HorizonCertificationWitness.selected_series5_semantic_sha256
+          === selectedSeries5SemanticSha256
+        && selectedD5HorizonCertificationWitness
+          .known_adverse_series5_semantic_sha256
+          === knownAdverseSeries5SemanticSha256
+        && selectedD5HorizonCertificationWitness.known_adverse_present === false,
+      selected_b3_horizon_exhaustively_certified: selectedHorizonMatches.length === 1
+        && selectedHorizonTrace.response.status === "exhausted"
+        && selectedHorizonTrace.request.call_work_credit
+          === HORIZON_CALL_WORK_CREDIT
+        && exactInteger(
+          selectedHorizonTrace.response.work_used,
+          1,
+          HORIZON_CALL_WORK_CREDIT,
+        )
+        && selectedD5HorizonCertificationWitness.horizon_request_sequence
+          === selectedHorizonTrace.request_sequence
+        && selectedD5HorizonCertificationWitness.horizon_status === "exhausted"
+        && selectedD5HorizonCertificationWitness.horizon_call_work_credit
+          === HORIZON_CALL_WORK_CREDIT
+        && selectedD5HorizonCertificationWitness.horizon_work_used
+          === selectedHorizonTrace.response.work_used,
+      selected_b3_root_child_exhaustively_certified:
+        selectedRootChildMatches.length === 1
+        && selectedRootChildTrace.response.status === "exhausted"
+        && selectedRootChildTrace.request.call_work_credit
+          === SAFETY_CALL_WORK_CREDIT - selectedHorizonTrace.response.work_used
+        && exactInteger(
+          selectedRootChildTrace.response.work_used,
+          1,
+          selectedRootChildTrace.request.call_work_credit,
+        )
+        && selectedD5HorizonCertificationWitness.root_child_request_sequence
+          === selectedRootChildTrace.request_sequence
+        && selectedD5HorizonCertificationWitness.root_child_status === "exhausted"
+        && selectedD5HorizonCertificationWitness.root_child_call_work_credit
+          === selectedRootChildTrace.request.call_work_credit
+        && selectedD5HorizonCertificationWitness.root_child_work_used
+          === selectedRootChildTrace.response.work_used
+        && selectedD5HorizonCertificationWitness.safety_work_used
+          === selectedHorizonTrace.response.work_used
+            + selectedRootChildTrace.response.work_used
+        && selectedD5HorizonCertificationWitness.safety_call_work_credit
+          === SAFETY_CALL_WORK_CREDIT
+        && selectedD5HorizonCertificationWitness.safety_work_used
+          <= SAFETY_CALL_WORK_CREDIT,
       global_work_respected: exactInteger(
         result.work,
         1,
@@ -1362,8 +1789,16 @@ const probeExpression = String.raw`(async () => {
       no_interruption: result.timed_out === false
         && result.work_limit_reached === false,
       deadline_respected: elapsedSeconds < 60
-        && repairWitnesses.every((witness) => witness === null
-          || witness.repair.received_monotonic_ms < searchDeadline),
+        && f3Witness !== null
+        && f3WarmRecertification !== null
+        && secondF3Safety !== null
+        && selectedHorizonTrace !== null
+        && selectedRootChildTrace !== null
+        && f3Witness.repair.received_monotonic_ms < searchDeadline
+        && f3WarmRecertification.received_monotonic_ms < searchDeadline
+        && secondF3Safety.received_monotonic_ms < searchDeadline
+        && selectedHorizonTrace.received_monotonic_ms < searchDeadline
+        && selectedRootChildTrace.received_monotonic_ms < searchDeadline,
     };
     if (Object.values(checks).some((value) => value !== true)) {
       throw new Error("checked-PV horizon checks failed: " + JSON.stringify({
@@ -1381,12 +1816,23 @@ const probeExpression = String.raw`(async () => {
           work_limit_reached: result.work_limit_reached,
         },
         workerFactoryCalls,
+        witnessMatchCounts: {
+          f3_repairs: f3RepairWitnesses.length,
+          b3_repairs: b3RepairWitnesses.length,
+          f3_warm_recertifications: f3WarmRecertifications.length,
+          f3_second_adverse_safety: secondF3Candidates.length,
+          f3_adverse_safety_total: f3AdverseSafetyTraces.length,
+          selected_horizon_exhausted: selectedHorizonMatches.length,
+          selected_root_child_exhausted: selectedRootChildMatches.length,
+        },
+        selectedD5HorizonCertificationWitness,
+        rawTraceAttestation,
         safetyTrace,
         horizonResearchTrace,
       }));
     }
     return {
-      schema: "spc-opera-checked-pv-horizon-receipt-v4",
+      schema: "spc-opera-checked-pv-horizon-receipt-v5",
       status: "passed-not-certified",
       product_publishable: false,
       safety_certified: false,
@@ -1427,19 +1873,18 @@ const probeExpression = String.raw`(async () => {
       same_root_repair_policy: sameRootRepairPolicy,
       pv_horizon_policy_vetoes: policyVetoes,
       threshold_veto_witness: thresholdVetoWitness,
+      selected_d5_horizon_certification_witness:
+        selectedD5HorizonCertificationWitness,
+      raw_trace_attestation: rawTraceAttestation,
+      raw_horizon_safety_traces: safetyTrace,
+      raw_horizon_research_traces: horizonResearchTrace,
       horizon_safety_traces: {
         f3: f3Witness?.safety,
-        b3: b3Witness?.safety,
       },
-      horizon_research_traces: horizonResearchTrace,
       certified_repair_traces: {
         f3: f3Witness?.repair,
-        b3: b3Witness?.repair,
       },
-      final_winner_warm_recertification: {
-        f3: warmRecertifications[0],
-        b3: warmRecertifications[1],
-      },
+      f3_warm_recertification_trace: f3WarmRecertification,
       runtime_receipt: result.runtime_receipt,
       stats: result.stats,
     };

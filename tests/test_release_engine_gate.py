@@ -69,7 +69,7 @@ def _browser_receipt(*, scenario: str = "initial", mode: str = "faster") -> dict
         "committed_work": 40_000,
         "reserved_work": 0,
         "remaining_work": budget.max_work - 40_000,
-        "safety_reserve_work": 1_000_000,
+        "safety_reserve_work": 4_000_000,
         "safety_committed_work": 100,
         "exact_at_cap": False,
         "within_cap": True,
@@ -123,7 +123,7 @@ def _browser_receipt(*, scenario: str = "initial", mode: str = "faster") -> dict
                 "depth": 5,
                 "width": 32,
                 "max_work": budget.max_work,
-                "safety_reserve_work": 1_000_000,
+                "safety_reserve_work": 4_000_000,
                 "mode": "warm",
                 "config": {
                     "max_depth": 5,

@@ -151,7 +151,7 @@ def build_browser_probe_plan(
                     "wave": workers,
                     "mode": "warm",
                     "max_work": budget.max_work,
-                    "safety_work": 1_000_000,
+                    "safety_work": 4_000_000,
                     "timeout_ms": int(budget.seconds * 1_000),
                     "fen": boundary.fen,
                     "series": boundary.series,
@@ -1188,7 +1188,7 @@ def normalize_browser_receipt(
     _require(config.get("max_work") == budget.max_work, "browser config max_work drifted")
     _require(config.get("weights") == BASELINE_WEIGHTS, "browser benchmark profile is not the certified baseline")
     safety_reserve_work = geometry.get("safety_reserve_work")
-    _require(safety_reserve_work == 1_000_000, "browser safety reserve drifted")
+    _require(safety_reserve_work == 4_000_000, "browser safety reserve drifted")
     worker_environment = _object(worker.get("environment"), "browser worker environment")
     _require(
         worker_environment.get("ordinary_module_workers") is True,

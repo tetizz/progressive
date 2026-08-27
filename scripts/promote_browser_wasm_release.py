@@ -33,7 +33,7 @@ from scottish_progressive.rules import SeriesLegalityError, play_series  # noqa:
 from scripts import build_browser_wasm_bundle as bundle_builder  # noqa: E402
 
 
-RELEASE_SCHEMA = "spc-browser-wasm-release-promotion-v1"
+RELEASE_SCHEMA = "spc-browser-wasm-release-promotion-v2"
 BUILD_SCHEMA = "spc-root-session-build-receipt-v1"
 ROOT_SMOKE_SCHEMA = "spc-root-session-wasm-smoke-v1"
 ROOT_PARITY_SCHEMA = "spc-root-d5-oracle-v1"
@@ -42,7 +42,7 @@ BROWSER_PREFIX_SCHEMA = "spc-browser-prefix-contract-receipt-v1"
 MATE_PARITY_SCHEMA = "spc-mate-wasm-receipt-v2"
 OPERA_CDP_SCHEMA = "spc-opera-root-session-cdp-receipt-v1"
 OPERA_WORKER_SCHEMA = "spc-opera-root-d5-benchmark-v2"
-OPERA_CHECKED_HORIZON_SCHEMA = "spc-opera-checked-pv-horizon-receipt-v4"
+OPERA_CHECKED_HORIZON_SCHEMA = "spc-opera-checked-pv-horizon-receipt-v5"
 OPERA_CHECKED_HORIZON_FILENAME = "opera-checked-pv-horizon-receipt.json"
 CANDIDATE_SCHEMA = "spc-browser-wasm-release-candidate-v1"
 CHECKED_HORIZON_EVIDENCE_SCHEMA = "spc-checked-horizon-wasm-evidence-v1"
@@ -50,7 +50,14 @@ CHECKED_PV_SELECTION_POLICY = "repair-once-then-veto-adverse-checked-pv-mates-v1
 SAME_ROOT_REPAIR_POLICY_SCHEMA = "spc-same-root-horizon-repair-policy-v1"
 PV_HORIZON_POLICY_VETO_SCHEMA = "spc-pv-horizon-candidate-veto-v1"
 THRESHOLD_VETO_WITNESS_SCHEMA = "spc-opera-same-root-repair-limit-witness-v1"
+SELECTED_D5_HORIZON_CERTIFICATION_SCHEMA = (
+    "spc-opera-selected-d5-horizon-certification-v1"
+)
+RAW_TRACE_ATTESTATION_SCHEMA = "spc-opera-checked-pv-raw-trace-attestation-v1"
+SELECTED_D5_FIXTURE_ID = "b3-known-adverse-series5-2026-08-26-v1"
 MAXIMUM_SUCCESSFUL_SAME_ROOT_REPAIRS = 1
+CERTIFIED_SAFETY_RESERVE_POSITIONS = 4_000_000
+PV_HORIZON_MATE_WORK_LIMIT = 3_500_000
 WHITE_HORIZON_CANDIDATE_SHA256 = (
     "d050d64ee2388a82969a0953fdc1aa937455951d762ec9b7d16c3f9fee7b5c94"
 )
@@ -119,12 +126,14 @@ OPERA_CHECKED_HORIZON_CHECKS = frozenset(
         "policy_is_explicit",
         "repair_once_then_veto_policy_bound",
         "f3_exact_raw_mate_and_same_root_repair",
+        "f3_repair_warm_recertified",
         "f3_second_distinct_proof_vetoed_without_research",
-        "b3_exact_raw_mate_and_same_root_repair",
-        "repaired_candidates_are_distinct",
-        "newest_request_order_proofs_hit",
+        "f3_newest_request_order_proof_hit",
         "selected_b3_after_f3_policy_veto",
-        "final_repaired_winner_warm_recertified",
+        "selected_b3_full_d5_pv_bound_to_compiled_trace",
+        "selected_b3_known_adverse_series5_horizon_absent",
+        "selected_b3_horizon_exhaustively_certified",
+        "selected_b3_root_child_exhaustively_certified",
         "global_work_respected",
         "no_interruption",
         "deadline_respected",
@@ -198,6 +207,17 @@ class OperaCheckedHorizonEvidence:
     native_repairs: int
     candidate_vetoes: int
     selected_root_series: str
+    principal_variation_sha256: str
+    selected_fixture_id: str
+    known_adverse_excluded: bool
+    selected_horizon_exhaustively_certified: bool
+    selected_root_child_exhaustively_certified: bool
+    raw_safety_trace_count: int
+    raw_safety_trace_sha256: str
+    raw_research_trace_count: int
+    raw_research_trace_sha256: str
+    raw_trace_attestation: dict[str, Any]
+    selected_d5_horizon_certification_witness: dict[str, Any]
 
 
 def _mapping(value: object, label: str) -> Mapping[str, Any]:
@@ -596,6 +616,24 @@ def _validate_series(value: object, label: str) -> dict[str, Any]:
     return series
 
 
+def _boundary_from_state(state: ProgressiveState) -> dict[str, Any]:
+    ep_targets = [chess.square_name(square) for square in state.ep_targets]
+    fen = state.board.fen(en_passant="fen")
+    return {
+        "board_fen": fen,
+        "chess960": bool(state.board.chess960),
+        "ep_targets": ep_targets,
+        "fen": fen,
+        "progressive_ep": ep_targets,
+        "promoted_hex": f"{state.board.promoted:016x}",
+        "quiet_draw_pending": state.quiet_draw_pending,
+        "quiet_series": state.quiet_series,
+        "series": state.series_number,
+        "series_number": state.series_number,
+        "side_to_move": "white" if state.board.turn == chess.WHITE else "black",
+    }
+
+
 def _validate_rooted_path_continuity(
     path: list[dict[str, Any]],
     *,
@@ -613,21 +651,7 @@ def _validate_rooted_path_continuity(
                 f"{expected_series}: {error}"
             ) from error
         final_state = result.final_state
-        ep_targets = [chess.square_name(square) for square in final_state.ep_targets]
-        fen = final_state.board.fen(en_passant="fen")
-        actual_boundary = {
-            "board_fen": fen,
-            "chess960": bool(final_state.board.chess960),
-            "ep_targets": ep_targets,
-            "fen": fen,
-            "progressive_ep": ep_targets,
-            "promoted_hex": f"{final_state.board.promoted:016x}",
-            "quiet_draw_pending": final_state.quiet_draw_pending,
-            "quiet_series": final_state.quiet_series,
-            "series": final_state.series_number,
-            "series_number": final_state.series_number,
-            "side_to_move": "white" if final_state.board.turn == chess.WHITE else "black",
-        }
+        actual_boundary = _boundary_from_state(final_state)
         expected_outcome = (
             None
             if result.outcome is None
@@ -966,6 +990,119 @@ def _validate_raw_safety_trace(
     ):
         raise ReleaseGateError(f"{label} raw mate result is not fail-closed")
     return trace
+
+
+def _validate_exhausted_safety_trace(
+    value: object,
+    *,
+    expected_root: str,
+    expected_series: Mapping[str, Any],
+    expected_parent_boundary: Mapping[str, Any],
+    expected_replay_suffix: str,
+    expected_call_work_credit: int,
+    root_identity: Mapping[str, Any],
+    prefix_identity: Mapping[str, Any],
+    maximum_work: int,
+    label: str,
+) -> dict[str, Any]:
+    trace = _validate_trace_envelope(value, label)
+    request = _require_fields_match(trace["request"], root_identity, f"{label} request")
+    response = _require_fields_match(trace["response"], root_identity, f"{label} response")
+    if (
+        request.get("schema") != "spc-root-safety-task-v1"
+        or response.get("status") != "exhausted"
+        or set(response)
+        != {*request, "status", "work_used", "memory_bytes", "memory_peak_bytes"}
+    ):
+        raise ReleaseGateError(f"{label} is not an exact exhausted safety result")
+    for key, requested in request.items():
+        if response.get(key) != requested:
+            raise ReleaseGateError(f"{label} response did not echo request field {key!r}")
+    request_id = _text(request.get("request_id"), f"{label} request id")
+    if (
+        request.get("iteration_id") != f"{request_id}:d5"
+        or not isinstance(request.get("generation"), int)
+        or int(request["generation"]) < 1
+        or not isinstance(request.get("safety_revision"), int)
+        or int(request["safety_revision"]) < 0
+        or not isinstance(request.get("incumbent_epoch"), int)
+        or int(request["incumbent_epoch"]) < 0
+        or _number(request.get("deadline_monotonic_ms"), f"{label} deadline")
+        <= float(trace["received_monotonic_ms"])
+        or _number(request.get("deadline_epoch_ms"), f"{label} epoch deadline") <= 0
+        or not 1 <= _integer(request.get("remaining_time_ms"), f"{label} remaining time") <= 60_000
+    ):
+        raise ReleaseGateError(f"{label} request identity, revision, or deadline is invalid")
+
+    candidate = _mapping(request.get("candidate"), f"{label} candidate")
+    normalized_series = _validate_series(expected_series, f"{label} expected series")
+    candidate_series = _validate_series(candidate.get("root_series"), f"{label} candidate series")
+    child = _validate_boundary(
+        request.get("authoritative_child_boundary"),
+        f"{label} authoritative child",
+    )
+    if (
+        request.get("candidate_identity") != candidate.get("candidate_identity")
+        or candidate.get("order_key") != expected_root
+        or candidate_series != normalized_series
+        or child != normalized_series.get("child_boundary")
+    ):
+        raise ReleaseGateError(f"{label} candidate is not bound to the selected D5 series")
+
+    parent = _validate_boundary(expected_parent_boundary, f"{label} expected parent")
+    replay = _require_fields_match(
+        request.get("authoritative_root_replay"),
+        prefix_identity,
+        f"{label} root replay",
+    )
+    expected_replay_id = (
+        f"{request.get('iteration_id')}:{request.get('safety_revision')}:"
+        f"{expected_replay_suffix}"
+    )
+    ended_by_check = normalized_series.get("ended_by_check") is True
+    if (
+        replay.get("schema") != "spc-boundary-prefix-v1"
+        or replay.get("request_id") != expected_replay_id
+        or replay.get("boundary_state") != parent
+        or replay.get("prefix") != normalized_series.get("moves")
+        or replay.get("current_prefix") != normalized_series.get("moves")
+        or replay.get("complete") is not True
+        or replay.get("outcome") != normalized_series.get("outcome")
+        or replay.get("completion_reason") != ("check" if ended_by_check else "budget")
+        or replay.get("ended_by_check") is not ended_by_check
+        or replay.get("check") is not ended_by_check
+        or replay.get("in_check") is not ended_by_check
+        or replay.get("next_state") != child
+        or any(replay.get(key) != 0 for key in ("remaining", "moves_remaining", "unused_moves"))
+        or replay.get("legal_next") != []
+        or replay.get("legal_moves") != []
+    ):
+        raise ReleaseGateError(f"{label} root replay is not the exact authoritative series")
+
+    credit = _integer(request.get("call_work_credit"), f"{label} work credit", 1)
+    work_used = _integer(response.get("work_used"), f"{label} work used", 1)
+    memory = _integer(response.get("memory_bytes"), f"{label} memory", 1)
+    peak = _integer(response.get("memory_peak_bytes"), f"{label} peak memory", memory)
+    if (
+        credit != expected_call_work_credit
+        or credit > maximum_work
+        or work_used > credit
+        or peak < memory
+    ):
+        raise ReleaseGateError(f"{label} exhausted-search work or memory envelope drifted")
+    return trace
+
+
+def _series_semantic(series: Mapping[str, Any], *, series_index: int) -> dict[str, Any]:
+    return {
+        "series_index": series_index,
+        "moves": list(_list(series.get("moves"), "series semantic moves")),
+        "child_boundary": dict(
+            _mapping(series.get("child_boundary"), "series semantic child boundary")
+        ),
+        "outcome": series.get("outcome"),
+        "ended_by_check": series.get("ended_by_check"),
+    }
 
 
 def _validate_retained_proof(value: object, *, root: str, depth: int, label: str) -> dict[str, Any]:
@@ -3618,6 +3755,24 @@ def validate_opera_checked_horizon_receipt(
     selected_root = "/".join(best_series)
     if selected_root != "b2b3":
         raise ReleaseGateError("Opera checked-PV result did not select the release-bound b2b3 root")
+    principal_variation = [
+        _validate_series(value, f"Opera checked-PV principal variation series {index}")
+        for index, value in enumerate(
+            _list(payload.get("principal_variation"), "Opera checked-PV principal variation"),
+            start=1,
+        )
+    ]
+    if (
+        len(principal_variation) != 5
+        or principal_variation[0].get("machine_notation") != selected_root
+    ):
+        raise ReleaseGateError(
+            "Opera checked-PV principal variation is not the complete selected D5 line"
+        )
+    _validate_rooted_path_continuity(
+        principal_variation,
+        label="Opera checked-PV principal variation",
+    )
     _signed_integer(summary.get("score"), "Opera checked-PV score")
     bounds = _list(summary.get("proof_bounds"), "Opera checked-PV proof bounds")
     if len(bounds) != 2 or any(bound not in {-1, 0, 1} for bound in bounds):
@@ -3625,12 +3780,12 @@ def validate_opera_checked_horizon_receipt(
     line_rejections = _integer(
         summary.get("pv_horizon_line_rejections"),
         "Opera checked-PV line rejections",
-        3,
+        2,
     )
     native_repairs = _integer(
         summary.get("pv_horizon_native_repairs"),
         "Opera checked-PV native repairs",
-        2,
+        1,
     )
     candidate_vetoes = _integer(
         summary.get("pv_horizon_candidate_vetoes"),
@@ -3638,8 +3793,8 @@ def validate_opera_checked_horizon_receipt(
     )
     work = _integer(summary.get("work"), "Opera checked-PV work", 1)
     if (
-        line_rejections != 3
-        or native_repairs != 2
+        line_rejections != 2
+        or native_repairs != 1
         or candidate_vetoes != 1
         or native_repairs + candidate_vetoes != line_rejections
     ):
@@ -3727,67 +3882,193 @@ def validate_opera_checked_horizon_receipt(
     if elapsed >= 60:
         raise ReleaseGateError("Opera checked-PV D5 proof did not complete under 60 seconds")
 
+    if evidence.safety_reserve_positions != CERTIFIED_SAFETY_RESERVE_POSITIONS:
+        raise ReleaseGateError("Opera checked-PV evidence did not use the certified safety reserve")
+
+    raw_safety_traces = _list(
+        payload.get("raw_horizon_safety_traces"),
+        "Opera checked-PV raw safety traces",
+    )
+    raw_research_traces = _list(
+        payload.get("raw_horizon_research_traces"),
+        "Opera checked-PV raw research traces",
+    )
+    raw_attestation = dict(
+        _mapping(payload.get("raw_trace_attestation"), "Opera checked-PV raw trace attestation")
+    )
+    if set(raw_attestation) != {
+        "schema",
+        "horizon_safety_trace_count",
+        "horizon_safety_trace_sha256",
+        "horizon_research_trace_count",
+        "horizon_research_trace_sha256",
+    }:
+        raise ReleaseGateError("Opera checked-PV raw trace attestation has the wrong shape")
+    raw_safety_sha256 = _canonical_sha256(raw_safety_traces)
+    raw_research_sha256 = _canonical_sha256(raw_research_traces)
+    if (
+        raw_attestation.get("schema") != RAW_TRACE_ATTESTATION_SCHEMA
+        or raw_attestation.get("horizon_safety_trace_count") != len(raw_safety_traces)
+        or raw_attestation.get("horizon_safety_trace_sha256") != raw_safety_sha256
+        or raw_attestation.get("horizon_research_trace_count") != len(raw_research_traces)
+        or raw_attestation.get("horizon_research_trace_sha256") != raw_research_sha256
+        or not raw_safety_traces
+        or not raw_research_traces
+    ):
+        raise ReleaseGateError("Opera checked-PV full raw trace attestation drifted")
+
+    normalized_raw_safety: list[dict[str, Any]] = []
+    for index, value in enumerate(raw_safety_traces):
+        trace = _validate_trace_envelope(value, f"Opera checked-PV raw safety trace {index}")
+        request = _require_fields_match(
+            trace["request"],
+            root_identity,
+            f"Opera checked-PV raw safety request {index}",
+        )
+        response = _require_fields_match(
+            trace["response"],
+            root_identity,
+            f"Opera checked-PV raw safety response {index}",
+        )
+        if (
+            trace["worker"] not in normalized_workers
+            or request.get("schema") != "spc-root-safety-task-v1"
+            or response.get("status") not in {"found", "exhausted", "unknown"}
+            or any(response.get(key) != requested for key, requested in request.items())
+            or _number(request.get("deadline_monotonic_ms"), "raw safety deadline")
+            <= float(trace["received_monotonic_ms"])
+            or _number(request.get("deadline_epoch_ms"), "raw safety epoch deadline") <= 0
+        ):
+            raise ReleaseGateError("Opera checked-PV raw safety trace is not factory-bound")
+        credit = _integer(request.get("call_work_credit"), "raw safety work credit", 1)
+        used = _integer(response.get("work_used"), "raw safety work used", 1)
+        memory = _integer(response.get("memory_bytes"), "raw safety memory", 1)
+        peak = _integer(response.get("memory_peak_bytes"), "raw safety peak memory", memory)
+        if credit > CERTIFIED_SAFETY_RESERVE_POSITIONS or used > credit or peak < memory:
+            raise ReleaseGateError("Opera checked-PV raw safety work envelope drifted")
+        normalized_raw_safety.append(trace)
+
+    normalized_raw_research: list[dict[str, Any]] = []
+    for index, value in enumerate(raw_research_traces):
+        trace = _validate_trace_envelope(value, f"Opera checked-PV raw research trace {index}")
+        request = _require_fields_match(
+            trace["request"],
+            root_identity,
+            f"Opera checked-PV raw research request {index}",
+        )
+        response = _require_fields_match(
+            trace["response"],
+            root_identity,
+            f"Opera checked-PV raw research response {index}",
+        )
+        if (
+            trace["worker"] not in normalized_workers
+            or request.get("schema") != "spc-root-horizon-research-task-v1"
+            or response.get("schema") != "spc-root-horizon-research-result-v1"
+            or response.get("status") != "complete"
+            or response.get("bound") != "exact"
+        ):
+            raise ReleaseGateError("Opera checked-PV raw research trace is not factory-bound")
+        normalized_raw_research.append(trace)
+
     safety_map = _mapping(payload.get("horizon_safety_traces"), "Opera checked-PV safety traces")
     repair_map = _mapping(payload.get("certified_repair_traces"), "Opera checked-PV repair traces")
-    warm_map = _mapping(
-        payload.get("final_winner_warm_recertification"),
-        "Opera checked-PV warm recertifications",
+    if set(safety_map) != {"f3"} or set(repair_map) != {"f3"}:
+        raise ReleaseGateError("Opera checked-PV counted trace fixtures are incomplete")
+    f3_safety = _validate_raw_safety_trace(
+        safety_map["f3"],
+        expected_root="f2f3",
+        expected_unsafe_horizon="d1e2/e2c4/c4c7/f1c4/c7c8",
+        expected_child_fen=(
+            "rnQ1k1nr/1p1p1ppp/8/p3p3/1PB1P3/5P2/1PPP3P/RNB1K1Nq b Qkq - 0 7"
+        ),
+        root_identity=root_identity,
+        prefix_identity=prefix_identity,
+        maximum_work=100_000_000,
+        label="Opera checked-PV f3 safety",
     )
-    if set(safety_map) != {"f3", "b3"} or set(repair_map) != {"f3", "b3"} or set(warm_map) != {"f3", "b3"}:
-        raise ReleaseGateError("Opera checked-PV trace fixtures are incomplete")
-    research_traces = _list(payload.get("horizon_research_traces"), "Opera checked-PV research traces")
-    fixtures = {
-        "f3": (
-            "f2f3",
-            "d1e2/e2c4/c4c7/f1c4/c7c8",
-            "rnQ1k1nr/1p1p1ppp/8/p3p3/1PB1P3/5P2/1PPP3P/RNB1K1Nq b Qkq - 0 7",
-        ),
-        "b3": (
-            "b2b3",
-            "e1f2/d1g4/f2e3/g1h3/g4h5",
-            "rnbq1bnr/pppp1kpp/4p3/7Q/2B5/1P2K2N/PBPP2PP/RN5R b - - 4 7",
-        ),
-    }
-    validated_pairs: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
-    for fixture, (expected_root, unsafe_horizon, child_fen) in fixtures.items():
-        safety = _validate_raw_safety_trace(
-            safety_map[fixture],
-            expected_root=expected_root,
-            expected_unsafe_horizon=unsafe_horizon,
-            expected_child_fen=child_fen,
-            root_identity=root_identity,
-            prefix_identity=prefix_identity,
-            maximum_work=100_000_000,
-            label=f"Opera checked-PV {fixture} safety",
-        )
-        repair = _validate_horizon_research_trace(
-            repair_map[fixture],
-            expected_root=expected_root,
-            root_identity=root_identity,
-            maximum_work=100_000_000,
-            require_newest_hit=True,
-            require_warm_exact=False,
-            label=f"Opera checked-PV {fixture} repair",
-        )
-        if safety["worker"] not in normalized_workers or repair["worker"] not in normalized_workers:
-            raise ReleaseGateError(
-                f"Opera checked-PV {fixture} trace Worker was not created by the bound factory"
-            )
-        if not _trace_occurs(repair, research_traces):
-            raise ReleaseGateError(f"Opera checked-PV {fixture} repair is absent from the raw trace")
-        _validate_safety_repair_crosslink(
-            safety,
-            repair,
-            expected_root=expected_root,
-            label=f"Opera checked-PV {fixture}",
-        )
-        validated_pairs[fixture] = (safety, repair)
-    f3_candidate = validated_pairs["f3"][1]["request"].get("candidate_identity")
-    b3_candidate = validated_pairs["b3"][1]["request"].get("candidate_identity")
-    if f3_candidate == b3_candidate:
-        raise ReleaseGateError("Opera checked-PV f3 and b3 repairs reused one candidate identity")
+    f3_repair = _validate_horizon_research_trace(
+        repair_map["f3"],
+        expected_root="f2f3",
+        root_identity=root_identity,
+        maximum_work=100_000_000,
+        require_newest_hit=True,
+        require_warm_exact=False,
+        label="Opera checked-PV f3 repair",
+    )
+    if (
+        f3_safety["worker"] not in normalized_workers
+        or f3_repair["worker"] not in normalized_workers
+        or not _trace_occurs(f3_safety, normalized_raw_safety)
+        or not _trace_occurs(f3_repair, normalized_raw_research)
+    ):
+        raise ReleaseGateError("Opera checked-PV counted f3 repair is absent from the raw trace")
+    _validate_safety_repair_crosslink(
+        f3_safety,
+        f3_repair,
+        expected_root="f2f3",
+        label="Opera checked-PV f3",
+    )
+    f3_candidate = f3_repair["request"].get("candidate_identity")
     if policy_veto.get("candidate_identity") != f3_candidate:
         raise ReleaseGateError("Opera checked-PV threshold veto is not bound to the repaired f3 candidate")
+
+    f3_warm = _validate_horizon_research_trace(
+        payload.get("f3_warm_recertification_trace"),
+        expected_root="f2f3",
+        root_identity=root_identity,
+        maximum_work=100_000_000,
+        require_newest_hit=False,
+        require_warm_exact=True,
+        label="Opera checked-PV f3 warm recertification",
+    )
+    repair_request = _mapping(f3_repair["request"], "Opera checked-PV f3 repair request")
+    repair_response = _mapping(f3_repair["response"], "Opera checked-PV f3 repair response")
+    warm_request = _mapping(f3_warm["request"], "Opera checked-PV f3 warm request")
+    warm_response = _mapping(f3_warm["response"], "Opera checked-PV f3 warm response")
+    if (
+        f3_warm["worker"] not in normalized_workers
+        or not _trace_occurs(f3_warm, normalized_raw_research)
+        or f3_warm["worker"] != f3_repair["worker"]
+        or f3_warm["request_sequence"] <= f3_repair["request_sequence"]
+        or f3_warm["posted_monotonic_ms"] < f3_repair["received_monotonic_ms"]
+        or any(
+            warm_request.get(key) != repair_request.get(key)
+            for key in (
+                "session_id",
+                "request_id",
+                "iteration_id",
+                "generation",
+                "deadline_monotonic_ms",
+                "deadline_epoch_ms",
+                "enumeration_identity",
+                "candidate_identity",
+                "order_index",
+                "order_key",
+                "safety_revision",
+                "horizon_proofs",
+            )
+        )
+        or warm_request.get("task_id") == repair_request.get("task_id")
+        or warm_request.get("incumbent_epoch")
+        not in {
+            repair_request.get("incumbent_epoch"),
+            int(repair_request.get("incumbent_epoch")) + 1,
+        }
+        or int(warm_request.get("remaining_time_ms"))
+        > int(repair_request.get("remaining_time_ms"))
+        or any(
+            warm_response.get(key) != repair_response.get(key)
+            for key in (
+                "root_series",
+                "child_pv",
+                "score",
+                "proof_bounds",
+                "horizon_proof_set_identity",
+            )
+        )
+    ):
+        raise ReleaseGateError("Opera checked-PV f3 warm repair recertification drifted")
 
     witness = dict(
         _mapping(
@@ -3816,7 +4097,7 @@ def validate_opera_checked_horizon_receipt(
         or witness.get("proof_count_2_research_dispatched") is not False
     ):
         raise ReleaseGateError("Opera checked-PV threshold-veto witness is not policy-bound")
-    first_repair = validated_pairs["f3"][1]
+    first_repair = f3_repair
     second_safety = _validate_raw_safety_trace(
         witness.get("second_safety_trace"),
         expected_root="f2f3",
@@ -3840,9 +4121,11 @@ def validate_opera_checked_horizon_receipt(
     if (
         witness.get("first_repair_request_sequence") != first_repair["request_sequence"]
         or witness.get("second_safety_request_sequence") != second_safety["request_sequence"]
-        or second_safety["request_sequence"] <= first_repair["request_sequence"]
-        or second_safety["posted_monotonic_ms"] < first_repair["received_monotonic_ms"]
+        or not _trace_occurs(second_safety, normalized_raw_safety)
+        or second_safety["request_sequence"] <= f3_warm["request_sequence"]
+        or second_safety["posted_monotonic_ms"] < f3_warm["received_monotonic_ms"]
         or second_safety["worker"] != first_repair["worker"]
+        or second_safety["worker"] != f3_warm["worker"]
         or second_request.get("candidate_identity") != f3_candidate
         or second_candidate.get("candidate_identity") != f3_candidate
         or second_candidate.get("order_key") != "f2f3"
@@ -3859,10 +4142,13 @@ def validate_opera_checked_horizon_receipt(
                 "candidate_identity",
             )
         )
-        or second_request.get("safety_revision") != first_request.get("safety_revision")
-        or not isinstance(second_request.get("incumbent_epoch"), int)
-        or int(second_request["incumbent_epoch"]) < int(first_request.get("incumbent_epoch"))
-        or int(second_request.get("remaining_time_ms")) > int(first_request.get("remaining_time_ms"))
+        or second_request.get("safety_revision") != warm_request.get("safety_revision")
+        or second_request.get("incumbent_epoch") != warm_request.get("incumbent_epoch")
+        or int(second_request.get("remaining_time_ms"))
+        > int(warm_request.get("remaining_time_ms"))
+        or second_candidate.get("score") != warm_response.get("score")
+        or second_candidate.get("proof_bounds") != warm_response.get("proof_bounds")
+        or second_candidate.get("child_pv") != warm_response.get("child_pv")
     ):
         raise ReleaseGateError(
             "Opera checked-PV second f3 proof is not ordered after the first same-root repair"
@@ -3899,7 +4185,25 @@ def validate_opera_checked_horizon_receipt(
         or first_proof_sha256 == second_proof_sha256
     ):
         raise ReleaseGateError("Opera checked-PV f3 threshold-veto proofs are not distinct and hash-bound")
-    for index, trace_value in enumerate(research_traces):
+    f3_found_safety = [
+        trace
+        for trace in normalized_raw_safety
+        if _mapping(trace.get("request"), "Opera checked-PV raw f3 safety request")
+        .get("candidate", {})
+        .get("order_key")
+        == "f2f3"
+        and _mapping(trace.get("response"), "Opera checked-PV raw f3 safety response").get(
+            "status"
+        )
+        == "found"
+    ]
+    if (
+        len(f3_found_safety) != 2
+        or not _trace_occurs(f3_safety, f3_found_safety)
+        or not _trace_occurs(second_safety, f3_found_safety)
+    ):
+        raise ReleaseGateError("Opera checked-PV semantic f3 rejection count is not exactly two")
+    for index, trace_value in enumerate(normalized_raw_research):
         trace = _validate_trace_envelope(
             trace_value,
             f"Opera checked-PV raw research trace {index}",
@@ -3912,59 +4216,287 @@ def validate_opera_checked_horizon_receipt(
             raise ReleaseGateError(
                 "Opera checked-PV dispatched f3 proof-count-2 research instead of threshold-vetoing"
             )
-
-    for fixture, (expected_root, _, _) in fixtures.items():
-        warm_value = warm_map[fixture]
-        if selected_root != expected_root:
-            if warm_value is not None:
-                raise ReleaseGateError(f"Opera checked-PV {fixture} contains an unrelated warm recertification")
-            continue
-        if warm_value is None:
-            raise ReleaseGateError(f"Opera checked-PV selected {fixture} winner lacks warm recertification")
-        warm = _validate_horizon_research_trace(
-            warm_value,
-            expected_root=expected_root,
-            root_identity=root_identity,
-            maximum_work=100_000_000,
-            require_newest_hit=False,
-            require_warm_exact=True,
-            label=f"Opera checked-PV {fixture} warm recertification",
+    selected_witness = dict(
+        _mapping(
+            payload.get("selected_d5_horizon_certification_witness"),
+            "Opera checked-PV selected D5 horizon witness",
         )
-        repair = validated_pairs[fixture][1]
-        if not _trace_occurs(warm, research_traces):
-            raise ReleaseGateError(f"Opera checked-PV {fixture} warm recertification is absent from the raw trace")
-        for key in (
-            "worker",
-            "session_id",
-            "request_id",
-            "iteration_id",
-            "generation",
-            "deadline_monotonic_ms",
-            "deadline_epoch_ms",
-            "enumeration_identity",
-            "candidate_identity",
-            "order_index",
-            "order_key",
-            "safety_revision",
-            "horizon_proofs",
-        ):
-            left = warm.get(key) if key == "worker" else warm["request"].get(key)
-            right = repair.get(key) if key == "worker" else repair["request"].get(key)
-            if left != right:
-                raise ReleaseGateError(f"Opera checked-PV {fixture} warm field {key!r} drifted")
-        if (
-            warm["request"].get("task_id") == repair["request"].get("task_id")
-            or warm["request"].get("remaining_time_ms") > repair["request"].get("remaining_time_ms")
-            or warm["request"].get("incumbent_epoch") not in {
-                repair["request"].get("incumbent_epoch"),
-                int(repair["request"].get("incumbent_epoch")) + 1,
-            }
-            or any(
-                warm["response"].get(key) != repair["response"].get(key)
-                for key in ("horizon_proof_set_identity", "score", "root_series", "child_pv")
+    )
+    expected_selected_keys = {
+        "schema",
+        "fixture_id",
+        "selected_root_series",
+        "candidate_identity",
+        "owner_worker_id",
+        "principal_variation_sha256",
+        "selected_series5_semantic_sha256",
+        "known_adverse_series5_semantic_sha256",
+        "known_adverse_present",
+        "horizon_request_sequence",
+        "horizon_status",
+        "horizon_call_work_credit",
+        "horizon_work_used",
+        "root_child_request_sequence",
+        "root_child_status",
+        "root_child_call_work_credit",
+        "root_child_work_used",
+        "safety_work_used",
+        "safety_call_work_credit",
+    }
+    if set(selected_witness) != expected_selected_keys:
+        raise ReleaseGateError(
+            "Opera checked-PV selected D5 horizon witness has the wrong shape"
+        )
+    principal_variation_sha256 = _canonical_sha256(principal_variation)
+    selected_series5 = principal_variation[-1]
+    selected_series5_semantic_sha256 = _canonical_sha256(
+        _series_semantic(selected_series5, series_index=5)
+    )
+    known_adverse_series5 = _validate_series(
+        {
+            "moves": ["e1f2", "d1g4", "f2e3", "g1h3", "g4h5"],
+            "machine_notation": "e1f2/d1g4/f2e3/g1h3/g4h5",
+            "child_boundary": {
+                "fen": "rnbq1bnr/pppp1kpp/4p3/7Q/2B5/1P2K2N/PBPP2PP/RN5R b - - 4 7",
+                "board_fen": "rnbq1bnr/pppp1kpp/4p3/7Q/2B5/1P2K2N/PBPP2PP/RN5R b - - 4 7",
+                "series": 6,
+                "series_number": 6,
+                "side_to_move": "black",
+                "quiet_series": 0,
+                "quiet_draw_pending": False,
+                "ep_targets": [],
+                "progressive_ep": [],
+                "promoted_hex": "0000000000000000",
+                "chess960": False,
+            },
+            "outcome": None,
+            "ended_by_check": True,
+            "transposition_count": 1,
+        },
+        "Opera checked-PV known adverse b3 series 5",
+    )
+    _validate_rooted_path_continuity(
+        [*principal_variation[:4], known_adverse_series5],
+        label="Opera checked-PV known adverse b3 fixture",
+    )
+    known_adverse_semantic_sha256 = _canonical_sha256(
+        _series_semantic(known_adverse_series5, series_index=5)
+    )
+    if selected_series5_semantic_sha256 == known_adverse_semantic_sha256:
+        raise ReleaseGateError("Opera checked-PV selected b3 retained the known adverse series 5")
+
+    selected_horizon_candidates = [
+        trace
+        for trace in normalized_raw_safety
+        if _mapping(trace.get("request"), "Opera checked-PV selected horizon request")
+        .get("candidate", {})
+        .get("order_key")
+        == selected_root
+        and _mapping(trace.get("request"), "Opera checked-PV selected horizon request")
+        .get("candidate", {})
+        .get("root_series", {})
+        .get("machine_notation")
+        == selected_series5.get("machine_notation")
+        and _mapping(trace.get("request"), "Opera checked-PV selected horizon request").get(
+            "call_work_credit"
+        )
+        == PV_HORIZON_MATE_WORK_LIMIT
+        and _mapping(trace.get("response"), "Opera checked-PV selected horizon response").get(
+            "status"
+        )
+        == "exhausted"
+    ]
+    if len(selected_horizon_candidates) != 1:
+        raise ReleaseGateError("Opera checked-PV selected b3 horizon is not uniquely exhausted")
+    selected_horizon = _validate_exhausted_safety_trace(
+        selected_horizon_candidates[0],
+        expected_root=selected_root,
+        expected_series=selected_series5,
+        expected_parent_boundary=_mapping(
+            principal_variation[-2].get("child_boundary"),
+            "Opera checked-PV selected horizon parent",
+        ),
+        expected_replay_suffix="pv-horizon-replay-4",
+        expected_call_work_credit=PV_HORIZON_MATE_WORK_LIMIT,
+        root_identity=root_identity,
+        prefix_identity=prefix_identity,
+        maximum_work=CERTIFIED_SAFETY_RESERVE_POSITIONS,
+        label="Opera checked-PV selected b3 horizon exhaustion",
+    )
+    horizon_request = _mapping(selected_horizon["request"], "selected horizon request")
+    horizon_response = _mapping(selected_horizon["response"], "selected horizon response")
+    root_child_credit = CERTIFIED_SAFETY_RESERVE_POSITIONS - int(
+        horizon_response.get("work_used")
+    )
+    selected_root_child_candidates = [
+        trace
+        for trace in normalized_raw_safety
+        if _mapping(trace.get("request"), "Opera checked-PV selected root-child request")
+        .get("candidate", {})
+        .get("order_key")
+        == selected_root
+        and _mapping(trace.get("request"), "Opera checked-PV selected root-child request")
+        .get("candidate", {})
+        .get("root_series", {})
+        .get("machine_notation")
+        == principal_variation[0].get("machine_notation")
+        and _mapping(trace.get("request"), "Opera checked-PV selected root-child request").get(
+            "call_work_credit"
+        )
+        == root_child_credit
+        and _mapping(trace.get("response"), "Opera checked-PV selected root-child response").get(
+            "status"
+        )
+        == "exhausted"
+    ]
+    if len(selected_root_child_candidates) != 1:
+        raise ReleaseGateError("Opera checked-PV selected b3 root-child is not uniquely exhausted")
+    selected_root_child = _validate_exhausted_safety_trace(
+        selected_root_child_candidates[0],
+        expected_root=selected_root,
+        expected_series=principal_variation[0],
+        expected_parent_boundary=_boundary_from_state(ProgressiveState.initial()),
+        expected_replay_suffix="root-child-replay-0",
+        expected_call_work_credit=root_child_credit,
+        root_identity=root_identity,
+        prefix_identity=prefix_identity,
+        maximum_work=CERTIFIED_SAFETY_RESERVE_POSITIONS,
+        label="Opera checked-PV selected b3 root-child exhaustion",
+    )
+    root_child_request = _mapping(selected_root_child["request"], "selected root-child request")
+    root_child_response = _mapping(selected_root_child["response"], "selected root-child response")
+    horizon_candidate = _mapping(horizon_request.get("candidate"), "selected horizon candidate")
+    root_child_candidate = _mapping(
+        root_child_request.get("candidate"),
+        "selected root-child candidate",
+    )
+    expected_candidate_keys = {
+        "candidate_identity",
+        "order_index",
+        "order_key",
+        "root_series",
+        "score",
+        "terminal",
+        "owner_worker_id",
+        "proof_bounds",
+        "child_pv",
+        "safety_override",
+    }
+    if (
+        set(horizon_candidate) != expected_candidate_keys
+        or set(root_child_candidate) != expected_candidate_keys
+        or selected_root_child["request_sequence"] <= selected_horizon["request_sequence"]
+        or selected_root_child["posted_monotonic_ms"]
+        < selected_horizon["received_monotonic_ms"]
+        or selected_root_child["worker"] != selected_horizon["worker"]
+        or any(
+            root_child_request.get(key) != horizon_request.get(key)
+            for key in (
+                "session_id",
+                "request_id",
+                "iteration_id",
+                "generation",
+                "safety_revision",
+                "incumbent_epoch",
+                "deadline_monotonic_ms",
+                "deadline_epoch_ms",
+                "candidate_identity",
             )
-        ):
-            raise ReleaseGateError(f"Opera checked-PV {fixture} warm exact result drifted")
+        )
+        or int(root_child_request.get("remaining_time_ms"))
+        > int(horizon_request.get("remaining_time_ms"))
+        or horizon_request.get("generation") != 1
+        or horizon_request.get("session_id") != 1
+        or any(
+            root_child_candidate.get(key) != horizon_candidate.get(key)
+            for key in (
+                "candidate_identity",
+                "order_index",
+                "order_key",
+                "score",
+                "terminal",
+                "owner_worker_id",
+                "proof_bounds",
+                "child_pv",
+                "safety_override",
+            )
+        )
+        or horizon_candidate.get("owner_worker_id")
+        != _mapping(selected_horizon.get("worker"), "selected horizon Worker").get(
+            "channel_id"
+        )
+        or horizon_candidate.get("score") != summary.get("score")
+        or horizon_candidate.get("proof_bounds") != summary.get("proof_bounds")
+        or horizon_candidate.get("child_pv") != principal_variation[1:]
+        or horizon_candidate.get("terminal") is not False
+        or horizon_candidate.get("safety_override") is not False
+    ):
+        raise ReleaseGateError(
+            "Opera checked-PV selected b3 safety stages are not bound to the same Worker and search"
+        )
+
+    known_adverse_present = any(
+        _mapping(trace.get("request"), "Opera checked-PV raw selected safety request")
+        .get("candidate", {})
+        .get("order_key")
+        == selected_root
+        and (
+            _mapping(trace.get("request"), "Opera checked-PV raw selected safety request")
+            .get("candidate", {})
+            .get("root_series", {})
+            .get("machine_notation")
+            == known_adverse_series5.get("machine_notation")
+            or _mapping(trace.get("request"), "Opera checked-PV raw selected safety request")
+            .get("authoritative_child_boundary", {})
+            .get("fen")
+            == _mapping(
+                known_adverse_series5.get("child_boundary"),
+                "Opera checked-PV known adverse child",
+            ).get("fen")
+        )
+        for trace in normalized_raw_safety
+    )
+    if known_adverse_present:
+        raise ReleaseGateError("Opera checked-PV selected b3 trace contains the known adverse series 5")
+
+    horizon_work = int(horizon_response.get("work_used"))
+    root_child_work = int(root_child_response.get("work_used"))
+    if (
+        selected_witness.get("schema") != SELECTED_D5_HORIZON_CERTIFICATION_SCHEMA
+        or selected_witness.get("fixture_id") != SELECTED_D5_FIXTURE_ID
+        or selected_witness.get("selected_root_series") != selected_root
+        or selected_witness.get("candidate_identity")
+        != horizon_request.get("candidate_identity")
+        or selected_witness.get("owner_worker_id")
+        != _mapping(selected_horizon.get("worker"), "selected horizon Worker").get(
+            "channel_id"
+        )
+        or selected_witness.get("principal_variation_sha256")
+        != principal_variation_sha256
+        or selected_witness.get("selected_series5_semantic_sha256")
+        != selected_series5_semantic_sha256
+        or selected_witness.get("known_adverse_series5_semantic_sha256")
+        != known_adverse_semantic_sha256
+        or selected_witness.get("known_adverse_present") is not False
+        or selected_witness.get("horizon_request_sequence")
+        != selected_horizon.get("request_sequence")
+        or selected_witness.get("horizon_status") != "exhausted"
+        or selected_witness.get("horizon_call_work_credit")
+        != PV_HORIZON_MATE_WORK_LIMIT
+        or selected_witness.get("horizon_work_used") != horizon_work
+        or selected_witness.get("root_child_request_sequence")
+        != selected_root_child.get("request_sequence")
+        or selected_witness.get("root_child_status") != "exhausted"
+        or selected_witness.get("root_child_call_work_credit") != root_child_credit
+        or selected_witness.get("root_child_work_used") != root_child_work
+        or selected_witness.get("safety_work_used") != horizon_work + root_child_work
+        or selected_witness.get("safety_call_work_credit")
+        != CERTIFIED_SAFETY_RESERVE_POSITIONS
+        or horizon_work + root_child_work > CERTIFIED_SAFETY_RESERVE_POSITIONS
+    ):
+        raise ReleaseGateError(
+            "Opera checked-PV selected D5 horizon witness digest or identity drifted"
+        )
 
     return OperaCheckedHorizonEvidence(
         receipt=receipt,
@@ -3975,6 +4507,17 @@ def validate_opera_checked_horizon_receipt(
         native_repairs=native_repairs,
         candidate_vetoes=candidate_vetoes,
         selected_root_series=selected_root,
+        principal_variation_sha256=principal_variation_sha256,
+        selected_fixture_id=SELECTED_D5_FIXTURE_ID,
+        known_adverse_excluded=True,
+        selected_horizon_exhaustively_certified=True,
+        selected_root_child_exhaustively_certified=True,
+        raw_safety_trace_count=len(raw_safety_traces),
+        raw_safety_trace_sha256=raw_safety_sha256,
+        raw_research_trace_count=len(raw_research_traces),
+        raw_research_trace_sha256=raw_research_sha256,
+        raw_trace_attestation=raw_attestation,
+        selected_d5_horizon_certification_witness=selected_witness,
     )
 
 
@@ -4259,6 +4802,21 @@ def promote_release(
                     "pv_horizon_line_rejections": checked_horizon.line_rejections,
                     "pv_horizon_native_repairs": checked_horizon.native_repairs,
                     "pv_horizon_candidate_vetoes": checked_horizon.candidate_vetoes,
+                    "principal_variation_sha256": (
+                        checked_horizon.principal_variation_sha256
+                    ),
+                    "selected_fixture_id": checked_horizon.selected_fixture_id,
+                    "known_adverse_excluded": checked_horizon.known_adverse_excluded,
+                    "selected_horizon_exhaustively_certified": (
+                        checked_horizon.selected_horizon_exhaustively_certified
+                    ),
+                    "selected_root_child_exhaustively_certified": (
+                        checked_horizon.selected_root_child_exhaustively_certified
+                    ),
+                    "raw_trace_attestation": checked_horizon.raw_trace_attestation,
+                    "selected_d5_horizon_certification_witness": (
+                        checked_horizon.selected_d5_horizon_certification_witness
+                    ),
                     "local_checkout_asset_set_sha256": (
                         checked_horizon.local_checkout_asset_set_sha256
                     ),
@@ -4280,15 +4838,27 @@ def promote_release(
                 "existing_bundle_revalidated": True,
                 "immutable_copy_by_digest": True,
                 "opera_checked_horizon_raw_trace_attested": (
-                    checked_horizon.line_rejections == 3
-                    and checked_horizon.native_repairs == 2
-                    and checked_horizon.candidate_vetoes == 1
+                    checked_horizon.raw_safety_trace_count > 0
+                    and HEX_64.fullmatch(checked_horizon.raw_safety_trace_sha256)
+                    is not None
+                    and checked_horizon.raw_research_trace_count > 0
+                    and HEX_64.fullmatch(checked_horizon.raw_research_trace_sha256)
+                    is not None
                 ),
                 "opera_checked_horizon_local_assets_bound": (
                     HEX_64.fullmatch(
                         checked_horizon.local_checkout_asset_set_sha256
                     )
                     is not None
+                ),
+                "opera_selected_b3_known_adverse_horizon_excluded": (
+                    checked_horizon.known_adverse_excluded
+                ),
+                "opera_selected_b3_horizon_exhaustively_certified": (
+                    checked_horizon.selected_horizon_exhaustively_certified
+                ),
+                "opera_selected_b3_root_child_exhaustively_certified": (
+                    checked_horizon.selected_root_child_exhaustively_certified
                 ),
                 "opera_checked_horizon_d5_under_60_seconds": (
                     checked_horizon.elapsed_seconds < 60

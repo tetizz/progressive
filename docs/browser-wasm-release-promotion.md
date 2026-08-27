@@ -30,17 +30,26 @@ The input receipt schemas are:
   `spc-opera-root-d5-benchmark-v2` Worker receipt
 
 Those seven receipts stage the exact candidate bytes. Final validation then
-requires `spc-opera-checked-pv-horizon-receipt-v4`, captured from those staged
-bytes in local Opera. The v4 receipt binds the page and CDP Opera identities,
-the manifest and browser asset hashes, the ordinary Worker factory, raw f3 and
-b3 checked-horizon mate traces, and the exact
-`repair-once-then-veto-adverse-checked-pv-mates-v1` policy. It proves one
-successful same-root f3 repair, a second distinct f3 proof that triggers the
-one-repair policy veto without dispatching a two-proof f3 search, the repaired
-and warm-recertified `b2b3` winner, full root-to-child series continuity for
-each retained D5 path, exact 3/2/1 rejection/repair/veto accounting, and
-selection-eligible coverage. It remains explicitly
-non-publishable evidence until the promotion helper validates it.
+requires `spc-opera-checked-pv-horizon-receipt-v5`, captured from those staged
+bytes in local Opera. The v5 receipt binds the page and CDP Opera identities,
+the manifest and browser asset hashes, the ordinary Worker factory, the full
+raw safety and horizon-research trace arrays, and the exact
+`repair-once-then-veto-adverse-checked-pv-mates-v1` policy. A canonical
+count-and-SHA-256 attestation covers each full raw array; raw trace counts are
+not policy counters because the arrays also contain warm, unrelated, and
+selected-candidate certification calls.
+
+The receipt proves one successful same-root f3 repair, a warm exact
+recertification of that same proof, and a second distinct f3 proof that triggers
+the one-repair policy veto without dispatching a two-proof f3 search. Its
+semantic rejection/repair/veto accounting is exactly 2/1/1. The selected
+`b2b3` result is bound to a complete five-series D5 PV. Its final PV horizon is
+exhausted with an exact 3,500,000-position call credit, then its root child is
+exhausted with the remaining `4,000,000 - horizon_work_used` credit on the same
+candidate, Worker, session, revision, epoch, and deadline. Both calls use
+positive native work, and the known adverse Series 5 semantic is absent. The
+receipt remains explicitly local, unsigned, non-publishable pre-certification
+evidence until the promotion helper validates it.
 
 The old root differential, prefix v1, mate v1, and Opera benchmark v1 formats
 are deliberately non-promotable. They either lack exact artifact identity or
@@ -80,6 +89,10 @@ eight ordinary `DedicatedWorkerGlobalScope` module Workers:
   losing root for an exact score;
 - exact W32 D1 through D5 completion in less than 60 seconds, including pool
   startup.
+
+The certified play geometry reserves exactly 4,000,000 positions for selected
+move safety. Of that reserve, at most 3,500,000 may be spent on the checked-PV
+horizon so a positive root-child certification budget remains available.
 
 Gate booleans alone are insufficient. The helper recomputes digests, counts,
 membership, timings, work ledgers, memory totals, semantic signatures, and
@@ -134,7 +147,7 @@ python .\scripts\promote_browser_wasm_release.py @common `
 
 # Serve a Pages candidate containing $candidate\browser-engine, then capture
 # the required local Opera receipt from those exact bytes.
-$checked = "$evidence\opera-checked-pv-horizon-v4.json"
+$checked = "$evidence\opera-checked-pv-horizon-v5.json"
 node .\benchmarks\capture_opera_checked_pv_horizon.mjs `
   --endpoint http://127.0.0.1:9237 `
   --url 'http://127.0.0.1:8898/?release=candidate' `
@@ -160,7 +173,9 @@ local Opera receipt against them, and creates an immutable directory containing:
 - `evidence/`, byte-for-byte copies of the seven core receipts plus the local
   Opera checked-PV receipt;
 - `release-receipt.json`, the promotion authorization, all evidence hashes,
-  bundle digest, measured Opera result, memory proof, and release gates.
+  bundle digest, measured Opera result, memory proof, raw-trace attestation,
+  selected-D5 certification witness, and release gates. This receipt uses
+  `spc-browser-wasm-release-promotion-v2`.
 
 The output path must not already exist. A failed gate leaves no promoted output.
 Do not publish from this temporary output. Copy the complete promoted directory

@@ -141,6 +141,24 @@ def test_checked_horizon_capture_compares_canonical_contracts_and_exact_hit_mask
         "bitCount16(response.horizon_proof_hit_mask) "
         "> response.horizon_proof_hits"
     ) not in capture
+    for exact_contract in (
+        'schema: "spc-opera-checked-pv-horizon-receipt-v5"',
+        "const SAFETY_CALL_WORK_CREDIT = 4_000_000;",
+        "const HORIZON_CALL_WORK_CREDIT = 3_500_000;",
+        '"spc-opera-checked-pv-raw-trace-attestation-v1"',
+        '"spc-opera-selected-d5-horizon-certification-v1"',
+        '"b3-known-adverse-series5-2026-08-26-v1"',
+        "raw_trace_attestation: rawTraceAttestation",
+        "raw_horizon_safety_traces: safetyTrace",
+        "raw_horizon_research_traces: horizonResearchTrace",
+        "selected_d5_horizon_certification_witness:",
+        "repair_once_then_veto_policy_bound:",
+        "selected_b3_horizon_exhaustively_certified:",
+        "selected_b3_root_child_exhaustively_certified:",
+    ):
+        assert exact_contract in capture
+    assert "safetyTrace.length === lineRejections" not in capture
+    assert "horizonResearchTrace.length === nativeRepairs" not in capture
 
 
 def test_pages_never_binds_the_certified_local_engine_to_render_identity() -> None:

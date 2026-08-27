@@ -258,7 +258,7 @@ function parseParameters() {
     mode: values.get("mode") === "cold" ? "cold" : "warm",
     aspirationEnabled: values.get("aspiration") !== "off",
     maxWork: integer("max_work", 100_000_000),
-    safetyReserveWork: integer("safety_work", 1_000_000),
+    safetyReserveWork: integer("safety_work", 4_000_000),
     timeoutMs: integer("timeout_ms", 300_000),
     boundary: Object.freeze({
       fen,

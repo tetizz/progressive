@@ -8,7 +8,7 @@
   const UCI_MOVE = /^[a-h][1-8][a-h][1-8][qrbn]?$/;
   const MATE_SCORE = 1_000_000;
   const MAX_LOCAL_DEPTH = 5;
-  const PV_HORIZON_MATE_WORK_LIMIT = 262_144;
+  const PV_HORIZON_MATE_WORK_LIMIT = 3_500_000;
   const ASPIRATION_INITIAL_DELTA = 2_048;
   const MAX_ASPIRATION_ATTEMPTS = 4;
   const ROOT_TACTICAL_POLICY = "canonical-boundary-policy-v1";
@@ -2124,7 +2124,17 @@
 
               let workUsed = 0;
               const horizon = checkedPvHorizon(task.candidate);
-              if (horizon !== null && task.call_work_credit - workUsed > 1) {
+              if (horizon !== null) {
+                if (task.call_work_credit - workUsed <= 1) {
+                  return {
+                    ...task,
+                    status: "unknown",
+                    work_used: workUsed,
+                    memory_bytes: channel.memoryBytes,
+                    memory_peak_bytes: channel.memoryPeakBytes,
+                    safety_scope: "pv-horizon",
+                  };
+                }
                 const horizonCredit = Math.min(
                   PV_HORIZON_MATE_WORK_LIMIT,
                   task.call_work_credit - workUsed - 1,
@@ -2176,6 +2186,12 @@
                       mate_ply: horizon.matePly,
                       horizon_series: horizon.pv.at(-1).machine_notation,
                     },
+                  };
+                }
+                if (horizonSafety.status === "unknown") {
+                  return {
+                    ...horizonSafety,
+                    work_used: workUsed,
                   };
                 }
               }

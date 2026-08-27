@@ -119,7 +119,7 @@ def _build_fixture(
         "maximum_seconds": 60,
         "default_seconds": 30,
         "default_generation_positions": 100_000_000,
-        "safety_reserve_positions": 1_000_000,
+        "safety_reserve_positions": 4_000_000,
     }
     certificate_ids = {
         "prefix": "spc-prefix-1111111111111111",
@@ -243,6 +243,36 @@ def _build_fixture(
         ],
         "policy": {"maximum_seconds": 60, "default_seconds": 30},
     }
+    raw_trace_attestation = {
+        "schema": validator.evidence_producer.RAW_TRACE_ATTESTATION_SCHEMA,
+        "horizon_safety_trace_count": 8,
+        "horizon_safety_trace_sha256": "6" * 64,
+        "horizon_research_trace_count": 3,
+        "horizon_research_trace_sha256": "7" * 64,
+    }
+    selected_d5_witness = {
+        "schema": (
+            validator.evidence_producer.SELECTED_D5_HORIZON_CERTIFICATION_SCHEMA
+        ),
+        "fixture_id": validator.evidence_producer.SELECTED_D5_FIXTURE_ID,
+        "selected_root_series": "b2b3",
+        "candidate_identity": "spc-root-candidate-v1|fixture-b3",
+        "owner_worker_id": "root-1",
+        "principal_variation_sha256": "8" * 64,
+        "selected_series5_semantic_sha256": "9" * 64,
+        "known_adverse_series5_semantic_sha256": "a" * 64,
+        "known_adverse_present": False,
+        "horizon_request_sequence": 10,
+        "horizon_status": "exhausted",
+        "horizon_call_work_credit": 3_500_000,
+        "horizon_work_used": 2_500_000,
+        "root_child_request_sequence": 11,
+        "root_child_status": "exhausted",
+        "root_child_call_work_credit": 1_500_000,
+        "root_child_work_used": 1_000_000,
+        "safety_work_used": 3_500_000,
+        "safety_call_work_credit": 4_000_000,
+    }
     receipt = {
         "schema": validator.RELEASE_SCHEMA,
         "status": "promoted",
@@ -285,9 +315,18 @@ def _build_fixture(
                 "elapsed_seconds": 8.5,
                 "work": 75_000_000,
                 "selected_root_series": "b2b3",
-                "pv_horizon_line_rejections": 3,
-                "pv_horizon_native_repairs": 2,
+                "pv_horizon_line_rejections": 2,
+                "pv_horizon_native_repairs": 1,
                 "pv_horizon_candidate_vetoes": 1,
+                "principal_variation_sha256": "8" * 64,
+                "selected_fixture_id": (
+                    validator.evidence_producer.SELECTED_D5_FIXTURE_ID
+                ),
+                "known_adverse_excluded": True,
+                "selected_horizon_exhaustively_certified": True,
+                "selected_root_child_exhaustively_certified": True,
+                "raw_trace_attestation": raw_trace_attestation,
+                "selected_d5_horizon_certification_witness": selected_d5_witness,
                 "local_checkout_asset_set_sha256": "5" * 64,
             },
         },
@@ -351,6 +390,23 @@ def _build_fixture(
             checked_line_rejections=checked["pv_horizon_line_rejections"],
             checked_native_repairs=checked["pv_horizon_native_repairs"],
             checked_candidate_vetoes=checked["pv_horizon_candidate_vetoes"],
+            checked_principal_variation_sha256=checked[
+                "principal_variation_sha256"
+            ],
+            checked_selected_fixture_id=checked["selected_fixture_id"],
+            checked_known_adverse_excluded=checked["known_adverse_excluded"],
+            checked_selected_horizon_exhaustively_certified=checked[
+                "selected_horizon_exhaustively_certified"
+            ],
+            checked_selected_root_child_exhaustively_certified=checked[
+                "selected_root_child_exhaustively_certified"
+            ],
+            checked_raw_trace_attestation=copy.deepcopy(
+                checked["raw_trace_attestation"]
+            ),
+            checked_selected_d5_horizon_certification_witness=copy.deepcopy(
+                checked["selected_d5_horizon_certification_witness"]
+            ),
             checked_local_asset_set_sha256=checked[
                 "local_checkout_asset_set_sha256"
             ],
@@ -400,6 +456,14 @@ def test_validates_exact_parent_bound_promoted_release(
     assert result["product_publishable"] is True
     assert result["source_revision"] == fixture["source_revision"]
     assert result["artifact_revision"] == fixture["artifact_revision"]
+    assert fixture["receipt"]["schema"] == "spc-browser-wasm-release-promotion-v2"
+    assert fixture["receipt"]["promotion_policy"]["safety_reserve_positions"] == 4_000_000
+    for gate in (
+        "opera_selected_b3_known_adverse_horizon_excluded",
+        "opera_selected_b3_horizon_exhaustively_certified",
+        "opera_selected_b3_root_child_exhaustively_certified",
+    ):
+        assert fixture["receipt"]["gates"][gate] is True
     assert fixture["calls"] == [
         (fixture["release"] / "browser-engine", fixture["source_package"])
     ]
@@ -598,10 +662,46 @@ def test_rejects_backslash_git_path_aliases() -> None:
             "promotion_policy",
         ),
         (
+            lambda receipt: receipt["promotion_policy"].update(
+                safety_reserve_positions=3_999_999
+            ),
+            "certified 4,000,000-position budget",
+        ),
+        (
             lambda receipt: receipt["measured"]["opera_checked_horizon"].update(
                 pv_horizon_candidate_vetoes=0
             ),
             "independently satisfy",
+        ),
+        (
+            lambda receipt: receipt["measured"]["opera_checked_horizon"][
+                "raw_trace_attestation"
+            ].update(horizon_safety_trace_sha256="b" * 64),
+            "differ from the validated Opera receipt",
+        ),
+        (
+            lambda receipt: receipt["measured"]["opera_checked_horizon"].update(
+                known_adverse_excluded=False
+            ),
+            "independently satisfy",
+        ),
+        (
+            lambda receipt: receipt["measured"]["opera_checked_horizon"][
+                "selected_d5_horizon_certification_witness"
+            ].update(horizon_call_work_credit=3_499_999),
+            "independently satisfy",
+        ),
+        (
+            lambda receipt: receipt["measured"]["opera_checked_horizon"][
+                "selected_d5_horizon_certification_witness"
+            ].update(root_child_call_work_credit=1_499_999),
+            "independently satisfy",
+        ),
+        (
+            lambda receipt: receipt["gates"].update(
+                opera_selected_b3_root_child_exhaustively_certified=False
+            ),
+            "gate",
         ),
     ],
 )

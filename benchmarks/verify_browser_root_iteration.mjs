@@ -79,7 +79,7 @@ const PLAY_LIMITS = Object.freeze({
   maximum_seconds: 60,
   default_seconds: 60,
   default_generation_positions: CONFIG.max_work,
-  safety_reserve_positions: 1_000_000,
+  safety_reserve_positions: 4_000_000,
 });
 const PREFIX_CONTRACT = Object.freeze({
   schema: prefixApi.CONTRACT_SCHEMA,
@@ -424,6 +424,10 @@ class MockWorld {
     policyDrift = null,
     horizonMateFirst = false,
     horizonMateTwice = false,
+    horizonSafetyUnknown = false,
+    zeroNativeWork = false,
+    rootSafetyWork = 1,
+    singleCandidate = false,
     favorableHorizonFirst = false,
   } = {}) {
     this.foundFirst = foundFirst;
@@ -437,6 +441,10 @@ class MockWorld {
     this.policyDrift = policyDrift;
     this.horizonMateFirst = horizonMateFirst;
     this.horizonMateTwice = horizonMateTwice;
+    this.horizonSafetyUnknown = horizonSafetyUnknown;
+    this.zeroNativeWork = zeroNativeWork;
+    this.rootSafetyWork = rootSafetyWork;
+    this.singleCandidate = singleCandidate;
     this.favorableHorizonFirst = favorableHorizonFirst;
     this.workers = [];
     this.live = 0;
@@ -571,8 +579,12 @@ class MockWorld {
         payload.preferred_series,
         { terminalFirst: this.terminalFirst },
       );
+      if (this.singleCandidate) {
+        manifest.candidates = manifest.candidates.slice(0, 1);
+        manifest.retained_count = 1;
+      }
       worker.manifest = manifest;
-      const work = setupWork(worker, payload, 2);
+      const work = setupWork(worker, payload, this.zeroNativeWork ? 0 : 2);
       return {
         schema: "spc-root-session-enumeration-result-v1",
         abi_version: 2,
@@ -602,7 +614,7 @@ class MockWorld {
       assert.equal(payload.schema, "spc-root-session-import-v1");
       this.deadlineEpochs.push(payload.deadline_epoch_ms);
       worker.manifest = JSON.parse(JSON.stringify(payload.manifest));
-      const work = setupWork(worker, payload, 1);
+      const work = setupWork(worker, payload, this.zeroNativeWork ? 0 : 1);
       return {
         schema: "spc-root-session-import-result-v1",
         abi_version: 2,
@@ -659,7 +671,7 @@ class MockWorld {
       const bound = payload.purpose === "scout" || payload.purpose === "aspiration"
         ? score <= payload.alpha ? "upper" : score >= payload.beta ? "lower" : "exact"
         : "exact";
-      const work = setupWork(worker, payload, 1);
+      const work = setupWork(worker, payload, this.zeroNativeWork ? 0 : 1);
       let childPv = [];
       const pvLength = payload.candidate_identity === "c0"
         ? this.horizonMateFirst
@@ -757,11 +769,17 @@ class MockWorld {
     }
     if (type === "root-safety") {
       this.deadlineEpochs.push(payload.deadline_epoch_ms);
-      if (this.safetyUnknown) {
+      if (
+        this.safetyUnknown
+        || (
+          this.horizonSafetyUnknown
+          && payload.authoritative_child_boundary?.series === 6
+        )
+      ) {
         const result = {
           ...payload,
           status: "unknown",
-          work_used: 1,
+          work_used: this.rootSafetyWork,
           memory_bytes: MEMORY.initial_bytes,
           memory_peak_bytes: MEMORY.initial_bytes,
         };
@@ -783,7 +801,7 @@ class MockWorld {
         const result = {
           ...payload,
           status: "exhausted",
-          work_used: 1,
+          work_used: this.rootSafetyWork,
           memory_bytes: MEMORY.initial_bytes,
           memory_peak_bytes: MEMORY.initial_bytes,
         };
@@ -810,7 +828,7 @@ class MockWorld {
       const result = {
         ...payload,
         status: "found",
-        work_used: 1,
+        work_used: this.rootSafetyWork,
         override_score: childIsWhite ? CONFIG.mate_score - 2 : -CONFIG.mate_score + 2,
         proof_bounds: childIsWhite ? [1, 1] : [-1, -1],
         memory_bytes: MEMORY.initial_bytes,
@@ -1106,8 +1124,8 @@ async function testPersistentPoolTwoTurns() {
   assert.equal(first.completed_depth, 2);
   assert.equal(first.root_scores_complete, false);
   assert.equal(first.root_bound_coverage_complete, true);
-  assert.equal(first.runtime_receipt.safety_reserve_positions, 1_000_000);
-  assert.equal(first.stats.safety_reserve_positions, 1_000_000);
+  assert.equal(first.runtime_receipt.safety_reserve_positions, 4_000_000);
+  assert.equal(first.stats.safety_reserve_positions, 4_000_000);
   assertPolicyReceiptSurfaces(first, []);
   assert.equal(first.runtime_receipt.worker_count, 8);
   assert.equal(world.peakLive, 8, "preflight heap must be dropped before admitting 8 roots");
@@ -1169,7 +1187,7 @@ async function testPersistentPoolTwoTurns() {
   assert.equal(first.stats.aspiration_warm_owner_reused_count, 8);
   assert(world.searchDispatches.some((entry) => entry.task.purpose === "scout"));
   assert.equal(world.safetyReceipts.length, 1, "D1 and D2 must share one complete mate proof");
-  assert.equal(world.safetyReceipts[0].call_work_credit, 1_000_000);
+  assert.equal(world.safetyReceipts[0].call_work_credit, 4_000_000);
   assert.deepEqual(first.runtime_receipt.mate_cache, {
     schema: "spc-root-mate-proof-cache-summary-v1",
     hits: 1,
@@ -1504,6 +1522,70 @@ async function testUnknownMateProofNeverCaches() {
   client.close();
 }
 
+async function testUnknownCheckedPvHorizonCannotFallThroughToRootChild() {
+  const world = new MockWorld({
+    horizonMateFirst: true,
+    horizonSafetyUnknown: true,
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  const result = await client.analyzeRoot(
+    payload(boundaryPayload(WHITE_FEN, 1), 5),
+    { deadlineMs: performance.now() + 20_000 },
+  );
+  assert.equal(result.completed_depth, 4, "UNKNOWN D5 horizon must not publish");
+  assert.equal(result.runtime_receipt.interruption_code, "root-safety-unknown");
+  assert.equal(
+    world.safetyReceipts.filter((receipt) => (
+      receipt.authoritative_child_boundary?.series === 6
+    )).length,
+    1,
+  );
+  assert.equal(
+    world.safetyReceipts.filter((receipt) => (
+      receipt.authoritative_child_boundary?.series === 2
+      && receipt.iteration_id.endsWith(":d5")
+    )).length,
+    0,
+    "root-child exhaustion must not replace an UNKNOWN checked horizon",
+  );
+  client.close();
+}
+
+async function testCheckedPvHorizonWithoutProbeCreditFailsClosed() {
+  const world = new MockWorld({
+    horizonMateFirst: true,
+    zeroNativeWork: true,
+    rootSafetyWork: 998,
+    singleCandidate: true,
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  const request = payload(boundaryPayload(WHITE_FEN, 1), 5);
+  request.max_generation_positions = 1_000;
+  const result = await client.analyzeRoot(request, {
+    deadlineMs: performance.now() + 20_000,
+  });
+  assert.equal(result.completed_depth, 4, "unprobed D5 horizon must not publish");
+  assert.equal(result.runtime_receipt.interruption_code, "root-safety-unknown");
+  assert.equal(
+    world.safetyReceipts.some((receipt) => (
+      receipt.iteration_id.endsWith(":d5")
+    )),
+    false,
+    "a one-credit safety reservation cannot skip into root-child certification",
+  );
+  client.close();
+}
+
 async function testImmediateMatePublishesWithBoundCoverage() {
   const world = new MockWorld({ terminalFirst: true });
   const client = browserClientApi.createClient({
@@ -1549,7 +1631,7 @@ async function testCheckedPvHorizonMateRejectsTheProvisionalWinner() {
     && receipt.status === "found"
   ));
   assert(horizonProof, "the selected checked D5 horizon must receive an exact S6 mate probe");
-  assert.equal(horizonProof.call_work_credit, 262_144);
+  assert.equal(horizonProof.call_work_credit, 3_500_000);
   assert.equal(horizonProof.override_score, -CONFIG.mate_score + 2);
   assert.equal(result.selection_policy_filtered, false);
   assert.equal(result.pv_horizon_line_rejections, 1);
@@ -2072,6 +2154,8 @@ await testCrashReturnsLastSafeAndReprobes();
 await testNestedDeadlineAndExactWorkLimitClassification();
 await testMateProofCacheAcrossFiveDepthsAndBoundaries();
 await testUnknownMateProofNeverCaches();
+await testUnknownCheckedPvHorizonCannotFallThroughToRootChild();
+await testCheckedPvHorizonWithoutProbeCreditFailsClosed();
 await testImmediateMatePublishesWithBoundCoverage();
 await testAllMatingFrontierRescuesTerminalRootMate();
 await testUnprovenTerminalMateRescueFailsClosed();
@@ -2112,6 +2196,8 @@ process.stdout.write(JSON.stringify({
   incomplete_bound_coverage_fails_closed: true,
   complete_mate_proof_cache: true,
   unknown_mate_proof_not_cached: true,
+  unknown_checked_pv_horizon_fails_closed: true,
+  unprobed_checked_pv_horizon_fails_closed: true,
   mate_cache_identity_boundary_bound: true,
   crash_last_safe_and_reprobe: true,
   absolute_deadline_epoch_transport: true,

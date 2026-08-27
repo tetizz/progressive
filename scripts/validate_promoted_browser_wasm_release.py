@@ -21,7 +21,7 @@ from scripts import build_browser_wasm_bundle as bundle_builder  # noqa: E402
 from scripts import promote_browser_wasm_release as evidence_producer  # noqa: E402
 
 
-RELEASE_SCHEMA = "spc-browser-wasm-release-promotion-v1"
+RELEASE_SCHEMA = "spc-browser-wasm-release-promotion-v2"
 HEX_16 = re.compile(r"[0-9a-f]{16}")
 HEX_64 = re.compile(r"[0-9a-f]{64}")
 GIT_REVISION = re.compile(r"[0-9a-f]{40,64}")
@@ -84,7 +84,7 @@ EVIDENCE_SPECS = (
     (
         "opera_checked_horizon",
         "evidence/opera-checked-pv-horizon-receipt.json",
-        "spc-opera-checked-pv-horizon-receipt-v4",
+        "spc-opera-checked-pv-horizon-receipt-v5",
     ),
 )
 
@@ -146,6 +146,9 @@ EXPECTED_GATES = frozenset(
         "immutable_copy_by_digest",
         "opera_checked_horizon_raw_trace_attested",
         "opera_checked_horizon_local_assets_bound",
+        "opera_selected_b3_known_adverse_horizon_excluded",
+        "opera_selected_b3_horizon_exhaustively_certified",
+        "opera_selected_b3_root_child_exhaustively_certified",
         "opera_checked_horizon_d5_under_60_seconds",
         "opera_checked_horizon_accounting_balanced",
     }
@@ -196,6 +199,13 @@ class SemanticEvidence:
     checked_line_rejections: int
     checked_native_repairs: int
     checked_candidate_vetoes: int
+    checked_principal_variation_sha256: str
+    checked_selected_fixture_id: str
+    checked_known_adverse_excluded: bool
+    checked_selected_horizon_exhaustively_certified: bool
+    checked_selected_root_child_exhaustively_certified: bool
+    checked_raw_trace_attestation: Mapping[str, Any]
+    checked_selected_d5_horizon_certification_witness: Mapping[str, Any]
     checked_local_asset_set_sha256: str
 
 
@@ -1012,6 +1022,19 @@ def _validate_semantic_evidence(
         checked_line_rejections=checked.line_rejections,
         checked_native_repairs=checked.native_repairs,
         checked_candidate_vetoes=checked.candidate_vetoes,
+        checked_principal_variation_sha256=checked.principal_variation_sha256,
+        checked_selected_fixture_id=checked.selected_fixture_id,
+        checked_known_adverse_excluded=checked.known_adverse_excluded,
+        checked_selected_horizon_exhaustively_certified=(
+            checked.selected_horizon_exhaustively_certified
+        ),
+        checked_selected_root_child_exhaustively_certified=(
+            checked.selected_root_child_exhaustively_certified
+        ),
+        checked_raw_trace_attestation=dict(checked.raw_trace_attestation),
+        checked_selected_d5_horizon_certification_witness=dict(
+            checked.selected_d5_horizon_certification_witness
+        ),
         checked_local_asset_set_sha256=checked.local_checkout_asset_set_sha256,
     )
 
@@ -1355,6 +1378,10 @@ def validate_promoted_release(
         "safety_reserve_positions",
         1,
     )
+    if safety_reserve_positions != evidence_producer.CERTIFIED_SAFETY_RESERVE_POSITIONS:
+        raise PromotedReleaseError(
+            "release safety reserve is not the certified 4,000,000-position budget"
+        )
 
     semantic = _validate_semantic_evidence(
         repository=repository,
@@ -1455,6 +1482,13 @@ def validate_promoted_release(
             "pv_horizon_line_rejections",
             "pv_horizon_native_repairs",
             "pv_horizon_candidate_vetoes",
+            "principal_variation_sha256",
+            "selected_fixture_id",
+            "known_adverse_excluded",
+            "selected_horizon_exhaustively_certified",
+            "selected_root_child_exhaustively_certified",
+            "raw_trace_attestation",
+            "selected_d5_horizon_certification_witness",
             "local_checkout_asset_set_sha256",
         },
         "release measured Opera checked horizon",
@@ -1476,6 +1510,7 @@ def validate_promoted_release(
             selected_root_series,
         )
         is None
+        or selected_root_series != "b2b3"
     ):
         raise PromotedReleaseError("Opera checked horizon has invalid root-series notation")
     line_rejections = _integer(
@@ -1486,20 +1521,167 @@ def validate_promoted_release(
     native_repairs = _integer(
         checked_horizon.get("pv_horizon_native_repairs"),
         "Opera checked-horizon native repairs",
-        2,
+        1,
     )
     candidate_vetoes = _integer(
         checked_horizon.get("pv_horizon_candidate_vetoes"),
         "Opera checked-horizon candidate vetoes",
     )
     local_asset_set = checked_horizon.get("local_checkout_asset_set_sha256")
+    principal_variation_sha256 = checked_horizon.get("principal_variation_sha256")
+    selected_fixture_id = checked_horizon.get("selected_fixture_id")
+    known_adverse_excluded = checked_horizon.get("known_adverse_excluded")
+    selected_horizon_certified = checked_horizon.get(
+        "selected_horizon_exhaustively_certified"
+    )
+    selected_root_child_certified = checked_horizon.get(
+        "selected_root_child_exhaustively_certified"
+    )
+    raw_trace_attestation = _mapping(
+        checked_horizon.get("raw_trace_attestation"),
+        "release measured Opera raw trace attestation",
+    )
+    _exact_keys(
+        raw_trace_attestation,
+        {
+            "schema",
+            "horizon_safety_trace_count",
+            "horizon_safety_trace_sha256",
+            "horizon_research_trace_count",
+            "horizon_research_trace_sha256",
+        },
+        "release measured Opera raw trace attestation",
+    )
+    raw_safety_count = _integer(
+        raw_trace_attestation.get("horizon_safety_trace_count"),
+        "Opera raw safety trace count",
+        1,
+    )
+    raw_research_count = _integer(
+        raw_trace_attestation.get("horizon_research_trace_count"),
+        "Opera raw research trace count",
+        1,
+    )
+    raw_safety_sha256 = raw_trace_attestation.get("horizon_safety_trace_sha256")
+    raw_research_sha256 = raw_trace_attestation.get("horizon_research_trace_sha256")
+    selected_witness = _mapping(
+        checked_horizon.get("selected_d5_horizon_certification_witness"),
+        "release measured selected D5 horizon certification witness",
+    )
+    _exact_keys(
+        selected_witness,
+        {
+            "schema",
+            "fixture_id",
+            "selected_root_series",
+            "candidate_identity",
+            "owner_worker_id",
+            "principal_variation_sha256",
+            "selected_series5_semantic_sha256",
+            "known_adverse_series5_semantic_sha256",
+            "known_adverse_present",
+            "horizon_request_sequence",
+            "horizon_status",
+            "horizon_call_work_credit",
+            "horizon_work_used",
+            "root_child_request_sequence",
+            "root_child_status",
+            "root_child_call_work_credit",
+            "root_child_work_used",
+            "safety_work_used",
+            "safety_call_work_credit",
+        },
+        "release measured selected D5 horizon certification witness",
+    )
+    horizon_sequence = _integer(
+        selected_witness.get("horizon_request_sequence"),
+        "selected D5 horizon request sequence",
+        1,
+    )
+    root_child_sequence = _integer(
+        selected_witness.get("root_child_request_sequence"),
+        "selected D5 root-child request sequence",
+        1,
+    )
+    horizon_credit = _integer(
+        selected_witness.get("horizon_call_work_credit"),
+        "selected D5 horizon work credit",
+        1,
+    )
+    horizon_work = _integer(
+        selected_witness.get("horizon_work_used"),
+        "selected D5 horizon work",
+        1,
+    )
+    root_child_credit = _integer(
+        selected_witness.get("root_child_call_work_credit"),
+        "selected D5 root-child work credit",
+        1,
+    )
+    root_child_work = _integer(
+        selected_witness.get("root_child_work_used"),
+        "selected D5 root-child work",
+        1,
+    )
+    safety_work = _integer(
+        selected_witness.get("safety_work_used"),
+        "selected D5 total safety work",
+        1,
+    )
     if (
         not 0 < checked_elapsed < 60
         or checked_work > default_generation_positions
-        or line_rejections != 3
-        or native_repairs != 2
+        or line_rejections != 2
+        or native_repairs != 1
         or candidate_vetoes != 1
         or native_repairs + candidate_vetoes != line_rejections
+        or not isinstance(principal_variation_sha256, str)
+        or HEX_64.fullmatch(principal_variation_sha256) is None
+        or selected_fixture_id != evidence_producer.SELECTED_D5_FIXTURE_ID
+        or known_adverse_excluded is not True
+        or selected_horizon_certified is not True
+        or selected_root_child_certified is not True
+        or raw_trace_attestation.get("schema")
+        != evidence_producer.RAW_TRACE_ATTESTATION_SCHEMA
+        or raw_safety_count < line_rejections
+        or raw_research_count < native_repairs
+        or not isinstance(raw_safety_sha256, str)
+        or HEX_64.fullmatch(raw_safety_sha256) is None
+        or not isinstance(raw_research_sha256, str)
+        or HEX_64.fullmatch(raw_research_sha256) is None
+        or selected_witness.get("schema")
+        != evidence_producer.SELECTED_D5_HORIZON_CERTIFICATION_SCHEMA
+        or selected_witness.get("fixture_id") != selected_fixture_id
+        or selected_witness.get("selected_root_series") != selected_root_series
+        or not isinstance(selected_witness.get("candidate_identity"), str)
+        or not selected_witness.get("candidate_identity")
+        or not isinstance(selected_witness.get("owner_worker_id"), str)
+        or not selected_witness.get("owner_worker_id")
+        or selected_witness.get("principal_variation_sha256")
+        != principal_variation_sha256
+        or not isinstance(selected_witness.get("selected_series5_semantic_sha256"), str)
+        or HEX_64.fullmatch(selected_witness["selected_series5_semantic_sha256"])
+        is None
+        or not isinstance(
+            selected_witness.get("known_adverse_series5_semantic_sha256"), str
+        )
+        or HEX_64.fullmatch(
+            selected_witness["known_adverse_series5_semantic_sha256"]
+        )
+        is None
+        or selected_witness.get("known_adverse_present") is not False
+        or root_child_sequence <= horizon_sequence
+        or selected_witness.get("horizon_status") != "exhausted"
+        or horizon_credit != evidence_producer.PV_HORIZON_MATE_WORK_LIMIT
+        or horizon_work > horizon_credit
+        or selected_witness.get("root_child_status") != "exhausted"
+        or root_child_credit
+        != evidence_producer.CERTIFIED_SAFETY_RESERVE_POSITIONS - horizon_work
+        or root_child_work > root_child_credit
+        or safety_work != horizon_work + root_child_work
+        or selected_witness.get("safety_call_work_credit")
+        != evidence_producer.CERTIFIED_SAFETY_RESERVE_POSITIONS
+        or safety_work > evidence_producer.CERTIFIED_SAFETY_RESERVE_POSITIONS
         or not isinstance(local_asset_set, str)
         or HEX_64.fullmatch(local_asset_set) is None
     ):
@@ -1513,6 +1695,19 @@ def validate_promoted_release(
         "pv_horizon_line_rejections": semantic.checked_line_rejections,
         "pv_horizon_native_repairs": semantic.checked_native_repairs,
         "pv_horizon_candidate_vetoes": semantic.checked_candidate_vetoes,
+        "principal_variation_sha256": semantic.checked_principal_variation_sha256,
+        "selected_fixture_id": semantic.checked_selected_fixture_id,
+        "known_adverse_excluded": semantic.checked_known_adverse_excluded,
+        "selected_horizon_exhaustively_certified": (
+            semantic.checked_selected_horizon_exhaustively_certified
+        ),
+        "selected_root_child_exhaustively_certified": (
+            semantic.checked_selected_root_child_exhaustively_certified
+        ),
+        "raw_trace_attestation": dict(semantic.checked_raw_trace_attestation),
+        "selected_d5_horizon_certification_witness": dict(
+            semantic.checked_selected_d5_horizon_certification_witness
+        ),
         "local_checkout_asset_set_sha256": semantic.checked_local_asset_set_sha256,
     }
     if checked_horizon != semantic_checked:
