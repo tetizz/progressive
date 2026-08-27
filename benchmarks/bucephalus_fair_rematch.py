@@ -1026,8 +1026,9 @@ class ExternalMatchConfig:
                             "incomplete_at_soft_action": "kill-drain-then-suffix",
                         },
                         "suffix": {
-                            "method": "repeated-max-ply-then-exact-ply1-rescue",
+                            "method": "repeated-live-max-ply-then-exact-ply1-rescue",
                             "allocation": "remaining-wall-divided-by-remaining-root-moves",
+                            "complete_at_soft_action": "same-pid-continue-to-global-hard-deadline",
                             "restart_clears_transposition_table": True,
                         },
                         "cleanup_reserve_seconds": 1.0,
@@ -1348,7 +1349,7 @@ def _continuation_chain_selects_analysis(
             )
         ):
             return False
-        if stage.purpose == "deep-max-ply":
+        if stage.purpose in {"deep-max-ply", "suffix-max-ply"}:
             if (
                 type(stage.process_id) is not int
                 or stage.process_id <= 0

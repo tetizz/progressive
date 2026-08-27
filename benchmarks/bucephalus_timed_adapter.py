@@ -19,7 +19,7 @@ from scottish_progressive.rules import SeriesLegalityError, play_series
 
 
 BUCEPHALUS_ADAPTER_VERSION = "bucephalus-terminal-v1"
-BUCEPHALUS_TIMED_ITERATIVE_ADAPTER_VERSION = "bucephalus-timed-live-checkpoint-v3"
+BUCEPHALUS_TIMED_ITERATIVE_ADAPTER_VERSION = "bucephalus-timed-live-checkpoint-v4"
 BUCEPHALUS_MAX_PLY = 30
 BUCEPHALUS_MAX_GAME_RECORD = 200
 
@@ -1152,11 +1152,45 @@ def _analyze_bucephalus_with_continuation(
                 if remaining <= 0 or remaining_moves <= 0:
                     break
                 stage_timeout = remaining / remaining_moves
-                process = run_stage(
-                    purpose="suffix-max-ply",
-                    prefix=stitched,
-                    requested_ply=BUCEPHALUS_MAX_PLY,
-                    timeout=stage_timeout,
+                suffix_script = _request_script(
+                    history, BUCEPHALUS_MAX_PLY, prefix=stitched
+                )
+
+                def suffix_snapshot_completes(snapshot: str) -> bool:
+                    try:
+                        _validate_output_identity_and_boundary(
+                            snapshot,
+                            state,
+                            count_in_series=len(stitched) + 1,
+                        )
+                        _, _, _, snapshot_result = (
+                            _parse_deepest_continuation_progress(
+                                snapshot,
+                                requested_ply=BUCEPHALUS_MAX_PLY,
+                                state=state,
+                                prefix=stitched,
+                            )
+                        )
+                    except ExternalEngineProtocolError:
+                        return False
+                    return snapshot_result is not None
+
+                suffix_live = _run_bucephalus_live_checkpoint(
+                    executable,
+                    suffix_script,
+                    cwd=executable.parent,
+                    creationflags=creationflags,
+                    soft_timeout_seconds=stage_timeout,
+                    hard_timeout_seconds=remaining,
+                    cleanup_timeout_seconds=cleanup_margin,
+                    snapshot_has_complete_root=suffix_snapshot_completes,
+                )
+                process = (
+                    suffix_live[0], suffix_live[1], suffix_live[2],
+                    suffix_live[3], suffix_live[4], suffix_script,
+                )
+                suffix_stop, suffix_pid, suffix_continued = (
+                    suffix_live[5], suffix_live[6], suffix_live[7]
                 )
                 try:
                     _validate_output_identity_and_boundary(
@@ -1173,8 +1207,13 @@ def _analyze_bucephalus_with_continuation(
                 except ExternalEngineProtocolError as error:
                     append_stage(
                         "suffix-max-ply", stitched, (), BUCEPHALUS_MAX_PLY,
-                        0, stage_timeout, process, usable=False,
+                        0, remaining, process, usable=False,
                         error=str(error),
+                        stop_reason=suffix_stop,
+                        process_id=suffix_pid,
+                        same_process_continued=suffix_continued,
+                        soft_checkpoint_seconds=stage_timeout,
+                        hard_deadline_seconds=remaining,
                     )
                     while stitched_result is None:
                         remaining = searchable_deadline - elapsed_total()
@@ -1192,7 +1231,12 @@ def _analyze_bucephalus_with_continuation(
                     break
                 append_stage(
                     "suffix-max-ply", stitched, extension,
-                    BUCEPHALUS_MAX_PLY, suffix_ply, stage_timeout, process,
+                    BUCEPHALUS_MAX_PLY, suffix_ply, remaining, process,
+                    stop_reason=suffix_stop,
+                    process_id=suffix_pid,
+                    same_process_continued=suffix_continued,
+                    soft_checkpoint_seconds=stage_timeout,
+                    hard_deadline_seconds=remaining,
                 )
                 stitched += extension
             if stitched_result is not None:

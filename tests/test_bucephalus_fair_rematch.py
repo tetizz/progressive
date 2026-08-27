@@ -446,6 +446,12 @@ def test_live_completion_controller_is_frozen_in_config_receipt() -> None:
     assert controller["version"] == BUCEPHALUS_TIMED_ITERATIVE_ADAPTER_VERSION
     assert controller["anchor"]["phase_ceiling_seconds"] == 12.0
     assert controller["deep"]["soft_checkpoint_fraction_of_searchable_wall"] == 0.75
+    assert controller["suffix"] == {
+        "method": "repeated-live-max-ply-then-exact-ply1-rescue",
+        "allocation": "remaining-wall-divided-by-remaining-root-moves",
+        "complete_at_soft_action": "same-pid-continue-to-global-hard-deadline",
+        "restart_clears_transposition_table": True,
+    }
     assert controller["cleanup_reserve_seconds"] == 1.0
 
 

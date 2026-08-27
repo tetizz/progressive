@@ -24,6 +24,7 @@ from benchmarks.bucephalus_timed_adapter import (
     analyze_bucephalus_timed_iterative,
     replay_series_history,
     _run_bucephalus_live_checkpoint,
+    _parse_deepest_continuation_progress,
     _parse_deepest_legal_incomplete_prefix,
 )
 from scottish_progressive.league import OPENING_SUITE
@@ -117,11 +118,22 @@ def test_series_nine_stitches_replay_validated_ply7_then_continuation(
     )
     monkeypatch.setattr("benchmarks.bucephalus_timed_adapter.subprocess.run", fake_run)
 
+    live_calls = {"count": 0}
+
     def fake_live(*args, **kwargs):
-        clock["now"] += kwargs["soft_timeout_seconds"]
+        live_calls["count"] += 1
+        if live_calls["count"] == 1:
+            clock["now"] += kwargs["soft_timeout_seconds"]
+            return (
+                _timed_stdout(9, 1, ((7, prefix),)), "", True, -9,
+                kwargs["soft_timeout_seconds"], "soft-checkpoint-incomplete", 4242, False,
+            )
+        # The suffix process has a complete continuation at its soft checkpoint,
+        # so the same PID is allowed to spend the entire remaining searchable wall.
+        clock["now"] += kwargs["hard_timeout_seconds"]
         return (
-            _timed_stdout(9, 1, ((7, prefix),)), "", True, -9,
-            kwargs["soft_timeout_seconds"], "soft-checkpoint-incomplete", 4242, False,
+            _timed_stdout(9, 8, ((2, "a3-b1 b1-a3"),)), "", True, -9,
+            kwargs["hard_timeout_seconds"], "hard-deadline", 4343, True,
         )
 
     monkeypatch.setattr(
@@ -136,8 +148,8 @@ def test_series_nine_stitches_replay_validated_ply7_then_continuation(
     assert analysis.best_series.machine_notation == (
         "b1a3/a3b1/b1a3/a3b1/b1a3/a3b1/b1a3/a3b1/b1a3"
     )
-    assert len(calls) == 10
-    assert calls[9]["timeout"] > 10.0
+    assert len(calls) == 9
+    assert live_calls["count"] == 2
     assert analysis.elapsed_seconds < 120.0
     assert len(analysis.continuation_stages) == 11
     assert analysis.continuation_stages[9].emitted_prefix == tuple(
@@ -147,6 +159,14 @@ def test_series_nine_stitches_replay_validated_ply7_then_continuation(
         "b1a3", "a3b1", "b1a3", "a3b1", "b1a3", "a3b1", "b1a3"
     )
     assert analysis.continuation_stages[10].completed_ply == 2
+    assert analysis.continuation_stages[10].purpose == "suffix-max-ply"
+    assert analysis.continuation_stages[10].process_id == 4343
+    assert analysis.continuation_stages[10].same_process_continued is True
+    assert analysis.continuation_stages[10].stop_reason == "hard-deadline"
+    assert analysis.continuation_stages[10].elapsed_seconds == pytest.approx(
+        analysis.continuation_stages[10].hard_deadline_seconds
+    )
+    assert analysis.elapsed_seconds == pytest.approx(119.0)
     assert analysis.selection_mode == "deep-prefix-continuation"
     assert analysis.deadline_reached is True
     assert analysis.global_deadline_reached is False
@@ -185,6 +205,14 @@ def test_series_nine_stitches_replay_validated_ply7_then_continuation(
     )
     altered = list(analysis.continuation_stages)
     altered[-1] = replace(altered[-1], stdout="Bucephalus v1.0.0\n")
+    assert not _continuation_chain_selects_analysis(
+        state,
+        SERIES_NINE_HISTORY,
+        replace(analysis, continuation_stages=tuple(altered)),
+        120.0,
+    )
+    altered = list(analysis.continuation_stages)
+    altered[-1] = replace(altered[-1], same_process_continued=False)
     assert not _continuation_chain_selects_analysis(
         state,
         SERIES_NINE_HISTORY,
@@ -325,6 +353,19 @@ def test_full_budget_pv_with_illegal_last_move_cannot_salvage_prefix() -> None:
     ):
         _parse_deepest_legal_incomplete_prefix(
             stdout, requested_ply=30, state=state
+        )
+
+
+def test_suffix_pv_with_illegal_root_tail_cannot_salvage_earlier_move() -> None:
+    state = replay_series_history(SERIES_NINE_HISTORY)
+    prefix = ("b1a3", "a3b1", "b1a3", "a3b1", "b1a3", "a3b1", "b1a3")
+    stdout = _timed_stdout(9, 8, ((2, "a3-b1 a2-a3"),))
+    with pytest.raises(
+        ExternalEngineProtocolError,
+        match="no authoritative legal progress",
+    ):
+        _parse_deepest_continuation_progress(
+            stdout, requested_ply=30, state=state, prefix=prefix
         )
 
 
