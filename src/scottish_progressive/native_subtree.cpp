@@ -849,12 +849,45 @@ struct GenerationKeyHash {
     };
 }
 
+[[nodiscard]] PositionKey position_key(
+    const CompleteSeriesCandidate& candidate
+) noexcept {
+    return PositionKey{
+        {
+            candidate.board.pawns,
+            candidate.board.knights,
+            candidate.board.bishops,
+            candidate.board.rooks,
+            candidate.board.queens,
+            candidate.board.kings,
+            candidate.board.occupied[0],
+            candidate.board.occupied[1],
+            candidate.board.castling_rights,
+        },
+        candidate.board.white_to_move,
+        ep_bits(candidate.ep_targets),
+        candidate.series_number,
+        candidate.quiet_series,
+    };
+}
+
 [[nodiscard]] ExactStateKey exact_key(const SubtreeState& state) noexcept {
     return ExactStateKey{
         position_key(state),
         state.board.promoted,
         state.halfmove_clock,
         state.fullmove_number,
+    };
+}
+
+[[nodiscard]] ExactStateKey exact_key(
+    const CompleteSeriesCandidate& candidate
+) noexcept {
+    return ExactStateKey{
+        position_key(candidate),
+        candidate.board.promoted,
+        candidate.halfmove_clock,
+        candidate.fullmove_number,
     };
 }
 
@@ -1157,6 +1190,7 @@ public:
     std::vector<ValidatedHorizonProofSet> horizon_proof_sets;
     const ValidatedHorizonProofSet* active_horizon_proof_set = nullptr;
     std::uint16_t active_horizon_proof_hit_mask = 0;
+    std::vector<TTKey> canonical_research_keys;
 
     std::unordered_map<TTKey, TTEntry, TTKeyHash> tt;
     // Transactional PVS probes roll their TT writes back, but a legal series
@@ -1237,6 +1271,66 @@ public:
             }
         }
         return nullptr;
+    }
+
+    [[nodiscard]] bool child_bound_proves_scout_cutoff(
+        const CompleteSeriesCandidate& candidate,
+        std::int64_t child_depth,
+        std::int64_t child_ply_from_root,
+        std::int64_t alpha,
+        std::int64_t beta,
+        bool parent_mover
+    ) const {
+        if (
+            candidate.outcome != CompleteSeriesOutcome::None
+            || child_depth < 1
+        ) {
+            return false;
+        }
+        const TTKey child_key = tt_key(
+            exact_key(candidate),
+            child_ply_from_root,
+            descendant_tactical_protection(),
+            active_horizon_proof_set == nullptr
+                ? 0
+                : active_horizon_proof_set->namespace_id
+        );
+        const auto committed = tt.find(child_key);
+        if (committed != tt.end() && committed->second.depth >= child_depth) {
+            const auto& bound = committed->second;
+            const bool committed_cutoff = parent_mover == WHITE
+                ? (
+                    (
+                        bound.bound == TTBound::Exact
+                        || bound.bound == TTBound::Lower
+                    )
+                    && bound.score >= beta
+                )
+                : (
+                    (
+                        bound.bound == TTBound::Exact
+                        || bound.bound == TTBound::Upper
+                    )
+                    && bound.score <= alpha
+                );
+            if (committed_cutoff) {
+                return true;
+            }
+        }
+
+        const auto* transactional = transactional_bound(child_key);
+        if (transactional == nullptr || transactional->depth < child_depth) {
+            return false;
+        }
+        return parent_mover == WHITE
+            ? (
+                (transactional->mask & TRANSACTIONAL_LOWER) != 0
+                && transactional->lower >= beta
+            )
+            : (
+                (transactional->mask & TRANSACTIONAL_UPPER) != 0
+                && transactional->upper <= alpha
+            );
     }
 
     void remember_transactional_bound(
@@ -2640,7 +2734,23 @@ public:
             : TTBound::Upper;
         const std::int64_t original_alpha = alpha;
         const std::int64_t original_beta = beta;
-        if (entry != tt.end() && entry->second.depth >= depth) {
+        const bool recertifying_current_key = std::find(
+            canonical_research_keys.begin(),
+            canonical_research_keys.end(),
+            key
+        ) != canonical_research_keys.end();
+        const bool ignore_current_non_exact_bound =
+            recertifying_current_key
+            && entry != tt.end()
+            && entry->second.bound != TTBound::Exact;
+        const bool ignore_proof_only_entry = recertifying_current_key
+            && entry != tt.end()
+            && !entry->second.canonical_pv;
+        if (
+            entry != tt.end()
+            && entry->second.depth >= depth
+            && !ignore_current_non_exact_bound
+        ) {
             ++stats.tt_hits;
             if (entry->second.bound == TTBound::Exact) {
                 if (!entry->second.canonical_pv) {
@@ -2701,7 +2811,11 @@ public:
         std::optional<std::vector<std::string>> preferred_moves;
         const std::vector<std::string>* preferred_series = nullptr;
         bool proof_only_ordering = false;
-        if (entry != tt.end() && !entry->second.pv.empty()) {
+        if (
+            entry != tt.end()
+            && !ignore_proof_only_entry
+            && !entry->second.pv.empty()
+        ) {
             if (entry->second.canonical_pv) {
                 if (
                     config.requested_depth >= 4
@@ -2857,11 +2971,104 @@ public:
                 child_bounds.clear();
             }
 
+            struct OrderedScoutChild {
+                std::size_t index = 0;
+                bool proves_cutoff = false;
+            };
+            std::vector<OrderedScoutChild> scout_order;
+            if (
+                config.requested_depth >= 5
+                && original_beta - original_alpha == 1
+                && depth >= 2
+                && !stopped_on_mover_mate
+                && series_count >= 3
+            ) {
+                bool saw_unproven_tail = false;
+                bool changes_tail_order = false;
+                for (
+                    std::size_t ordinal = 1;
+                    ordinal < series_count;
+                    ++ordinal
+                ) {
+                    const std::size_t index = ordered_index(
+                        ordinal,
+                        generated.preferred_index
+                    );
+                    const bool proves_cutoff =
+                        child_bound_proves_scout_cutoff(
+                            (*generated.series)[index],
+                            depth - 1,
+                            ply_from_root + 1,
+                            alpha,
+                            beta,
+                            mover
+                        );
+                    if (proves_cutoff && saw_unproven_tail) {
+                        changes_tail_order = true;
+                        break;
+                    }
+                    if (!proves_cutoff) {
+                        saw_unproven_tail = true;
+                    }
+                }
+                if (changes_tail_order) {
+                    scout_order.reserve(series_count);
+                    for (
+                        std::size_t ordinal = 0;
+                        ordinal < series_count;
+                        ++ordinal
+                    ) {
+                        const std::size_t index = ordered_index(
+                            ordinal,
+                            generated.preferred_index
+                        );
+                        scout_order.push_back(OrderedScoutChild{
+                            index,
+                            ordinal != 0
+                                && child_bound_proves_scout_cutoff(
+                                    (*generated.series)[index],
+                                    depth - 1,
+                                    ply_from_root + 1,
+                                    alpha,
+                                    beta,
+                                    mover
+                                ),
+                        });
+                    }
+                    std::size_t next_cutoff = 1;
+                    while (
+                        next_cutoff < scout_order.size()
+                        && scout_order[next_cutoff].proves_cutoff
+                    ) {
+                        ++next_cutoff;
+                    }
+                    for (
+                        std::size_t cursor = next_cutoff + 1;
+                        cursor < scout_order.size();
+                        ++cursor
+                    ) {
+                        if (!scout_order[cursor].proves_cutoff) {
+                            continue;
+                        }
+                        std::rotate(
+                            scout_order.begin() + next_cutoff,
+                            scout_order.begin() + cursor,
+                            scout_order.begin() + cursor + 1
+                        );
+                        ++next_cutoff;
+                    }
+                    // The reordered scout can prove only a bound.  Never let
+                    // its non-canonical equal-score choice escape as an exact
+                    // PV or become a full-window ordering source.
+                    proof_only_ordering = true;
+                }
+            }
+
             for (std::size_t ordinal = 0; ordinal < series_count; ++ordinal) {
-                const auto& candidate = (*generated.series)[ordered_index(
-                    ordinal,
-                    generated.preferred_index
-                )];
+                const std::size_t index = scout_order.empty()
+                    ? ordered_index(ordinal, generated.preferred_index)
+                    : scout_order[ordinal].index;
+                const auto& candidate = (*generated.series)[index];
                 if (
                     previsited_series != nullptr
                     && candidate.path.moves == *previsited_series
@@ -2955,9 +3162,47 @@ public:
             bound = TTBound::Lower;
         }
         if (!canonical_pv && bound == TTBound::Exact) {
-            throw std::logic_error(
-                "native bound-only mate exit produced an exact result"
-            );
+            if (recertifying_current_key) {
+                throw std::logic_error(
+                    "native canonical exact re-search remained bound-only"
+                );
+            }
+
+            // A proof-only TT bound can meet a complementary bound at the
+            // same score and therefore prove an exact value without carrying
+            // the canonical PV required by an exact result. Re-search the
+            // original window while ignoring every current-key non-exact TT
+            // bound. Even a canonical bound could otherwise re-narrow the
+            // repair window and reproduce the same bound-only convergence.
+            // Canonical PVs remain legal ordering hints. The same session
+            // budget, deadline, transaction log, and accumulated work remain
+            // active, so an interrupted reconstruction fails closed.
+            canonical_research_keys.push_back(key);
+            NodeResult recovered;
+            try {
+                recovered = minimax(
+                    state,
+                    depth,
+                    original_alpha,
+                    original_beta,
+                    ply_from_root
+                );
+            } catch (...) {
+                canonical_research_keys.pop_back();
+                throw;
+            }
+            canonical_research_keys.pop_back();
+            if (!recovered.canonical_pv) {
+                throw std::logic_error(
+                    "native canonical exact re-search returned no canonical PV"
+                );
+            }
+            if (recovered.score != best_score) {
+                throw std::logic_error(
+                    "native canonical exact re-search disagreed with bound proof"
+                );
+            }
+            return recovered;
         }
         const auto proof_bounds = child_bounds.result(
             !cutoff_before_generation

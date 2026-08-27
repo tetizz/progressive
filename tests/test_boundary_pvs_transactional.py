@@ -377,10 +377,9 @@ def test_hard_s4_depth_five_completes_with_exact_safety_under_production_work() 
         baseline_profile(),
     )
     # Later-root transactional scouts reject 31 non-improving S4 candidates.
-    # The exact-capture leaf evaluator deliberately spends more work than the
-    # old geometric vulnerability proxy, while staying below the production
-    # cap and retaining a byte-exact release regression for this hard gate.
-    assert result.stats.work_positions == 6_681_416
+    # Against frozen 00a336b, exact-context child-bound tail ordering preserves
+    # the result while reducing deterministic work from 6,804,167 by 22,935.
+    assert result.stats.work_positions == 6_781_232
     assert result.stats.root_pvs_zero_window_searches == 31
     assert result.stats.root_safety_screen_positions == 392_001
     assert (

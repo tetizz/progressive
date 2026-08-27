@@ -1836,6 +1836,7 @@ def _scout_tail_order_fixture(
     tuple[int, int],
     int,
     tuple[str, ...],
+    tuple[str, ...],
 ]:
     if mover == "white":
         return (
@@ -1845,6 +1846,7 @@ def _scout_tail_order_fixture(
             (600, 601),
             542,
             ("e2e3", "f7f5/e8f7", "f1b5/b5d7/d1h5"),
+            ("d2d3",),
         )
     if mover == "black":
         return (
@@ -1858,6 +1860,7 @@ def _scout_tail_order_fixture(
                 "d1e2/e2e4/e4a4",
                 "c8d7/d7a4/d8d4/a4c2",
             ),
+            ("d7d5", "c8g4"),
         )
     raise AssertionError(f"unknown mover fixture {mover!r}")
 
@@ -1897,7 +1900,15 @@ def test_scout_orders_a_cutoff_proving_tail_child_from_a_bound(
     mover: str,
     bound_source: str,
 ) -> None:
-    parent, target_moves, window, _wrong_window, expected_score, _pv = (
+    (
+        parent,
+        target_moves,
+        window,
+        _wrong_window,
+        expected_score,
+        _pv,
+        preserved_head_moves,
+    ) = (
         _scout_tail_order_fixture(mover)
     )
     child = play_series(parent, target_moves).final_state
@@ -1940,8 +1951,13 @@ def test_scout_orders_a_cutoff_proving_tail_child_from_a_bound(
     target_key = "/".join(target_moves)
     target = next(item for item in manifest.candidates if item.order_key == target_key)
     assert target.order_index >= 2
-    canonical_head = manifest.candidates[0]
-    assert canonical_head.candidate_identity != target.candidate_identity
+    preserved_head_key = "/".join(preserved_head_moves)
+    # Black's public root manifest uses its existing S3 neural ordering, while
+    # this generic minimax fixture retains the non-root traversal head.
+    preserved_head = next(
+        item for item in manifest.candidates if item.order_key == preserved_head_key
+    )
+    assert preserved_head.candidate_identity != target.candidate_identity
     parent_generation_work = manifest.work.call_native_work
     assert parent_generation_work > 0
 
@@ -1956,7 +1972,7 @@ def test_scout_orders_a_cutoff_proving_tail_child_from_a_bound(
     )
     head_before = dict(zip(SUBTREE_STAT_FIELDS, head_seed.stats, strict=True))
     head_result = head_meter.search(
-        canonical_head.series.final_state,
+        preserved_head.series.final_state,
         depth=2,
         alpha=window[0],
         beta=window[1],
@@ -1966,16 +1982,16 @@ def test_scout_orders_a_cutoff_proving_tail_child_from_a_bound(
     )
     assert head_result.status == 0
     head_after = dict(zip(SUBTREE_STAT_FIELDS, head_result.stats, strict=True))
-    canonical_head_work = (
+    preserved_head_work = (
         head_after["generation_positions"] - head_before["generation_positions"]
     )
-    assert canonical_head_work > 0
+    assert preserved_head_work > 0
 
     bounded = _session(
         width=8,
         depth=5,
         max_work=(
-            seed_work + parent_generation_work + canonical_head_work
+            seed_work + parent_generation_work + preserved_head_work + 1
         ),
     )
     seeded = _seed_child_scout_bound(
@@ -2002,9 +2018,10 @@ def test_scout_orders_a_cutoff_proving_tail_child_from_a_bound(
 
     assert result.status == 0
     assert result.score == seeded.score
+    assert result.principal_variation == ()
     assert (
         after["generation_positions"] - before["generation_positions"]
-        == parent_generation_work + canonical_head_work
+        == parent_generation_work + preserved_head_work
     )
     assert (
         after["tt_hits"] - before["tt_hits"]
@@ -2014,6 +2031,202 @@ def test_scout_orders_a_cutoff_proving_tail_child_from_a_bound(
         after["generation_work_limit_hits"]
         == before["generation_work_limit_hits"]
     )
+
+
+def test_scout_keeps_multiple_cutoff_proving_tail_children_stable() -> None:
+    parent = ProgressiveState.initial()
+    window = (519, 520)
+    session = _session(width=8, depth=5, max_work=20_000_000)
+    seeded_scores = []
+    for moves in (("e2e3",), ("e2e4",)):
+        child = play_series(parent, moves).final_state
+        seeded = _seed_child_scout_bound(
+            session,
+            child,
+            depth=2,
+            ply_from_root=1,
+            window=(-2 * MATE_SCORE, 2 * MATE_SCORE),
+            transactional=False,
+        )
+        seeded_scores.append(seeded.score)
+    assert seeded_scores == [542, 530]
+
+    result = session.search(
+        parent,
+        depth=3,
+        alpha=window[0],
+        beta=window[1],
+        ply_from_root=0,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+
+    assert result.status == 0
+    assert result.score == seeded_scores[0]
+    assert result.principal_variation == ()
+
+
+def _alter_scout_child_exact_context(
+    child: ProgressiveState,
+    context: str,
+) -> ProgressiveState:
+    board = child.board.copy(stack=False)
+    quiet_series = child.quiet_series
+    if context == "promoted-provenance":
+        board.promoted |= chess.BB_B1
+    elif context == "halfmove-clock":
+        board.halfmove_clock += 1
+    elif context == "fullmove-number":
+        board.fullmove_number += 1
+    elif context == "quiet-series":
+        quiet_series += 1
+    elif context == "castling-rights":
+        board.castling_rights &= ~chess.BB_H1
+    else:  # pragma: no cover - the parametrization is the closed test contract.
+        raise AssertionError(f"unknown exact child context {context!r}")
+    return ProgressiveState(
+        board,
+        series_number=child.series_number,
+        quiet_series=quiet_series,
+        ep_targets=child.ep_targets,
+    )
+
+
+@pytest.mark.parametrize(
+    ("context", "expected_parent_work"),
+    (
+        ("promoted-provenance", 3_503),
+        ("halfmove-clock", 1_709),
+        ("fullmove-number", 3_503),
+        ("quiet-series", 1_709),
+        ("castling-rights", 4_297),
+    ),
+)
+@pytest.mark.parametrize(
+    "transactional",
+    (False, True),
+    ids=("committed-tt", "transactional-overlay"),
+)
+def test_scout_child_bound_never_aliases_exact_state_context(
+    context: str,
+    expected_parent_work: int,
+    transactional: bool,
+) -> None:
+    parent = ProgressiveState.initial()
+    child = play_series(parent, ("e2e3",)).final_state
+    mismatched_child = _alter_scout_child_exact_context(child, context)
+    window = (519, 520)
+    session = _session(width=8, depth=5, max_work=20_000_000)
+    seeded = _seed_child_scout_bound(
+        session,
+        mismatched_child,
+        depth=2,
+        ply_from_root=1,
+        window=window,
+        transactional=transactional,
+    )
+    assert seeded.score >= window[1]
+    before = dict(zip(SUBTREE_STAT_FIELDS, seeded.stats, strict=True))
+
+    result = session.search(
+        parent,
+        depth=3,
+        alpha=window[0],
+        beta=window[1],
+        ply_from_root=0,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    after = dict(zip(SUBTREE_STAT_FIELDS, result.stats, strict=True))
+
+    assert result.status == 0
+    assert (
+        after["generation_positions"] - before["generation_positions"]
+        == expected_parent_work
+    )
+    # If any exact-state field above were dropped from the child TT key, the
+    # seeded e3 bound would be treated as authoritative and this search would
+    # take the 980-position proof-only reorder path instead.
+    assert expected_parent_work != 980
+
+
+@pytest.mark.parametrize(
+    "transactional",
+    (False, True),
+    ids=("committed-tt", "transactional-overlay"),
+)
+@pytest.mark.parametrize(
+    "context",
+    ("series-number", "progressive-ep"),
+)
+def test_scout_child_bound_never_aliases_progressive_context(
+    context: str,
+    transactional: bool,
+) -> None:
+    if context == "series-number":
+        parent = ProgressiveState.initial()
+        child = play_series(parent, ("e2e3",)).final_state
+        mismatched_child = ProgressiveState(
+            child.board,
+            series_number=child.series_number + 2,
+            quiet_series=child.quiet_series,
+            ep_targets=child.ep_targets,
+        )
+        window = (-355, -354)
+        expected_parent_work = 2_149
+    else:
+        parent = ProgressiveState.from_fen(
+            "rnbqkbnr/ppp1pppp/8/8/3p4/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            1,
+        )
+        child = play_series(parent, ("e2e4",)).final_state
+        assert child.ep_targets == (chess.E3,)
+        without_ep = child.board.copy(stack=False)
+        without_ep.ep_square = None
+        mismatched_child = ProgressiveState(
+            without_ep,
+            series_number=child.series_number,
+            quiet_series=child.quiet_series,
+            ep_targets=(),
+        )
+        window = (-258, -257)
+        expected_parent_work = 1_664
+
+    session = _session(width=8, depth=5, max_work=20_000_000)
+    seeded = _seed_child_scout_bound(
+        session,
+        mismatched_child,
+        depth=2,
+        ply_from_root=1,
+        window=window,
+        transactional=transactional,
+    )
+    assert seeded.score >= window[1]
+    before = dict(zip(SUBTREE_STAT_FIELDS, seeded.stats, strict=True))
+
+    result = session.search(
+        parent,
+        depth=3,
+        alpha=window[0],
+        beta=window[1],
+        ply_from_root=0,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    after = dict(zip(SUBTREE_STAT_FIELDS, result.stats, strict=True))
+
+    assert result.status == 0
+    assert tuple(
+        item.machine_notation for item in result.principal_variation
+    ) == ("d2d3", "e7e5/f8b4", "c2c3/c1g5/g5d8")
+    assert (
+        after["generation_positions"] - before["generation_positions"]
+        == expected_parent_work
+    )
+    # The mismatched child is a later tail candidate and its seeded bound
+    # proves this window. Dropping either field would activate proof-only tail
+    # ordering and suppress the canonical PV above, even though the preserved
+    # head itself still cuts off.
 
 
 @pytest.mark.parametrize("mover", ("white", "black"))
@@ -2048,7 +2261,7 @@ def test_scout_does_not_order_a_tail_child_from_an_unusable_bound(
     bound_case: str,
     expected_parent_work: dict[str, int],
 ) -> None:
-    parent, target_moves, window, wrong_window, _score, _pv = (
+    parent, target_moves, window, wrong_window, _score, _pv, _head = (
         _scout_tail_order_fixture(mover)
     )
     child = play_series(parent, target_moves).final_state
@@ -2094,7 +2307,15 @@ def test_scout_child_bound_never_changes_the_canonical_full_window_pv(
     mover: str,
     transactional: bool,
 ) -> None:
-    parent, target_moves, window, _wrong_window, expected_score, expected_pv = (
+    (
+        parent,
+        target_moves,
+        window,
+        _wrong_window,
+        expected_score,
+        expected_pv,
+        _head,
+    ) = (
         _scout_tail_order_fixture(mover)
     )
     child = play_series(parent, target_moves).final_state
@@ -2342,6 +2563,388 @@ def test_mover_mate_bound_reconstructs_canonical_full_window_pv() -> None:
             item.machine_notation for item in warm.principal_variation
         ) == expected_pv
         assert warm.principal_variation == cold.principal_variation
+
+
+def test_warm_mate_bound_convergence_reconstructs_canonical_pv() -> None:
+    state = ProgressiveState.from_fen(
+        "4k1nB/2pB3p/8/8/P3n3/4K3/2P2P1P/7r b - - 1 21",
+        10,
+    )
+    session = _session(
+        width=32,
+        depth=5,
+        max_work=25_000_000,
+        cache_capacity=65_536,
+        root_tactical_protection=True,
+    )
+    full_window = (-2 * MATE_SCORE, 2 * MATE_SCORE)
+
+    depth_two = session.search(
+        state,
+        depth=2,
+        alpha=full_window[0],
+        beta=full_window[1],
+        ply_from_root=1,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    mate_bound = session.search(
+        state,
+        depth=3,
+        alpha=-2068,
+        beta=full_window[1],
+        ply_from_root=1,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    exact = session.search(
+        state,
+        depth=3,
+        alpha=full_window[0],
+        beta=full_window[1],
+        ply_from_root=1,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+
+    assert depth_two.status == mate_bound.status == exact.status == 0
+    assert depth_two.score == -1762
+    assert mate_bound.score == exact.score == -MATE_SCORE + 4
+    assert mate_bound.principal_variation == ()
+    assert tuple(
+        item.machine_notation for item in exact.principal_variation
+    ) == (
+        "e8d7/h1c1/c1c2/c2a2/g8f6/e4f2/a2a4/a4a8/a8h8/h8e8",
+        "e3f3/f3f4/f4f5/f5f6/f6g5/g5f6/f6g7/g7f6/f6g7/g7h7/h7g6",
+        "c7c5/e8c8/f2d3/c8h8/c5c4/c4c3/c3c2/c2c1q/c1b1/d7e6/b1c2/c2g2",
+    )
+
+
+def test_canonical_mate_lower_bound_preserves_exact_pv() -> None:
+    state = ProgressiveState.from_fen(
+        "4k1nB/2pB3p/8/8/P3n3/4K3/2P2P1P/7r b - - 1 21",
+        10,
+    )
+    full_window = (-2 * MATE_SCORE, 2 * MATE_SCORE)
+    cold = _session(
+        width=32,
+        depth=5,
+        max_work=25_000_000,
+        cache_capacity=65_536,
+        root_tactical_protection=True,
+    ).search(
+        state,
+        depth=3,
+        alpha=full_window[0],
+        beta=full_window[1],
+        ply_from_root=1,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    assert cold.status == 0
+    assert cold.score == -MATE_SCORE + 4
+    assert cold.principal_variation
+
+    warm = _session(
+        width=32,
+        depth=5,
+        max_work=25_000_000,
+        cache_capacity=65_536,
+        root_tactical_protection=True,
+    )
+    canonical_lower = warm.search(
+        state,
+        depth=3,
+        alpha=cold.score - 1,
+        beta=cold.score,
+        ply_from_root=1,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    assert canonical_lower.status == 0
+    assert canonical_lower.score >= cold.score
+    assert canonical_lower.principal_variation
+
+    exact = warm.search(
+        state,
+        depth=3,
+        alpha=full_window[0],
+        beta=full_window[1],
+        ply_from_root=1,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+
+    assert exact.status == 0
+    assert exact.message == ""
+    assert exact.score == cold.score
+    assert exact.proof_bounds == cold.proof_bounds
+    assert tuple(
+        _series_signature(item) for item in exact.principal_variation
+    ) == tuple(_series_signature(item) for item in cold.principal_variation)
+
+
+def test_interrupted_warm_mate_bound_recertification_retries_canonically() -> None:
+    state = ProgressiveState.from_fen(
+        "4k1nB/2pB3p/8/8/P3n3/4K3/2P2P1P/7r b - - 1 21",
+        10,
+    )
+    session = _session(
+        width=32,
+        depth=5,
+        max_work=25_000_000,
+        cache_capacity=65_536,
+        root_tactical_protection=True,
+    )
+    full_window = (-2 * MATE_SCORE, 2 * MATE_SCORE)
+    session.search(
+        state,
+        depth=2,
+        alpha=full_window[0],
+        beta=full_window[1],
+        ply_from_root=1,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    bound = session.search(
+        state,
+        depth=3,
+        alpha=-2068,
+        beta=full_window[1],
+        ply_from_root=1,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    work_before = dict(
+        zip(SUBTREE_STAT_FIELDS, bound.stats, strict=True)
+    )["generation_positions"]
+
+    interrupted = session.search(
+        state,
+        depth=3,
+        alpha=full_window[0],
+        beta=full_window[1],
+        ply_from_root=1,
+        external_work=0,
+        remaining_nanoseconds=1_000_000_000,
+    )
+    retry = session.search(
+        state,
+        depth=3,
+        alpha=full_window[0],
+        beta=full_window[1],
+        ply_from_root=1,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    cold = _session(
+        width=32,
+        depth=5,
+        max_work=25_000_000,
+        cache_capacity=65_536,
+        root_tactical_protection=True,
+    ).search(
+        state,
+        depth=3,
+        alpha=full_window[0],
+        beta=full_window[1],
+        ply_from_root=1,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+
+    interrupted_stats = dict(
+        zip(SUBTREE_STAT_FIELDS, interrupted.stats, strict=True)
+    )
+    assert interrupted.status == 2
+    assert interrupted.principal_variation == ()
+    assert interrupted_stats["generation_positions"] > work_before
+    assert retry.status == cold.status == 0
+    assert retry.score == cold.score == -MATE_SCORE + 4
+    assert retry.proof_bounds == cold.proof_bounds
+    assert tuple(
+        _series_signature(item) for item in retry.principal_variation
+    ) == tuple(_series_signature(item) for item in cold.principal_variation)
+
+
+def test_warm_mate_bound_recertification_work_limit_fails_closed() -> None:
+    state = ProgressiveState.from_fen(
+        "4k1nB/2pB3p/8/8/P3n3/4K3/2P2P1P/7r b - - 1 21",
+        10,
+    )
+    session = _session(
+        width=32,
+        depth=5,
+        max_work=1_000_000,
+        cache_capacity=65_536,
+        root_tactical_protection=True,
+    )
+    full_window = (-2 * MATE_SCORE, 2 * MATE_SCORE)
+    session.search(
+        state,
+        depth=2,
+        alpha=full_window[0],
+        beta=full_window[1],
+        ply_from_root=1,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    bound = session.search(
+        state,
+        depth=3,
+        alpha=-2068,
+        beta=full_window[1],
+        ply_from_root=1,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    interrupted = session.search(
+        state,
+        depth=3,
+        alpha=full_window[0],
+        beta=full_window[1],
+        ply_from_root=1,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+
+    assert bound.status == 0
+    assert bound.score == -MATE_SCORE + 4
+    assert bound.principal_variation == ()
+    assert interrupted.status == 1
+    assert interrupted.score == 0
+    assert interrupted.principal_variation == ()
+    assert interrupted.message == "native subtree generation work limit reached"
+    interrupted_stats = dict(
+        zip(SUBTREE_STAT_FIELDS, interrupted.stats, strict=True)
+    )
+    assert interrupted_stats["generation_positions"] == 1_000_000
+
+
+def test_warm_mate_bound_recertification_respects_outer_tt_rollback() -> None:
+    state = ProgressiveState.from_fen(
+        "4k1nB/2pB3p/8/8/P3n3/4K3/2P2P1P/7r b - - 1 21",
+        10,
+    )
+    session = _session(
+        width=32,
+        depth=5,
+        max_work=25_000_000,
+        cache_capacity=65_536,
+        root_tactical_protection=True,
+    )
+    full_window = (-2 * MATE_SCORE, 2 * MATE_SCORE)
+    session.search(
+        state,
+        depth=2,
+        alpha=full_window[0],
+        beta=full_window[1],
+        ply_from_root=1,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    session.search(
+        state,
+        depth=3,
+        alpha=-2068,
+        beta=full_window[1],
+        ply_from_root=1,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+
+    session.begin_transaction()
+    transactional = session.search(
+        state,
+        depth=3,
+        alpha=full_window[0],
+        beta=full_window[1],
+        ply_from_root=1,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    rolled_back = session.rollback_transaction()
+    replayed = session.search(
+        state,
+        depth=3,
+        alpha=full_window[0],
+        beta=full_window[1],
+        ply_from_root=1,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+
+    assert transactional.status == replayed.status == 0
+    assert transactional.score == replayed.score == -MATE_SCORE + 4
+    assert transactional.proof_bounds == replayed.proof_bounds
+    assert tuple(
+        _series_signature(item) for item in transactional.principal_variation
+    ) == tuple(
+        _series_signature(item) for item in replayed.principal_variation
+    )
+    assert rolled_back > 0
+
+
+def test_warm_mate_bound_recertification_is_native_thread_deterministic() -> None:
+    state = ProgressiveState.from_fen(
+        "4k1nB/2pB3p/8/8/P3n3/4K3/2P2P1P/7r b - - 1 21",
+        10,
+    )
+    full_window = (-2 * MATE_SCORE, 2 * MATE_SCORE)
+    results = []
+    for native_threads in (1, 16):
+        session = _session(
+            width=32,
+            depth=5,
+            max_work=25_000_000,
+            cache_capacity=65_536,
+            root_tactical_protection=True,
+            native_threads=native_threads,
+        )
+        session.search(
+            state,
+            depth=2,
+            alpha=full_window[0],
+            beta=full_window[1],
+            ply_from_root=1,
+            external_work=0,
+            remaining_nanoseconds=None,
+        )
+        session.search(
+            state,
+            depth=3,
+            alpha=-2068,
+            beta=full_window[1],
+            ply_from_root=1,
+            external_work=0,
+            remaining_nanoseconds=None,
+        )
+        results.append(
+            session.search(
+                state,
+                depth=3,
+                alpha=full_window[0],
+                beta=full_window[1],
+                ply_from_root=1,
+                external_work=0,
+                remaining_nanoseconds=None,
+            )
+        )
+
+    serial, parallel = results
+    assert serial.status == parallel.status == 0
+    assert serial.score == parallel.score == -MATE_SCORE + 4
+    assert serial.proof_bounds == parallel.proof_bounds
+    assert tuple(
+        _series_signature(item) for item in serial.principal_variation
+    ) == tuple(
+        _series_signature(item) for item in parallel.principal_variation
+    )
+    assert dict(zip(SUBTREE_STAT_FIELDS, serial.stats, strict=True))[
+        "generation_positions"
+    ] == dict(zip(SUBTREE_STAT_FIELDS, parallel.stats, strict=True))[
+        "generation_positions"
+    ]
 
 
 @pytest.mark.parametrize(
