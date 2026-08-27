@@ -27,6 +27,7 @@ from benchmarks.bucephalus_timed_adapter import (
     BUCEPHALUS_TIMED_ITERATIVE_ADAPTER_VERSION,
     BucephalusSpec,
     ExternalAnalysis,
+    ExternalAnalysisStage,
     ExternalEngineConfigurationError,
     ExternalEngineError,
     ExternalEngineProtocolError,
@@ -35,6 +36,12 @@ from benchmarks.bucephalus_timed_adapter import (
     analyze_bucephalus,
     analyze_bucephalus_timed_iterative,
     replay_series_history,
+    _parse_deepest_completed_ply,
+    _parse_deepest_continuation_progress,
+    _parse_deepest_legal_incomplete_prefix,
+    _parse_requested_ply,
+    _request_script,
+    _validate_output_identity_and_boundary,
 )
 from scottish_progressive.league import OPENING_SUITE, OPENING_SUITE_VERSION, OpeningCase
 from scottish_progressive.model import (
@@ -1268,6 +1275,123 @@ def _revalidate_selected(
     return authoritative
 
 
+def _continuation_chain_selects_analysis(
+    state: ProgressiveState,
+    history: Sequence[Sequence[str]],
+    analysis: ExternalAnalysis,
+    wall_seconds: float,
+) -> bool:
+    if wall_seconds < 12.0:
+        return True
+    if (
+        not analysis.continuation_stages
+        or analysis.global_deadline_seconds != wall_seconds
+        or analysis.terminal_stage_score != analysis.score_text
+        or analysis.process_count != len(analysis.continuation_stages)
+    ):
+        return False
+    anchor: tuple[str, ...] = ()
+    stitched: tuple[str, ...] = ()
+    elapsed = 0.0
+    for index, stage in enumerate(analysis.continuation_stages, 1):
+        expected = (
+            anchor if stage.purpose == "anchor-ply1"
+            else () if stage.purpose in {"deep-max-ply", "deep-refinement"}
+            else stitched if stage.purpose in {"suffix-max-ply", "suffix-ply1"}
+            else None
+        )
+        if (
+            stage.stage_index != index
+            or expected is None
+            or stage.starting_prefix != expected
+            or stage.elapsed_seconds < 0
+            or stage.wall_timeout_seconds <= 0
+            or stage.request_script
+            != _request_script(
+                history, stage.requested_ply, prefix=stage.starting_prefix
+            )
+        ):
+            return False
+        elapsed += stage.elapsed_seconds
+        if stage.usable:
+            try:
+                _validate_output_identity_and_boundary(
+                    stage.stdout,
+                    state,
+                    count_in_series=len(stage.starting_prefix) + 1,
+                )
+                if stage.purpose in {"anchor-ply1", "suffix-ply1"}:
+                    _, emitted = _parse_requested_ply(stage.stdout, 1)
+                    if emitted != stage.emitted_prefix or len(emitted) != 1:
+                        return False
+                elif stage.purpose == "deep-max-ply":
+                    try:
+                        parsed_ply, _, parsed_result = _parse_deepest_completed_ply(
+                            stage.stdout,
+                            requested_ply=stage.requested_ply,
+                            state=state,
+                        )
+                        emitted = tuple(parsed_result.moves)
+                    except ExternalEngineProtocolError:
+                        parsed_ply, _, emitted = _parse_deepest_legal_incomplete_prefix(
+                            stage.stdout,
+                            requested_ply=stage.requested_ply,
+                            state=state,
+                        )
+                    if parsed_ply != stage.completed_ply or emitted != stage.emitted_prefix:
+                        return False
+                elif stage.purpose == "deep-refinement":
+                    parsed_ply, _, parsed_result = _parse_deepest_completed_ply(
+                        stage.stdout,
+                        requested_ply=stage.requested_ply,
+                        state=state,
+                    )
+                    emitted = tuple(parsed_result.moves)
+                    if parsed_ply != stage.completed_ply or emitted != stage.emitted_prefix:
+                        return False
+                else:
+                    parsed_ply, _, emitted, _ = _parse_deepest_continuation_progress(
+                        stage.stdout,
+                        requested_ply=stage.requested_ply,
+                        state=state,
+                        prefix=stage.starting_prefix,
+                    )
+                    if parsed_ply != stage.completed_ply or emitted != stage.emitted_prefix:
+                        return False
+            except ExternalEngineProtocolError:
+                return False
+        if stage.usable and stage.purpose == "anchor-ply1":
+            anchor += stage.emitted_prefix
+        elif stage.usable and stage.purpose == "deep-max-ply":
+            stitched = stage.emitted_prefix
+        elif (
+            stage.usable
+            and stage.purpose == "deep-refinement"
+            and analysis.selection_mode == "deep-refined"
+        ):
+            stitched = stage.emitted_prefix
+        elif stage.usable and stage.purpose in {"suffix-max-ply", "suffix-ply1"}:
+            stitched += stage.emitted_prefix
+    evidence = (
+        anchor
+        if analysis.selection_mode in {"anchor-fallback", "anchor-terminal"}
+        else stitched
+    )
+    return (
+        tuple(analysis.best_series.moves) == evidence
+        and elapsed <= wall_seconds + COMMON_WALL_OVERRUN_GRACE_SECONDS
+        and analysis.elapsed_seconds + 1e-9 >= elapsed
+        and analysis.elapsed_seconds
+        <= wall_seconds + COMMON_WALL_OVERRUN_GRACE_SECONDS
+        and analysis.deadline_reached
+        == any(stage.deadline_reached for stage in analysis.continuation_stages)
+        and analysis.process_exit_recovered
+        == any(stage.process_exit_recovered for stage in analysis.continuation_stages)
+        and analysis.global_deadline_reached
+        == (analysis.elapsed_seconds >= wall_seconds)
+    )
+
+
 def _stats_dict(stats: object | None) -> dict[str, Any]:
     if stats is None:
         return {}
@@ -1843,6 +1967,34 @@ def _play_external_game(
                     "process_exit_recovered": (
                         external_analysis.process_exit_recovered
                     ),
+                    "selection_mode": external_analysis.selection_mode,
+                    "terminal_stage_score": external_analysis.terminal_stage_score,
+                    "global_deadline_seconds": external_analysis.global_deadline_seconds,
+                    "global_deadline_reached": external_analysis.global_deadline_reached,
+                    "external_process_count": external_analysis.process_count,
+                    "selection_root_prefix_ply": external_analysis.selection_root_prefix_ply,
+                    "terminal_stage_ply": external_analysis.terminal_stage_ply,
+                    "continuation_stages": [
+                        {
+                            "stage_index": stage.stage_index,
+                            "purpose": stage.purpose,
+                            "starting_prefix": list(stage.starting_prefix),
+                            "emitted_prefix": list(stage.emitted_prefix),
+                            "requested_ply": stage.requested_ply,
+                            "completed_ply": stage.completed_ply,
+                            "wall_timeout_seconds": stage.wall_timeout_seconds,
+                            "elapsed_seconds": stage.elapsed_seconds,
+                            "request_script": stage.request_script,
+                            "stdout": stage.stdout,
+                            "stderr": stage.stderr,
+                            "deadline_reached": stage.deadline_reached,
+                            "process_exit_code": stage.process_exit_code,
+                            "process_exit_recovered": stage.process_exit_recovered,
+                            "usable": stage.usable,
+                            "error": stage.error,
+                        }
+                        for stage in external_analysis.continuation_stages
+                    ],
                 }
             )
             if (
@@ -1874,12 +2026,16 @@ def _play_external_game(
                     external_analysis.completed_ply < requested_ply
                     and not external_analysis.deadline_reached
                     and not external_analysis.process_exit_recovered
+                    and external_analysis.selection_mode == "single-stage"
                 )
                 or (
                     external_analysis.process_exit_recovered
                     and (
                         external_analysis.process_exit_code in (None, 0)
-                        or external_analysis.deadline_reached
+                        or (
+                            external_analysis.deadline_reached
+                            and external_analysis.selection_mode == "single-stage"
+                        )
                     )
                 )
                 or (
@@ -1892,6 +2048,25 @@ def _play_external_game(
                 != job.external_spec.upstream_commit
                 or external_analysis.adapter_version
                 != job.config.expected_external_adapter_version
+                or (
+                    (job.config.common_wall_timeout_seconds or 0) >= 12.0
+                    and not external_analysis.continuation_stages
+                )
+                or external_analysis.selection_mode not in {
+                    "single-stage",
+                    "anchor-fallback",
+                    "anchor-terminal",
+                    "deep-complete-retained",
+                    "deep-refined",
+                    "deep-prefix-continuation",
+                }
+                or not _continuation_chain_selects_analysis(
+                    state,
+                    history,
+                    external_analysis,
+                    job.config.common_wall_timeout_seconds
+                    or job.config.external_wall_timeout_seconds,
+                )
             ):
                 trace.append(attempted_trace)
                 return _technical_record(
@@ -2584,12 +2759,18 @@ def _validate_journal_record_replay(
                 completed_ply < expected_requested_ply
                 and not deadline_reached
                 and not process_exit_recovered
+                and item.get("selection_mode", "single-stage") == "single-stage"
             ):
                 raise ValueError(
                     "journal Bucephalus partial iteration lacks a stop reason"
                 )
             if process_exit_recovered and (
-                process_exit_code in (None, 0) or deadline_reached
+                process_exit_code in (None, 0)
+                or (
+                    deadline_reached
+                    and item.get("selection_mode", "single-stage")
+                    == "single-stage"
+                )
             ):
                 raise ValueError(
                     "journal Bucephalus process-exit recovery is inconsistent"
@@ -2618,6 +2799,198 @@ def _validate_journal_record_replay(
                 raise ValueError(
                     "journal Bucephalus evidence transcript is incomplete"
                 )
+            continuation_stages = item.get("continuation_stages")
+            if not isinstance(continuation_stages, list):
+                raise ValueError(
+                    "journal Bucephalus continuation provenance is missing"
+                )
+            if (
+                (job.config.common_wall_timeout_seconds or 0) >= 12.0
+                and not continuation_stages
+            ):
+                raise ValueError(
+                    "journal long Bucephalus series has no continuation stages"
+                )
+            selection_mode = item.get("selection_mode", "single-stage")
+            if selection_mode not in {
+                "single-stage", "anchor-fallback", "anchor-terminal",
+                "deep-complete-retained", "deep-refined",
+                "deep-prefix-continuation",
+            }:
+                raise ValueError("journal Bucephalus selection mode is invalid")
+            anchor_prefix: list[str] = []
+            stitched_prefix: list[str] = []
+            parsed_stages: list[ExternalAnalysisStage] = []
+            stage_elapsed = 0.0
+            for stage_index, stage in enumerate(continuation_stages, 1):
+                if not isinstance(stage, dict):
+                    raise ValueError("journal Bucephalus stage is not an object")
+                starting_prefix = stage.get("starting_prefix")
+                emitted_prefix = stage.get("emitted_prefix")
+                stage_wall = stage.get("wall_timeout_seconds")
+                elapsed = stage.get("elapsed_seconds")
+                purpose = stage.get("purpose")
+                usable = stage.get("usable")
+                expected_prefix = (
+                    anchor_prefix if purpose == "anchor-ply1"
+                    else [] if purpose in {"deep-max-ply", "deep-refinement"}
+                    else stitched_prefix if purpose in {"suffix-max-ply", "suffix-ply1"}
+                    else None
+                )
+                if (
+                    stage.get("stage_index") != stage_index
+                    or expected_prefix is None
+                    or starting_prefix != expected_prefix
+                    or not isinstance(emitted_prefix, list)
+                    or any(not isinstance(move, str) for move in emitted_prefix)
+                    or type(stage.get("requested_ply")) is not int
+                    or type(stage.get("completed_ply")) is not int
+                    or stage.get("requested_ply") not in {
+                        1, expected_requested_ply - 1, expected_requested_ply
+                    }
+                    or (
+                        purpose in {"anchor-ply1", "suffix-ply1"}
+                        and stage.get("requested_ply") != 1
+                    )
+                    or (
+                        purpose == "deep-max-ply"
+                        and stage.get("requested_ply") != expected_requested_ply - 1
+                    )
+                    or (
+                        purpose in {"deep-refinement", "suffix-max-ply"}
+                        and stage.get("requested_ply") != expected_requested_ply
+                    )
+                    or not 0 <= stage.get("completed_ply") <= stage.get("requested_ply")
+                    or type(usable) is not bool
+                    or (
+                        stage.get("error") is not None
+                        and not isinstance(stage.get("error"), str)
+                    )
+                    or (usable and stage.get("completed_ply") < 1)
+                    or (not usable and stage.get("completed_ply") != 0)
+                    or not isinstance(stage_wall, (int, float))
+                    or not isinstance(elapsed, (int, float))
+                    or stage_wall <= 0
+                    or elapsed < 0
+                    or not isinstance(stage.get("request_script"), str)
+                    or not isinstance(stage.get("stdout"), str)
+                    or not isinstance(stage.get("stderr"), str)
+                    or type(stage.get("deadline_reached")) is not bool
+                    or type(stage.get("process_exit_recovered")) is not bool
+                    or (
+                        stage.get("process_exit_code") is not None
+                        and type(stage.get("process_exit_code")) is not int
+                    )
+                ):
+                    raise ValueError(
+                        "journal Bucephalus continuation stage is invalid"
+                    )
+                stage_elapsed += float(elapsed)
+                parsed_stages.append(
+                    ExternalAnalysisStage(
+                        stage_index=stage_index,
+                        purpose=purpose,
+                        starting_prefix=tuple(starting_prefix),
+                        emitted_prefix=tuple(emitted_prefix),
+                        requested_ply=stage["requested_ply"],
+                        completed_ply=stage["completed_ply"],
+                        wall_timeout_seconds=float(stage_wall),
+                        elapsed_seconds=float(elapsed),
+                        request_script=stage["request_script"],
+                        stdout=stage["stdout"],
+                        stderr=stage["stderr"],
+                        deadline_reached=stage["deadline_reached"],
+                        process_exit_code=stage.get("process_exit_code"),
+                        process_exit_recovered=stage["process_exit_recovered"],
+                        usable=usable,
+                        error=stage.get("error"),
+                    )
+                )
+                if usable and purpose == "anchor-ply1":
+                    anchor_prefix = starting_prefix + emitted_prefix
+                elif usable and purpose == "deep-max-ply":
+                    stitched_prefix = starting_prefix + emitted_prefix
+                elif (
+                    usable
+                    and purpose == "deep-refinement"
+                    and selection_mode == "deep-refined"
+                ):
+                    stitched_prefix = starting_prefix + emitted_prefix
+                elif usable and purpose in {"suffix-max-ply", "suffix-ply1"}:
+                    stitched_prefix = starting_prefix + emitted_prefix
+            selected_moves = machine.split("/")
+            selected_evidence = (
+                anchor_prefix
+                if selection_mode in {"anchor-fallback", "anchor-terminal"}
+                else stitched_prefix
+            )
+            if continuation_stages and selected_evidence != selected_moves:
+                raise ValueError(
+                    "journal Bucephalus stage chain does not produce the selected series"
+                )
+            if (
+                job.config.common_wall_timeout_seconds is not None
+                and stage_elapsed
+                > job.config.common_wall_timeout_seconds
+                + COMMON_WALL_OVERRUN_GRACE_SECONDS
+            ):
+                raise ValueError(
+                    "journal Bucephalus continuation stages exceed the common wall"
+                )
+            if (job.config.common_wall_timeout_seconds or 0) >= 12.0:
+                external_elapsed = item.get("external_elapsed_seconds")
+                if (
+                    item.get("global_deadline_seconds")
+                    != job.config.common_wall_timeout_seconds
+                    or item.get("terminal_stage_score") != item.get("score_text")
+                    or not isinstance(external_elapsed, (int, float))
+                    or external_elapsed < 0
+                    or external_elapsed
+                    > job.config.common_wall_timeout_seconds
+                    + COMMON_WALL_OVERRUN_GRACE_SECONDS
+                ):
+                    raise ValueError(
+                        "journal Bucephalus global deadline accounting is invalid"
+                    )
+                try:
+                    selected_result = play_series(state, tuple(selected_moves))
+                except SeriesLegalityError as error:
+                    raise ValueError(
+                        "journal Bucephalus selected series is illegal"
+                    ) from error
+                reconstructed = ExternalAnalysis(
+                    best_series=selected_result,
+                    requested_ply=expected_requested_ply,
+                    completed_ply=completed_ply,
+                    score_text=item["score_text"],
+                    elapsed_seconds=float(external_elapsed),
+                    executable_sha256=item["executable_sha256"],
+                    upstream_commit=item.get("upstream_commit"),
+                    adapter_version=item["adapter_version"],
+                    request_script=item["request_script"],
+                    stdout=item["stdout"],
+                    stderr=item["stderr"],
+                    deadline_reached=deadline_reached,
+                    process_exit_code=process_exit_code,
+                    process_exit_recovered=process_exit_recovered,
+                    continuation_stages=tuple(parsed_stages),
+                    selection_mode=selection_mode,
+                    terminal_stage_score=item.get("terminal_stage_score"),
+                    global_deadline_seconds=item.get("global_deadline_seconds"),
+                    global_deadline_reached=bool(item.get("global_deadline_reached")),
+                    process_count=item.get("external_process_count", 0),
+                    selection_root_prefix_ply=item.get("selection_root_prefix_ply"),
+                    terminal_stage_ply=item.get("terminal_stage_ply"),
+                )
+                if not _continuation_chain_selects_analysis(
+                    state,
+                    history,
+                    reconstructed,
+                    job.config.common_wall_timeout_seconds,
+                ):
+                    raise ValueError(
+                        "journal Bucephalus continuation transcript is not authoritative"
+                    )
         try:
             authoritative = play_series(state, tuple(machine.split("/")))
         except SeriesLegalityError as error:

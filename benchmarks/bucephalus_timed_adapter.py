@@ -13,12 +13,12 @@ from typing import Mapping, Sequence
 
 import chess
 
-from scottish_progressive.model import ProgressiveState, SeriesResult
+from scottish_progressive.model import Outcome, ProgressiveState, SeriesResult
 from scottish_progressive.rules import SeriesLegalityError, play_series
 
 
 BUCEPHALUS_ADAPTER_VERSION = "bucephalus-terminal-v1"
-BUCEPHALUS_TIMED_ITERATIVE_ADAPTER_VERSION = "bucephalus-timed-iterative-v1"
+BUCEPHALUS_TIMED_ITERATIVE_ADAPTER_VERSION = "bucephalus-timed-continuation-v2"
 BUCEPHALUS_MAX_PLY = 30
 BUCEPHALUS_MAX_GAME_RECORD = 200
 
@@ -102,6 +102,26 @@ class BucephalusSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class ExternalAnalysisStage:
+    stage_index: int
+    purpose: str
+    starting_prefix: tuple[str, ...]
+    emitted_prefix: tuple[str, ...]
+    requested_ply: int
+    completed_ply: int
+    wall_timeout_seconds: float
+    elapsed_seconds: float
+    request_script: str
+    stdout: str
+    stderr: str
+    deadline_reached: bool
+    process_exit_code: int | None
+    process_exit_recovered: bool
+    usable: bool = True
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ExternalAnalysis:
     best_series: SeriesResult
     requested_ply: int
@@ -117,6 +137,14 @@ class ExternalAnalysis:
     deadline_reached: bool = False
     process_exit_code: int | None = None
     process_exit_recovered: bool = False
+    continuation_stages: tuple[ExternalAnalysisStage, ...] = ()
+    selection_mode: str = "single-stage"
+    terminal_stage_score: str | None = None
+    global_deadline_seconds: float | None = None
+    global_deadline_reached: bool = False
+    process_count: int = 1
+    selection_root_prefix_ply: int | None = None
+    terminal_stage_ply: int | None = None
 
 
 _PLY_LINE = re.compile(
@@ -206,6 +234,22 @@ def _validate_history_capacity(history: Sequence[Sequence[str]]) -> None:
             )
 
 
+def _validate_partial_series_capacity(
+    history: Sequence[Sequence[str]], prefix: Sequence[str]
+) -> None:
+    if not prefix:
+        return
+    series_number = len(history) + 1
+    final_record_index = (
+        series_number * (series_number - 1) // 2 + len(prefix) - 1
+    )
+    if final_record_index >= BUCEPHALUS_MAX_GAME_RECORD:
+        raise ExternalEngineConfigurationError(
+            "partial-series replay exceeds Bucephalus's 200-move game-record "
+            f"array at series {series_number}"
+        )
+
+
 def _bucephalus_move(uci: str) -> str:
     if re.fullmatch(r"[a-h][1-8][a-h][1-8][nbrq]?", uci) is None:
         raise ExternalEngineConfigurationError(
@@ -215,12 +259,15 @@ def _bucephalus_move(uci: str) -> str:
 
 
 def _request_script(
-    history: Sequence[Sequence[str]], search_ply: int
+    history: Sequence[Sequence[str]], search_ply: int, *, prefix: Sequence[str] = ()
 ) -> str:
+    _validate_partial_series_capacity(history, prefix)
     commands: list[str] = []
     for series in history:
         for uci in series:
             commands.extend(("m", _bucephalus_move(uci)))
+    for uci in prefix:
+        commands.extend(("m", _bucephalus_move(uci)))
     # `p` gives a machine-checkable boundary marker. `e`, depth, `t` is
     # Bucephalus's terminal evaluator; `q` flushes output through an ordinary
     # pipe once the requested iterative search finishes.
@@ -283,7 +330,7 @@ def _decode_process_output(output: str | bytes | None) -> str:
 
 
 def _validate_output_identity_and_boundary(
-    stdout: str, state: ProgressiveState
+    stdout: str, state: ProgressiveState, *, count_in_series: int = 1
 ) -> None:
     if "Bucephalus v" not in stdout:
         raise ExternalEngineProtocolError(
@@ -292,12 +339,95 @@ def _validate_output_identity_and_boundary(
     side = "W" if state.board.turn == chess.WHITE else "B"
     status = re.compile(
         rf"Side to move:\s*{side}\s+Length of Series:\s*"
-        rf"{state.series_number}\s+Count in Series:\s*1"
+        rf"{state.series_number}\s+Count in Series:\s*{count_in_series}"
     )
     if status.search(stdout) is None:
         raise ExternalEngineProtocolError(
             "Bucephalus replay did not report the requested series boundary"
         )
+
+
+def _parse_deepest_legal_incomplete_prefix(
+    stdout: str, *, requested_ply: int, state: ProgressiveState
+) -> tuple[int, str, tuple[str, ...]]:
+    matches = list(_PLY_LINE.finditer(stdout))
+    if not matches:
+        raise ExternalEngineProtocolError(
+            "timed Bucephalus output contained no completed PLY line"
+        )
+    observed = {int(match.group("ply")) for match in matches}
+    if max(observed) > requested_ply:
+        raise ExternalEngineProtocolError(
+            f"Bucephalus reported PLY {max(observed)} beyond requested PLY "
+            f"{requested_ply}"
+        )
+    rejected: list[str] = []
+    for completed_ply in sorted(observed, reverse=True):
+        try:
+            score, pv = _parse_requested_ply(stdout, completed_ply)
+            prefix = tuple(pv[: state.moves_available - 1])
+            if not prefix:
+                raise ExternalEngineProtocolError("no root-series prefix was emitted")
+            try:
+                play_series(state, prefix)
+            except SeriesLegalityError as error:
+                if str(error).startswith("series is incomplete:"):
+                    return completed_ply, score, prefix
+                raise ExternalEngineProtocolError(
+                    f"Bucephalus principal variation is illegal at root: {error}"
+                ) from error
+            raise ExternalEngineProtocolError(
+                "principal variation already completed the root series"
+            )
+        except ExternalEngineProtocolError as error:
+            rejected.append(f"PLY {completed_ply}: {error}")
+    raise ExternalEngineProtocolError(
+        "timed Bucephalus output contained no replay-valid legal incomplete "
+        f"root prefix ({'; '.join(rejected[:3])})"
+    )
+
+
+def _parse_deepest_continuation_progress(
+    stdout: str,
+    *,
+    requested_ply: int,
+    state: ProgressiveState,
+    prefix: tuple[str, ...],
+) -> tuple[int, str, tuple[str, ...], SeriesResult | None]:
+    matches = list(_PLY_LINE.finditer(stdout))
+    if not matches:
+        raise ExternalEngineProtocolError("continuation emitted no completed PLY line")
+    observed = {int(match.group("ply")) for match in matches}
+    if max(observed) > requested_ply:
+        raise ExternalEngineProtocolError(
+            f"Bucephalus reported PLY {max(observed)} beyond requested PLY {requested_ply}"
+        )
+    rejected: list[str] = []
+    for completed_ply in sorted(observed, reverse=True):
+        try:
+            score, pv = _parse_requested_ply(stdout, completed_ply)
+        except ExternalEngineProtocolError as error:
+            rejected.append(f"PLY {completed_ply}: {error}")
+            continue
+        accepted: tuple[str, ...] = ()
+        for length in range(1, min(len(pv), state.moves_available - len(prefix)) + 1):
+            extension = tuple(pv[:length])
+            try:
+                result = play_series(state, prefix + extension)
+            except SeriesLegalityError as error:
+                if str(error).startswith("series is incomplete:"):
+                    accepted = extension
+                    continue
+                rejected.append(f"PLY {completed_ply}: {error}")
+                accepted = ()
+                break
+            return completed_ply, score, extension, result
+        if accepted:
+            return completed_ply, score, accepted, None
+    raise ExternalEngineProtocolError(
+        "continuation emitted no authoritative legal progress "
+        f"({'; '.join(rejected[:3])})"
+    )
 
 
 def _parse_deepest_completed_ply(
@@ -470,6 +600,7 @@ def analyze_bucephalus_timed_iterative(
     fail-on-timeout/fail-on-exit behavior.
     """
 
+    adapter_entry_started = time.perf_counter()
     if not math.isfinite(wall_timeout_seconds) or wall_timeout_seconds <= 0:
         raise ValueError("wall_timeout_seconds must be finite and positive")
     if BUCEPHALUS_MAX_PLY < state.moves_available:
@@ -500,6 +631,16 @@ def analyze_bucephalus_timed_iterative(
         )
 
     executable, actual_hash = spec.verify()
+    if wall_timeout_seconds >= 12.0:
+        return _analyze_bucephalus_with_continuation(
+            state,
+            normalized_history,
+            spec,
+            executable=executable,
+            actual_hash=actual_hash,
+            wall_timeout_seconds=wall_timeout_seconds,
+            overall_started=adapter_entry_started,
+        )
     requested_ply = BUCEPHALUS_MAX_PLY
     script = _request_script(normalized_history, requested_ply)
     creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
@@ -607,4 +748,338 @@ def analyze_bucephalus_timed_iterative(
         stdout=stdout,
         stderr=stderr,
         deadline_reached=False,
+    )
+
+
+def _analyze_bucephalus_with_continuation(
+    state: ProgressiveState,
+    history: SeriesHistory,
+    spec: BucephalusSpec,
+    *,
+    executable: Path,
+    actual_hash: str,
+    wall_timeout_seconds: float,
+    overall_started: float,
+) -> ExternalAnalysis:
+    """Builds a Bucephalus-only anchor, then spends the wall on deep search."""
+
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    cleanup_margin = min(1.0, wall_timeout_seconds * 0.01)
+    searchable_deadline = wall_timeout_seconds - cleanup_margin
+    anchor_deadline = min(12.0, wall_timeout_seconds * 0.10)
+    stages: list[ExternalAnalysisStage] = []
+
+    def elapsed_total() -> float:
+        return time.perf_counter() - overall_started
+
+    def run_stage(
+        *, purpose: str, prefix: tuple[str, ...], requested_ply: int, timeout: float
+    ) -> tuple[str, str, bool, int | None, float, str]:
+        if timeout <= 0:
+            raise ExternalEngineTimeout(
+                f"Bucephalus {purpose} has no time left inside the common wall"
+            )
+        script = _request_script(history, requested_ply, prefix=prefix)
+        before = elapsed_total()
+        try:
+            completed = subprocess.run(
+                [str(executable)], input=script, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, encoding="utf-8", errors="replace",
+                timeout=timeout, check=False, cwd=str(executable.parent),
+                creationflags=creationflags,
+            )
+            return (
+                _decode_process_output(completed.stdout),
+                _decode_process_output(completed.stderr),
+                False, completed.returncode, elapsed_total() - before, script,
+            )
+        except subprocess.TimeoutExpired as error:
+            return (
+                _decode_process_output(error.stdout),
+                _decode_process_output(error.stderr),
+                True, None, elapsed_total() - before, script,
+            )
+        except OSError as error:
+            raise ExternalEngineConfigurationError(
+                f"cannot start external executable: {executable}"
+            ) from error
+
+    def append_stage(
+        purpose: str,
+        prefix: tuple[str, ...],
+        emitted: tuple[str, ...],
+        requested: int,
+        completed: int,
+        timeout: float,
+        process: tuple[str, str, bool, int | None, float, str],
+        *,
+        usable: bool = True,
+        error: str | None = None,
+    ) -> None:
+        stdout, stderr, timed, exit_code, elapsed, script = process
+        stages.append(
+            ExternalAnalysisStage(
+                len(stages) + 1, purpose, prefix, emitted, requested, completed,
+                timeout, elapsed, script, stdout, stderr, timed, exit_code,
+                bool(exit_code not in (None, 0)), usable, error,
+            )
+        )
+
+    def exact_one_move(
+        prefix: tuple[str, ...], *, purpose: str, timeout: float
+    ) -> tuple[tuple[str, ...], SeriesResult | None, str]:
+        process = run_stage(
+            purpose=purpose, prefix=prefix, requested_ply=1, timeout=timeout
+        )
+        stdout = process[0]
+        try:
+            _validate_output_identity_and_boundary(
+                stdout, state, count_in_series=len(prefix) + 1
+            )
+            score, pv = _parse_requested_ply(stdout, 1)
+            if len(pv) != 1:
+                raise ExternalEngineProtocolError(
+                    "exact PLY1 stage did not emit exactly one move"
+                )
+            candidate = prefix + pv
+            try:
+                result = play_series(state, candidate)
+            except SeriesLegalityError as replay_error:
+                if not str(replay_error).startswith("series is incomplete:"):
+                    raise ExternalEngineProtocolError(
+                        f"exact PLY1 move failed authoritative replay: {replay_error}"
+                    ) from replay_error
+                result = None
+        except ExternalEngineProtocolError as error:
+            append_stage(
+                purpose, prefix, (), 1, 0, timeout, process,
+                usable=False, error=str(error),
+            )
+            raise
+        append_stage(purpose, prefix, pv, 1, 1, timeout, process)
+        return candidate, result, score
+
+    # A complete fallback exists before expensive search starts. It is made
+    # exclusively from exact PLY1 choices emitted by the pinned executable.
+    anchor_prefix: tuple[str, ...] = ()
+    anchor_result: SeriesResult | None = None
+    anchor_score = ""
+    while anchor_result is None:
+        anchor_remaining = anchor_deadline - elapsed_total()
+        if anchor_remaining <= 0:
+            raise ExternalEngineTimeout(
+                "Bucephalus could not build its engine-native anchor inside "
+                "the reserved common-wall budget"
+            )
+        remaining_root_moves = state.moves_available - len(anchor_prefix)
+        per_call_timeout = min(
+            1.0,
+            anchor_remaining / (remaining_root_moves + 1),
+        )
+        try:
+            anchor_prefix, anchor_result, anchor_score = exact_one_move(
+                anchor_prefix, purpose="anchor-ply1", timeout=per_call_timeout
+            )
+        except ExternalEngineProtocolError as error:
+            raise ExternalEngineTimeout(
+                f"Bucephalus engine-native anchor failed: {error}"
+            ) from error
+    assert anchor_result is not None
+    if anchor_result.outcome == Outcome.CHECKMATE:
+        total_elapsed = elapsed_total()
+        recovered_exit = next(
+            (stage.process_exit_code for stage in stages if stage.process_exit_recovered),
+            None,
+        )
+        return ExternalAnalysis(
+            anchor_result, BUCEPHALUS_MAX_PLY, 1, anchor_score, total_elapsed,
+            actual_hash, spec.upstream_commit,
+            BUCEPHALUS_TIMED_ITERATIVE_ADAPTER_VERSION,
+            "multi-stage; see continuation_stages",
+            "multi-stage stdout retained per continuation stage",
+            "multi-stage stderr retained per continuation stage",
+            deadline_reached=any(stage.deadline_reached for stage in stages),
+            process_exit_code=recovered_exit,
+            process_exit_recovered=recovered_exit is not None,
+            continuation_stages=tuple(stages),
+            selection_mode="anchor-terminal",
+            terminal_stage_score=anchor_score,
+            global_deadline_seconds=wall_timeout_seconds,
+            global_deadline_reached=False,
+            process_count=len(stages),
+            selection_root_prefix_ply=1,
+            terminal_stage_ply=1,
+        )
+
+    remaining_searchable = searchable_deadline - elapsed_total()
+    deep_timeout = remaining_searchable * 0.75
+    if deep_timeout <= 0:
+        raise ExternalEngineTimeout(
+            "Bucephalus anchor left no deep-search budget inside the common wall"
+        )
+    deep_process = run_stage(
+        purpose="deep-max-ply", prefix=(),
+        requested_ply=BUCEPHALUS_MAX_PLY - 1, timeout=deep_timeout,
+    )
+    deep_stdout = deep_process[0]
+    selected = anchor_result
+    selected_score = anchor_score
+    selected_completed_ply = 1
+    selection_mode = "anchor-fallback"
+    try:
+        _validate_output_identity_and_boundary(deep_stdout, state)
+        completed_ply, score, complete = _parse_deepest_completed_ply(
+            deep_stdout, requested_ply=BUCEPHALUS_MAX_PLY - 1, state=state
+        )
+    except ExternalEngineProtocolError:
+        try:
+            prefix_ply, score, deep_prefix = _parse_deepest_legal_incomplete_prefix(
+                deep_stdout, requested_ply=BUCEPHALUS_MAX_PLY - 1, state=state
+            )
+        except ExternalEngineProtocolError as error:
+            append_stage(
+                "deep-max-ply", (), (), BUCEPHALUS_MAX_PLY - 1, 0,
+                deep_timeout, deep_process, usable=False, error=str(error),
+            )
+            deep_prefix = ()
+        else:
+            append_stage(
+                "deep-max-ply", (), deep_prefix, BUCEPHALUS_MAX_PLY - 1,
+                prefix_ply, deep_timeout, deep_process,
+            )
+            stitched = deep_prefix
+            stitched_result: SeriesResult | None = None
+            stitched_score = score
+            while stitched_result is None:
+                remaining = searchable_deadline - elapsed_total()
+                remaining_moves = state.moves_available - len(stitched)
+                if remaining <= 0 or remaining_moves <= 0:
+                    break
+                stage_timeout = remaining / remaining_moves
+                process = run_stage(
+                    purpose="suffix-max-ply",
+                    prefix=stitched,
+                    requested_ply=BUCEPHALUS_MAX_PLY,
+                    timeout=stage_timeout,
+                )
+                try:
+                    _validate_output_identity_and_boundary(
+                        process[0], state, count_in_series=len(stitched) + 1
+                    )
+                    suffix_ply, stitched_score, extension, stitched_result = (
+                        _parse_deepest_continuation_progress(
+                            process[0],
+                            requested_ply=BUCEPHALUS_MAX_PLY,
+                            state=state,
+                            prefix=stitched,
+                        )
+                    )
+                except ExternalEngineProtocolError as error:
+                    append_stage(
+                        "suffix-max-ply", stitched, (), BUCEPHALUS_MAX_PLY,
+                        0, stage_timeout, process, usable=False,
+                        error=str(error),
+                    )
+                    while stitched_result is None:
+                        remaining = searchable_deadline - elapsed_total()
+                        remaining_moves = state.moves_available - len(stitched)
+                        if remaining <= 0 or remaining_moves <= 0:
+                            break
+                        try:
+                            stitched, stitched_result, stitched_score = exact_one_move(
+                                stitched,
+                                purpose="suffix-ply1",
+                                timeout=remaining / (remaining_moves + 1),
+                            )
+                        except ExternalEngineProtocolError:
+                            break
+                    break
+                append_stage(
+                    "suffix-max-ply", stitched, extension,
+                    BUCEPHALUS_MAX_PLY, suffix_ply, stage_timeout, process,
+                )
+                stitched += extension
+            if stitched_result is not None:
+                selected = stitched_result
+                selected_score = stitched_score
+                selected_completed_ply = prefix_ply
+                selection_mode = "deep-prefix-continuation"
+    else:
+        append_stage(
+            "deep-max-ply", (), tuple(complete.moves), BUCEPHALUS_MAX_PLY - 1,
+            completed_ply, deep_timeout, deep_process,
+        )
+        selected = complete
+        selected_score = score
+        selected_completed_ply = completed_ply
+        selection_mode = "deep-complete-retained"
+        refinement_timeout = searchable_deadline - elapsed_total()
+        if refinement_timeout > 0:
+            refinement = run_stage(
+                purpose="deep-refinement", prefix=(),
+                requested_ply=BUCEPHALUS_MAX_PLY,
+                timeout=refinement_timeout,
+            )
+            try:
+                _validate_output_identity_and_boundary(refinement[0], state)
+                refined_ply, refined_score, refined = _parse_deepest_completed_ply(
+                    refinement[0],
+                    requested_ply=BUCEPHALUS_MAX_PLY,
+                    state=state,
+                )
+            except ExternalEngineProtocolError as error:
+                append_stage(
+                    "deep-refinement", (), (), BUCEPHALUS_MAX_PLY, 0,
+                    refinement_timeout, refinement, usable=False,
+                    error=str(error),
+                )
+            else:
+                append_stage(
+                    "deep-refinement", (), tuple(refined.moves),
+                    BUCEPHALUS_MAX_PLY, refined_ply,
+                    refinement_timeout, refinement,
+                )
+                if refined_ply >= completed_ply:
+                    selected = refined
+                    selected_score = refined_score
+                    selected_completed_ply = refined_ply
+                    selection_mode = "deep-refined"
+
+    total_elapsed = elapsed_total()
+    if total_elapsed > wall_timeout_seconds:
+        raise ExternalEngineTimeout(
+            "Bucephalus continuation exceeded the single common-wall deadline"
+        )
+    recovered_exit = next(
+        (
+            stage.process_exit_code
+            for stage in stages
+            if stage.process_exit_recovered
+        ),
+        None,
+    )
+    return ExternalAnalysis(
+        selected, BUCEPHALUS_MAX_PLY, selected_completed_ply, selected_score,
+        total_elapsed, actual_hash, spec.upstream_commit,
+        BUCEPHALUS_TIMED_ITERATIVE_ADAPTER_VERSION,
+        "multi-stage; see continuation_stages",
+        "multi-stage stdout retained per continuation stage",
+        "multi-stage stderr retained per continuation stage",
+        deadline_reached=any(stage.deadline_reached for stage in stages),
+        process_exit_code=recovered_exit,
+        process_exit_recovered=recovered_exit is not None,
+        continuation_stages=tuple(stages),
+        selection_mode=selection_mode,
+        terminal_stage_score=selected_score,
+        global_deadline_seconds=wall_timeout_seconds,
+        global_deadline_reached=total_elapsed >= wall_timeout_seconds,
+        process_count=len(stages),
+        selection_root_prefix_ply=(
+            selected_completed_ply
+            if selection_mode == "deep-prefix-continuation"
+            else None
+        ),
+        terminal_stage_ply=(
+            stages[-1].completed_ply if stages and stages[-1].usable else None
+        ),
     )

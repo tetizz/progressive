@@ -53,6 +53,14 @@ from scottish_progressive.strength import build_seeded_opening_suite
 
 PINNED_HASH = "1" * 64
 PUBLISHED_MATE = ("c7c6", "d8b6", "f6e4", "b6f2")
+SERIES_NINE_HISTORY = (
+    ("c2c4",), ("d7d6", "c8h3"), ("e2e3", "g2h3", "a2a4"),
+    ("c7c5", "d8a5", "a5a4", "a4d1"),
+    ("e1d1", "a1a7", "a7a8", "d2d3", "a8b8"),
+    ("e8d7", "d7c7", "g8f6", "f6e4", "c7b8", "e4f2"),
+    ("d1e1", "b2b4", "b4c5", "c5d6", "d6e7", "e1f2", "e7f8q"),
+    ("h8f8", "b7b5", "b5c4", "c4d3", "d3d2", "d2c1q", "b8b7", "f8e8"),
+)
 
 
 def _identity_snapshot() -> dict[str, object]:
@@ -779,6 +787,51 @@ def test_equal_wall_rejects_partial_bucephalus_depth_without_deadline(
         )
 
     record = _play_external_game(job, external_adapter=inconsistent_external)
+
+    assert record.result == "*"
+    assert record.terminal_reason == "technical-external-provenance-mismatch"
+
+
+def test_equal_wall_rejects_long_series_without_stage_provenance(
+    tmp_path: Path,
+) -> None:
+    state = replay_series_history(SERIES_NINE_HISTORY)
+    opening = OpeningCase(
+        case_id="series-nine-continuation-gate",
+        fen=state.board.fen(en_passant="fen"),
+        series_number=9,
+        quiet_series=state.quiet_series,
+        ep_targets=(),
+        source="regression",
+    )
+    job = ExternalGameJob(
+        game_id="series-nine-stage-gate",
+        pair_id="series-nine-stage-pair",
+        pair_index=0,
+        swap_index=0,
+        opening=opening,
+        history=SERIES_NINE_HISTORY,
+        local_color=chess.BLACK,
+        local_profile=baseline_profile(),
+        external_spec=_spec(tmp_path),
+        config=replace(
+            _timed_config(emergency_max_series=9),
+            external_wall_timeout_seconds=120.0,
+            common_wall_timeout_seconds=120.0,
+        ),
+    )
+
+    def missing_stages(state, history, spec, *, wall_timeout_seconds):
+        return _external_result(
+            state,
+            ("b1a3", "a3b1", "b1a3", "a3b1", "b1a3", "a3b1", "b1a3", "a3b1", "b1a3"),
+            requested_ply=BUCEPHALUS_MAX_PLY,
+            completed_ply=2,
+            adapter_version=BUCEPHALUS_TIMED_ITERATIVE_ADAPTER_VERSION,
+            deadline_reached=True,
+        )
+
+    record = _play_external_game(job, external_adapter=missing_stages)
 
     assert record.result == "*"
     assert record.terminal_reason == "technical-external-provenance-mismatch"

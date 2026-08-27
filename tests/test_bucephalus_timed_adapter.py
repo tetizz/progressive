@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 from pathlib import Path
 import subprocess
@@ -45,6 +46,259 @@ def _published_stdout(line: str) -> str:
         "[PLY  1][SCORE  0.00][TIME 0 m 0.00 s][LINE: c7-c6 ]\n"
         f"[PLY  4][SCORE *MATE*][TIME 0 m 0.06 s][LINE: {line} ]\n"
     )
+
+
+SERIES_NINE_HISTORY = (
+    ("c2c4",),
+    ("d7d6", "c8h3"),
+    ("e2e3", "g2h3", "a2a4"),
+    ("c7c5", "d8a5", "a5a4", "a4d1"),
+    ("e1d1", "a1a7", "a7a8", "d2d3", "a8b8"),
+    ("e8d7", "d7c7", "g8f6", "f6e4", "c7b8", "e4f2"),
+    ("d1e1", "b2b4", "b4c5", "c5d6", "d6e7", "e1f2", "e7f8q"),
+    ("h8f8", "b7b5", "b5c4", "c4d3", "d3d2", "d2c1q", "b8b7", "f8e8"),
+)
+
+
+def _timed_stdout(series: int, count: int, records: tuple[tuple[int, str], ...]) -> str:
+    lines = [
+        "Bucephalus v1.0.0",
+        f"Side to move: W  Length of Series: {series}  Count in Series: {count}",
+    ]
+    lines.extend(
+        f"[PLY {ply:2d}][SCORE 0.00][TIME 0 m 1.00 s][LINE: {line} ]"
+        for ply, line in records
+    )
+    return "\n".join(lines) + "\n"
+
+
+def test_series_nine_stitches_replay_validated_ply7_then_continuation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    state = replay_series_history(SERIES_NINE_HISTORY)
+    spec = _dummy_spec(tmp_path)
+    prefix = "b1-a3 a3-b1 b1-a3 a3-b1 b1-a3 a3-b1 b1-a3"
+    anchor = ("b1a3", "a3b1", "b1a3", "a3b1", "b1a3", "a3b1", "b1a3", "a3b1", "b1a3")
+    calls: list[dict[str, object]] = []
+    clock = {"now": 0.0}
+
+    def fake_run(*args, **kwargs):
+        calls.append(kwargs)
+        if kwargs["input"].endswith("p\ne\n1\nt\nq\n"):
+            index = len([call for call in calls if call["input"].endswith("p\ne\n1\nt\nq\n")]) - 1
+            clock["now"] += 0.05
+            return subprocess.CompletedProcess(
+                args[0], 0,
+                stdout=_timed_stdout(9, index + 1, ((1, anchor[index][:2] + "-" + anchor[index][2:]),)),
+                stderr="anchor",
+            )
+        if kwargs["input"].endswith("p\ne\n29\nt\nq\n"):
+            clock["now"] += kwargs["timeout"]
+            raise subprocess.TimeoutExpired(
+                args[0], kwargs["timeout"],
+                output=_timed_stdout(9, 1, ((7, prefix),)), stderr="stage one",
+            )
+        assert kwargs["input"].count("\nm\n") >= 7
+        clock["now"] += 1.0
+        return subprocess.CompletedProcess(
+            args[0], 0,
+            stdout=_timed_stdout(9, 8, ((2, "a3-b1 b1-a3"),)),
+            stderr="stage two",
+        )
+
+    monkeypatch.setattr(
+        "benchmarks.bucephalus_timed_adapter.time.perf_counter",
+        lambda: clock["now"],
+    )
+    monkeypatch.setattr("benchmarks.bucephalus_timed_adapter.subprocess.run", fake_run)
+
+    analysis = analyze_bucephalus_timed_iterative(
+        state, SERIES_NINE_HISTORY, spec, wall_timeout_seconds=120.0
+    )
+
+    assert analysis.best_series.machine_notation == (
+        "b1a3/a3b1/b1a3/a3b1/b1a3/a3b1/b1a3/a3b1/b1a3"
+    )
+    assert len(calls) == 11
+    assert calls[9]["timeout"] > 85.0
+    assert calls[10]["timeout"] > 10.0
+    assert analysis.elapsed_seconds < 120.0
+    assert len(analysis.continuation_stages) == 11
+    assert analysis.continuation_stages[9].emitted_prefix == tuple(
+        move.replace("-", "") for move in prefix.split()
+    )
+    assert analysis.continuation_stages[10].starting_prefix == (
+        "b1a3", "a3b1", "b1a3", "a3b1", "b1a3", "a3b1", "b1a3"
+    )
+    assert analysis.continuation_stages[10].completed_ply == 2
+    assert analysis.selection_mode == "deep-prefix-continuation"
+
+    from benchmarks.bucephalus_fair_rematch import (
+        _continuation_chain_selects_analysis,
+    )
+
+    assert _continuation_chain_selects_analysis(
+        state, SERIES_NINE_HISTORY, analysis, 120.0
+    )
+    altered = list(analysis.continuation_stages)
+    altered[-1] = replace(altered[-1], emitted_prefix=("a3b1",))
+    assert not _continuation_chain_selects_analysis(
+        state,
+        SERIES_NINE_HISTORY,
+        replace(analysis, continuation_stages=tuple(altered)),
+        120.0,
+    )
+    altered = list(analysis.continuation_stages)
+    altered[-1] = replace(altered[-1], stdout="Bucephalus v1.0.0\n")
+    assert not _continuation_chain_selects_analysis(
+        state,
+        SERIES_NINE_HISTORY,
+        replace(analysis, continuation_stages=tuple(altered)),
+        120.0,
+    )
+
+
+def test_series_nine_continuation_falls_back_to_bucephalus_only_anchor(
+    tmp_path: Path, monkeypatch
+) -> None:
+    state = replay_series_history(SERIES_NINE_HISTORY)
+    spec = _dummy_spec(tmp_path)
+    prefix = "b1-a3 a3-b1 b1-a3 a3-b1 b1-a3 a3-b1 b1-a3"
+    anchor = ("b1a3", "a3b1", "b1a3", "a3b1", "b1a3", "a3b1", "b1a3", "a3b1", "b1a3")
+    clock = {"now": 0.0, "anchor": 0, "deep": 0}
+
+    def fake_run(*args, **kwargs):
+        if kwargs["input"].endswith("p\ne\n1\nt\nq\n") and clock["anchor"] < 9:
+            index = clock["anchor"]
+            clock["anchor"] += 1
+            clock["now"] += 0.05
+            return subprocess.CompletedProcess(
+                args[0], 0,
+                stdout=_timed_stdout(9, index + 1, ((1, anchor[index][:2] + "-" + anchor[index][2:]),)),
+                stderr="",
+            )
+        if kwargs["input"].endswith("p\ne\n1\nt\nq\n"):
+            clock["now"] += kwargs["timeout"]
+            raise subprocess.TimeoutExpired(
+                args[0], kwargs["timeout"], output="Bucephalus v1.0.0\n", stderr=""
+            )
+        clock["deep"] += 1
+        clock["now"] += kwargs["timeout"]
+        output = _timed_stdout(9, 1, ((7, prefix),)) if clock["deep"] == 1 else "Bucephalus v1.0.0\n"
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"], output=output, stderr="")
+
+    monkeypatch.setattr(
+        "benchmarks.bucephalus_timed_adapter.time.perf_counter",
+        lambda: clock["now"],
+    )
+    monkeypatch.setattr("benchmarks.bucephalus_timed_adapter.subprocess.run", fake_run)
+    analysis = analyze_bucephalus_timed_iterative(
+        state, SERIES_NINE_HISTORY, spec, wall_timeout_seconds=120.0
+    )
+    assert analysis.best_series.machine_notation == "/".join(anchor)
+    assert analysis.selection_mode == "anchor-fallback"
+    assert analysis.continuation_stages[-1].usable is False
+
+
+def test_series_nine_fails_when_bucephalus_cannot_emit_a_legal_anchor_move(
+    tmp_path: Path, monkeypatch
+) -> None:
+    state = replay_series_history(SERIES_NINE_HISTORY)
+    spec = _dummy_spec(tmp_path)
+    launched = 0
+
+    def fake_run(*args, **kwargs):
+        nonlocal launched
+        launched += 1
+        return subprocess.CompletedProcess(
+            args[0], 0,
+            stdout=_timed_stdout(9, 1, ((1, "a2-a3"),)),
+            stderr="",
+        )
+
+    monkeypatch.setattr("benchmarks.bucephalus_timed_adapter.subprocess.run", fake_run)
+    with pytest.raises(ExternalEngineTimeout, match="engine-native anchor failed"):
+        analyze_bucephalus_timed_iterative(
+            state, SERIES_NINE_HISTORY, spec, wall_timeout_seconds=120.0
+        )
+    assert launched == 1
+
+
+def test_timed_turn_uses_terminal_ply1_anchor_before_deep_search(
+    tmp_path: Path, monkeypatch
+) -> None:
+    state = replay_series_history(PUBLISHED_HISTORY)
+    spec = _dummy_spec(tmp_path)
+    moves = ("c7c6", "d8b6", "f6e4", "b6f2")
+    launched = 0
+
+    def fake_run(*args, **kwargs):
+        nonlocal launched
+        move = moves[launched]
+        launched += 1
+        return subprocess.CompletedProcess(
+            args[0], 0,
+            stdout=(
+                "Bucephalus v1.0.0\n"
+                f"Side to move: B  Length of Series: 4  Count in Series: {launched}\n"
+                f"[PLY  1][SCORE *MATE*][TIME 0 m 0.01 s][LINE: {move[:2]}x{move[2:]} ]\n"
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr("benchmarks.bucephalus_timed_adapter.subprocess.run", fake_run)
+    analysis = analyze_bucephalus_timed_iterative(
+        state, PUBLISHED_HISTORY, spec, wall_timeout_seconds=120.0
+    )
+    assert analysis.best_series.outcome == Outcome.CHECKMATE
+    assert analysis.selection_mode == "anchor-terminal"
+    assert analysis.process_count == 4
+    assert launched == 4
+
+
+def test_complete_deep_stage_spends_reserved_window_on_refinement(
+    tmp_path: Path, monkeypatch
+) -> None:
+    state = replay_series_history(SERIES_NINE_HISTORY)
+    spec = _dummy_spec(tmp_path)
+    line = ("b1a3", "a3b1", "b1a3", "a3b1", "b1a3", "a3b1", "b1a3", "a3b1", "b1a3")
+    clock = {"now": 0.0, "anchor": 0, "deep": 0}
+
+    def fake_run(*args, **kwargs):
+        if kwargs["input"].endswith("p\ne\n1\nt\nq\n"):
+            index = clock["anchor"]
+            clock["anchor"] += 1
+            clock["now"] += 0.02
+            move = line[index]
+            return subprocess.CompletedProcess(
+                args[0], 0,
+                stdout=_timed_stdout(9, index + 1, ((1, move[:2] + "-" + move[2:]),)),
+                stderr="",
+            )
+        clock["deep"] += 1
+        clock["now"] += kwargs["timeout"]
+        if clock["deep"] == 1:
+            raise subprocess.TimeoutExpired(
+                args[0], kwargs["timeout"],
+                output=_timed_stdout(9, 1, ((10, " ".join(move[:2] + "-" + move[2:] for move in line)),)),
+                stderr="",
+            )
+        raise subprocess.TimeoutExpired(
+            args[0], kwargs["timeout"],
+            output=_timed_stdout(9, 1, ((9, " ".join(move[:2] + "-" + move[2:] for move in line)),)),
+            stderr="",
+        )
+
+    monkeypatch.setattr("benchmarks.bucephalus_timed_adapter.time.perf_counter", lambda: clock["now"])
+    monkeypatch.setattr("benchmarks.bucephalus_timed_adapter.subprocess.run", fake_run)
+    analysis = analyze_bucephalus_timed_iterative(
+        state, SERIES_NINE_HISTORY, spec, wall_timeout_seconds=120.0
+    )
+    assert analysis.selection_mode == "deep-complete-retained"
+    assert analysis.continuation_stages[-1].purpose == "deep-refinement"
+    assert analysis.continuation_stages[-1].usable is True
+    assert analysis.completed_ply == 10
+    assert analysis.process_count == 11
 
 
 def test_all_league_openings_have_exact_canonical_replay_histories() -> None:
