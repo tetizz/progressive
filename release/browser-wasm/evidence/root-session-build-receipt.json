@@ -41,13 +41,13 @@
   "certificate_id": null,
   "command": [
     "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\cycle4-production-overlay-scaffold-20260824\\build\\emsdk\\upstream\\emscripten\\em++.exe",
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\cycle10-release-d059e8c\\src\\scottish_progressive\\_native_eval.cpp",
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\cycle10-release-d059e8c\\src\\scottish_progressive\\native_subtree.cpp",
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\cycle10-release-d059e8c\\src\\scottish_progressive\\native_subtree_wasm.cpp",
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\cycle10-release-d059e8c\\src\\scottish_progressive\\native_root_session_wasm.cpp",
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\cycle10-release-d059e8c\\src\\scottish_progressive\\_native_mate.cpp",
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\cycle12-release-176804c\\src\\scottish_progressive\\_native_eval.cpp",
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\cycle12-release-176804c\\src\\scottish_progressive\\native_subtree.cpp",
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\cycle12-release-176804c\\src\\scottish_progressive\\native_subtree_wasm.cpp",
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\cycle12-release-176804c\\src\\scottish_progressive\\native_root_session_wasm.cpp",
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\cycle12-release-176804c\\src\\scottish_progressive\\_native_mate.cpp",
     "-I",
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\cycle10-release-d059e8c\\src\\scottish_progressive",
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\cycle12-release-176804c\\src\\scottish_progressive",
     "-std=c++20",
     "-O3",
     "-flto",
@@ -70,7 +70,7 @@
     "-sEXPORTED_FUNCTIONS=_spc_start_kernel_search_json,_spc_boundary_kernel_search_json,_spc_boundary_prefix_json,_spc_boundary_prefix_contract_json,_spc_start_kernel_abi_version,_spc_root_session_contract_json,_spc_root_session_create_json,_spc_root_session_enumerate_json,_spc_root_session_import_json,_spc_root_session_search_json,_spc_root_session_destroy,_spc_root_session_abi_version,_spc_series_mate_search_json,_spc_series_mate_abi_version,_malloc,_free",
     "-sEXPORTED_RUNTIME_METHODS=UTF8ToString,stringToNewUTF8,HEAPU8",
     "-o",
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\cycle10-release-d059e8c\\build\\release\\evidence\\spc-root-session.mjs"
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\cycle12-release-176804c\\build\\release\\evidence\\spc-root-session.mjs"
   ],
   "engine_version": "spc-0.9.0",
   "gates": {
@@ -82,7 +82,7 @@
     "root_session_smoke": false,
     "under_60_seconds_w32_d5": false
   },
-  "kernel_sha256": "fcd6d1e2b9213af1a229c73f156a620e2fa1f69a023a22fe91e793d11338687f",
+  "kernel_sha256": "13b45b20d65c77e9fa7ac3df432df89561812fd816f3968618e2a7f0b20fa748",
   "memory_envelope": {
     "estimated_peak_bytes": 134217728,
     "growth_enabled": true,
@@ -123,57 +123,57 @@
   "source_fingerprint": "9e76dd9e4f0429bd",
   "source_inputs": [
     {
-      "bytes": 328960,
+      "bytes": 319152,
       "path": "src/scottish_progressive/_native_eval.cpp",
-      "sha256": "0bcf93891431cbfb8ccf68d30b5c418fb77fdfa82349f8d78608a53c71bd758f"
+      "sha256": "29cde43737338f3ed40aa520a54375637a0b34d3433c774da44de4835f3bfc0a"
     },
     {
-      "bytes": 78315,
+      "bytes": 76017,
       "path": "src/scottish_progressive/_native_mate.cpp",
-      "sha256": "e62efc6b8d08e7001d670a8f48037c40bf0d455e46b3241a2c8b8ad4eb768e85"
+      "sha256": "039ceb6d0f79dc48380665204e70ae7b1baee2aff874d6fc380717d962ae82c1"
     },
     {
-      "bytes": 11334,
+      "bytes": 10999,
       "path": "src/scottish_progressive/native_eval.hpp",
-      "sha256": "fc00595213f0b86c8ff1410af7dfc9626ab03ac2d5cae78bc719ff2b7d86f511"
+      "sha256": "85b426f8f868def00dea0d7a7f6f9d048d9836cde1018dc1ae0d61e33c25ac5f"
     },
     {
-      "bytes": 104969,
+      "bytes": 102043,
       "path": "src/scottish_progressive/native_root_session_wasm.cpp",
-      "sha256": "36603babe9fcc227a5e126deff9178d59b81cd95fc90a8ff3a4f523addb665bf"
+      "sha256": "f33bd6432bae84145e449a6955c50abc2f0ed3bdbd41625e281ee44332c538b9"
     },
     {
-      "bytes": 1591,
+      "bytes": 1538,
       "path": "src/scottish_progressive/native_root_session_wasm.hpp",
-      "sha256": "ee81791d78509e3f0bad01da83d10114b63c0ce1660ee12b354f4c576990e311"
+      "sha256": "ddd5e26010211891ed0561bfe889bc24347aec50754295a144c389eb49aa9407"
     },
     {
-      "bytes": 134850,
+      "bytes": 131282,
       "path": "src/scottish_progressive/native_subtree.cpp",
-      "sha256": "72ee429ea2f0ff23e27224281281bcb4d7c296d0f0bce62a3b4d9422cdbab8b9"
+      "sha256": "3c62c89498ccbf1bb54dd186455ac5753223e137be3f5b4f29653bdd2c9567af"
     },
     {
-      "bytes": 13785,
+      "bytes": 13453,
       "path": "src/scottish_progressive/native_subtree.hpp",
-      "sha256": "266d0da151fb94715b5d0d319f904e12cbc61ffe2dbd2418911119f257f1ac10"
+      "sha256": "44e40b73d22bba15de3e9e87d898b373fbe201efc656383cd966e68d37f52391"
     },
     {
-      "bytes": 54227,
+      "bytes": 52604,
       "path": "src/scottish_progressive/native_subtree_wasm.cpp",
-      "sha256": "bb12a3d3078cd24477fac6f3ff2ac019533a1a9481aa97c063a20c544c54f324"
+      "sha256": "1ca3fe70ea7ba3fb191d3e084acf574f50880fcf8ac40418e57feab941242803"
     },
     {
-      "bytes": 2419,
+      "bytes": 2355,
       "path": "src/scottish_progressive/native_subtree_wasm.hpp",
-      "sha256": "78066cd29b3db183b25325a855278ed11dab5ec8e48fdbfad0117edcdff7a412"
+      "sha256": "40239b759e389005357f0fbf526f9f1c3d58b7a53dfffacb25206720674d6bba"
     },
     {
-      "bytes": 701,
+      "bytes": 674,
       "path": "src/scottish_progressive/native_subtree_wasm_support.hpp",
-      "sha256": "37209bcebbb01dff89322288e84add184855dec1fb161cb538cdb7614662a067"
+      "sha256": "bef97b5453d10f1c19e2a61b712dee2a8346bb92c2c64a5582ec4aec9d12fa3c"
     }
   ],
-  "source_revision": "d059e8c82b78b3cdbb262f177f2dd118e7b6013c",
+  "source_revision": "176804ce7663f6fda274879df43ed5b0dc0ab6a9",
   "status": "built-not-certified",
   "support_files": [],
   "thread_count": 1,

@@ -1,7 +1,7 @@
 {
   "abi_version": 2,
   "allocator": "dlmalloc",
-  "certificate_id": "spc-root-session-47e039be982f3364",
+  "certificate_id": "spc-root-session-dbf5c0094536a742",
   "checked_horizon_proof_research": {
     "black_parity": {
       "bound": "exact",
@@ -156,7 +156,7 @@
     "persistent_d1_d2_session": true,
     "selected_owner_warm_exact_certification": true,
     "start_w32_d5_completed_depth": 5,
-    "start_w32_d5_elapsed_seconds": 29.013400000095366,
+    "start_w32_d5_elapsed_seconds": 33.003199999928476,
     "start_w32_d5_width": 32,
     "work_limit_fail_closed": true
   },
@@ -212,7 +212,7 @@
     },
     "supported_lower_geometries": []
   },
-  "kernel_sha256": "fcd6d1e2b9213af1a229c73f156a620e2fa1f69a023a22fe91e793d11338687f",
+  "kernel_sha256": "13b45b20d65c77e9fa7ac3df432df89561812fd816f3968618e2a7f0b20fa748",
   "memory": {
     "estimated_peak_bytes": 134217728,
     "growth_enabled": true,

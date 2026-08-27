@@ -1,10 +1,10 @@
 {
   "artifact": {
     "artifact_set_sha256": "3d125891e4d4bf07a182505397c089019eebe17130b24e59333db6190f5e0354",
-    "kernel_sha256": "fcd6d1e2b9213af1a229c73f156a620e2fa1f69a023a22fe91e793d11338687f",
+    "kernel_sha256": "13b45b20d65c77e9fa7ac3df432df89561812fd816f3968618e2a7f0b20fa748",
     "module_js_sha256": "858b069e50a068291a636befea2d16ea13e9e300874544b724cfaec75cc642f9",
     "source_fingerprint": "9e76dd9e4f0429bd",
-    "source_revision": "d059e8c82b78b3cdbb262f177f2dd118e7b6013c",
+    "source_revision": "176804ce7663f6fda274879df43ed5b0dc0ab6a9",
     "wasm_sha256": "2a96d76682063a0a5053310f3c0958c8c6999a8af6ac7beb73994fa44c30abd6"
   },
   "case_set_sha256": "dfb6946433f324c9c5a998921287b785492031a67c54b3c9823faac84327223a",

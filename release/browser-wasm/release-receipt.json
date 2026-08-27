@@ -3,11 +3,11 @@
     "allocator": "dlmalloc",
     "artifact_set_sha256": "3d125891e4d4bf07a182505397c089019eebe17130b24e59333db6190f5e0354",
     "exception_strategy": "emscripten",
-    "kernel_sha256": "fcd6d1e2b9213af1a229c73f156a620e2fa1f69a023a22fe91e793d11338687f",
+    "kernel_sha256": "13b45b20d65c77e9fa7ac3df432df89561812fd816f3968618e2a7f0b20fa748",
     "module_js_sha256": "858b069e50a068291a636befea2d16ea13e9e300874544b724cfaec75cc642f9",
     "runtime_variant": "single",
     "source_fingerprint": "9e76dd9e4f0429bd",
-    "source_revision": "d059e8c82b78b3cdbb262f177f2dd118e7b6013c",
+    "source_revision": "176804ce7663f6fda274879df43ed5b0dc0ab6a9",
     "thread_count": 1,
     "wasm_sha256": "2a96d76682063a0a5053310f3c0958c8c6999a8af6ac7beb73994fa44c30abd6",
     "wasm_simd": false
@@ -18,12 +18,12 @@
     "transition": "verified-combined-wasm-to-pages-ready"
   },
   "browser_bundle": {
-    "artifact_set_sha256": "05d0db09032950f84846b078277f9435c0f19dd836410e7f5d87a7c459accab1",
+    "artifact_set_sha256": "6cff362d378f5481e836c2be572db87ab2856554f4dd2d43a02bb1e0b7b547b0",
     "files": [
       {
         "bytes": 20305,
         "path": "browser-engine-manifest.json",
-        "sha256": "7833064e8b02d2a09f9fadb40695fb95259fef3c27fd326e6e4d7a21669cefff"
+        "sha256": "2f17932d54f1483fc0078eec29f159fd3a65544d72e6d9a8438e5b39bd98ad56"
       },
       {
         "bytes": 27497,
@@ -38,23 +38,23 @@
     ],
     "path": "browser-engine"
   },
-  "build_command_sha256": "db35215a7bb6ba1d9826d6817b3adf942cfe4bfe41199a276dbd6bd4018cded4",
-  "certificate_set_sha256": "77489b26d43525e20c62364a9cea6295460cf651ef1e571edff736eadd7b9175",
+  "build_command_sha256": "7c37a34325373acace11872907a88ea7bfc00d49e42280c7e0c5a2fb5baded34",
+  "certificate_set_sha256": "893e8ea6266c39f6402c393159a81281244aca3473aca3f4bca6a36783e88962",
   "certificates": {
     "mate": {
-      "certificate_id": "spc-mate-b70ade7cb43408a9",
+      "certificate_id": "spc-mate-5c954839adef398c",
       "path": "certificates/mate-certificate.json",
-      "sha256": "d0458c239872ca28d6d1618203349e6b1beda21d87f10061a949876866e15fe2"
+      "sha256": "5e7b58e65521dd020e711dfe04eadbe7222196d4606cffe59cf27dc9abc252d7"
     },
     "prefix": {
-      "certificate_id": "spc-prefix-8f5fb6844672f36e",
+      "certificate_id": "spc-prefix-5a720467779b05e8",
       "path": "certificates/prefix-certificate.json",
-      "sha256": "0819016433626ca967226373fc2677c66323de0742a1cb5a32dce3affcfe6c85"
+      "sha256": "b9920fb16b2f8ffbb19b81372983dd852431c4525b26e501804c6457902e5257"
     },
     "root_session": {
-      "certificate_id": "spc-root-session-47e039be982f3364",
+      "certificate_id": "spc-root-session-dbf5c0094536a742",
       "path": "certificates/root-session-certificate.json",
-      "sha256": "a8edbd0d8d5d2f2843b2302fdfda9b0e89070ab9560301133c394969d5414210"
+      "sha256": "3118d36e04f82c4741cbdbf5ab0952453a091491baf88e311cc22ba5008e80c7"
     }
   },
   "dependency_closure": {
@@ -74,7 +74,7 @@
       "src/scottish_progressive/_native_mate.cpp"
     ],
     "schema": "spc-wasm-dependency-closure-v2",
-    "source_revision": "d059e8c82b78b3cdbb262f177f2dd118e7b6013c",
+    "source_revision": "176804ce7663f6fda274879df43ed5b0dc0ab6a9",
     "target": "ordinary-worker-root-session-prefix-mate"
   },
   "evidence_receipts": [
@@ -83,56 +83,56 @@
       "label": "build",
       "path": "evidence/root-session-build-receipt.json",
       "schema": "spc-root-session-build-receipt-v1",
-      "sha256": "9ade361a6a3ef800b83335d88afa7422c57560777f05abf1fe9a67ae5c91d198"
+      "sha256": "d3f00774d1067b864d7252760b2045ba445e500b7b2113e63fcd3a304621c565"
     },
     {
-      "bytes": 46558,
+      "bytes": 46578,
       "label": "root_smoke",
       "path": "evidence/root-session-smoke-receipt.json",
       "schema": "spc-root-session-wasm-smoke-v1",
-      "sha256": "ed2f88c3d2ab4eb8b095d546b0c70ec9e875018bc34db23d3ee43b89bc3e6521"
+      "sha256": "935f8a6832ee9b8b532e0e35e6d44ac4200fd4c7f87e98b705d6a4cfdcc6b59d"
     },
     {
       "bytes": 16105,
       "label": "root_parity",
       "path": "evidence/root-session-parity-receipt.json",
       "schema": "spc-root-d5-oracle-v1",
-      "sha256": "65c73b9a1a03448de920cece66d4df0c6b95acc6e4186fa54b557c5e322e31fa"
+      "sha256": "9aa8d6e67dd907ef930d593043dfbcf5abf3491385bb2decac7c23e694cdb202"
     },
     {
       "bytes": 6269,
       "label": "prefix_parity",
       "path": "evidence/prefix-parity-receipt.json",
       "schema": "spc-prefix-parity-receipt-v2",
-      "sha256": "ed72af0da5b1bb7f48f4cfb9107af6d3d4a0ab739584f2484b5888a8294bf642"
+      "sha256": "aa094a19bdb68cfaa8f96a16c9b93d9919450584fc78a4eb40b9d59dabe85dd4"
     },
     {
       "bytes": 998,
       "label": "browser_prefix",
       "path": "evidence/browser-prefix-receipt.json",
       "schema": "spc-browser-prefix-contract-receipt-v1",
-      "sha256": "f2e1ead179c8f9fe253ee2d67b0e97895aca69288788da8d4757f702575aec7e"
+      "sha256": "7f613d30254fd4ec421d6a7b13e625895491f18f66600f2560a0f56dd3c199f8"
     },
     {
       "bytes": 6052,
       "label": "mate_parity",
       "path": "evidence/mate-parity-receipt.json",
       "schema": "spc-mate-wasm-receipt-v2",
-      "sha256": "2dd09aee7dff2cb33e38b324e54030dd3f1cebfddde5e3fc93c661e175f9894d"
+      "sha256": "5446feb00f4c6e484d4c50521f09c8bf08804095e20e73f7bb1a7fa9c884b461"
     },
     {
-      "bytes": 167144,
+      "bytes": 167134,
       "label": "opera",
       "path": "evidence/opera-d1-d5-receipt.json",
       "schema": "spc-opera-root-session-cdp-receipt-v1",
-      "sha256": "29d623b1156f3c33c4db0c899c6ba9c316d747c72c11685021e87e6f15cd3045"
+      "sha256": "c65b30516dec70c22c72c8e2aa7332ee5389177c83b6fd980ff71d46f39ce070"
     },
     {
-      "bytes": 359550,
+      "bytes": 359560,
       "label": "opera_checked_horizon",
       "path": "evidence/opera-checked-pv-horizon-receipt.json",
       "schema": "spc-opera-checked-pv-horizon-receipt-v4",
-      "sha256": "00ab9383f9c10a4a77ae3150a78d581c68d2db503c87a8664dfa028e9317e795"
+      "sha256": "6821ba09240b5ba2317de360a310b00c487ec2e4754ebbb677c70cfe499485f9"
     }
   ],
   "gates": {
@@ -165,62 +165,62 @@
       "workers": [
         {
           "id": "root-0",
-          "native_work_after": 6122106,
+          "native_work_after": 6087458,
           "peak_bytes": 67108864
         },
         {
           "id": "root-1",
-          "native_work_after": 5768758,
+          "native_work_after": 5826595,
           "peak_bytes": 67108864
         },
         {
           "id": "root-2",
-          "native_work_after": 6775723,
+          "native_work_after": 6780726,
           "peak_bytes": 67108864
         },
         {
           "id": "root-3",
-          "native_work_after": 6161487,
+          "native_work_after": 6124050,
           "peak_bytes": 67108864
         },
         {
           "id": "root-4",
-          "native_work_after": 4113002,
+          "native_work_after": 4565610,
           "peak_bytes": 67108864
         },
         {
           "id": "root-5",
-          "native_work_after": 4234177,
+          "native_work_after": 3805749,
           "peak_bytes": 67108864
         },
         {
           "id": "root-6",
-          "native_work_after": 3925594,
+          "native_work_after": 3858406,
           "peak_bytes": 67108864
         },
         {
           "id": "root-7",
-          "native_work_after": 4355359,
+          "native_work_after": 4357595,
           "peak_bytes": 67108864
         }
       ]
     },
     "opera_checked_horizon": {
-      "elapsed_seconds": 51.09460000002384,
-      "local_checkout_asset_set_sha256": "7bd9a63d90b809d0ca9999d8e7ce1cb1cc7ff2994ba9956f77edcdd31b4bfe28",
+      "elapsed_seconds": 48.66260000002384,
+      "local_checkout_asset_set_sha256": "77efe9cb236dd0a7055975c7a367eec3e69d683e399bc004070a7a0ec16a11ae",
       "pv_horizon_candidate_vetoes": 1,
       "pv_horizon_line_rejections": 3,
       "pv_horizon_native_repairs": 2,
       "selected_root_series": "b2b3",
-      "work": 46445010
+      "work": 46861345
     },
-    "opera_total_d1_through_d5_seconds": 29.013400000095366,
+    "opera_total_d1_through_d5_seconds": 33.003199999928476,
     "result": {
       "candidate_identity": "spc-root-candidate-v1|moves1:4:f2f3|count1|final201:spc-state-v1|00ff00000020df00|4200000000000042|2400000000000024|8100000000000081|0800000000000008|1000000000000010|ffff000000000000|000000000020dfff|0000000000000000|8100000000000081|b|h0|f1|s2|q0|ep0:|out0|check0",
       "completed_depth": 5,
       "coverage_complete": true,
       "move": "f2f3",
-      "order_shape_sha256": "eb98323b3bf63f6b455b568dca8f8b41d5d48b07b209ff3e77c745d89df94344",
+      "order_shape_sha256": "20dc29fb61e498938406d971c40bac6de5849f01696a79c1aba7cd8525624058",
       "owner_worker_id": "root-4",
       "principal_variation": [
         {
@@ -517,7 +517,7 @@
             -1,
             1
           ],
-          "score": 422,
+          "score": 593,
           "selection_eligible": true
         },
         {
@@ -557,17 +557,17 @@
       "score": 617,
       "width_complete": true,
       "work": {
-        "committed_work": 41458637,
+        "committed_work": 41408620,
         "exact_at_cap": false,
         "max_work": 100000000,
-        "remaining_work": 58541363,
+        "remaining_work": 58591380,
         "reserved_work": 0,
         "safety_committed_work": 486,
         "safety_reserve_work": 1000000,
         "within_cap": true
       }
     },
-    "root_d5_oracle_signature_sha256": "b943c94630db8b3c95eda0bee3e3deab49391bfc50ccdce32582d20e163fb046",
+    "root_d5_oracle_signature_sha256": "bf096d1f14ca60ba27b9115135007d96f58f73257007cf85071f6740877f4603",
     "width": 32,
     "workers": 8
   },
@@ -578,14 +578,14 @@
     "maximum_seconds": 60,
     "safety_reserve_positions": 1000000
   },
-  "release_id": "spc-browser-wasm-release-b73167b56df7f448",
+  "release_id": "spc-browser-wasm-release-6e6911fa10b408a5",
   "root_tactical_policy": {
     "capability": true,
     "legacy_wire_root_tactical_protection": false,
     "policy": "canonical-boundary-policy-v1"
   },
   "schema": "spc-browser-wasm-release-promotion-v1",
-  "source_revision": "d059e8c82b78b3cdbb262f177f2dd118e7b6013c",
+  "source_revision": "176804ce7663f6fda274879df43ed5b0dc0ab6a9",
   "status": "promoted",
   "toolchain": {
     "path": "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\cycle4-production-overlay-scaffold-20260824\\build\\emsdk\\upstream\\emscripten\\em++.exe",

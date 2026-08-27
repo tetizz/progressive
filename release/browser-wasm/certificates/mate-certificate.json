@@ -1,7 +1,7 @@
 {
   "abi_version": 1,
   "allocator": "dlmalloc",
-  "certificate_id": "spc-mate-b70ade7cb43408a9",
+  "certificate_id": "spc-mate-5c954839adef398c",
   "contract_version": 1,
   "engine": {
     "engine_version": "spc-0.9.0",
@@ -44,7 +44,7 @@
     "_malloc",
     "_free"
   ],
-  "kernel_sha256": "fcd6d1e2b9213af1a229c73f156a620e2fa1f69a023a22fe91e793d11338687f",
+  "kernel_sha256": "13b45b20d65c77e9fa7ac3df432df89561812fd816f3968618e2a7f0b20fa748",
   "mate_capability_certified": true,
   "memory": {
     "estimated_peak_bytes": 134217728,
