@@ -167,6 +167,12 @@ def test_series_nine_stitches_replay_validated_ply7_then_continuation(
         replace(analysis, continuation_stages=tuple(altered)),
         120.0,
     )
+    assert not _continuation_chain_selects_analysis(
+        state,
+        SERIES_NINE_HISTORY,
+        replace(analysis, terminal_stage_score="tampered-score"),
+        120.0,
+    )
     altered = list(analysis.continuation_stages)
     altered[9] = replace(altered[9], process_id=-1)
     assert not _continuation_chain_selects_analysis(
@@ -256,6 +262,49 @@ def test_series_nine_fails_when_bucephalus_cannot_emit_a_legal_anchor_move(
             state, SERIES_NINE_HISTORY, spec, wall_timeout_seconds=120.0
         )
     assert launched == 1
+
+
+def test_wrong_boundary_partial_deep_output_cannot_drive_a_stitch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    state = replay_series_history(SERIES_NINE_HISTORY)
+    spec = _dummy_spec(tmp_path)
+    anchor = ("b1a3", "a3b1", "b1a3", "a3b1", "b1a3", "a3b1", "b1a3", "a3b1", "b1a3")
+    anchor_call = 0
+
+    def fake_run(*args, **kwargs):
+        nonlocal anchor_call
+        move = anchor[anchor_call]
+        anchor_call += 1
+        return subprocess.CompletedProcess(
+            args[0], 0,
+            stdout=_timed_stdout(
+                9, anchor_call, ((1, move[:2] + "-" + move[2:]),)
+            ),
+            stderr="",
+        )
+
+    wrong_boundary = (
+        "Bucephalus v1.0.0\n"
+        "Side to move: B  Length of Series: 8  Count in Series: 1\n"
+        "[PLY  7][SCORE 99.00][TIME 0 m 1.00 s]"
+        "[LINE: b1-a3 a3-b1 b1-a3 a3-b1 b1-a3 a3-b1 b1-a3 ]\n"
+    )
+    monkeypatch.setattr("benchmarks.bucephalus_timed_adapter.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "benchmarks.bucephalus_timed_adapter._run_bucephalus_live_checkpoint",
+        lambda *args, **kwargs: (
+            wrong_boundary, "", True, -9, 90.0,
+            "soft-checkpoint-incomplete", 7373, False,
+        ),
+    )
+    analysis = analyze_bucephalus_timed_iterative(
+        state, SERIES_NINE_HISTORY, spec, wall_timeout_seconds=120.0
+    )
+    assert analysis.selection_mode == "anchor-fallback"
+    assert analysis.best_series.machine_notation == "/".join(anchor)
+    assert analysis.continuation_stages[-1].usable is False
+    assert "boundary" in (analysis.continuation_stages[-1].error or "")
 
 
 def test_timed_turn_uses_terminal_ply1_anchor_before_deep_search(

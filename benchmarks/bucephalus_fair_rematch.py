@@ -1292,6 +1292,8 @@ def _continuation_chain_selects_analysis(
         return False
     anchor: tuple[str, ...] = ()
     stitched: tuple[str, ...] = ()
+    anchor_terminal_score: str | None = None
+    stitched_terminal_score: str | None = None
     elapsed = 0.0
     for index, stage in enumerate(analysis.continuation_stages, 1):
         expected = (
@@ -1345,19 +1347,19 @@ def _continuation_chain_selects_analysis(
                     count_in_series=len(stage.starting_prefix) + 1,
                 )
                 if stage.purpose in {"anchor-ply1", "suffix-ply1"}:
-                    _, emitted = _parse_requested_ply(stage.stdout, 1)
+                    parsed_score, emitted = _parse_requested_ply(stage.stdout, 1)
                     if emitted != stage.emitted_prefix or len(emitted) != 1:
                         return False
                 elif stage.purpose == "deep-max-ply":
                     try:
-                        parsed_ply, _, parsed_result = _parse_deepest_completed_ply(
+                        parsed_ply, parsed_score, parsed_result = _parse_deepest_completed_ply(
                             stage.stdout,
                             requested_ply=stage.requested_ply,
                             state=state,
                         )
                         emitted = tuple(parsed_result.moves)
                     except ExternalEngineProtocolError:
-                        parsed_ply, _, emitted = _parse_deepest_legal_incomplete_prefix(
+                        parsed_ply, parsed_score, emitted = _parse_deepest_legal_incomplete_prefix(
                             stage.stdout,
                             requested_ply=stage.requested_ply,
                             state=state,
@@ -1365,7 +1367,7 @@ def _continuation_chain_selects_analysis(
                     if parsed_ply != stage.completed_ply or emitted != stage.emitted_prefix:
                         return False
                 elif stage.purpose == "deep-refinement":
-                    parsed_ply, _, parsed_result = _parse_deepest_completed_ply(
+                    parsed_ply, parsed_score, parsed_result = _parse_deepest_completed_ply(
                         stage.stdout,
                         requested_ply=stage.requested_ply,
                         state=state,
@@ -1374,7 +1376,7 @@ def _continuation_chain_selects_analysis(
                     if parsed_ply != stage.completed_ply or emitted != stage.emitted_prefix:
                         return False
                 else:
-                    parsed_ply, _, emitted, _ = _parse_deepest_continuation_progress(
+                    parsed_ply, parsed_score, emitted, _ = _parse_deepest_continuation_progress(
                         stage.stdout,
                         requested_ply=stage.requested_ply,
                         state=state,
@@ -1386,23 +1388,33 @@ def _continuation_chain_selects_analysis(
                 return False
         if stage.usable and stage.purpose == "anchor-ply1":
             anchor += stage.emitted_prefix
+            anchor_terminal_score = parsed_score
         elif stage.usable and stage.purpose == "deep-max-ply":
             stitched = stage.emitted_prefix
+            stitched_terminal_score = parsed_score
         elif (
             stage.usable
             and stage.purpose == "deep-refinement"
             and analysis.selection_mode == "deep-refined"
         ):
             stitched = stage.emitted_prefix
+            stitched_terminal_score = parsed_score
         elif stage.usable and stage.purpose in {"suffix-max-ply", "suffix-ply1"}:
             stitched += stage.emitted_prefix
+            stitched_terminal_score = parsed_score
     evidence = (
         anchor
         if analysis.selection_mode in {"anchor-fallback", "anchor-terminal"}
         else stitched
     )
+    evidence_score = (
+        anchor_terminal_score
+        if analysis.selection_mode in {"anchor-fallback", "anchor-terminal"}
+        else stitched_terminal_score
+    )
     return (
         tuple(analysis.best_series.moves) == evidence
+        and analysis.terminal_stage_score == evidence_score
         and elapsed <= wall_seconds + COMMON_WALL_OVERRUN_GRACE_SECONDS
         and analysis.elapsed_seconds + 1e-9 >= elapsed
         and analysis.elapsed_seconds

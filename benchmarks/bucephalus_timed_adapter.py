@@ -1084,6 +1084,7 @@ def _analyze_bucephalus_with_continuation(
         )
     except ExternalEngineProtocolError:
         try:
+            _validate_output_identity_and_boundary(deep_stdout, state)
             prefix_ply, score, deep_prefix = _parse_deepest_legal_incomplete_prefix(
                 deep_stdout, requested_ply=BUCEPHALUS_MAX_PLY, state=state
             )
