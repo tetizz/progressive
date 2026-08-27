@@ -115,6 +115,8 @@ class ExternalAnalysis:
     stdout: str
     stderr: str
     deadline_reached: bool = False
+    process_exit_code: int | None = None
+    process_exit_recovered: bool = False
 
 
 _PLY_LINE = re.compile(
@@ -461,10 +463,11 @@ def analyze_bucephalus_timed_iterative(
     """Runs Bucephalus to its maximum ply under a wall-clock budget.
 
     Unlike :func:`analyze_bucephalus`, this explicit timed adapter can recover
-    after the watchdog expires. Recovery is limited to the deepest fully
-    emitted PLY record, and only after the process identity, replay boundary,
-    move syntax, and complete root series all validate. The exact-depth adapter
-    intentionally retains its original fail-on-timeout behavior.
+    after the watchdog expires or the per-call process exits abnormally.
+    Recovery is limited to the deepest fully emitted PLY record, and only after
+    the process identity, replay boundary, move syntax, and complete root series
+    all validate. The exact-depth adapter intentionally retains its original
+    fail-on-timeout/fail-on-exit behavior.
     """
 
     if not math.isfinite(wall_timeout_seconds) or wall_timeout_seconds <= 0:
@@ -555,9 +558,36 @@ def analyze_bucephalus_timed_iterative(
     stdout = _decode_process_output(completed.stdout)
     stderr = _decode_process_output(completed.stderr)
     if completed.returncode != 0:
-        raise ExternalEngineProtocolError(
-            f"Bucephalus exited with status {completed.returncode}: "
-            f"{stderr.strip()}"
+        try:
+            _validate_output_identity_and_boundary(stdout, state)
+            completed_ply, score_text, best_series = (
+                _parse_deepest_completed_ply(
+                    stdout,
+                    requested_ply=requested_ply,
+                    state=state,
+                )
+            )
+        except ExternalEngineProtocolError as protocol_error:
+            raise ExternalEngineProtocolError(
+                f"Bucephalus exited with status {completed.returncode} without "
+                f"a usable completed iteration: {protocol_error}; "
+                f"stderr={stderr.strip()!r}"
+            ) from protocol_error
+        return ExternalAnalysis(
+            best_series=best_series,
+            requested_ply=requested_ply,
+            completed_ply=completed_ply,
+            score_text=score_text,
+            elapsed_seconds=elapsed,
+            executable_sha256=actual_hash,
+            upstream_commit=spec.upstream_commit,
+            adapter_version=BUCEPHALUS_TIMED_ITERATIVE_ADAPTER_VERSION,
+            request_script=script,
+            stdout=stdout,
+            stderr=stderr,
+            deadline_reached=False,
+            process_exit_code=completed.returncode,
+            process_exit_recovered=True,
         )
     _validate_output_identity_and_boundary(stdout, state)
     score_text, principal_variation = _parse_requested_ply(

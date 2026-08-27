@@ -94,7 +94,10 @@ the local engine may instead return a clearly labeled legal move-only liveness
 fallback when its conservative safety search remains incomplete. This is equal
 move latency, not equal search time: Bucephalus's clock necessarily includes a
 fresh process start and canonical from-start history replay because its 2016
-interface has no persistent position command.
+interface has no persistent position command. If that disposable process exits
+abnormally after flushing a complete legal iteration, the harness replay-checks
+and plays that iteration while recording the exit code and recovery. An exit or
+deadline with no complete legal root series remains a technical failure.
 
 The upstream binary buffers stdout and cannot expose completed iterations when
 the watchdog terminates it. Build a separately pinned benchmark binary from

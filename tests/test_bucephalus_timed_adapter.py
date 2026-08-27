@@ -187,6 +187,65 @@ def test_timed_iterative_recovers_deepest_complete_legal_line_on_timeout(
     assert observed["kwargs"]["timeout"] == 0.25
 
 
+def test_timed_iterative_recovers_flushed_legal_line_after_process_exit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    state = replay_series_history(PUBLISHED_HISTORY)
+    spec = _dummy_spec(tmp_path)
+    stdout = _published_stdout("c7-c6 d8-b6 f6-e4 b6xf2")
+
+    monkeypatch.setattr(
+        "scottish_progressive.external.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            0xC0000005,
+            stdout=stdout,
+            stderr="",
+        ),
+    )
+    analysis = analyze_bucephalus_timed_iterative(
+        state,
+        PUBLISHED_HISTORY,
+        spec,
+        wall_timeout_seconds=0.25,
+    )
+
+    assert analysis.completed_ply == 4
+    assert analysis.best_series.machine_notation == "c7c6/d8b6/f6e4/b6f2"
+    assert analysis.deadline_reached is False
+    assert analysis.process_exit_code == 0xC0000005
+    assert analysis.process_exit_recovered is True
+
+
+def test_timed_iterative_rejects_process_exit_without_legal_root_series(
+    tmp_path: Path, monkeypatch
+) -> None:
+    state = replay_series_history(PUBLISHED_HISTORY)
+    spec = _dummy_spec(tmp_path)
+    stdout = (
+        "Bucephalus v1.0.0\n"
+        "Side to move: B  Length of Series: 4  Count in Series: 1\n"
+        "[PLY  1][SCORE 0.00][TIME 0 m 0.00 s][LINE: c7-c6 ]\n"
+    )
+
+    monkeypatch.setattr(
+        "scottish_progressive.external.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            0xC0000005,
+            stdout=stdout,
+            stderr="",
+        ),
+    )
+    with pytest.raises(ExternalEngineProtocolError, match="without a usable"):
+        analyze_bucephalus_timed_iterative(
+            state,
+            PUBLISHED_HISTORY,
+            spec,
+            wall_timeout_seconds=0.25,
+        )
+
+
 def test_timed_iterative_skips_invalid_deeper_record_for_last_legal_iteration(
     tmp_path: Path, monkeypatch
 ) -> None:

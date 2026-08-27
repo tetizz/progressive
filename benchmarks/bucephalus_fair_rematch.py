@@ -1395,6 +1395,10 @@ def _play_external_game(
                     "deadline_completed_iteration_used": (
                         external_analysis.deadline_reached
                     ),
+                    "process_exit_code": external_analysis.process_exit_code,
+                    "process_exit_recovered": (
+                        external_analysis.process_exit_recovered
+                    ),
                 }
             )
             if (
@@ -1425,6 +1429,18 @@ def _play_external_game(
                 or (
                     external_analysis.completed_ply < requested_ply
                     and not external_analysis.deadline_reached
+                    and not external_analysis.process_exit_recovered
+                )
+                or (
+                    external_analysis.process_exit_recovered
+                    and (
+                        external_analysis.process_exit_code in (None, 0)
+                        or external_analysis.deadline_reached
+                    )
+                )
+                or (
+                    external_analysis.process_exit_code not in (None, 0)
+                    and not external_analysis.process_exit_recovered
                 )
                 or external_analysis.executable_sha256.lower()
                 != job.external_spec.sha256
@@ -1634,10 +1650,15 @@ def _summarize(
     local_move_only_fallbacks = 0
     local_internal_selective_limit_moves = 0
     local_deadline_completed_iteration_moves = 0
+    external_process_exit_recoveries = 0
     failure_reasons: dict[str, int] = {}
     failure_owners: dict[str, int] = {}
     for record in records:
         for entry in record.trace:
+            if entry.get("engine") == "bucephalus" and entry.get("played"):
+                external_process_exit_recoveries += int(
+                    bool(entry.get("process_exit_recovered"))
+                )
             if entry.get("engine") != "local" or not entry.get("played"):
                 continue
             local_move_only_fallbacks += int(
@@ -1754,6 +1775,9 @@ def _summarize(
                     local_deadline_completed_iteration_moves
                 ),
             },
+            "external_process_exit_recoveries": (
+                external_process_exit_recoveries
+            ),
         },
         tuple(pairs),
     )
@@ -1812,8 +1836,11 @@ def _rule_protocol_gaps(config: ExternalMatchConfig) -> list[dict[str, str]]:
                     "iteration, or its explicit legal move-only liveness fallback "
                     "when an internal conservative safety proof remains unknown. "
                     "Bucephalus is externally stopped and may return only its "
-                    "deepest fully emitted legal iteration. No legal output is an "
-                    "incomplete game. Every fallback is counted and disclosed."
+                    "deepest fully emitted legal iteration. Because each call is "
+                    "a disposable process, a flushed legal iteration emitted "
+                    "before an abnormal exit is replay-validated and used; the "
+                    "exit code and recovery are counted. No legal output is an "
+                    "incomplete game. Every fallback is disclosed."
                 )
                 if timed
                 else (

@@ -160,6 +160,8 @@ def _external_result(
     completed_ply: int | None = None,
     adapter_version: str = BUCEPHALUS_ADAPTER_VERSION,
     deadline_reached: bool = False,
+    process_exit_code: int | None = None,
+    process_exit_recovered: bool = False,
 ) -> ExternalAnalysis:
     selected = play_series(state, moves)
     return ExternalAnalysis(
@@ -177,6 +179,8 @@ def _external_result(
         stdout="Bucephalus v1.0.0\n[PLY 4]...\n",
         stderr="",
         deadline_reached=deadline_reached,
+        process_exit_code=process_exit_code,
+        process_exit_recovered=process_exit_recovered,
     )
 
 
@@ -478,6 +482,32 @@ def test_equal_wall_bucephalus_plays_deepest_completed_iteration_after_deadline(
     assert record.trace[0]["deadline_completed_iteration_used"] is True
 
 
+def test_equal_wall_bucephalus_plays_flushed_iteration_after_process_exit(
+    tmp_path: Path,
+) -> None:
+    job = _build_jobs(
+        baseline_profile(), _spec(tmp_path), _timed_config()
+    )[0]
+
+    def fake_external(state, history, spec, *, wall_timeout_seconds):
+        return _external_result(
+            state,
+            PUBLISHED_MATE,
+            requested_ply=BUCEPHALUS_MAX_PLY,
+            completed_ply=state.moves_available,
+            adapter_version=BUCEPHALUS_TIMED_ITERATIVE_ADAPTER_VERSION,
+            process_exit_code=0xC0000005,
+            process_exit_recovered=True,
+        )
+
+    record = _play_external_game(job, external_adapter=fake_external)
+
+    assert record.result == "0-1"
+    assert record.winner == "bucephalus"
+    assert record.trace[0]["process_exit_code"] == 0xC0000005
+    assert record.trace[0]["process_exit_recovered"] is True
+
+
 def test_equal_wall_accepts_early_checking_external_iteration(
     tmp_path: Path,
 ) -> None:
@@ -570,6 +600,61 @@ def test_equal_wall_rejects_partial_bucephalus_depth_without_deadline(
             completed_ply=state.moves_available,
             adapter_version=BUCEPHALUS_TIMED_ITERATIVE_ADAPTER_VERSION,
             deadline_reached=False,
+        )
+
+    record = _play_external_game(job, external_adapter=inconsistent_external)
+
+    assert record.result == "*"
+    assert record.terminal_reason == "technical-external-provenance-mismatch"
+
+
+@pytest.mark.parametrize(
+    ("process_exit_code", "deadline_reached"),
+    ((None, False), (0, False), (0xC0000005, True)),
+)
+def test_equal_wall_rejects_inconsistent_process_exit_recovery_provenance(
+    tmp_path: Path,
+    process_exit_code: int | None,
+    deadline_reached: bool,
+) -> None:
+    job = _build_jobs(
+        baseline_profile(), _spec(tmp_path), _timed_config()
+    )[0]
+
+    def inconsistent_external(state, history, spec, *, wall_timeout_seconds):
+        return _external_result(
+            state,
+            PUBLISHED_MATE,
+            requested_ply=BUCEPHALUS_MAX_PLY,
+            completed_ply=state.moves_available,
+            adapter_version=BUCEPHALUS_TIMED_ITERATIVE_ADAPTER_VERSION,
+            deadline_reached=deadline_reached,
+            process_exit_code=process_exit_code,
+            process_exit_recovered=True,
+        )
+
+    record = _play_external_game(job, external_adapter=inconsistent_external)
+
+    assert record.result == "*"
+    assert record.terminal_reason == "technical-external-provenance-mismatch"
+
+
+def test_equal_wall_rejects_unrecovered_nonzero_process_exit(
+    tmp_path: Path,
+) -> None:
+    job = _build_jobs(
+        baseline_profile(), _spec(tmp_path), _timed_config()
+    )[0]
+
+    def inconsistent_external(state, history, spec, *, wall_timeout_seconds):
+        return _external_result(
+            state,
+            PUBLISHED_MATE,
+            requested_ply=BUCEPHALUS_MAX_PLY,
+            completed_ply=state.moves_available,
+            adapter_version=BUCEPHALUS_TIMED_ITERATIVE_ADAPTER_VERSION,
+            process_exit_code=0xC0000005,
+            process_exit_recovered=False,
         )
 
     record = _play_external_game(job, external_adapter=inconsistent_external)
