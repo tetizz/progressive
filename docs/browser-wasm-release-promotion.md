@@ -74,7 +74,10 @@ eight ordinary `DedicatedWorkerGlobalScope` module Workers:
 - cold D5 and warm persistent D1 through D5 both equal the signed root oracle;
 - at least two distinct real seed-wave/order shapes reach that same result;
 - exact selected-owner certification, complete rival-bound coverage, compiled
-  prefix replay, compiled reply-mate safety, and zero Unknown/limit results;
+  prefix replay, compiled reply-mate safety, and zero Unknown/limit results.
+  `root_scores_complete` remains boolean telemetry: it may be false when
+  alpha-beta safely retains covering bounds instead of re-searching every
+  losing root for an exact score;
 - exact W32 D1 through D5 completion in less than 60 seconds, including pool
   startup.
 

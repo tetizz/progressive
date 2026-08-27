@@ -1647,7 +1647,7 @@ def _opera_checked_horizon_fixture(
         "safety_certified": True,
         "coverage_complete": True,
         "coverage_scope": "selection-eligible-candidates",
-        "root_scores_complete": True,
+        "root_scores_complete": False,
         "width_complete": True,
         "legal_series_certified": True,
         "authoritative_replay_certified": True,
@@ -1963,6 +1963,31 @@ def test_checked_horizon_receipt_omission_fails_closed(tmp_path: Path) -> None:
     _rewrite_checked(context, mutate)
     with pytest.raises(promoter.ReleaseGateError, match="every exact passing check"):
         _validate_checked_fixture(context)
+
+
+def test_checked_horizon_rejects_non_boolean_root_score_completeness(
+    tmp_path: Path,
+) -> None:
+    context = _checked_promotion_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        payload["result_summary"]["root_scores_complete"] = None
+
+    _rewrite_checked(context, mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="exact boolean"):
+        _validate_checked_fixture(context)
+
+
+def test_checked_horizon_accepts_complete_exact_root_scores(tmp_path: Path) -> None:
+    context = _checked_promotion_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        payload["result_summary"]["root_scores_complete"] = True
+
+    _rewrite_checked(context, mutate)
+    assert _validate_checked_fixture(context).receipt.payload["result_summary"][
+        "root_scores_complete"
+    ] is True
 
 
 def test_checked_horizon_rejects_identity_and_asset_hash_drift(tmp_path: Path) -> None:

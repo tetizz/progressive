@@ -3565,7 +3565,6 @@ def validate_opera_checked_horizon_receipt(
         "safety_certified": True,
         "coverage_complete": True,
         "coverage_scope": "selection-eligible-candidates",
-        "root_scores_complete": True,
         "width_complete": True,
         "legal_series_certified": True,
         "authoritative_replay_certified": True,
@@ -3592,6 +3591,10 @@ def validate_opera_checked_horizon_receipt(
     for key, expected in required_summary.items():
         if summary.get(key) != expected:
             raise ReleaseGateError(f"Opera checked-PV result field {key!r} is not release-safe")
+    if not isinstance(summary.get("root_scores_complete"), bool):
+        raise ReleaseGateError(
+            "Opera checked-PV root score completeness must be an exact boolean"
+        )
     best_series = _list(summary.get("best_full_series"), "Opera checked-PV best series")
     if not best_series or any(not isinstance(move, str) or _UCI_MOVE.fullmatch(move) is None for move in best_series):
         raise ReleaseGateError("Opera checked-PV best series is not canonical")
