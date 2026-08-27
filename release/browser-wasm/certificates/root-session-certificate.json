@@ -1,7 +1,7 @@
 {
   "abi_version": 2,
   "allocator": "dlmalloc",
-  "certificate_id": "spc-root-session-84bcf2e02cb13d79",
+  "certificate_id": "spc-root-session-7ece8d1bfaea9f27",
   "checked_horizon_proof_research": {
     "black_parity": {
       "bound": "exact",
@@ -156,7 +156,7 @@
     "persistent_d1_d2_session": true,
     "selected_owner_warm_exact_certification": true,
     "start_w32_d5_completed_depth": 5,
-    "start_w32_d5_elapsed_seconds": 30.365799999952316,
+    "start_w32_d5_elapsed_seconds": 28.6475,
     "start_w32_d5_width": 32,
     "work_limit_fail_closed": true
   },
@@ -365,7 +365,7 @@
   },
   "runtime_variant": "single",
   "schema": "spc-root-session-certificate-v1",
-  "source_fingerprint": "f3ce2d85406c32e6",
+  "source_fingerprint": "dd1621ac34bd4acb",
   "status": "certified",
   "support_files": [],
   "thread_count": 1,

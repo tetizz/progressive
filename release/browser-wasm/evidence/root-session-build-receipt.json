@@ -70,7 +70,7 @@
     "-sEXPORTED_FUNCTIONS=_spc_start_kernel_search_json,_spc_boundary_kernel_search_json,_spc_boundary_prefix_json,_spc_boundary_prefix_contract_json,_spc_start_kernel_abi_version,_spc_root_session_contract_json,_spc_root_session_create_json,_spc_root_session_enumerate_json,_spc_root_session_import_json,_spc_root_session_search_json,_spc_root_session_destroy,_spc_root_session_abi_version,_spc_series_mate_search_json,_spc_series_mate_abi_version,_malloc,_free",
     "-sEXPORTED_RUNTIME_METHODS=UTF8ToString,stringToNewUTF8,HEAPU8",
     "-o",
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\cycle14-checked-boundary-extension-20260826\\build\\cycle14-release-7bd76cc\\evidence\\spc-root-session.mjs"
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\cycle14-checked-boundary-extension-20260826\\build\\cycle14-release-1950ad8\\evidence\\spc-root-session.mjs"
   ],
   "engine_version": "spc-0.9.0",
   "gates": {
@@ -120,7 +120,7 @@
     "root_contract_eval_capacity": 262144,
     "root_contract_tt_capacity": 262144
   },
-  "source_fingerprint": "f3ce2d85406c32e6",
+  "source_fingerprint": "dd1621ac34bd4acb",
   "source_inputs": [
     {
       "bytes": 320634,
@@ -173,7 +173,7 @@
       "sha256": "bef97b5453d10f1c19e2a61b712dee2a8346bb92c2c64a5582ec4aec9d12fa3c"
     }
   ],
-  "source_revision": "7bd76cca4686fb8f0a9ab39e45f2822578e6f363",
+  "source_revision": "1950ad88bb975c06a0e454cad2220acad9fb43be",
   "status": "built-not-certified",
   "support_files": [],
   "thread_count": 1,
