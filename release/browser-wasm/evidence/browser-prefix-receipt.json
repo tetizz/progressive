@@ -2,7 +2,7 @@
   "schema": "spc-browser-prefix-contract-receipt-v1",
   "status": "passed",
   "artifact": {
-    "source_revision": "176804ce7663f6fda274879df43ed5b0dc0ab6a9",
+    "source_revision": "032a6021d88e3781c82d65e1daa32b6a875a933e",
     "source_fingerprint": "9e76dd9e4f0429bd",
     "kernel_sha256": "13b45b20d65c77e9fa7ac3df432df89561812fd816f3968618e2a7f0b20fa748",
     "wasm_sha256": "2a96d76682063a0a5053310f3c0958c8c6999a8af6ac7beb73994fa44c30abd6",

@@ -1,7 +1,7 @@
 {
   "abi_version": 2,
   "allocator": "dlmalloc",
-  "certificate_id": "spc-root-session-dbf5c0094536a742",
+  "certificate_id": "spc-root-session-d60d9801590d86a3",
   "checked_horizon_proof_research": {
     "black_parity": {
       "bound": "exact",
@@ -156,7 +156,7 @@
     "persistent_d1_d2_session": true,
     "selected_owner_warm_exact_certification": true,
     "start_w32_d5_completed_depth": 5,
-    "start_w32_d5_elapsed_seconds": 33.003199999928476,
+    "start_w32_d5_elapsed_seconds": 32.22240000009537,
     "start_w32_d5_width": 32,
     "work_limit_fail_closed": true
   },

@@ -4,7 +4,7 @@
   "failures": 0,
   "differential_cases": 6,
   "artifact": {
-    "source_revision": "176804ce7663f6fda274879df43ed5b0dc0ab6a9",
+    "source_revision": "032a6021d88e3781c82d65e1daa32b6a875a933e",
     "source_fingerprint": "9e76dd9e4f0429bd",
     "kernel_sha256": "13b45b20d65c77e9fa7ac3df432df89561812fd816f3968618e2a7f0b20fa748",
     "wasm_sha256": "2a96d76682063a0a5053310f3c0958c8c6999a8af6ac7beb73994fa44c30abd6",
@@ -342,7 +342,7 @@
       {
         "candidate_identity": "spc-root-candidate-v1|moves1:4:g2g3|count1|final201:spc-state-v1|00ff00000040bf00|4200000000000042|2400000000000024|8100000000000081|0800000000000008|1000000000000010|ffff000000000000|000000000040bfff|0000000000000000|8100000000000081|b|h0|f1|s2|q0|ep0:|out0|check0",
         "bound": "upper",
-        "score": 593,
+        "score": 422,
         "proof_bounds": [
           -1,
           1
@@ -376,21 +376,21 @@
         ]
       }
     ],
-    "coverage_sha256": "3064ab3ced94a7287657e9a950b14e1d3578df91f5860f5c00eeb68d739e48cf"
+    "coverage_sha256": "6960541cee1ef45c220a5ab2145863bfc331f7077901891e1bfa924ec6404b47"
   },
   "work": {
     "status": "complete",
     "within_cap": true,
     "unknown_or_limit_count": 0,
     "max_work": 100000000,
-    "accounted_work": 41408620
+    "accounted_work": 41437257
   },
   "deadline": {
     "status": "complete",
     "deadline_reached": false,
     "unknown_or_limit_count": 0,
     "deadline_limit_ms": 60000.0,
-    "remaining_time_ms": 26996.800000071526
+    "remaining_time_ms": 27777.599999904633
   },
   "gates": {
     "initial_root_enumeration_python_parity": true,
@@ -401,5 +401,5 @@
     "deadline_receipts": true,
     "complete_rival_bound_coverage": true
   },
-  "oracle_signature_sha256": "bf096d1f14ca60ba27b9115135007d96f58f73257007cf85071f6740877f4603"
+  "oracle_signature_sha256": "4d9639312162732117116619ef3e337a312545d069457ad94070ceb816311789"
 }
