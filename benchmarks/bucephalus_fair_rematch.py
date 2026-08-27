@@ -70,6 +70,9 @@ EXTERNAL_PLY_POLICY = "series-number-plus-fixed-lookahead-v1"
 TIMED_ITERATIVE_PLY_POLICY = "maximum-ply-best-completed-under-wall-budget-v1"
 FAIR_EQUAL_WALL_MATCH_INTENT = "fair-equal-wall"
 BEST_SETTINGS_MATCH_INTENT = "best-settings-head-to-head"
+OPENING_POLICY_FIXED_SUITE = "canonical-color-swapped-suite"
+OPENING_POLICY_INITIAL = "initial-position-no-preplayed-series"
+INITIAL_POSITION_SUITE_VERSION = "spc-initial-position-no-preplayed-series-v1"
 ENGAGED_OPENING_QUALIFICATION_VERSION = "spc-engaged-openings-v2"
 BUCEPHALUS_FAIR_OPENING_SEED = 20260827
 BUCEPHALUS_FAIR_OPENING_SUITE_VERSION = (
@@ -108,6 +111,26 @@ APPROVED_BEST_SETTINGS_LOCAL_PROFILE_ID = "spc-68942034c41b4cc4"
 APPROVED_BEST_SETTINGS_LOCAL_PROFILE_SHA256 = (
     "a8c698997f3a0acfa1777bae9723fa119684745be7ed2706269ac16905d500f8"
 )
+
+_INITIAL_STATE = ProgressiveState.initial()
+INITIAL_POSITION_CASE = OpeningCase(
+    case_id="initial-position",
+    fen=_INITIAL_STATE.board.fen(en_passant="fen"),
+    series_number=1,
+    source="standard-initial-position",
+)
+INITIAL_POSITION_SUITE_CANONICAL_SHA256 = hashlib.sha256(
+    json.dumps(
+        {
+            "format": INITIAL_POSITION_SUITE_VERSION,
+            "opening_policy": OPENING_POLICY_INITIAL,
+            "case": INITIAL_POSITION_CASE.as_dict(),
+            "canonical_history": [],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+).hexdigest()
 
 ExternalAdapter = Callable[..., ExternalAnalysis]
 LocalAnalyzer = Callable[..., SearchResult]
@@ -209,6 +232,7 @@ BUCEPHALUS_OPENING_SUITES: Mapping[str, tuple[OpeningCase, ...]] = MappingProxyT
     {
         OPENING_SUITE_VERSION: OPENING_SUITE,
         BUCEPHALUS_FAIR_OPENING_SUITE_VERSION: BUCEPHALUS_FAIR_OPENING_SUITE,
+        INITIAL_POSITION_SUITE_VERSION: (INITIAL_POSITION_CASE,),
     }
 )
 BUCEPHALUS_OPENING_HISTORIES: Mapping[
@@ -217,6 +241,9 @@ BUCEPHALUS_OPENING_HISTORIES: Mapping[
     {
         OPENING_SUITE_VERSION: BUCEPHALUS_OPENING_HISTORIES_V1,
         BUCEPHALUS_FAIR_OPENING_SUITE_VERSION: BUCEPHALUS_FAIR_OPENING_HISTORIES,
+        INITIAL_POSITION_SUITE_VERSION: MappingProxyType(
+            {INITIAL_POSITION_CASE.case_id: ()}
+        ),
     }
 )
 
@@ -243,6 +270,7 @@ BUCEPHALUS_OPENING_SUITE_SHA256: Mapping[str, str] = MappingProxyType(
         BUCEPHALUS_FAIR_OPENING_SUITE_VERSION: (
             BUCEPHALUS_FAIR_OPENING_SUITE_CANONICAL_SHA256
         ),
+        INITIAL_POSITION_SUITE_VERSION: INITIAL_POSITION_SUITE_CANONICAL_SHA256,
     }
 )
 
@@ -404,6 +432,8 @@ def _resolve_opening_context(
     config: ExternalMatchConfig,
     opening_suite: SeededOpeningSuite | None,
 ) -> _OpeningContext:
+    if config.opening_policy == OPENING_POLICY_INITIAL and opening_suite is not None:
+        raise ValueError("initial-position mode forbids a supplied opening suite")
     if opening_suite is None:
         if config.opening_suite_version not in BUCEPHALUS_OPENING_SUITES:
             raise ValueError(
@@ -434,7 +464,10 @@ def _resolve_opening_context(
             generator=generator,
             content_addressed=(
                 config.opening_suite_version
-                == BUCEPHALUS_FAIR_OPENING_SUITE_VERSION
+                in {
+                    BUCEPHALUS_FAIR_OPENING_SUITE_VERSION,
+                    INITIAL_POSITION_SUITE_VERSION,
+                }
             ),
         )
 
@@ -724,6 +757,7 @@ class ExternalMatchConfig:
     pairs: int = 10
     seed: int = 20260820
     match_intent: str = FAIR_EQUAL_WALL_MATCH_INTENT
+    opening_policy: str = OPENING_POLICY_FIXED_SUITE
     opening_suite_version: str = OPENING_SUITE_VERSION
     opening_suite_canonical_sha256: str | None = None
     opening_qualification: OpeningQualification | None = None
@@ -749,6 +783,25 @@ class ExternalMatchConfig:
         }
         if self.match_intent not in supported_match_intents:
             raise ValueError(f"unsupported match intent {self.match_intent}")
+        if self.opening_policy not in {
+            OPENING_POLICY_FIXED_SUITE,
+            OPENING_POLICY_INITIAL,
+        }:
+            raise ValueError(f"unsupported opening policy {self.opening_policy}")
+        initial_position_mode = self.opening_policy == OPENING_POLICY_INITIAL
+        if initial_position_mode and (
+            self.opening_suite_version != INITIAL_POSITION_SUITE_VERSION
+            or self.opening_case_ids != (INITIAL_POSITION_CASE.case_id,)
+            or self.opening_qualification is not None
+        ):
+            raise ValueError(
+                "initial-position mode requires its frozen empty-history case "
+                "and forbids opening qualification"
+            )
+        if not initial_position_mode and (
+            self.opening_suite_version == INITIAL_POSITION_SUITE_VERSION
+        ):
+            raise ValueError("initial-position suite requires its explicit opening policy")
         built_in_suite = self.opening_suite_version in BUCEPHALUS_OPENING_SUITES
         if (
             not built_in_suite
@@ -795,9 +848,11 @@ class ExternalMatchConfig:
             raise ValueError("opening_case_ids cannot contain duplicates")
         if not set(self.opening_case_ids) <= available:
             raise ValueError("opening_case_ids must name active canonical openings")
-        if not 1 <= self.pairs <= len(self.opening_case_ids):
+        if not 1 <= self.pairs or (
+            not initial_position_mode and self.pairs > len(self.opening_case_ids)
+        ):
             raise ValueError(
-                "pairs must be between 1 and the number of unique openings"
+                "pairs must be positive and fixed-suite pairs cannot exceed unique openings"
             )
         if not 1 <= self.local_depth_series <= 8:
             raise ValueError("local_depth_series must be between 1 and 8")
@@ -880,6 +935,7 @@ class ExternalMatchConfig:
             )
         if (
             self.match_intent == BEST_SETTINGS_MATCH_INTENT
+            and not initial_position_mode
             and self.opening_suite_version
             == BUCEPHALUS_FAIR_OPENING_SUITE_VERSION
         ):
@@ -889,11 +945,14 @@ class ExternalMatchConfig:
             )
         if self.match_intent == BEST_SETTINGS_MATCH_INTENT:
             if (
-                self.opening_qualification is None
-                or self.opening_qualification.version
-                != ENGAGED_OPENING_QUALIFICATION_VERSION
-                or self.opening_qualification.target_series != 3
-                or self.opening_qualification.selected_count != self.pairs
+                not initial_position_mode
+                and (
+                    self.opening_qualification is None
+                    or self.opening_qualification.version
+                    != ENGAGED_OPENING_QUALIFICATION_VERSION
+                    or self.opening_qualification.target_series != 3
+                    or self.opening_qualification.selected_count != self.pairs
+                )
             ):
                 raise ValueError(
                     "best-settings matches require the engaged S3 opening "
@@ -955,6 +1014,9 @@ class ExternalMatchConfig:
             "games": self.pairs * 2,
             "seed": self.seed,
             "match_intent": self.match_intent,
+            "opening_policy": self.opening_policy,
+            "opening_series_played": 0 if self.opening_policy == OPENING_POLICY_INITIAL else None,
+            "engine_play_begins_series": 1 if self.opening_policy == OPENING_POLICY_INITIAL else None,
             "opening_suite_version": self.opening_suite_version,
             "opening_suite_canonical_sha256": self.opening_suite_sha256,
             "opening_qualification": (
@@ -1013,6 +1075,12 @@ class ExternalMatchConfig:
                 "completion_controller": (
                     {
                         "version": BUCEPHALUS_TIMED_ITERATIVE_ADAPTER_VERSION,
+                        "label": "Bucephalus-output-only completion controller",
+                        "anchor_reserve_seconds": 12.0,
+                        "soft_checkpoint_fraction": 0.75,
+                        "hard_wall_seconds": self.common_wall_timeout_seconds,
+                        "cleanup_reserve_seconds": 1.0,
+                        "restart_semantics": "fresh-process-replay-clears-transposition-table",
                         "moves_source": "pinned-bucephalus-output-only",
                         "anchor": {
                             "method": "repeated-exact-ply1",
@@ -1031,7 +1099,6 @@ class ExternalMatchConfig:
                             "complete_at_soft_action": "same-pid-continue-to-global-hard-deadline",
                             "restart_clears_transposition_table": True,
                         },
-                        "cleanup_reserve_seconds": 1.0,
                         "fallback": "precomputed-bucephalus-ply1-anchor",
                     }
                     if self.external_ply_policy == TIMED_ITERATIVE_PLY_POLICY
@@ -1051,7 +1118,7 @@ class ExternalMatchConfig:
                 "enabled": self.common_wall_timeout_seconds is not None,
                 "wall_seconds_per_move": self.common_wall_timeout_seconds,
                 "policy": (
-                    "equal-end-to-end-call-wall-engine-native-return-v2"
+                    "equal-end-to-end-call-wall-bucephalus-output-only-controller-v4"
                     if self.common_wall_timeout_seconds is not None
                     else None
                 ),
@@ -1123,6 +1190,10 @@ def _ordered_openings(
     config: ExternalMatchConfig,
     opening_cases: Sequence[OpeningCase] | None = None,
 ) -> tuple[OpeningCase, ...]:
+    if config.opening_policy == OPENING_POLICY_INITIAL:
+        if opening_cases is not None and tuple(opening_cases) != (INITIAL_POSITION_CASE,):
+            raise ValueError("initial-position mode forbids supplied opening fixtures")
+        return (INITIAL_POSITION_CASE,) * config.pairs
     by_id = {
         case.case_id: case
         for case in (
@@ -1192,6 +1263,14 @@ def _build_jobs(
     resolved_openings = opening_context or _resolve_opening_context(
         config, opening_suite
     )
+    if config.opening_policy == OPENING_POLICY_INITIAL and (
+        resolved_openings.cases != (INITIAL_POSITION_CASE,)
+        or dict(resolved_openings.histories) != {INITIAL_POSITION_CASE.case_id: ()}
+    ):
+        raise ValueError(
+            "initial-position mode requires exactly one standard initial case "
+            "with empty canonical history"
+        )
     config_json = json.dumps(
         config.as_dict(), sort_keys=True, separators=(",", ":")
     )
@@ -2562,12 +2641,9 @@ def _protocol_eligibility(
     )
     best_settings_protocol = (
         config.match_intent == BEST_SETTINGS_MATCH_INTENT
-        and config.opening_suite_canonical_sha256 is not None
-        and config.opening_qualification is not None
-        and config.opening_qualification.version
-        == ENGAGED_OPENING_QUALIFICATION_VERSION
-        and config.opening_qualification.target_series == 3
-        and config.opening_qualification.selected_count == 50
+        and config.opening_policy == OPENING_POLICY_INITIAL
+        and config.opening_suite_version == INITIAL_POSITION_SUITE_VERSION
+        and config.opening_qualification is None
         and config.external_ply_policy == TIMED_ITERATIVE_PLY_POLICY
         and config.common_wall_timeout_seconds == 120.0
         and config.external_wall_timeout_seconds == 120.0
@@ -2579,7 +2655,7 @@ def _protocol_eligibility(
         and config.emergency_max_series == 18
         and config.requested_match_workers == 1
         and config.pairs == 50
-        and len(config.opening_case_ids) == 50
+        and config.opening_case_ids == (INITIAL_POSITION_CASE.case_id,)
         and _approved_best_settings_profile(local_profile)
     )
     return fair_equal_wall_protocol, best_settings_protocol
@@ -2608,6 +2684,7 @@ def _superiority_gate(
     paired_p = summary["paired_sign_test"]["two_sided_exact_binomial_p"]
     superiority_supported = (
         strict_protocol_complete
+        and config.opening_policy != OPENING_POLICY_INITIAL
         and approved_bucephalus_identity
         and identity_stable
         and pair_wdl["wins"] > pair_wdl["losses"]
@@ -2615,6 +2692,19 @@ def _superiority_gate(
         and paired_p < 0.05
     )
     return strict_protocol_complete, superiority_supported
+
+
+def _apply_opening_policy_summary(
+    config: ExternalMatchConfig, summary: dict[str, Any]
+) -> None:
+    if config.opening_policy == OPENING_POLICY_INITIAL:
+        summary["paired_sign_test"] = {
+            "unit": "repeated-initial-position-color-swapped-pair",
+            "decisive_pairs": None,
+            "two_sided_exact_binomial_p": None,
+            "applicable": False,
+            "reason": "repeated-identical-initial-state-is-not-independent",
+        }
 
 
 def _rule_protocol_gaps(config: ExternalMatchConfig) -> list[dict[str, str]]:
@@ -2635,12 +2725,11 @@ def _rule_protocol_gaps(config: ExternalMatchConfig) -> list[dict[str, str]]:
                     "local engine returns its deepest completed series-depth "
                     "iteration, or its explicit legal move-only liveness fallback "
                     "when an internal conservative safety proof remains unknown. "
-                    "Bucephalus is externally stopped and may return only its "
-                    "deepest fully emitted legal iteration. Because each call is "
-                    "a disposable process, a flushed legal iteration emitted "
-                    "before an abnormal exit is replay-validated and used; the "
-                    "exit code and recovery are counted. No legal output is an "
-                    "incomplete game. Every fallback is disclosed."
+                    "Bucephalus uses the frozen output-only v4 completion "
+                    "controller: a replay-validated PLY1 anchor, live deep search, "
+                    "and replay-validated suffix continuation. Every selected "
+                    "move was emitted by the pinned engine; process stops, "
+                    "restarts, stitching, and anchor fallback are disclosed."
                 )
                 if timed
                 else (
@@ -3239,7 +3328,10 @@ def _validate_journal_record_replay(
     ):
         raise ValueError("journal terminal result metadata is not authoritative")
     if (
-        job.config.opening_qualification is not None
+        (
+            job.config.opening_qualification is not None
+            or job.config.opening_policy == OPENING_POLICY_INITIAL
+        )
         and played_engines != {"local", "bucephalus"}
     ):
         raise ValueError("engaged completed game did not include both engines")
@@ -3438,6 +3530,7 @@ def run_external_match(
     )
     elapsed_seconds = time.perf_counter() - started
     summary, pairs = _summarize(records)
+    _apply_opening_policy_summary(config, summary)
     identity_drift = _identity_drift(identity_snapshot)
     strict_protocol_complete, superiority_supported = _superiority_gate(
         config,
@@ -3453,7 +3546,11 @@ def run_external_match(
     summary["strict_100_game_protocol_complete"] = strict_protocol_complete
     summary["fair_equal_wall_protocol"] = fair_equal_wall_protocol
     summary["best_settings_protocol"] = best_settings_protocol
-    selected_openings = [job.opening for job in jobs[::2]]
+    selected_openings = (
+        [INITIAL_POSITION_CASE]
+        if config.opening_policy == OPENING_POLICY_INITIAL
+        else [job.opening for job in jobs[::2]]
+    )
     match_id = jobs[0].game_id[:20]
     report = {
         "format": EXTERNAL_MATCH_FORMAT,
@@ -3527,6 +3624,24 @@ def run_external_match(
             "identity_drift": identity_drift,
         },
         "opening_suite": {
+            "opening_policy": config.opening_policy,
+            "opening_series_played": (
+                0 if config.opening_policy == OPENING_POLICY_INITIAL else None
+            ),
+            "engine_play_begins_series": (
+                1 if config.opening_policy == OPENING_POLICY_INITIAL else None
+            ),
+            "unique_starting_positions": (
+                1 if config.opening_policy == OPENING_POLICY_INITIAL else len(selected_openings)
+            ),
+            "scheduled_repetitions_per_color": (
+                config.pairs if config.opening_policy == OPENING_POLICY_INITIAL else 1
+            ),
+            "seed_effect": (
+                "none-fixed-initial-position"
+                if config.opening_policy == OPENING_POLICY_INITIAL
+                else "deterministic-opening-order"
+            ),
             "version": config.opening_suite_version,
             "canonical_sha256": opening_context.canonical_sha256,
             "content_addressed": opening_context.content_addressed,
@@ -3561,10 +3676,27 @@ def run_external_match(
             "independent_opponent": approved_bucephalus_identity,
             "exact_approved_bucephalus_baseline": approved_bucephalus_identity,
             "fixed_suite_only": True,
+            "repeated_initial_state_games": (
+                config.pairs * 2
+                if config.opening_policy == OPENING_POLICY_INITIAL
+                else 0
+            ),
+            "statistical_independence_limited_by_deterministic_repetition": (
+                config.opening_policy == OPENING_POLICY_INITIAL
+            ),
+            "independent_sample_claim": False,
+            "opening_generalization_claim": False,
+            "universal_superiority_claim": False,
             "promotion_effect": "none",
             "native_research_engine_only": True,
             "browser_release_equivalence_claim": False,
             "statement": (
+                "All games begin from the standard initial Progressive Series 1 "
+                "with empty history; the engines own every played series. The "
+                "100-game schedule repeats one deterministic initial state, so "
+                "its games are not 50 independent opening samples."
+                if config.opening_policy == OPENING_POLICY_INITIAL
+                else (
                 "Results apply only to the selected canonical Scottish "
                 "Progressive openings and the exact equal end-to-end call-wall, "
                 "engine-native return policy in this report. A disclosed legal "
@@ -3576,7 +3708,7 @@ def run_external_match(
                     "Results apply only to the selected canonical Scottish "
                     "Progressive openings and the exact asymmetric policies in "
                     "this report."
-                )
+                ))
             ),
             "stockfish_level_claim": False,
             "rating_claim": False,
@@ -3596,11 +3728,27 @@ def run_external_match(
                 "requires_no_start_to_finish_identity_drift": True,
                 "requires_100_completed_games": True,
                 "requires_50_completed_color_swapped_pairs": True,
-                "requires_local_pair_wins_above_losses": True,
-                "paired_two_sided_p_below": 0.05,
+                "inferential_superiority_eligible": (
+                    config.opening_policy != OPENING_POLICY_INITIAL
+                ),
+                "paired_test_applicable": (
+                    config.opening_policy != OPENING_POLICY_INITIAL
+                ),
+                "inferential_ineligibility_reason": (
+                    "repeated-identical-initial-state-is-not-independent"
+                    if config.opening_policy == OPENING_POLICY_INITIAL
+                    else None
+                ),
+                "requires_local_pair_wins_above_losses": (
+                    config.opening_policy != OPENING_POLICY_INITIAL
+                ),
+                "paired_two_sided_p_below": (
+                    None if config.opening_policy == OPENING_POLICY_INITIAL else 0.05
+                ),
                 "best_settings_additional_requirements": {
-                    "engaged_s3_opening_qualification": True,
-                    "fresh_custom_suite": True,
+                    "opening_policy": OPENING_POLICY_INITIAL,
+                    "opening_series_played": 0,
+                    "engine_play_begins_series": 1,
                     "minimum_wall_seconds_per_move": 120.0,
                     "local_depth_series": 8,
                     "local_branch_cap": 32,
@@ -3616,7 +3764,8 @@ def run_external_match(
             },
             "warning": (
                 "This is independent-engine game evidence, not calibrated Elo, "
-                "SPRT, equal-node evidence, or proof of Stockfish-level strength."
+                "a confidence interval, SPRT, equal-node evidence, an "
+                "opening-general claim, or proof of universal Stockfish-level strength."
             ),
         },
     }
@@ -3675,8 +3824,17 @@ def build_parser() -> argparse.ArgumentParser:
         choices=(FAIR_EQUAL_WALL_MATCH_INTENT, BEST_SETTINGS_MATCH_INTENT),
         default=FAIR_EQUAL_WALL_MATCH_INTENT,
         help=(
-            "label the frozen protocol honestly; best-settings requires a "
-            "fresh deterministic opening suite"
+            "label the frozen protocol honestly; pair with --opening-policy "
+            "to choose fixtures or genuine play from the initial position"
+        ),
+    )
+    parser.add_argument(
+        "--opening-policy",
+        choices=(OPENING_POLICY_FIXED_SUITE, OPENING_POLICY_INITIAL),
+        default=OPENING_POLICY_FIXED_SUITE,
+        help=(
+            "use canonical fixtures or start every pair from standard Series 1 "
+            "with no pre-played series"
         ),
     )
     parser.add_argument(
@@ -3724,7 +3882,13 @@ def _config_and_opening_suite_from_args(
     args: argparse.Namespace,
 ) -> tuple[ExternalMatchConfig, SeededOpeningSuite | None]:
     opening_qualification: OpeningQualification | None = None
-    if (
+    if args.opening_policy == OPENING_POLICY_INITIAL:
+        if args.fresh_opening_seed is not None:
+            raise ValueError(
+                "initial-position mode forbids fresh or pre-played opening fixtures"
+            )
+        opening_suite = None
+    elif (
         args.match_intent == BEST_SETTINGS_MATCH_INTENT
         and args.fresh_opening_seed is not None
     ):
@@ -3744,7 +3908,11 @@ def _config_and_opening_suite_from_args(
         )
     else:
         opening_suite = None
-    if opening_suite is None:
+    if args.opening_policy == OPENING_POLICY_INITIAL:
+        opening_suite_version = INITIAL_POSITION_SUITE_VERSION
+        opening_case_ids = (INITIAL_POSITION_CASE.case_id,)
+        opening_suite_canonical_sha256 = None
+    elif opening_suite is None:
         opening_suite_version = BUCEPHALUS_FAIR_OPENING_SUITE_VERSION
         opening_case_ids = tuple(
             case.case_id for case in BUCEPHALUS_FAIR_OPENING_SUITE
@@ -3760,6 +3928,7 @@ def _config_and_opening_suite_from_args(
         pairs=args.pairs,
         seed=args.seed,
         match_intent=args.match_intent,
+        opening_policy=args.opening_policy,
         opening_suite_version=opening_suite_version,
         opening_suite_canonical_sha256=opening_suite_canonical_sha256,
         opening_qualification=opening_qualification,

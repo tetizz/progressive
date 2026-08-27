@@ -255,6 +255,109 @@ def test_fair_suite_schedules_100_games_as_50_color_swapped_pairs(
         )
 
 
+def _initial_position_config(*, pairs: int = 50) -> ExternalMatchConfig:
+    return ExternalMatchConfig(
+        pairs=pairs,
+        seed=20260827,
+        opening_policy=rematch_module.OPENING_POLICY_INITIAL,
+        opening_suite_version=rematch_module.INITIAL_POSITION_SUITE_VERSION,
+        opening_case_ids=(rematch_module.INITIAL_POSITION_CASE.case_id,),
+        local_depth_series=1,
+        local_max_series_per_node=4,
+        local_max_generation_positions=100,
+        local_max_game_work_positions=1_000,
+        external_wall_timeout_seconds=1.0,
+        emergency_max_series=2,
+    )
+
+
+def test_initial_position_mode_schedules_100_real_color_swapped_games(
+    tmp_path: Path,
+) -> None:
+    config = _initial_position_config()
+    jobs = _build_jobs(baseline_profile(), _spec(tmp_path), config)
+
+    assert len(jobs) == 100
+    assert len({job.game_id for job in jobs}) == 100
+    assert len({job.pair_id for job in jobs}) == 50
+    assert sum(job.local_color == chess.WHITE for job in jobs) == 50
+    assert sum(job.local_color == chess.BLACK for job in jobs) == 50
+    assert all(job.history == () for job in jobs)
+    assert all(job.opening.series_number == 1 for job in jobs)
+    assert config.as_dict()["opening_policy"] == (
+        "initial-position-no-preplayed-series"
+    )
+    assert config.as_dict()["opening_series_played"] == 0
+    assert config.as_dict()["engine_play_begins_series"] == 1
+
+
+def test_initial_position_mode_rejects_any_preplayed_history(tmp_path: Path) -> None:
+    config = _initial_position_config(pairs=1)
+    context = rematch_module._OpeningContext(
+        cases=(rematch_module.INITIAL_POSITION_CASE,),
+        histories={rematch_module.INITIAL_POSITION_CASE.case_id: (("e2e4",),)},
+        canonical_sha256=config.opening_suite_sha256,
+        generator=None,
+        content_addressed=True,
+    )
+    with pytest.raises(ValueError, match="empty canonical history"):
+        _build_jobs(
+            baseline_profile(),
+            _spec(tmp_path),
+            config,
+            opening_context=context,
+        )
+
+
+def test_initial_position_repetitions_do_not_emit_inferential_p_value() -> None:
+    summary = {
+        "paired_sign_test": {
+            "decisive_pairs": 50,
+            "two_sided_exact_binomial_p": 2.0**-49,
+        }
+    }
+    rematch_module._apply_opening_policy_summary(
+        _initial_position_config(), summary
+    )
+    assert summary["paired_sign_test"] == {
+        "unit": "repeated-initial-position-color-swapped-pair",
+        "decisive_pairs": None,
+        "two_sided_exact_binomial_p": None,
+        "applicable": False,
+        "reason": "repeated-identical-initial-state-is-not-independent",
+    }
+
+
+def test_initial_position_games_begin_with_both_engines_owning_their_series(
+    tmp_path: Path,
+) -> None:
+    jobs = _build_jobs(
+        baseline_profile(), _spec(tmp_path), _initial_position_config(pairs=1)
+    )
+
+    def local_analyzer(state, limits, **kwargs):
+        moves = ("e2e4",) if state.series_number == 1 else ("e7e5", "g8f6")
+        return _local_result(state, moves)
+
+    def external_adapter(state, history, spec, **kwargs):
+        moves = ("e2e4",) if state.series_number == 1 else ("e7e5", "g8f6")
+        return _external_result(
+            state, moves, requested_ply=state.series_number
+        )
+
+    for job in jobs:
+        record = _play_external_game(
+            job,
+            local_analyzer=local_analyzer,
+            external_adapter=external_adapter,
+        )
+        played = [item for item in record.trace if item["played"]]
+        assert [item["series_number"] for item in played] == [1, 2]
+        assert {item["engine"] for item in played} == {"local", "bucephalus"}
+        assert played[0]["before_pfen"] == ProgressiveState.initial().pfen
+        assert played[0]["canonical_history_after"] == [["e2e4"]]
+
+
 def test_best_settings_match_accepts_a_fresh_content_addressed_opening_suite(
     tmp_path: Path,
 ) -> None:
@@ -444,6 +547,11 @@ def test_live_completion_controller_is_frozen_in_config_receipt() -> None:
     )
     controller = limits["completion_controller"]
     assert controller["version"] == BUCEPHALUS_TIMED_ITERATIVE_ADAPTER_VERSION
+    assert controller["label"] == "Bucephalus-output-only completion controller"
+    assert controller["anchor_reserve_seconds"] == 12.0
+    assert controller["soft_checkpoint_fraction"] == 0.75
+    assert controller["hard_wall_seconds"] == 120.0
+    assert controller["restart_semantics"]
     assert controller["anchor"]["phase_ceiling_seconds"] == 12.0
     assert controller["deep"]["soft_checkpoint_fraction_of_searchable_wall"] == 0.75
     assert controller["suffix"] == {
@@ -1145,10 +1253,9 @@ def test_only_qualified_100_game_protocols_can_support_superiority() -> None:
         pairs=50,
         seed=2026082704,
         match_intent="best-settings-head-to-head",
-        opening_suite_version="spc-neutral-seeded-openings-v1-test",
-        opening_suite_canonical_sha256="3" * 64,
-        opening_qualification=best_qualification,
-        opening_case_ids=tuple(f"engaged-{index:03d}" for index in range(50)),
+        opening_policy=rematch_module.OPENING_POLICY_INITIAL,
+        opening_suite_version=rematch_module.INITIAL_POSITION_SUITE_VERSION,
+        opening_case_ids=(rematch_module.INITIAL_POSITION_CASE.case_id,),
         local_depth_series=8,
         local_max_series_per_node=32,
         local_native_threads=16,
@@ -1164,7 +1271,7 @@ def test_only_qualified_100_game_protocols_can_support_superiority() -> None:
         local_profile=baseline_profile(),
         approved_bucephalus_identity=True,
         identity_stable=True,
-    ) == (True, True)
+    ) == (True, False)
     altered_profile_metadata = replace(
         baseline_profile(),
         notes="Unapproved metadata mutation with the same derived profile ID.",
@@ -1252,6 +1359,35 @@ def test_cli_freezes_an_explicit_best_settings_match_with_fresh_openings() -> No
     assert config.opening_qualification is not None
     assert config.opening_qualification.version == "spc-engaged-openings-v2"
     assert config.opening_qualification.last_selected_candidate_index == 2
+
+
+def test_cli_freezes_best_settings_from_initial_position_without_fixtures() -> None:
+    args = build_parser().parse_args(
+        [
+            "bucephalus-flushed.exe",
+            "--sha256", PINNED_HASH,
+            "--upstream-commit", "0e11fcdc",
+            "--external-build-receipt", "build-receipt.json",
+            "--journal-directory", "journal",
+            "--pairs", "50",
+            "--match-intent", "best-settings-head-to-head",
+            "--opening-policy", "initial-position-no-preplayed-series",
+            "--local-native-threads", "16",
+            "--common-move-seconds", "120",
+        ]
+    )
+
+    config, opening_suite = rematch_module._config_and_opening_suite_from_args(args)
+
+    assert opening_suite is None
+    assert config.opening_policy == rematch_module.OPENING_POLICY_INITIAL
+    assert config.opening_qualification is None
+    assert config.opening_case_ids == (
+        rematch_module.INITIAL_POSITION_CASE.case_id,
+    )
+    assert config.opening_suite_sha256 == (
+        rematch_module.INITIAL_POSITION_SUITE_CANONICAL_SHA256
+    )
 
 
 def test_build_receipt_binds_executable_upstream_and_repository_patch(
