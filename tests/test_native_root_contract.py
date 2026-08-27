@@ -13,6 +13,7 @@ from scottish_progressive.native_subtree import (
     NativeDeepTeacherValueModel,
     NativeRootEnumerationResult,
     NativeSubtreeBound,
+    NativeSubtreeResult,
     NativeSubtreeSession,
     native_subtree_available,
 )
@@ -1824,6 +1825,318 @@ def test_transactional_bound_overlay_reuses_lower_bound_without_pv(
     assert _candidate_search_signature(reconstructed) == _candidate_search_signature(
         exact
     )
+
+
+def _scout_tail_order_fixture(
+    mover: str,
+) -> tuple[
+    ProgressiveState,
+    tuple[str, ...],
+    tuple[int, int],
+    tuple[int, int],
+    int,
+    tuple[str, ...],
+]:
+    if mover == "white":
+        return (
+            ProgressiveState.initial(),
+            ("e2e3",),
+            (519, 520),
+            (600, 601),
+            542,
+            ("e2e3", "f7f5/e8f7", "f1b5/b5d7/d1h5"),
+        )
+    if mover == "black":
+        return (
+            play_series(ProgressiveState.initial(), ("e2e4",)).final_state,
+            ("d7d5", "d5e4"),
+            (-1000, -999),
+            (-1200, -1199),
+            -1183,
+            (
+                "d7d5/d5e4",
+                "d1e2/e2e4/e4a4",
+                "c8d7/d7a4/d8d4/a4c2",
+            ),
+        )
+    raise AssertionError(f"unknown mover fixture {mover!r}")
+
+
+def _seed_child_scout_bound(
+    session: NativeSubtreeSession,
+    child: ProgressiveState,
+    *,
+    depth: int,
+    ply_from_root: int,
+    window: tuple[int, int],
+    transactional: bool,
+) -> NativeSubtreeResult:
+    if transactional:
+        session.begin_transaction()
+    result = session.search(
+        child,
+        depth=depth,
+        alpha=window[0],
+        beta=window[1],
+        ply_from_root=ply_from_root,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    assert result.status == 0
+    if transactional:
+        assert session.rollback_transaction() > 0
+    return result
+
+
+@pytest.mark.parametrize(
+    "bound_source",
+    ("committed-bound", "transactional-bound", "committed-exact"),
+)
+@pytest.mark.parametrize("mover", ("white", "black"))
+def test_scout_orders_a_cutoff_proving_tail_child_from_a_bound(
+    mover: str,
+    bound_source: str,
+) -> None:
+    parent, target_moves, window, _wrong_window, expected_score, _pv = (
+        _scout_tail_order_fixture(mover)
+    )
+    child = play_series(parent, target_moves).final_state
+    transactional = bound_source == "transactional-bound"
+    seed_window = (
+        (-2 * MATE_SCORE, 2 * MATE_SCORE)
+        if bound_source == "committed-exact"
+        else window
+    )
+
+    seed_meter = _session(width=8, depth=5, max_work=20_000_000)
+    measured_seed = _seed_child_scout_bound(
+        seed_meter,
+        child,
+        depth=2,
+        ply_from_root=1,
+        window=seed_window,
+        transactional=transactional,
+    )
+    seed_work = dict(
+        zip(SUBTREE_STAT_FIELDS, measured_seed.stats, strict=True)
+    )["generation_positions"]
+    if bound_source == "committed-exact":
+        assert measured_seed.score == expected_score
+    else:
+        assert (
+            measured_seed.score >= window[1]
+            if mover == "white"
+            else measured_seed.score <= window[0]
+        )
+
+    root_meter = _session(width=8, depth=5, max_work=20_000_000)
+    manifest = root_meter.enumerate_root(
+        parent,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    assert manifest.status == 0
+    target_key = "/".join(target_moves)
+    target = next(item for item in manifest.candidates if item.order_key == target_key)
+    assert target.order_index >= 2
+    canonical_head = manifest.candidates[0]
+    assert canonical_head.candidate_identity != target.candidate_identity
+    parent_generation_work = manifest.work.call_native_work
+    assert parent_generation_work > 0
+
+    head_meter = _session(width=8, depth=5, max_work=20_000_000)
+    head_seed = _seed_child_scout_bound(
+        head_meter,
+        child,
+        depth=2,
+        ply_from_root=1,
+        window=seed_window,
+        transactional=transactional,
+    )
+    head_before = dict(zip(SUBTREE_STAT_FIELDS, head_seed.stats, strict=True))
+    head_result = head_meter.search(
+        canonical_head.series.final_state,
+        depth=2,
+        alpha=window[0],
+        beta=window[1],
+        ply_from_root=1,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    assert head_result.status == 0
+    head_after = dict(zip(SUBTREE_STAT_FIELDS, head_result.stats, strict=True))
+    canonical_head_work = (
+        head_after["generation_positions"] - head_before["generation_positions"]
+    )
+    assert canonical_head_work > 0
+
+    bounded = _session(
+        width=8,
+        depth=5,
+        max_work=(
+            seed_work + parent_generation_work + canonical_head_work
+        ),
+    )
+    seeded = _seed_child_scout_bound(
+        bounded,
+        child,
+        depth=2,
+        ply_from_root=1,
+        window=seed_window,
+        transactional=transactional,
+    )
+    before = dict(zip(SUBTREE_STAT_FIELDS, seeded.stats, strict=True))
+    assert before["generation_positions"] == seed_work
+
+    result = bounded.search(
+        parent,
+        depth=3,
+        alpha=window[0],
+        beta=window[1],
+        ply_from_root=0,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    after = dict(zip(SUBTREE_STAT_FIELDS, result.stats, strict=True))
+
+    assert result.status == 0
+    assert result.score == seeded.score
+    assert (
+        after["generation_positions"] - before["generation_positions"]
+        == parent_generation_work + canonical_head_work
+    )
+    assert (
+        after["tt_hits"] - before["tt_hits"]
+        == head_after["tt_hits"] - head_before["tt_hits"] + 1
+    )
+    assert (
+        after["generation_work_limit_hits"]
+        == before["generation_work_limit_hits"]
+    )
+
+
+@pytest.mark.parametrize("mover", ("white", "black"))
+@pytest.mark.parametrize(
+    "transactional",
+    (False, True),
+    ids=("committed-tt", "transactional-overlay"),
+)
+@pytest.mark.parametrize(
+    ("bound_case", "expected_parent_work"),
+    (
+        pytest.param(
+            "mismatched-context",
+            {"white": 3503, "black": 6234},
+            id="mismatched-context",
+        ),
+        pytest.param(
+            "shallow",
+            {"white": 4268, "black": 5993},
+            id="shallow",
+        ),
+        pytest.param(
+            "wrong-direction",
+            {"white": 3393, "black": 3685},
+            id="wrong-direction",
+        ),
+    ),
+)
+def test_scout_does_not_order_a_tail_child_from_an_unusable_bound(
+    mover: str,
+    transactional: bool,
+    bound_case: str,
+    expected_parent_work: dict[str, int],
+) -> None:
+    parent, target_moves, window, wrong_window, _score, _pv = (
+        _scout_tail_order_fixture(mover)
+    )
+    child = play_series(parent, target_moves).final_state
+    seed_depth = 1 if bound_case == "shallow" else 2
+    seed_ply = 2 if bound_case == "mismatched-context" else 1
+    seed_window = wrong_window if bound_case == "wrong-direction" else window
+    session = _session(width=8, depth=5, max_work=20_000_000)
+    seeded = _seed_child_scout_bound(
+        session,
+        child,
+        depth=seed_depth,
+        ply_from_root=seed_ply,
+        window=seed_window,
+        transactional=transactional,
+    )
+    before = dict(zip(SUBTREE_STAT_FIELDS, seeded.stats, strict=True))
+
+    result = session.search(
+        parent,
+        depth=3,
+        alpha=window[0],
+        beta=window[1],
+        ply_from_root=0,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    after = dict(zip(SUBTREE_STAT_FIELDS, result.stats, strict=True))
+
+    assert result.status == 0
+    assert (
+        after["generation_positions"] - before["generation_positions"]
+        == expected_parent_work[mover]
+    )
+
+
+@pytest.mark.parametrize("mover", ("white", "black"))
+@pytest.mark.parametrize(
+    "transactional",
+    (False, True),
+    ids=("committed-tt", "transactional-overlay"),
+)
+def test_scout_child_bound_never_changes_the_canonical_full_window_pv(
+    mover: str,
+    transactional: bool,
+) -> None:
+    parent, target_moves, window, _wrong_window, expected_score, expected_pv = (
+        _scout_tail_order_fixture(mover)
+    )
+    child = play_series(parent, target_moves).final_state
+    full_window = (-2 * MATE_SCORE, 2 * MATE_SCORE)
+    cold = _session(width=8, depth=5, max_work=20_000_000).search(
+        parent,
+        depth=3,
+        alpha=full_window[0],
+        beta=full_window[1],
+        ply_from_root=0,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+
+    warm_session = _session(width=8, depth=5, max_work=20_000_000)
+    _seed_child_scout_bound(
+        warm_session,
+        child,
+        depth=2,
+        ply_from_root=1,
+        window=window,
+        transactional=transactional,
+    )
+    warm = warm_session.search(
+        parent,
+        depth=3,
+        alpha=full_window[0],
+        beta=full_window[1],
+        ply_from_root=0,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+
+    assert cold.status == warm.status == 0
+    assert cold.score == warm.score == expected_score
+    assert cold.proof_bounds == warm.proof_bounds
+    assert tuple(item.machine_notation for item in cold.principal_variation) == (
+        expected_pv
+    )
+    assert tuple(
+        _series_signature(item) for item in warm.principal_variation
+    ) == tuple(_series_signature(item) for item in cold.principal_variation)
 
 
 def test_deep_losing_scout_stops_after_mover_mate_proves_upper_bound() -> None:
