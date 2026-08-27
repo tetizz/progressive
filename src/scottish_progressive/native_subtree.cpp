@@ -1157,6 +1157,7 @@ public:
     std::vector<ValidatedHorizonProofSet> horizon_proof_sets;
     const ValidatedHorizonProofSet* active_horizon_proof_set = nullptr;
     std::uint16_t active_horizon_proof_hit_mask = 0;
+    std::vector<TTKey> canonical_research_keys;
 
     std::unordered_map<TTKey, TTEntry, TTKeyHash> tt;
     // Transactional PVS probes roll their TT writes back, but a legal series
@@ -2640,7 +2641,23 @@ public:
             : TTBound::Upper;
         const std::int64_t original_alpha = alpha;
         const std::int64_t original_beta = beta;
-        if (entry != tt.end() && entry->second.depth >= depth) {
+        const bool recertifying_current_key = std::find(
+            canonical_research_keys.begin(),
+            canonical_research_keys.end(),
+            key
+        ) != canonical_research_keys.end();
+        const bool ignore_current_non_exact_bound =
+            recertifying_current_key
+            && entry != tt.end()
+            && entry->second.bound != TTBound::Exact;
+        const bool ignore_proof_only_entry = recertifying_current_key
+            && entry != tt.end()
+            && !entry->second.canonical_pv;
+        if (
+            entry != tt.end()
+            && entry->second.depth >= depth
+            && !ignore_current_non_exact_bound
+        ) {
             ++stats.tt_hits;
             if (entry->second.bound == TTBound::Exact) {
                 if (!entry->second.canonical_pv) {
@@ -2701,7 +2718,11 @@ public:
         std::optional<std::vector<std::string>> preferred_moves;
         const std::vector<std::string>* preferred_series = nullptr;
         bool proof_only_ordering = false;
-        if (entry != tt.end() && !entry->second.pv.empty()) {
+        if (
+            entry != tt.end()
+            && !ignore_proof_only_entry
+            && !entry->second.pv.empty()
+        ) {
             if (entry->second.canonical_pv) {
                 if (
                     config.requested_depth >= 4
@@ -2955,9 +2976,47 @@ public:
             bound = TTBound::Lower;
         }
         if (!canonical_pv && bound == TTBound::Exact) {
-            throw std::logic_error(
-                "native bound-only mate exit produced an exact result"
-            );
+            if (recertifying_current_key) {
+                throw std::logic_error(
+                    "native canonical exact re-search remained bound-only"
+                );
+            }
+
+            // A proof-only TT bound can meet a complementary bound at the
+            // same score and therefore prove an exact value without carrying
+            // the canonical PV required by an exact result. Re-search the
+            // original window while ignoring every current-key non-exact TT
+            // bound. Even a canonical bound could otherwise re-narrow the
+            // repair window and reproduce the same bound-only convergence.
+            // Canonical PVs remain legal ordering hints. The same session
+            // budget, deadline, transaction log, and accumulated work remain
+            // active, so an interrupted reconstruction fails closed.
+            canonical_research_keys.push_back(key);
+            NodeResult recovered;
+            try {
+                recovered = minimax(
+                    state,
+                    depth,
+                    original_alpha,
+                    original_beta,
+                    ply_from_root
+                );
+            } catch (...) {
+                canonical_research_keys.pop_back();
+                throw;
+            }
+            canonical_research_keys.pop_back();
+            if (!recovered.canonical_pv) {
+                throw std::logic_error(
+                    "native canonical exact re-search returned no canonical PV"
+                );
+            }
+            if (recovered.score != best_score) {
+                throw std::logic_error(
+                    "native canonical exact re-search disagreed with bound proof"
+                );
+            }
+            return recovered;
         }
         const auto proof_bounds = child_bounds.result(
             !cutoff_before_generation
