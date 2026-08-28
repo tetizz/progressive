@@ -2,12 +2,12 @@
   "schema": "spc-browser-prefix-contract-receipt-v1",
   "status": "passed",
   "artifact": {
-    "source_revision": "94046d2b3c9aa854ebd984fab951749b3c9d0577",
-    "source_fingerprint": "26fe40a25f325fe4",
-    "kernel_sha256": "502efeced0d4e9f0d6528b182c3f6d5bc188d0c4ad4128214387a37f2d71d468",
-    "wasm_sha256": "bbf82cf9c10391fa4e17a1b8e469edeb67bcb88a7affa0fdc400b6b6ff12b7f8",
+    "source_revision": "ee3bc61147c164cd63309b045fc8795fdaf311b0",
+    "source_fingerprint": "358d43d03f6454fc",
+    "kernel_sha256": "64b837ecf5c060ca8e120f08db4927d99e8f297cdca18d764b65f40a93f428f1",
+    "wasm_sha256": "fe5a39268d79a808a6c3e342a1821d1fdb47cb3a9c1e46b75828c1a81030dd02",
     "module_js_sha256": "33f1298a3fb26e206fb9f0bc52fd060c089ad200a3ba4191b82f085b11f62a7c",
-    "artifact_set_sha256": "b7e88e2f1dd0aa8676a21c02d78324c5cb350946ff7a8e9c30ac12c9c9afcee9"
+    "artifact_set_sha256": "073fc056b8e4488cec8d40cbf09bcb4be10be991b197fa0b68bd67499c0f0dfa"
   },
   "exact_identity": true,
   "promoted_hex": "0000000000000000",

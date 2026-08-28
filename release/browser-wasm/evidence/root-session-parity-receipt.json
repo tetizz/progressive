@@ -4,12 +4,12 @@
   "failures": 0,
   "differential_cases": 6,
   "artifact": {
-    "source_revision": "94046d2b3c9aa854ebd984fab951749b3c9d0577",
-    "source_fingerprint": "26fe40a25f325fe4",
-    "kernel_sha256": "502efeced0d4e9f0d6528b182c3f6d5bc188d0c4ad4128214387a37f2d71d468",
-    "wasm_sha256": "bbf82cf9c10391fa4e17a1b8e469edeb67bcb88a7affa0fdc400b6b6ff12b7f8",
+    "source_revision": "ee3bc61147c164cd63309b045fc8795fdaf311b0",
+    "source_fingerprint": "358d43d03f6454fc",
+    "kernel_sha256": "64b837ecf5c060ca8e120f08db4927d99e8f297cdca18d764b65f40a93f428f1",
+    "wasm_sha256": "fe5a39268d79a808a6c3e342a1821d1fdb47cb3a9c1e46b75828c1a81030dd02",
     "module_js_sha256": "33f1298a3fb26e206fb9f0bc52fd060c089ad200a3ba4191b82f085b11f62a7c",
-    "artifact_set_sha256": "b7e88e2f1dd0aa8676a21c02d78324c5cb350946ff7a8e9c30ac12c9c9afcee9",
+    "artifact_set_sha256": "073fc056b8e4488cec8d40cbf09bcb4be10be991b197fa0b68bd67499c0f0dfa",
     "exception_strategy": "emscripten",
     "wasm_simd": false,
     "allocator": "dlmalloc",
@@ -342,7 +342,7 @@
       {
         "candidate_identity": "spc-root-candidate-v1|moves1:4:g2g3|count1|final201:spc-state-v1|00ff00000040bf00|4200000000000042|2400000000000024|8100000000000081|0800000000000008|1000000000000010|ffff000000000000|000000000040bfff|0000000000000000|8100000000000081|b|h0|f1|s2|q0|ep0:|out0|check0",
         "bound": "upper",
-        "score": 422,
+        "score": 593,
         "proof_bounds": [
           -1,
           1
@@ -376,21 +376,21 @@
         ]
       }
     ],
-    "coverage_sha256": "3a50fd98d935f82a44a166e251ecf18f421775c2e549e20e2dad4d0559b4a967"
+    "coverage_sha256": "4867648e6494869fd2d5e1bef9a23139ba67580830bc3e619e860ee219fdb429"
   },
   "work": {
     "status": "complete",
     "within_cap": true,
     "unknown_or_limit_count": 0,
     "max_work": 100000000,
-    "accounted_work": 41321355
+    "accounted_work": 41354108
   },
   "deadline": {
     "status": "complete",
     "deadline_reached": false,
     "unknown_or_limit_count": 0,
     "deadline_limit_ms": 60000.0,
-    "remaining_time_ms": 25452.300000071526
+    "remaining_time_ms": 24830.800000071526
   },
   "gates": {
     "initial_root_enumeration_python_parity": true,
@@ -401,5 +401,5 @@
     "deadline_receipts": true,
     "complete_rival_bound_coverage": true
   },
-  "oracle_signature_sha256": "2d3e05d5c794b163d6787d5f532ab3d1a6d8593b703e6b3e064bf7bf0d035568"
+  "oracle_signature_sha256": "c0812623ce1f7311b6af6589ab01ab7ccd9c4416ac02dedc04a823f520cd0e70"
 }

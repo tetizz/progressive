@@ -1,5 +1,5 @@
 {
-  "certificate_id": "spc-prefix-ea88121d0e2029b1",
+  "certificate_id": "spc-prefix-dc9e271d7346be3c",
   "contract_version": 1,
   "engine": {
     "engine_version": "spc-0.9.0",
@@ -38,9 +38,9 @@
     "schema": "spc-boundary-prefix-contract-v1"
   },
   "runtime_variant": "single",
-  "source_fingerprint": "26fe40a25f325fe4",
+  "source_fingerprint": "358d43d03f6454fc",
   "status": "certified",
   "support_files": [],
   "thread_count": 1,
-  "wasm_sha256": "bbf82cf9c10391fa4e17a1b8e469edeb67bcb88a7affa0fdc400b6b6ff12b7f8"
+  "wasm_sha256": "fe5a39268d79a808a6c3e342a1821d1fdb47cb3a9c1e46b75828c1a81030dd02"
 }
