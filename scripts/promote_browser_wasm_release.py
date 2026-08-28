@@ -2398,6 +2398,49 @@ def _validate_mate_parity(receipt: Receipt, build: BuildEvidence) -> int:
         "accelerated mate cases",
     )
     expected_accelerated = {
+        "s6-staged-root-found": {
+            "kernel_status": "found",
+            "proof_status": "found",
+            "complete": True,
+            "moves": [
+                "b8c6",
+                "c6d4",
+                "d1e3",
+                "f8d6",
+                "d6h2",
+                "h2g3",
+            ],
+            "work": 15_826,
+            "checkmates": 1,
+            "max_depth_reached": 6,
+        },
+        "s6-staged-root-cap-minus-one": {
+            "kernel_status": "work_limit",
+            "proof_status": "unknown",
+            "complete": False,
+            "moves": [],
+            "work": 15_825,
+            "checkmates": 0,
+            "max_depth_reached": 0,
+        },
+        "s6-selective-miss-exact-exhausted": {
+            "kernel_status": "exhausted",
+            "proof_status": "exhausted",
+            "complete": True,
+            "moves": [],
+            "work": 10_725,
+            "checkmates": 0,
+            "max_depth_reached": 5,
+        },
+        "authentic-s8-staged-root-invariant": {
+            "kernel_status": "found",
+            "proof_status": "found",
+            "complete": True,
+            "moves": ["a1d4", "a8a2", "a2d2", "d4f2"],
+            "work": 3_253,
+            "checkmates": 1,
+            "max_depth_reached": 4,
+        },
         "s7-staged-root-found": {
             "kernel_status": "found",
             "proof_status": "found",
@@ -2499,6 +2542,10 @@ def _validate_mate_parity(receipt: Receipt, build: BuildEvidence) -> int:
         "prefix_replay",
         "case_input_output_hashes",
         "late_series_staged_root",
+        "series6_staged_root",
+        "series6_selective_miss_exact_fallback",
+        "series6_budget_and_deadline_unknown",
+        "series8_staged_root_invariant",
     ):
         _true(gates, key, "mate parity")
     return len(cases)

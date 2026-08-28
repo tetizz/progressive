@@ -1207,10 +1207,10 @@ void add_mate_stats(
     const SeriesMateSearchRequest& request
 ) {
     FastMatePrepass prepass;
-    // S1-S6 retain the certified exact-search work/signature contract. The
-    // retained-frontier prepass pays for itself on the S7+ explosion that
-    // triggers the browser's emergency mate lane.
-    if (request.series_number < 7 || request.max_positions.has_value()) {
+    // S1-S5 retain the certified exact-search work/signature contract. The
+    // measured Series-6 safety pilot tries only widths 32 and 64 before the
+    // exact fallback; S7+ retains the wider emergency-mate stages.
+    if (request.series_number < 6 || request.max_positions.has_value()) {
         return prepass;
     }
 
@@ -1256,7 +1256,11 @@ void add_mate_stats(
     constexpr std::array<std::uint64_t, 6> STAGES{
         32, 64, 128, 256, 512, 832,
     };
-    for (const std::uint64_t width : STAGES) {
+    const std::size_t stage_count = request.series_number == 6
+        ? 2
+        : STAGES.size();
+    for (std::size_t stage_index = 0; stage_index < stage_count; ++stage_index) {
+        const std::uint64_t width = STAGES[stage_index];
         const std::uint64_t used = mate_work(prepass.response.stats);
         if (budget.has_value() && used >= *budget) {
             prepass.decisive = true;

@@ -13,7 +13,8 @@ import chess
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from scottish_progressive.model import ProgressiveState  # noqa: E402
+from scottish_progressive.model import Outcome, ProgressiveState  # noqa: E402
+from scottish_progressive.rules import play_series  # noqa: E402
 from scottish_progressive.series_mate import (  # noqa: E402
     SeriesMateStatus,
     find_native_series_mate,
@@ -23,6 +24,9 @@ from scottish_progressive.series_mate import (  # noqa: E402
 LIVE_S5 = "rn1q1bnr/ppp1pkpp/5p2/8/3Pp3/2NB4/PPP2PPP/R1BbK1NR w KQ - 0 7"
 MIRRORED_LIVE_S6 = "r1bBk1nr/ppp2ppp/2nb4/3pP3/8/5P2/PPP1PKPP/RN1Q1BNR b kq - 0 7"
 START_BLACK = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1"
+BUCEPHALUS_3AAEF_S6_FEN = (
+    "rnbNkb1r/pppp2pp/8/5p2/8/3B1P2/PPPP2PP/RNBnK2R b kq - 0 7"
+)
 CASES = (
     {
         "name": "white-live-s5-found",
@@ -38,6 +42,14 @@ CASES = (
         "series": 6,
         "max_positions": 1_000_000,
         "max_work": 10_000_000,
+        "time_limit_ms": 30_000,
+    },
+    {
+        "name": "authentic-s6-max-positions-exact-invariance",
+        "fen": BUCEPHALUS_3AAEF_S6_FEN,
+        "series": 6,
+        "max_positions": 1_000_000,
+        "max_work": 1_000_000,
         "time_limit_ms": 30_000,
     },
     {
@@ -65,6 +77,14 @@ CASES = (
         "time_limit_ms": 1,
     },
     {
+        "name": "s6-staged-deadline-unknown",
+        "fen": BUCEPHALUS_3AAEF_S6_FEN,
+        "series": 6,
+        "max_positions": 0,
+        "max_work": 1_000_000,
+        "time_limit_ms": 1,
+    },
+    {
         "name": "s7-max-positions-preserves-legacy-contract",
         "fen": "rnk3nr/pp3ppp/8/8/8/1Pp1P3/P1PP1PPP/R1b1K1NR w K - 0 13",
         "series": 7,
@@ -74,7 +94,42 @@ CASES = (
     },
 )
 S7_RESCUE_FEN = "rnk3nr/pp3ppp/8/8/8/1Pp1P3/P1PP1PPP/R1b1K1NR w K - 0 13"
+BUCEPHALUS_4044_S8_FEN = (
+    "rn1k1bn1/4pp2/5Q2/8/2P5/5P2/3P3P/qNBbK1NR b K - 0 13"
+)
 ACCELERATED_CASES = (
+    {
+        "name": "s6-staged-root-found",
+        "fen": BUCEPHALUS_3AAEF_S6_FEN,
+        "series": 6,
+        "max_positions": 0,
+        "max_work": 1_000_000,
+        "time_limit_ms": 30_000,
+    },
+    {
+        "name": "s6-staged-root-cap-minus-one",
+        "fen": BUCEPHALUS_3AAEF_S6_FEN,
+        "series": 6,
+        "max_positions": 0,
+        "max_work": 15_825,
+        "time_limit_ms": 30_000,
+    },
+    {
+        "name": "s6-selective-miss-exact-exhausted",
+        "fen": "6bk/8/8/8/8/8/8/K7 b - - 0 1",
+        "series": 6,
+        "max_positions": 0,
+        "max_work": 1_000_000,
+        "time_limit_ms": 30_000,
+    },
+    {
+        "name": "authentic-s8-staged-root-invariant",
+        "fen": BUCEPHALUS_4044_S8_FEN,
+        "series": 8,
+        "max_positions": 0,
+        "max_work": 1_000_000,
+        "time_limit_ms": 30_000,
+    },
     {
         "name": "s7-staged-root-found",
         "fen": S7_RESCUE_FEN,
@@ -162,9 +217,10 @@ def normalized_wasm(case: dict[str, object], value: dict[str, object]) -> dict[s
 
 def normalized_oracle(case: dict[str, object]) -> dict[str, object]:
     state = ProgressiveState.from_fen(str(case["fen"]), int(case["series"]))
+    max_positions = int(case["max_positions"])
     probe = find_native_series_mate(
         state,
-        max_positions=int(case["max_positions"]),
+        max_positions=None if max_positions == 0 else max_positions,
         max_work=int(case["max_work"]),
         time_limit_seconds=float(case["time_limit_ms"]) / 1_000.0,
     )
@@ -264,17 +320,42 @@ def main() -> int:
         "h2g3",
     ]:
         raise AssertionError("mirrored Black S6 mate result changed")
+    authentic_exact = by_name["authentic-s6-max-positions-exact-invariance"]
+    if (
+        authentic_exact["proof_status"] != "found"
+        or authentic_exact["moves"] != [
+            "d1e3",
+            "b8c6",
+            "c6d4",
+            "f8d6",
+            "d6h2",
+            "h2g3",
+        ]
+        or authentic_exact["stats"]["positions_visited"] != 22_771
+        or authentic_exact["stats"]["moves_generated"] != 777_872
+    ):
+        raise AssertionError("max-positions exact Series-6 contract changed")
     exhausted = by_name["bare-kings-exhausted"]
     if exhausted["proof_status"] != "exhausted" or not exhausted["complete"]:
         raise AssertionError("bare-kings exhaustion proof changed")
     for name in (
         "work-limit-unknown",
         "deadline-unknown",
+        "s6-staged-deadline-unknown",
         "s7-max-positions-preserves-legacy-contract",
     ):
         limited = by_name[name]
         if limited["proof_status"] != "unknown" or limited["complete"]:
             raise AssertionError(f"{name} must fail closed as unknown")
+    staged_deadline = by_name["s6-staged-deadline-unknown"]
+    if (
+        staged_deadline["kernel_status"] != "deadline"
+        or staged_deadline["message"]
+            != "native staged root mate prepass reached the deadline"
+        or staged_deadline["moves"]
+        or staged_deadline["stats"]["max_depth_reached"] != 0
+    ):
+        raise AssertionError("Series-6 staged deadline did not fail closed")
 
     accelerated_by_name = {
         case["name"]: result
@@ -284,6 +365,67 @@ def main() -> int:
             strict=True,
         )
     }
+    staged_s6 = accelerated_by_name["s6-staged-root-found"]
+    if (
+        staged_s6["kernel_status"] != "found"
+        or staged_s6["proof_status"] != "found"
+        or staged_s6["complete"] is not True
+        or staged_s6["moves"] != [
+            "b8c6",
+            "c6d4",
+            "d1e3",
+            "f8d6",
+            "d6h2",
+            "h2g3",
+        ]
+        or staged_s6["stats"]["positions_visited"]
+            + staged_s6["stats"]["moves_generated"]
+            != 15_826
+        or staged_s6["stats"]["checkmates"] != 1
+        or staged_s6["stats"]["max_depth_reached"] != 6
+    ):
+        raise AssertionError("Series-6 staged root mate result changed")
+    staged_s6_limited = accelerated_by_name["s6-staged-root-cap-minus-one"]
+    if (
+        staged_s6_limited["kernel_status"] != "work_limit"
+        or staged_s6_limited["proof_status"] != "unknown"
+        or staged_s6_limited["complete"] is not False
+        or staged_s6_limited["moves"]
+        or staged_s6_limited["stats"]["positions_visited"]
+            + staged_s6_limited["stats"]["moves_generated"]
+            != 15_825
+        or staged_s6_limited["stats"]["checkmates"] != 0
+        or staged_s6_limited["stats"]["max_depth_reached"] != 0
+    ):
+        raise AssertionError("Series-6 staged root work cap changed")
+    staged_s6_miss = accelerated_by_name["s6-selective-miss-exact-exhausted"]
+    if (
+        staged_s6_miss["kernel_status"] != "exhausted"
+        or staged_s6_miss["proof_status"] != "exhausted"
+        or staged_s6_miss["complete"] is not True
+        or staged_s6_miss["message"]
+            != "native series-mate state space exhausted"
+        or staged_s6_miss["moves"]
+        or staged_s6_miss["stats"]["positions_visited"]
+            + staged_s6_miss["stats"]["moves_generated"]
+            != 10_725
+        or staged_s6_miss["stats"]["checkmates"] != 0
+        or staged_s6_miss["stats"]["max_depth_reached"] != 5
+    ):
+        raise AssertionError("selective Series-6 miss did not reach exact exhaustion")
+    staged_s8 = accelerated_by_name["authentic-s8-staged-root-invariant"]
+    if (
+        staged_s8["kernel_status"] != "found"
+        or staged_s8["proof_status"] != "found"
+        or staged_s8["complete"] is not True
+        or staged_s8["moves"] != ["a1d4", "a8a2", "a2d2", "d4f2"]
+        or staged_s8["stats"]["positions_visited"]
+            + staged_s8["stats"]["moves_generated"]
+            != 3_253
+        or staged_s8["stats"]["checkmates"] != 1
+        or staged_s8["stats"]["max_depth_reached"] != 4
+    ):
+        raise AssertionError("authentic Series-8 staged result changed")
     staged = accelerated_by_name["s7-staged-root-found"]
     if (
         staged["kernel_status"] != "found"
@@ -334,6 +476,25 @@ def main() -> int:
         or nonchecking_stuck["stats"]["checkmates"] != 0
     ):
         raise AssertionError("non-checking stuck line was mislabeled as mate")
+
+    for case, result in zip(
+        ACCELERATED_CASES,
+        accelerated_results,
+        strict=True,
+    ):
+        if result["kernel_status"] != "found":
+            continue
+        replayed = play_series(
+            ProgressiveState.from_fen(str(case["fen"]), int(case["series"])),
+            tuple(result["moves"]),
+        )
+        if (
+            replayed.outcome is not Outcome.CHECKMATE
+            or not replayed.ended_by_check
+        ):
+            raise AssertionError(
+                f"{case['name']} failed authoritative Python replay"
+            )
 
     case_receipts = []
     for case, wire, wasm in zip(CASES, wire_cases, results, strict=True):
@@ -407,6 +568,10 @@ def main() -> int:
             "prefix_replay": True,
             "case_input_output_hashes": True,
             "late_series_staged_root": True,
+            "series6_staged_root": True,
+            "series6_selective_miss_exact_fallback": True,
+            "series6_budget_and_deadline_unknown": True,
+            "series8_staged_root_invariant": True,
         },
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
