@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import subprocess
 import sys
+from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
 
 
@@ -87,6 +88,36 @@ EVIDENCE_SPECS = (
         "spc-opera-checked-pv-horizon-receipt-v5",
     ),
 )
+LEGACY_CHECKED_HORIZON_SCHEMA = "spc-opera-checked-pv-horizon-receipt-v5"
+CURRENT_CHECKED_HORIZON_SCHEMA = "spc-opera-checked-pv-horizon-receipt-v6"
+CHECKED_HORIZON_SCHEMAS = frozenset(
+    {LEGACY_CHECKED_HORIZON_SCHEMA, CURRENT_CHECKED_HORIZON_SCHEMA}
+)
+LEGACY_CHECKED_HORIZON_SHA256 = (
+    "0ea545a250e1c97a7f202a3120ee307255a2fbdbb5238f2a62196a78acc0718c"
+)
+LEGACY_V5_RELEASE_RECEIPT_SHA256 = (
+    "6abe52032af4f465d6f564e7f670a657e325a415076d7a65cc6375d0ccb089bc"
+)
+LEGACY_V5_RELEASE_ID = "spc-browser-wasm-release-fbbfd2f5bfa905f7"
+LEGACY_V5_SOURCE_REVISION = "3deba940dc86d25b2cdb56b60c824ebb1dcf5113"
+LEGACY_V5_ARTIFACT = {
+    "allocator": "dlmalloc",
+    "artifact_set_sha256": "e5482871e8eaa1532402e1fd3019b8bb6c0f8246adf5d2c38ab4e30f23ff7507",
+    "exception_strategy": "emscripten",
+    "kernel_sha256": "297f8a4e47b3c814174a3206eb1282b71e3cb3a00def72da2f61744e3786fa64",
+    "module_js_sha256": "33f1298a3fb26e206fb9f0bc52fd060c089ad200a3ba4191b82f085b11f62a7c",
+    "runtime_variant": "single",
+    "source_fingerprint": "b68312c9c10103a6",
+    "source_revision": LEGACY_V5_SOURCE_REVISION,
+    "thread_count": 1,
+    "wasm_sha256": "e1452e93394cc173c42dd94cf1c13d8d3ad54d97ba980685373da97803eac50c",
+    "wasm_simd": False,
+}
+LEGACY_V5_BROWSER_BUNDLE = {
+    "path": "browser-engine",
+    "artifact_set_sha256": "d901ce780190a4d231fc89d138aece4dcf1c89b0eeedb02a234a7b53c8adb5db",
+}
 
 CERTIFICATE_SPECS = {
     "prefix": (
@@ -153,6 +184,22 @@ EXPECTED_GATES = frozenset(
         "opera_checked_horizon_accounting_balanced",
     }
 )
+V6_EXPECTED_GATES = frozenset(
+    {
+        *EXPECTED_GATES,
+        "opera_selected_b3_boundary_ladder_certified",
+        "opera_found_stops_boundary_ladder",
+        "opera_unknown_fail_closed_observed",
+    }
+)
+
+
+def _expected_gates_for_checked_schema(schema: object) -> frozenset[str]:
+    if schema == LEGACY_CHECKED_HORIZON_SCHEMA:
+        return EXPECTED_GATES
+    if schema == CURRENT_CHECKED_HORIZON_SCHEMA:
+        return V6_EXPECTED_GATES
+    raise PromotedReleaseError("checked-PV evidence schema is not deployable")
 
 RELEASE_RECEIPT_FIELDS = frozenset(
     {
@@ -207,6 +254,9 @@ class SemanticEvidence:
     checked_raw_trace_attestation: Mapping[str, Any]
     checked_selected_d5_horizon_certification_witness: Mapping[str, Any]
     checked_local_asset_set_sha256: str
+    checked_selected_boundary_ladder_certified: bool = False
+    checked_found_stop_observed: bool = False
+    checked_unknown_fail_closed_observed: bool = False
 
 
 def _mapping(value: object, label: str) -> Mapping[str, Any]:
@@ -260,6 +310,33 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _validate_legacy_v5_release_identity(
+    *,
+    receipt: Mapping[str, Any],
+    receipt_path: Path,
+    checked_receipt_path: Path,
+) -> None:
+    """Allow v5 only for the one already-promoted immutable release."""
+
+    browser = _mapping(receipt.get("browser_bundle"), "legacy v5 browser bundle")
+    observed_browser = {
+        "path": browser.get("path"),
+        "artifact_set_sha256": browser.get("artifact_set_sha256"),
+    }
+    if (
+        _sha256_file(receipt_path) != LEGACY_V5_RELEASE_RECEIPT_SHA256
+        or _sha256_file(checked_receipt_path) != LEGACY_CHECKED_HORIZON_SHA256
+        or receipt.get("release_id") != LEGACY_V5_RELEASE_ID
+        or receipt.get("source_revision") != LEGACY_V5_SOURCE_REVISION
+        or dict(_mapping(receipt.get("artifact"), "legacy v5 artifact"))
+        != LEGACY_V5_ARTIFACT
+        or observed_browser != LEGACY_V5_BROWSER_BUNDLE
+    ):
+        raise PromotedReleaseError(
+            "v5 evidence is valid only for the exact immutable legacy v5 release identity"
+        )
 
 
 def _reject_json_constant(value: str) -> None:
@@ -585,22 +662,30 @@ def _validate_evidence(
     payloads: dict[str, Mapping[str, Any]] = {}
     paths: dict[str, Path] = {}
     for index, (label, path, schema) in enumerate(EVIDENCE_SPECS):
+        expected_schema = schema
+        if label == "opera_checked_horizon":
+            record = _mapping(records[index], f"evidence receipt {index}")
+            expected_schema = record.get("schema")
+            if expected_schema not in CHECKED_HORIZON_SCHEMAS:
+                raise PromotedReleaseError(
+                    "opera_checked_horizon evidence schema is not deployable"
+                )
         actual, receipt_path = _validate_record(
             records[index],
             release=release,
             expected_path=path,
             label=f"evidence receipt {index}",
             include_label=label,
-            include_schema=schema,
+            include_schema=str(expected_schema),
         )
         payload = _load_json(receipt_path, f"{label} evidence receipt")
-        if payload.get("schema") != schema:
+        if payload.get("schema") != expected_schema:
             raise PromotedReleaseError(f"{label} evidence payload has the wrong schema")
         normalized.append(
             {
                 "label": label,
                 "path": path,
-                "schema": schema,
+                "schema": expected_schema,
                 **{key: actual[key] for key in ("sha256", "bytes")},
             }
         )
@@ -988,14 +1073,77 @@ def _validate_semantic_evidence(
                 raise PromotedReleaseError(
                     f"{label} certificate is not derived from the seven core evidence receipts"
                 )
-        checked = evidence_producer.validate_opera_checked_horizon_receipt(
-            receipt_path=evidence_paths["opera_checked_horizon"],
-            evidence=validated,
-            certificates=expected_certificates,
-            repository=repository,
-            source_package=source_package,
-            candidate_bundle=release / "browser-engine",
-        )
+        checked_schema = evidence_payloads["opera_checked_horizon"].get("schema")
+        if checked_schema == CURRENT_CHECKED_HORIZON_SCHEMA:
+            checked = evidence_producer.validate_opera_checked_horizon_receipt(
+                receipt_path=evidence_paths["opera_checked_horizon"],
+                evidence=validated,
+                certificates=expected_certificates,
+                repository=repository,
+                source_package=source_package,
+                candidate_bundle=release / "browser-engine",
+            )
+        elif checked_schema == LEGACY_CHECKED_HORIZON_SCHEMA:
+            legacy_receipt = receipts["opera_checked_horizon"]
+            if legacy_receipt.sha256 != LEGACY_CHECKED_HORIZON_SHA256:
+                raise PromotedReleaseError(
+                    "legacy v5 checked-PV evidence is allowed only for the immutable current release"
+                )
+            legacy = evidence_payloads["opera_checked_horizon"]
+            legacy_summary = _mapping(
+                legacy.get("result_summary"), "legacy checked-PV result summary"
+            )
+            legacy_authenticity = _mapping(
+                legacy.get("authenticity"), "legacy checked-PV authenticity"
+            )
+            legacy_witness = _mapping(
+                legacy.get("selected_d5_horizon_certification_witness"),
+                "legacy checked-PV selected witness",
+            )
+            checked = SimpleNamespace(
+                elapsed_seconds=_finite_number(
+                    legacy.get("elapsed_seconds"), "legacy checked-PV elapsed seconds"
+                ),
+                work=_integer(legacy.get("work"), "legacy checked-PV work", 1),
+                selected_root_series="/".join(
+                    _list(legacy.get("best_full_series"), "legacy checked-PV best series")
+                ),
+                line_rejections=_integer(
+                    legacy_summary.get("pv_horizon_line_rejections"),
+                    "legacy checked-PV line rejections",
+                ),
+                native_repairs=_integer(
+                    legacy_summary.get("pv_horizon_native_repairs"),
+                    "legacy checked-PV native repairs",
+                ),
+                candidate_vetoes=_integer(
+                    legacy_summary.get("pv_horizon_candidate_vetoes"),
+                    "legacy checked-PV candidate vetoes",
+                ),
+                principal_variation_sha256=_canonical_sha256(
+                    _list(
+                        legacy.get("principal_variation"),
+                        "legacy checked-PV principal variation",
+                    )
+                ),
+                selected_fixture_id=legacy_witness.get("fixture_id"),
+                known_adverse_excluded=True,
+                selected_boundary_ladder_certified=False,
+                found_stop_observed=False,
+                unknown_fail_closed_observed=False,
+                selected_horizon_exhaustively_certified=True,
+                selected_root_child_exhaustively_certified=True,
+                raw_trace_attestation=_mapping(
+                    legacy.get("raw_trace_attestation"),
+                    "legacy checked-PV raw trace attestation",
+                ),
+                selected_d5_horizon_certification_witness=legacy_witness,
+                local_checkout_asset_set_sha256=legacy_authenticity.get(
+                    "local_checkout_asset_set_sha256"
+                ),
+            )
+        else:
+            raise PromotedReleaseError("checked-PV evidence schema is not deployable")
     except PromotedReleaseError:
         raise
     except (
@@ -1031,6 +1179,11 @@ def _validate_semantic_evidence(
         checked_selected_root_child_exhaustively_certified=(
             checked.selected_root_child_exhaustively_certified
         ),
+        checked_selected_boundary_ladder_certified=(
+            checked.selected_boundary_ladder_certified
+        ),
+        checked_found_stop_observed=checked.found_stop_observed,
+        checked_unknown_fail_closed_observed=checked.unknown_fail_closed_observed,
         checked_raw_trace_attestation=dict(checked.raw_trace_attestation),
         checked_selected_d5_horizon_certification_witness=dict(
             checked.selected_d5_horizon_certification_witness
@@ -1282,8 +1435,20 @@ def validate_promoted_release(
         raise PromotedReleaseError("release source_revision is not a full Git revision")
 
     artifact = _validate_artifact(receipt.get("artifact"), source_revision)
+    evidence_receipt_values = _list(
+        receipt.get("evidence_receipts"), "release evidence_receipts"
+    )
+    if len(evidence_receipt_values) != len(EVIDENCE_SPECS):
+        raise PromotedReleaseError("release must contain exactly eight evidence receipts")
+    checked_schema = _mapping(
+        evidence_receipt_values[-1], "checked-PV evidence receipt record"
+    ).get("schema")
     gates = _mapping(receipt.get("gates"), "release gates")
-    _exact_keys(gates, EXPECTED_GATES, "release gates")
+    _exact_keys(
+        gates,
+        _expected_gates_for_checked_schema(checked_schema),
+        "release gates",
+    )
     if any(value is not True for value in gates.values()):
         raise PromotedReleaseError("every expected release gate must be exactly true")
     if receipt.get("root_tactical_policy") != {
@@ -1294,8 +1459,14 @@ def validate_promoted_release(
         raise PromotedReleaseError("release root tactical policy is not canonical")
 
     evidence_records, evidence_payloads, evidence_paths = _validate_evidence(
-        receipt.get("evidence_receipts"), release=expected_release
+        evidence_receipt_values, release=expected_release
     )
+    if checked_schema == LEGACY_CHECKED_HORIZON_SCHEMA:
+        _validate_legacy_v5_release_identity(
+            receipt=receipt,
+            receipt_path=expected_release / "release-receipt.json",
+            checked_receipt_path=evidence_paths["opera_checked_horizon"],
+        )
     build = evidence_payloads["build"]
     for field in ARTIFACT_IDENTITY_FIELDS:
         if build.get(field) != artifact[field]:
@@ -1473,9 +1644,7 @@ def validate_promoted_release(
         measured.get("opera_checked_horizon"),
         "release measured Opera checked horizon",
     )
-    _exact_keys(
-        checked_horizon,
-        {
+    checked_horizon_fields = {
             "elapsed_seconds",
             "work",
             "selected_root_series",
@@ -1490,7 +1659,18 @@ def validate_promoted_release(
             "raw_trace_attestation",
             "selected_d5_horizon_certification_witness",
             "local_checkout_asset_set_sha256",
-        },
+    }
+    if checked_schema == CURRENT_CHECKED_HORIZON_SCHEMA:
+        checked_horizon_fields.update(
+            {
+                "selected_boundary_ladder_certified",
+                "found_stop_observed",
+                "unknown_fail_closed_observed",
+            }
+        )
+    _exact_keys(
+        checked_horizon,
+        checked_horizon_fields,
         "release measured Opera checked horizon",
     )
     checked_elapsed = _finite_number(
@@ -1568,9 +1748,7 @@ def validate_promoted_release(
         checked_horizon.get("selected_d5_horizon_certification_witness"),
         "release measured selected D5 horizon certification witness",
     )
-    _exact_keys(
-        selected_witness,
-        {
+    common_witness_keys = {
             "schema",
             "fixture_id",
             "selected_root_series",
@@ -1580,6 +1758,12 @@ def validate_promoted_release(
             "selected_series5_semantic_sha256",
             "known_adverse_series5_semantic_sha256",
             "known_adverse_present",
+    }
+    if checked_schema == LEGACY_CHECKED_HORIZON_SCHEMA:
+        _exact_keys(
+            selected_witness,
+            {
+                *common_witness_keys,
             "horizon_request_sequence",
             "horizon_status",
             "horizon_call_work_credit",
@@ -1590,44 +1774,141 @@ def validate_promoted_release(
             "root_child_work_used",
             "safety_work_used",
             "safety_call_work_credit",
-        },
-        "release measured selected D5 horizon certification witness",
-    )
-    horizon_sequence = _integer(
-        selected_witness.get("horizon_request_sequence"),
-        "selected D5 horizon request sequence",
-        1,
-    )
-    root_child_sequence = _integer(
-        selected_witness.get("root_child_request_sequence"),
-        "selected D5 root-child request sequence",
-        1,
-    )
-    horizon_credit = _integer(
-        selected_witness.get("horizon_call_work_credit"),
-        "selected D5 horizon work credit",
-        1,
-    )
-    horizon_work = _integer(
-        selected_witness.get("horizon_work_used"),
-        "selected D5 horizon work",
-        1,
-    )
-    root_child_credit = _integer(
-        selected_witness.get("root_child_call_work_credit"),
-        "selected D5 root-child work credit",
-        1,
-    )
-    root_child_work = _integer(
-        selected_witness.get("root_child_work_used"),
-        "selected D5 root-child work",
-        1,
-    )
-    safety_work = _integer(
-        selected_witness.get("safety_work_used"),
-        "selected D5 total safety work",
-        1,
-    )
+            },
+            "release measured selected D5 horizon certification witness",
+        )
+        horizon_sequence = _integer(
+            selected_witness.get("horizon_request_sequence"),
+            "selected D5 horizon request sequence",
+            1,
+        )
+        root_child_sequence = _integer(
+            selected_witness.get("root_child_request_sequence"),
+            "selected D5 root-child request sequence",
+            1,
+        )
+        horizon_credit = _integer(
+            selected_witness.get("horizon_call_work_credit"),
+            "selected D5 horizon work credit",
+            1,
+        )
+        horizon_work = _integer(
+            selected_witness.get("horizon_work_used"),
+            "selected D5 horizon work",
+            1,
+        )
+        root_child_credit = _integer(
+            selected_witness.get("root_child_call_work_credit"),
+            "selected D5 root-child work credit",
+            1,
+        )
+        root_child_work = _integer(
+            selected_witness.get("root_child_work_used"),
+            "selected D5 root-child work",
+            1,
+        )
+        safety_work = _integer(
+            selected_witness.get("safety_work_used"),
+            "selected D5 total safety work",
+            1,
+        )
+        witness_contract_valid = (
+            selected_witness.get("schema")
+            == "spc-opera-selected-d5-horizon-certification-v1"
+            and root_child_sequence > horizon_sequence
+            and selected_witness.get("horizon_status") == "exhausted"
+            and horizon_credit == evidence_producer.PV_HORIZON_MATE_WORK_LIMIT
+            and horizon_work <= horizon_credit
+            and selected_witness.get("root_child_status") == "exhausted"
+            and root_child_credit
+            == evidence_producer.CERTIFIED_SAFETY_RESERVE_POSITIONS - horizon_work
+            and root_child_work <= root_child_credit
+            and safety_work == horizon_work + root_child_work
+            and selected_witness.get("safety_call_work_credit")
+            == evidence_producer.CERTIFIED_SAFETY_RESERVE_POSITIONS
+            and safety_work <= evidence_producer.CERTIFIED_SAFETY_RESERVE_POSITIONS
+        )
+    else:
+        _exact_keys(
+            selected_witness,
+            {
+                *common_witness_keys,
+                "boundary_probe_order",
+                "expected_nonterminal_rooted_path_lengths",
+                "boundary_probes",
+                "found_stop_witness",
+                "unknown_fail_closed_witness_sha256",
+                "safety_work_used",
+                "safety_call_work_credit",
+            },
+            "release measured selected D5 boundary-ladder certification witness",
+        )
+        probes = _list(
+            selected_witness.get("boundary_probes"),
+            "release measured selected D5 boundary probes",
+        )
+        cumulative = 0
+        probe_valid = len(probes) == 3
+        prior_sequence = 0
+        for index, (probe_value, rooted_length) in enumerate(zip(probes, (5, 3, 1))):
+            probe = _mapping(probe_value, f"release measured boundary probe {rooted_length}")
+            _exact_keys(
+                probe,
+                {
+                    "schema",
+                    "rooted_path_length",
+                    "scope",
+                    "replay_index",
+                    "request_sequence",
+                    "status",
+                    "call_work_credit",
+                    "work_used",
+                    "cumulative_work_before",
+                    "cumulative_work_after",
+                    "cache",
+                },
+                f"release measured boundary probe {rooted_length}",
+            )
+            sequence = _integer(probe.get("request_sequence"), "boundary probe sequence", 1)
+            credit = _integer(probe.get("call_work_credit"), "boundary probe credit", 1)
+            used = _integer(probe.get("work_used"), "boundary probe work", 1)
+            cache = _mapping(probe.get("cache"), "boundary probe cache")
+            probe_valid = probe_valid and (
+                probe.get("schema") == evidence_producer.BOUNDARY_LADDER_PROBE_SCHEMA
+                and probe.get("rooted_path_length") == rooted_length
+                and probe.get("scope") == ("root-child" if index == 2 else "pv-horizon")
+                and probe.get("replay_index") == (4, 2, 0)[index]
+                and probe.get("status") == "exhausted"
+                and sequence > prior_sequence
+                and used <= credit
+                and probe.get("cumulative_work_before") == cumulative
+                and probe.get("cumulative_work_after") == cumulative + used
+                and cache
+                == {
+                    "schema": "spc-root-mate-proof-cache-receipt-v1",
+                    "hit": False,
+                    "proof_status": "exhausted",
+                    "evidence": "native-worker-dispatch",
+                }
+            )
+            cumulative += used
+            prior_sequence = sequence
+        witness_contract_valid = (
+            selected_witness.get("schema")
+            == evidence_producer.SELECTED_D5_HORIZON_CERTIFICATION_SCHEMA
+            and selected_witness.get("boundary_probe_order")
+            == evidence_producer.BOUNDARY_LADDER_ORDER
+            and selected_witness.get("expected_nonterminal_rooted_path_lengths")
+            == [5, 3, 1]
+            and probe_valid
+            and selected_witness.get("safety_work_used") == cumulative
+            and selected_witness.get("safety_call_work_credit")
+            == evidence_producer.CERTIFIED_SAFETY_RESERVE_POSITIONS
+            and cumulative <= evidence_producer.CERTIFIED_SAFETY_RESERVE_POSITIONS
+            and checked_horizon.get("selected_boundary_ladder_certified") is True
+            and checked_horizon.get("found_stop_observed") is True
+            and checked_horizon.get("unknown_fail_closed_observed") is True
+        )
     if (
         not 0 < checked_elapsed < 60
         or checked_work > default_generation_positions
@@ -1649,8 +1930,7 @@ def validate_promoted_release(
         or HEX_64.fullmatch(raw_safety_sha256) is None
         or not isinstance(raw_research_sha256, str)
         or HEX_64.fullmatch(raw_research_sha256) is None
-        or selected_witness.get("schema")
-        != evidence_producer.SELECTED_D5_HORIZON_CERTIFICATION_SCHEMA
+        or not witness_contract_valid
         or selected_witness.get("fixture_id") != selected_fixture_id
         or selected_witness.get("selected_root_series") != selected_root_series
         or not isinstance(selected_witness.get("candidate_identity"), str)
@@ -1670,18 +1950,6 @@ def validate_promoted_release(
         )
         is None
         or selected_witness.get("known_adverse_present") is not False
-        or root_child_sequence <= horizon_sequence
-        or selected_witness.get("horizon_status") != "exhausted"
-        or horizon_credit != evidence_producer.PV_HORIZON_MATE_WORK_LIMIT
-        or horizon_work > horizon_credit
-        or selected_witness.get("root_child_status") != "exhausted"
-        or root_child_credit
-        != evidence_producer.CERTIFIED_SAFETY_RESERVE_POSITIONS - horizon_work
-        or root_child_work > root_child_credit
-        or safety_work != horizon_work + root_child_work
-        or selected_witness.get("safety_call_work_credit")
-        != evidence_producer.CERTIFIED_SAFETY_RESERVE_POSITIONS
-        or safety_work > evidence_producer.CERTIFIED_SAFETY_RESERVE_POSITIONS
         or not isinstance(local_asset_set, str)
         or HEX_64.fullmatch(local_asset_set) is None
     ):
@@ -1710,6 +1978,18 @@ def validate_promoted_release(
         ),
         "local_checkout_asset_set_sha256": semantic.checked_local_asset_set_sha256,
     }
+    if checked_schema == CURRENT_CHECKED_HORIZON_SCHEMA:
+        semantic_checked.update(
+            {
+                "selected_boundary_ladder_certified": (
+                    semantic.checked_selected_boundary_ladder_certified
+                ),
+                "found_stop_observed": semantic.checked_found_stop_observed,
+                "unknown_fail_closed_observed": (
+                    semantic.checked_unknown_fail_closed_observed
+                ),
+            }
+        )
     if checked_horizon != semantic_checked:
         raise PromotedReleaseError(
             "release checked-horizon measurements differ from the validated Opera receipt"

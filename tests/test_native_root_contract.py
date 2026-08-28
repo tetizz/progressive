@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
+import time
 
 import chess
 import pytest
@@ -21,9 +22,14 @@ from scottish_progressive.profiles import baseline_profile
 from scottish_progressive.rules import play_series
 from scottish_progressive.search import (
     MATE_SCORE,
+    ScoredSeries,
     SearchLimits,
     SeriesSearcher,
     analyze,
+)
+from scottish_progressive.selected_pv_horizon import (
+    CandidateHorizonState,
+    SelectedPvHorizonProof,
 )
 
 
@@ -403,6 +409,65 @@ def test_s1_s4_s7_full_product_signature_and_stats_parity(
     assert _analysis_signature(actual) == _analysis_signature(expected)
 
 
+def test_python_proof_repair_interruption_restores_ordinary_namespace() -> None:
+    root = ProgressiveState.from_fen(
+        "2k5/4pr2/8/8/3K3N/7R/2qP2b1/1B6 w - - 0 1",
+        1,
+    )
+    cursor = root
+    path = []
+    for moves in (
+        ("h4g2",),
+        ("c2c7", "e7e5"),
+        ("d4e4", "b1a2", "a2e6"),
+        ("c7d7", "d7e6", "e6d6", "d6d4"),
+    ):
+        result = play_series(cursor, moves)
+        path.append(result)
+        cursor = result.final_state
+    proof = SelectedPvHorizonProof.create(tuple(path[:3]), path[3])
+    horizon = CandidateHorizonState(
+        candidate_series=path[0].machine_notation,
+        retained_proofs=(proof,),
+    )
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=3,
+            max_series_per_node=4,
+            max_generation_positions=2_000_000,
+        )
+    )
+    ordinary_key = searcher._tt_key(ProgressiveState.initial())  # noqa: SLF001
+    ordinary_entry = search_module._TTEntry(  # noqa: SLF001
+        1,
+        123,
+        search_module.Bound.EXACT,
+        (),
+        (-1, 1),
+    )
+    searcher._tt[ordinary_key] = ordinary_entry  # noqa: SLF001
+    ordinary_tt = searcher._tt  # noqa: SLF001
+    ordinary_overrides = searcher._selected_pv_leaf_mate_overrides  # noqa: SLF001
+    ordinary_hits = searcher._selected_pv_leaf_override_hits  # noqa: SLF001
+
+    with pytest.raises(search_module._WorkLimit):  # noqa: SLF001
+        searcher._repair_selected_root_python(  # noqa: SLF001
+            root,
+            ScoredSeries(path[0], 0, tuple(path[1:3])),
+            2,
+            horizon,
+        )
+
+    assert searcher._tt is ordinary_tt  # noqa: SLF001
+    assert searcher._tt == {ordinary_key: ordinary_entry}  # noqa: SLF001
+    assert searcher._selected_pv_leaf_mate_overrides is ordinary_overrides  # noqa: SLF001
+    assert searcher._selected_pv_leaf_mate_overrides == {}  # noqa: SLF001
+    assert searcher._selected_pv_leaf_override_hits is ordinary_hits  # noqa: SLF001
+    assert searcher._selected_pv_leaf_override_hits == set()  # noqa: SLF001
+    assert searcher._selected_pv_proof_tt_namespaces == {}  # noqa: SLF001
+    assert searcher._tt_transaction_stack == []  # noqa: SLF001
+
+
 def test_legacy_subtree_stats_do_not_regress_after_path_count_saturation() -> None:
     """A high-series two-king boundary must keep cumulative stats monotonic."""
 
@@ -594,6 +659,72 @@ def test_retained_root_forces_authoritative_preferred_series_outside_width() -> 
         play_series(state, tuple(preferred.split("/")))
     )
     assert retained.work.call_native_work > 0
+
+
+def test_production_repair_force_retains_omitted_root_with_finite_ledger() -> None:
+    """The real repair path must recover an omitted selected root and finish."""
+
+    root = ProgressiveState.from_fen(
+        "6k1/8/8/q7/8/8/5PPP/1R4K1 w - - 0 1",
+        1,
+    )
+    candidate = play_series(root, ("b1b2",))
+    mate = play_series(candidate.final_state, ("a5e1",))
+    proof = SelectedPvHorizonProof.create((candidate,), mate)
+    horizon = CandidateHorizonState(
+        candidate_series=candidate.machine_notation,
+        retained_proofs=(proof,),
+    )
+
+    canonical = _session(width=1, depth=1, max_work=100_000).enumerate_root(
+        root,
+        preferred_series=candidate.machine_notation,
+        external_work=0,
+        remaining_nanoseconds=5_000_000_000,
+    )
+    assert canonical.status == 0
+    assert tuple(item.order_key for item in canonical.candidates) == ("b1b8",)
+    assert candidate.machine_notation not in {
+        item.order_key for item in canonical.candidates
+    }
+
+    limits = SearchLimits(
+        depth_series=1,
+        max_series_per_node=1,
+        max_generation_positions=100_000,
+        time_limit_seconds=5.0,
+        collect_all_root_scores=False,
+        native_threads=1,
+    )
+    searcher = SeriesSearcher(limits)
+    searcher._root_tactical_frontier_protection = (  # noqa: SLF001
+        search_module._tactical_frontier_protection_eligible(root)  # noqa: SLF001
+    )
+    searcher._start_native_subtree(root)  # noqa: SLF001
+    assert searcher._native_subtree_session is not None  # noqa: SLF001
+    searcher._deadline = time.perf_counter() + 5.0  # noqa: SLF001
+
+    repaired = searcher._repair_selected_root_native(  # noqa: SLF001
+        root,
+        ScoredSeries(candidate, 0, ()),
+        1,
+        horizon,
+    )
+
+    assert repaired.series == candidate
+    assert repaired.score == -MATE_SCORE + 2
+    assert repaired.principal_variation == (mate,)
+    assert repaired.proof_bounds == (-1, -1)
+    assert 0 < searcher.stats.generation_positions <= 100_000
+    native_generation_index = SUBTREE_STAT_FIELDS.index("generation_positions")
+    assert (
+        searcher._native_subtree_stats_applied[native_generation_index]  # noqa: SLF001
+        == searcher.stats.generation_positions
+    )
+    assert searcher.stats.series_generation_cache_hits == 1
+    assert searcher.stats.generation_work_limit_hits == 0
+    assert searcher._deadline is not None  # noqa: SLF001
+    assert time.perf_counter() < searcher._deadline  # noqa: SLF001
 
 
 def test_retained_root_rejects_malformed_forced_preferred_series() -> None:

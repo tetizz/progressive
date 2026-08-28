@@ -251,9 +251,7 @@ def _build_fixture(
         "horizon_research_trace_sha256": "7" * 64,
     }
     selected_d5_witness = {
-        "schema": (
-            validator.evidence_producer.SELECTED_D5_HORIZON_CERTIFICATION_SCHEMA
-        ),
+        "schema": "spc-opera-selected-d5-horizon-certification-v1",
         "fixture_id": validator.evidence_producer.SELECTED_D5_FIXTURE_ID,
         "selected_root_series": "b2b3",
         "candidate_identity": "spc-root-candidate-v1|fixture-b3",
@@ -373,6 +371,13 @@ def _build_fixture(
         "validate_mate_certificate",
         lambda *args, **kwargs: ({}, {}, "", ""),
     )
+    # Most fixtures exercise the generic validator with synthetic identities.
+    # The dedicated legacy-v5 regression below tests the real immutable pin.
+    monkeypatch.setattr(
+        validator,
+        "_validate_legacy_v5_release_identity",
+        lambda **_kwargs: None,
+    )
     if mock_semantics:
         measured = receipt["measured"]
         checked = measured["opera_checked_horizon"]
@@ -467,6 +472,98 @@ def test_validates_exact_parent_bound_promoted_release(
     assert fixture["calls"] == [
         (fixture["release"] / "browser-engine", fixture["source_package"])
     ]
+
+
+def test_promoted_validator_requires_v6_boundary_ladder_gates() -> None:
+    assert validator._expected_gates_for_checked_schema(
+        validator.LEGACY_CHECKED_HORIZON_SCHEMA
+    ) == validator.EXPECTED_GATES
+    assert validator._expected_gates_for_checked_schema(
+        validator.CURRENT_CHECKED_HORIZON_SCHEMA
+    ) == validator.V6_EXPECTED_GATES
+    assert {
+        "opera_selected_b3_boundary_ladder_certified",
+        "opera_found_stops_boundary_ladder",
+        "opera_unknown_fail_closed_observed",
+    } <= validator.V6_EXPECTED_GATES
+    assert not {
+        "opera_selected_b3_boundary_ladder_certified",
+        "opera_found_stops_boundary_ladder",
+        "opera_unknown_fail_closed_observed",
+    } & validator.EXPECTED_GATES
+
+
+def test_promoted_validator_recognizes_v6_checked_evidence_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _build_fixture(tmp_path, monkeypatch)
+    release = fixture["release"]
+    receipt = json.loads((release / "release-receipt.json").read_text(encoding="utf-8"))
+    record = receipt["evidence_receipts"][-1]
+    path = release / record["path"]
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["schema"] = validator.CURRENT_CHECKED_HORIZON_SCHEMA
+    _write_json(path, payload)
+    record["schema"] = validator.CURRENT_CHECKED_HORIZON_SCHEMA
+    record["sha256"] = validator._sha256_file(path)
+    record["bytes"] = path.stat().st_size
+
+    normalized, payloads, _paths = validator._validate_evidence(
+        receipt["evidence_receipts"], release=release
+    )
+
+    assert normalized[-1]["schema"] == validator.CURRENT_CHECKED_HORIZON_SCHEMA
+    assert payloads["opera_checked_horizon"]["schema"] == (
+        validator.CURRENT_CHECKED_HORIZON_SCHEMA
+    )
+
+
+def test_legacy_v5_exception_rejects_reissued_artifact_identity(tmp_path: Path) -> None:
+    repository = Path(__file__).resolve().parents[1]
+    release = repository / "release" / "browser-wasm"
+    checked = release / "evidence" / "opera-checked-pv-horizon-receipt.json"
+    fixed_receipt_path = release / "release-receipt.json"
+    fixed_receipt = json.loads(fixed_receipt_path.read_text(encoding="utf-8"))
+
+    validator._validate_legacy_v5_release_identity(
+        receipt=fixed_receipt,
+        receipt_path=fixed_receipt_path,
+        checked_receipt_path=checked,
+    )
+
+    forged = copy.deepcopy(fixed_receipt)
+    forged_source = "f" * 40
+    forged["source_revision"] = forged_source
+    forged["artifact"]["source_revision"] = forged_source
+    seed = {
+        "artifact": {
+            field: forged["artifact"][field]
+            for field in validator.ARTIFACT_IDENTITY_FIELDS
+        },
+        "bundle_set_sha256": forged["browser_bundle"]["artifact_set_sha256"],
+        "certificate_set_sha256": forged["certificate_set_sha256"],
+        "receipts": [
+            {"label": record["label"], "sha256": record["sha256"]}
+            for record in forged["evidence_receipts"]
+        ],
+        "policy": {
+            "maximum_seconds": forged["promotion_policy"]["maximum_seconds"],
+            "default_seconds": forged["promotion_policy"]["default_seconds"],
+        },
+    }
+    forged["release_id"] = f"spc-browser-wasm-release-{_canonical_sha256(seed)[:16]}"
+    forged_path = tmp_path / "release-receipt.json"
+    _write_json(forged_path, forged)
+
+    with pytest.raises(
+        validator.PromotedReleaseError,
+        match="immutable legacy v5 release identity",
+    ):
+        validator._validate_legacy_v5_release_identity(
+            receipt=forged,
+            receipt_path=forged_path,
+            checked_receipt_path=checked,
+        )
 
 
 def test_accepts_replacement_release_and_release_only_deletion(

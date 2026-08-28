@@ -30,11 +30,11 @@ The input receipt schemas are:
   `spc-opera-root-d5-benchmark-v2` Worker receipt
 
 Those seven receipts stage the exact candidate bytes. Final validation then
-requires `spc-opera-checked-pv-horizon-receipt-v5`, captured from those staged
-bytes in local Opera. The v5 receipt binds the page and CDP Opera identities,
+requires `spc-opera-checked-pv-horizon-receipt-v6`, captured from those staged
+bytes in local Opera. The v6 receipt binds the page and CDP Opera identities,
 the manifest and browser asset hashes, the ordinary Worker factory, the full
 raw safety and horizon-research trace arrays, and the exact
-`repair-once-then-veto-adverse-checked-pv-mates-v1` policy. A canonical
+`repair-once-then-veto-adverse-selected-pv-boundary-mates-v2` policy. A canonical
 count-and-SHA-256 attestation covers each full raw array; raw trace counts are
 not policy counters because the arrays also contain warm, unrelated, and
 selected-candidate certification calls.
@@ -44,16 +44,33 @@ recertification of that same proof, and a second distinct f3 proof that triggers
 the one-repair policy veto without dispatching a two-proof f3 search. Its
 semantic rejection/repair/veto accounting is exactly 2/1/1. The selected
 `b2b3` result is bound to a complete five-series D5 PV. Its final PV horizon is
-exhausted with an exact 3,500,000-position call credit, then its root child is
-exhausted with the remaining `4,000,000 - horizon_work_used` credit on the same
-candidate, Worker, session, revision, epoch, and deadline. Both calls use
-positive native work, and the known adverse Series 5 semantic is absent. The
-receipt remains explicitly local, unsigned, non-publishable pre-certification
-evidence until the promotion helper validates it.
+checked leaf-first at every nonterminal odd rooted prefix: lengths 5, 3, then 1.
+The first call receives at most 3,500,000 positions; each internal probe leaves
+one unit reserved for every shallower boundary; the root-child probe receives
+the remaining safety credit. Every probe is an exact authoritative replay and
+records status, call credit, work used, cumulative work, and whether the
+complete-proof cache was hit. All three selected-line probes must be cold
+native `exhausted` results on the same candidate, Worker, session, revision,
+epoch, and deadline. A `found` proof must stop the ladder immediately.
 
-The old root differential, prefix v1, mate v1, and Opera benchmark v1 formats
-are deliberately non-promotable. They either lack exact artifact identity or
-do not prove the final semantic and scheduling gates.
+The capture also performs a separate, fresh native-Worker run whose length-3
+probe is transparently constrained to one position after a deeper length-5
+probe exhausts. That browser run must actually return `unknown`, publish only
+the previously certified D4 result, report `root-safety-unknown`, dispatch no
+shallower length-1 probe, and leave no UNKNOWN cache entry. Its Workers, full
+raw traces, trace digests, injected credit, result, and cache observation are
+retained as `spc-opera-selected-pv-unknown-fail-closed-witness-v1` evidence.
+This is an observed fail-closed run, not a declaration inferred from source
+bytes. The known adverse Series 5 semantic must remain absent. The receipt is
+still explicitly local, unsigned, non-publishable pre-certification evidence
+until the promotion helper validates it.
+
+The old root differential, prefix v1, mate v1, Opera benchmark v1, and checked-
+PV v4/v5 formats are deliberately non-promotable by the current helper. They
+either lack exact artifact identity or do not prove the final semantic and
+scheduling gates. The promoted-release validator retains an explicit legacy-v5
+branch solely so the already checked-in immutable release remains verifiable;
+every new v6 promotion must carry the v6 measured fields and gates.
 
 Every parity receipt carries the six-field artifact subject:
 `source_revision`, `source_fingerprint`, `kernel_sha256`, `wasm_sha256`,
@@ -147,12 +164,12 @@ python .\scripts\promote_browser_wasm_release.py @common `
 
 # Serve a Pages candidate containing $candidate\browser-engine, then capture
 # the required local Opera receipt from those exact bytes.
-$checked = "$evidence\opera-checked-pv-horizon-v5.json"
+$checked = "$evidence\opera-checked-pv-horizon-v6.json"
 node .\benchmarks\capture_opera_checked_pv_horizon.mjs `
   --endpoint http://127.0.0.1:9237 `
   --url 'http://127.0.0.1:8898/?release=candidate' `
   --output $checked `
-  --timeout-ms 120000
+  --timeout-ms 180000
 
 python .\scripts\promote_browser_wasm_release.py @common `
   --check-only `

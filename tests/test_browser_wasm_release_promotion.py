@@ -2042,7 +2042,42 @@ def _opera_checked_horizon_fixture(
         },
     }
 
-    root_child_work_credit = safety_reserve - horizon_work_used
+    internal_work_credit = safety_reserve - horizon_work_used - 1
+    internal_work_used = 500_000
+    internal_request = {
+        **copy.deepcopy(selected_common),
+        "remaining_time_ms": 43_500,
+        "call_work_credit": internal_work_credit,
+        "candidate": {
+            **copy.deepcopy(selected_candidate),
+            "root_series": copy.deepcopy(selected_pv[2]),
+        },
+        "authoritative_child_boundary": copy.deepcopy(
+            selected_pv[2]["child_boundary"]
+        ),
+        "authoritative_root_replay": series_replay(
+            request_id="checked-selected-b3:d5:11:pv-horizon-replay-2",
+            start=copy.deepcopy(selected_pv[1]["child_boundary"]),
+            played=selected_pv[2],
+        ),
+    }
+    selected_internal_trace = {
+        "worker": copy.deepcopy(selected_worker),
+        "request_sequence": 8,
+        "posted_monotonic_ms": 660.0,
+        "received_monotonic_ms": 700.0,
+        "request": internal_request,
+        "ok": True,
+        "response": {
+            **copy.deepcopy(internal_request),
+            "status": "exhausted",
+            "work_used": internal_work_used,
+            "memory_bytes": 1,
+            "memory_peak_bytes": 1,
+        },
+    }
+
+    root_child_work_credit = safety_reserve - horizon_work_used - internal_work_used
     root_child_work_used = 200_000
     initial_boundary = boundary_from_state(promoter.ProgressiveState.initial())
     root_child_request = {
@@ -2061,9 +2096,9 @@ def _opera_checked_horizon_fixture(
     }
     selected_root_child_trace = {
         "worker": copy.deepcopy(selected_worker),
-        "request_sequence": 8,
-        "posted_monotonic_ms": 660.0,
-        "received_monotonic_ms": 720.0,
+        "request_sequence": 9,
+        "posted_monotonic_ms": 710.0,
+        "received_monotonic_ms": 770.0,
         "request": root_child_request,
         "ok": True,
         "response": {
@@ -2134,6 +2169,7 @@ def _opera_checked_horizon_fixture(
         copy.deepcopy(second_f3_safety),
         lower_depth_safety,
         selected_horizon_trace,
+        selected_internal_trace,
         selected_root_child_trace,
     ]
     raw_research_traces = [
@@ -2153,8 +2189,151 @@ def _opera_checked_horizon_fixture(
     known_adverse_series5 = copy.deepcopy(
         safety_traces["b3"]["request"]["candidate"]["root_series"]
     )
+    boundary_probe_specs = [
+        (selected_horizon_trace, 5, "pv-horizon", 4, 0),
+        (
+            selected_internal_trace,
+            3,
+            "pv-horizon",
+            2,
+            horizon_work_used,
+        ),
+        (
+            selected_root_child_trace,
+            1,
+            "root-child",
+            0,
+            horizon_work_used + internal_work_used,
+        ),
+    ]
+    boundary_probes = [
+        {
+            "schema": "spc-opera-selected-pv-boundary-probe-v1",
+            "rooted_path_length": rooted_path_length,
+            "scope": scope,
+            "replay_index": replay_index,
+            "request_sequence": trace["request_sequence"],
+            "status": "exhausted",
+            "call_work_credit": trace["request"]["call_work_credit"],
+            "work_used": trace["response"]["work_used"],
+            "cumulative_work_before": cumulative_before,
+            "cumulative_work_after": cumulative_before + trace["response"]["work_used"],
+            "cache": {
+                "schema": "spc-root-mate-proof-cache-receipt-v1",
+                "hit": False,
+                "proof_status": "exhausted",
+                "evidence": "native-worker-dispatch",
+            },
+        }
+        for trace, rooted_path_length, scope, replay_index, cumulative_before
+        in boundary_probe_specs
+    ]
+    found_stop_witness = {
+        "schema": "spc-opera-selected-pv-found-stop-witness-v1",
+        "selected_root_series": "f2f3",
+        "candidate_identity": fixture_specs["f3"]["candidate"],
+        "found_request_sequence": safety_traces["f3"]["request_sequence"],
+        "found_rooted_path_length": 5,
+        "found_status": "found",
+        "next_research_request_sequence": repair_traces["f3"]["request_sequence"],
+        "shallower_worker_dispatches_before_repair": 0,
+        "action": "stop-and-reject-selected-line",
+    }
+    unknown_deep_trace = copy.deepcopy(selected_horizon_trace)
+    unknown_deep_trace["request_sequence"] = 1
+    unknown_deep_trace["posted_monotonic_ms"] = 100.0
+    unknown_deep_trace["received_monotonic_ms"] = 150.0
+    unknown_deep_trace["request"]["request_id"] = "checked-unknown-b3"
+    unknown_deep_trace["request"]["iteration_id"] = "checked-unknown-b3:d5"
+    unknown_deep_trace["request"]["authoritative_root_replay"]["request_id"] = (
+        "checked-unknown-b3:d5:11:pv-horizon-replay-4"
+    )
+    for key in unknown_deep_trace["request"]:
+        unknown_deep_trace["response"][key] = copy.deepcopy(
+            unknown_deep_trace["request"][key]
+        )
+
+    unknown_internal_trace = copy.deepcopy(selected_internal_trace)
+    unknown_internal_trace["request_sequence"] = 2
+    unknown_internal_trace["posted_monotonic_ms"] = 160.0
+    unknown_internal_trace["received_monotonic_ms"] = 170.0
+    unknown_internal_trace["request"]["request_id"] = "checked-unknown-b3"
+    unknown_internal_trace["request"]["iteration_id"] = "checked-unknown-b3:d5"
+    unknown_internal_trace["request"]["call_work_credit"] = 1
+    unknown_internal_trace["request"]["authoritative_root_replay"]["request_id"] = (
+        "checked-unknown-b3:d5:11:pv-horizon-replay-2"
+    )
+    unknown_internal_trace["response"] = {
+        **copy.deepcopy(unknown_internal_trace["request"]),
+        "status": "unknown",
+        "work_used": 1,
+        "memory_bytes": 1,
+        "memory_peak_bytes": 1,
+    }
+    unknown_safety_traces = [unknown_deep_trace, unknown_internal_trace]
+    unknown_research_traces: list[dict[str, object]] = []
+    unknown_trace_attestation = {
+        "schema": "spc-opera-checked-pv-raw-trace-attestation-v1",
+        "horizon_safety_trace_count": len(unknown_safety_traces),
+        "horizon_safety_trace_sha256": promoter._canonical_sha256(
+            unknown_safety_traces
+        ),
+        "horizon_research_trace_count": 0,
+        "horizon_research_trace_sha256": promoter._canonical_sha256(
+            unknown_research_traces
+        ),
+    }
+    unknown_fail_closed_witness = {
+        "schema": "spc-opera-selected-pv-unknown-fail-closed-witness-v1",
+        "evidence_scope": "observed-native-worker-constrained-credit",
+        "selection_policy": (
+            "repair-once-then-veto-adverse-selected-pv-boundary-mates-v2"
+        ),
+        "selected_root_series": "b2b3",
+        "candidate_identity": fixture_specs["b3"]["candidate"],
+        "owner_worker_id": "root-1",
+        "fault_injection": {
+            "schema": "spc-opera-boundary-probe-credit-constraint-v1",
+            "target_rooted_path_length": 3,
+            "original_call_work_credit": internal_work_credit,
+            "constrained_call_work_credit": 1,
+            "injection_count": 1,
+        },
+        "deeper_exhausted_request_sequence": 1,
+        "unknown_request_sequence": 2,
+        "unknown_rooted_path_length": 3,
+        "unknown_status": "unknown",
+        "unknown_work_used": 1,
+        "shallower_worker_dispatches_after_unknown": 0,
+        "requested_depth": 5,
+        "completed_depth": 4,
+        "interruption_code": "root-safety-unknown",
+        "cache_entry_absent": True,
+        "unknown_action": "stop-and-discard-current-depth",
+        "shallower_probe_action": "forbidden-after-unknown",
+        "cache_policy": "never-store-unknown",
+        "raw_trace_attestation": unknown_trace_attestation,
+    }
+    unknown_fail_closed_evidence = {
+        "schema": "spc-opera-selected-pv-unknown-fail-closed-evidence-v1",
+        "worker_factory_calls": copy.deepcopy(worker_calls),
+        "trusted_worker_events_only": True,
+        "raw_horizon_safety_traces": unknown_safety_traces,
+        "raw_horizon_research_traces": unknown_research_traces,
+        "result_summary": {
+            "requested_depth": 5,
+            "completed_depth": 4,
+            "timed_out": False,
+            "work_limit_reached": False,
+            "interruption_code": "root-safety-unknown",
+            "selection_policy": (
+                "repair-once-then-veto-adverse-selected-pv-boundary-mates-v2"
+            ),
+        },
+        "witness": unknown_fail_closed_witness,
+    }
     selected_d5_witness = {
-        "schema": "spc-opera-selected-d5-horizon-certification-v1",
+        "schema": "spc-opera-selected-d5-boundary-ladder-certification-v2",
         "fixture_id": "b3-known-adverse-series5-2026-08-26-v1",
         "selected_root_series": "b2b3",
         "candidate_identity": fixture_specs["b3"]["candidate"],
@@ -2167,15 +2346,16 @@ def _opera_checked_horizon_fixture(
             series_semantic(known_adverse_series5, series_index=5)
         ),
         "known_adverse_present": False,
-        "horizon_request_sequence": selected_horizon_trace["request_sequence"],
-        "horizon_status": "exhausted",
-        "horizon_call_work_credit": horizon_work_limit,
-        "horizon_work_used": horizon_work_used,
-        "root_child_request_sequence": selected_root_child_trace["request_sequence"],
-        "root_child_status": "exhausted",
-        "root_child_call_work_credit": root_child_work_credit,
-        "root_child_work_used": root_child_work_used,
-        "safety_work_used": horizon_work_used + root_child_work_used,
+        "boundary_probe_order": "leaf-first-odd-rooted-prefix",
+        "expected_nonterminal_rooted_path_lengths": [5, 3, 1],
+        "boundary_probes": boundary_probes,
+        "found_stop_witness": found_stop_witness,
+        "unknown_fail_closed_witness_sha256": promoter._canonical_sha256(
+            unknown_fail_closed_witness
+        ),
+        "safety_work_used": (
+            horizon_work_used + internal_work_used + root_child_work_used
+        ),
         "safety_call_work_credit": safety_reserve,
     }
     safety_traces = {"f3": safety_traces["f3"]}
@@ -2197,7 +2377,9 @@ def _opera_checked_horizon_fixture(
         "authoritative_replay_certified": True,
         "legal_validation_runtime": "compiled-wasm",
         "root_search_mode": "streaming-root-iteration",
-        "selection_policy": "repair-once-then-veto-adverse-checked-pv-mates-v1",
+        "selection_policy": (
+            "repair-once-then-veto-adverse-selected-pv-boundary-mates-v2"
+        ),
         "selection_policy_filtered": True,
         "unfiltered_score_winner_selected": False,
         "pv_horizon_line_rejections": line_rejections,
@@ -2304,7 +2486,7 @@ def _opera_checked_horizon_fixture(
         "prefix_contract_sha256": manifest_binding["prefix_contract_sha256"],
     }
     payload = {
-        "schema": "spc-opera-checked-pv-horizon-receipt-v5",
+        "schema": "spc-opera-checked-pv-horizon-receipt-v6",
         "status": "passed-not-certified",
         "product_publishable": False,
         "safety_certified": False,
@@ -2347,6 +2529,7 @@ def _opera_checked_horizon_fixture(
         "pv_horizon_policy_vetoes": [policy_veto],
         "threshold_veto_witness": threshold_veto_witness,
         "selected_d5_horizon_certification_witness": selected_d5_witness,
+        "unknown_fail_closed_evidence": unknown_fail_closed_evidence,
         "raw_horizon_safety_traces": raw_safety_traces,
         "raw_horizon_research_traces": raw_research_traces,
         "raw_trace_attestation": raw_trace_attestation,
@@ -2541,7 +2724,7 @@ def test_checked_horizon_receipt_omission_fails_closed(tmp_path: Path) -> None:
     context = _checked_promotion_fixture(tmp_path)
 
     def mutate(payload: dict[str, object]) -> None:
-        payload["checks"].pop("selected_b3_horizon_exhaustively_certified")
+        payload["checks"].pop("selected_b3_ordered_boundary_ladder_certified")
 
     _rewrite_checked(context, mutate)
     with pytest.raises(promoter.ReleaseGateError, match="every exact passing check"):
@@ -2604,13 +2787,115 @@ def test_checked_horizon_rejects_resigned_accounting_drift(tmp_path: Path) -> No
         _validate_checked_fixture(context)
 
 
-def test_checked_horizon_rejects_legacy_v4_receipt(tmp_path: Path) -> None:
+def test_checked_horizon_release_contract_is_v6_boundary_ladder() -> None:
+    assert promoter.OPERA_CHECKED_HORIZON_SCHEMA == (
+        "spc-opera-checked-pv-horizon-receipt-v6"
+    )
+
+
+def _refresh_unknown_trace_attestation(payload: dict[str, object]) -> None:
+    evidence = payload["unknown_fail_closed_evidence"]
+    witness = evidence["witness"]
+    safety = evidence["raw_horizon_safety_traces"]
+    research = evidence["raw_horizon_research_traces"]
+    witness["raw_trace_attestation"].update(
+        {
+            "horizon_safety_trace_count": len(safety),
+            "horizon_safety_trace_sha256": promoter._canonical_sha256(safety),
+            "horizon_research_trace_count": len(research),
+            "horizon_research_trace_sha256": promoter._canonical_sha256(research),
+        }
+    )
+    payload["selected_d5_horizon_certification_witness"][
+        "unknown_fail_closed_witness_sha256"
+    ] = promoter._canonical_sha256(witness)
+    assert promoter.CHECKED_PV_SELECTION_POLICY == (
+        "repair-once-then-veto-adverse-selected-pv-boundary-mates-v2"
+    )
+    assert {
+        "selected_b3_ordered_boundary_ladder_certified",
+        "selected_b3_boundary_ladder_authoritative_replay",
+        "selected_b3_boundary_ladder_work_conserved",
+        "f3_found_stops_boundary_ladder",
+        "unknown_fail_closed_observed",
+    } <= promoter.OPERA_CHECKED_HORIZON_CHECKS
+
+
+def test_checked_horizon_rejects_declared_unknown_without_observed_unknown(
+    tmp_path: Path,
+) -> None:
+    context = _checked_promotion_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        evidence = payload["unknown_fail_closed_evidence"]
+        witness = evidence["witness"]
+        trace = _raw_trace_by_sequence(
+            evidence,
+            "raw_horizon_safety_traces",
+            witness["unknown_request_sequence"],
+        )
+        trace["response"]["status"] = "exhausted"
+        witness["unknown_status"] = "exhausted"
+        _refresh_unknown_trace_attestation(payload)
+
+    _rewrite_checked(context, mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="UNKNOWN.*observed|return UNKNOWN"):
+        _validate_checked_fixture(context)
+
+
+def test_checked_horizon_rejects_shallower_dispatch_after_unknown(
+    tmp_path: Path,
+) -> None:
+    context = _checked_promotion_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        evidence = payload["unknown_fail_closed_evidence"]
+        witness = evidence["witness"]
+        trace = copy.deepcopy(evidence["raw_horizon_safety_traces"][-1])
+        trace["request_sequence"] = witness["unknown_request_sequence"] + 1
+        trace["posted_monotonic_ms"] = trace["received_monotonic_ms"] + 1
+        trace["received_monotonic_ms"] = trace["posted_monotonic_ms"] + 1
+        for side in ("request", "response"):
+            trace[side]["authoritative_root_replay"]["request_id"] = (
+                f"{trace[side]['iteration_id']}:{trace[side]['safety_revision']}:"
+                "root-child-replay-0"
+            )
+        evidence["raw_horizon_safety_traces"].append(trace)
+        _refresh_unknown_trace_attestation(payload)
+
+    _rewrite_checked(context, mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="UNKNOWN did not stop"):
+        _validate_checked_fixture(context)
+
+
+def test_checked_horizon_rejects_unknown_cache_presence(tmp_path: Path) -> None:
+    context = _checked_promotion_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        witness = payload["unknown_fail_closed_evidence"]["witness"]
+        witness["cache_entry_absent"] = False
+        _refresh_unknown_trace_attestation(payload)
+
+    _rewrite_checked(context, mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="UNKNOWN witness.*fail-closed"):
+        _validate_checked_fixture(context)
+
+
+@pytest.mark.parametrize(
+    "legacy_schema",
+    [
+        "spc-opera-checked-pv-horizon-receipt-v4",
+        "spc-opera-checked-pv-horizon-receipt-v5",
+    ],
+)
+def test_checked_horizon_rejects_legacy_receipt(
+    tmp_path: Path,
+    legacy_schema: str,
+) -> None:
     context = _checked_promotion_fixture(tmp_path)
     _rewrite_checked(
         context,
-        lambda payload: payload.update(
-            schema="spc-opera-checked-pv-horizon-receipt-v4"
-        ),
+        lambda payload: payload.update(schema=legacy_schema),
     )
 
     with pytest.raises(promoter.ReleaseGateError, match="pre-certification evidence"):
@@ -2828,7 +3113,7 @@ def test_checked_horizon_accepts_attested_unrelated_raw_traces(
     context = _checked_promotion_fixture(tmp_path)
     receipt = context["receipt"]
 
-    assert len(receipt["raw_horizon_safety_traces"]) == 5
+    assert len(receipt["raw_horizon_safety_traces"]) == 6
     assert len(receipt["raw_horizon_research_traces"]) == 3
     assert receipt["pv_horizon_line_rejections"] == 2
     assert receipt["pv_horizon_native_repairs"] == 1
@@ -2916,17 +3201,22 @@ def test_checked_horizon_rejects_unexhausted_selected_d5_horizon(
 
     def mutate(payload: dict[str, object]) -> None:
         witness = payload["selected_d5_horizon_certification_witness"]
+        probe = witness["boundary_probes"][0]
         trace = _raw_trace_by_sequence(
             payload,
             "raw_horizon_safety_traces",
-            witness["horizon_request_sequence"],
+            probe["request_sequence"],
         )
         trace["response"]["status"] = status
-        witness["horizon_status"] = status
+        probe["status"] = status
+        probe["cache"]["proof_status"] = status
         _refresh_raw_trace_attestation(payload)
 
     _rewrite_checked(context, mutate)
-    with pytest.raises(promoter.ReleaseGateError, match="horizon.*exhausted|selected D5"):
+    with pytest.raises(
+        promoter.ReleaseGateError,
+        match="boundary probe.*exhausted|selected D5",
+    ):
         _validate_checked_fixture(context)
 
 
@@ -2940,7 +3230,7 @@ def test_checked_horizon_rejects_selected_root_child_on_wrong_worker(
         trace = _raw_trace_by_sequence(
             payload,
             "raw_horizon_safety_traces",
-            witness["root_child_request_sequence"],
+            witness["boundary_probes"][-1]["request_sequence"],
         )
         trace["worker"] = copy.deepcopy(
             payload["raw_horizon_safety_traces"][0]["worker"]
@@ -2950,7 +3240,7 @@ def test_checked_horizon_rejects_selected_root_child_on_wrong_worker(
     _rewrite_checked(context, mutate)
     with pytest.raises(
         promoter.ReleaseGateError,
-        match="same Worker|owner Worker|one bound search",
+        match="same Worker|owner Worker|one bound search|boundary probe drifted",
     ):
         _validate_checked_fixture(context)
 
@@ -2962,21 +3252,21 @@ def test_checked_horizon_rejects_quarantined_selected_mate_claim(
 
     def mutate(payload: dict[str, object]) -> None:
         witness = payload["selected_d5_horizon_certification_witness"]
-        for sequence_key in (
-            "horizon_request_sequence",
-            "root_child_request_sequence",
-        ):
+        for probe in witness["boundary_probes"]:
             trace = _raw_trace_by_sequence(
                 payload,
                 "raw_horizon_safety_traces",
-                witness[sequence_key],
+                probe["request_sequence"],
             )
             trace["request"]["candidate"]["mate_claim_quarantined"] = True
             trace["response"]["candidate"]["mate_claim_quarantined"] = True
         _refresh_raw_trace_attestation(payload)
 
     _rewrite_checked(context, mutate)
-    with pytest.raises(promoter.ReleaseGateError, match="same Worker|same.*search"):
+    with pytest.raises(
+        promoter.ReleaseGateError,
+        match="same Worker|same.*search|boundary probe drifted",
+    ):
         _validate_checked_fixture(context)
 
 
@@ -2990,12 +3280,12 @@ def test_checked_horizon_rejects_horizon_trace_substituted_for_root_child(
         horizon = _raw_trace_by_sequence(
             payload,
             "raw_horizon_safety_traces",
-            witness["horizon_request_sequence"],
+            witness["boundary_probes"][0]["request_sequence"],
         )
         root_child = _raw_trace_by_sequence(
             payload,
             "raw_horizon_safety_traces",
-            witness["root_child_request_sequence"],
+            witness["boundary_probes"][-1]["request_sequence"],
         )
         for key in (
             "candidate",
@@ -3009,7 +3299,7 @@ def test_checked_horizon_rejects_horizon_trace_substituted_for_root_child(
     _rewrite_checked(context, mutate)
     with pytest.raises(
         promoter.ReleaseGateError,
-        match="root-child|root child|selected root",
+        match="root-child|root child|selected root|probe 1 candidate",
     ):
         _validate_checked_fixture(context)
 

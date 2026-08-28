@@ -76,6 +76,9 @@ QUIET_ADJUDICATION_POSITION_LIMIT = 4_096
 # 65K ceiling matches the certified desktop browser geometry and removes D4
 # LRU churn without increasing the retained search width.
 SERIES_GENERATION_CACHE_CAPACITY = 65_536
+# Match the native retained-proof namespace bound. Long-lived searchers can
+# reuse successful repairs without retaining an unbounded number of TT maps.
+SELECTED_PV_PROOF_TT_NAMESPACE_CAPACITY = 256
 # Best-only play may otherwise accept a root series whose opponent reply mate
 # was discarded by the ordinary width-32 child beam. This second screen is
 # deliberately much wider and globally bounded. It is invoked only after a
@@ -539,6 +542,7 @@ class _TTEntry:
 
 _SearchKey = tuple[object, ...]
 _TTKey = tuple[_SearchKey, int, int, int, bool]
+_SelectedPvProofSetIdentity = tuple[object, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -740,6 +744,20 @@ class SeriesSearcher:
             _TTKey, SeriesResult
         ] = {}
         self._selected_pv_leaf_override_hits: set[_TTKey] = set()
+        # Repaired scores are valid only under the exact retained proof set.
+        # Keep those TT entries in their own deterministic namespaces, mirroring
+        # the native retained-root contract without destroying the ordinary TT.
+        self._selected_pv_proof_tt_namespaces: OrderedDict[
+            _SelectedPvProofSetIdentity, dict[_TTKey, _TTEntry]
+        ] = OrderedDict()
+        # Native proof repair must bind the selected Python root to a retained
+        # candidate manifest. Keep an equivalent isolated manifest cache on the
+        # Python fallback so both engines report the same real generation work
+        # and cache footprint without disturbing the ordinary root cache.
+        self._selected_pv_python_root_manifests: OrderedDict[
+            _TTKey, _SeriesCacheEntry
+        ] = OrderedDict()
+        self._selected_pv_python_root_manifest_weight = 0
         self._selected_pv_root_vetoes: set[str] = set()
         self._root_mate_claim_quarantines: set[str] = set()
         self._root_mate_claim_emergency_fallback: SeriesResult | None = None
@@ -1599,13 +1617,54 @@ class SeriesSearcher:
         self,
         state: ProgressiveState,
     ) -> SeriesMateProbe:
-        """Runs the exact one-series leaf probe under the shared safety budget."""
+        """Runs or reuses one exact boundary probe under the shared safety budget."""
 
         from .series_mate import (
             SeriesMateProbe,
             SeriesMateStatus,
             find_native_series_mate,
         )
+
+        cache_key = self._tt_key(state)
+        position_key = state.transposition_key
+        if cache_key in self._root_child_native_mate_cache_keys:
+            cached_mate = self._root_child_mate_screen_cache.get(cache_key)
+            if (
+                position_key in self._root_child_proven_mate_keys
+                and cached_mate is not None
+            ):
+                return SeriesMateProbe(
+                    SeriesMateStatus.FOUND,
+                    "reused exact in-process mate proof",
+                    cached_mate,
+                )
+            if (
+                position_key in self._root_child_native_mate_exhausted_keys
+                and cached_mate is None
+            ):
+                return SeriesMateProbe(
+                    SeriesMateStatus.EXHAUSTED,
+                    "reused exact in-process mate exhaustion",
+                )
+
+        persistent = self._persistent_mate_proof(state)
+        if persistent is not None:
+            status, cached_mate = persistent
+            self._root_child_mate_screen_cache[cache_key] = cached_mate
+            self._root_child_native_mate_cache_keys.add(cache_key)
+            if status == "found":
+                assert cached_mate is not None
+                self._mark_root_child_proven_mate(position_key)
+                return SeriesMateProbe(
+                    SeriesMateStatus.FOUND,
+                    "reused persistent mate proof",
+                    cached_mate,
+                )
+            self._mark_root_child_exact_exhausted(position_key)
+            return SeriesMateProbe(
+                SeriesMateStatus.EXHAUSTED,
+                "reused persistent mate exhaustion",
+            )
 
         self.stats.selected_pv_horizon_probe_calls += 1
         self.stats.native_series_mate_calls += 1
@@ -1627,11 +1686,31 @@ class SeriesSearcher:
             max_work=remaining,
             time_limit_seconds=remaining_seconds,
         )
+        work = probe.positions_visited + probe.moves_generated
         self._record_native_series_mate_probe(probe)
         if probe.status is SeriesMateStatus.FOUND:
+            if probe.series is None:  # pragma: no cover - adapter invariant
+                raise RuntimeError("native selected-PV mate status carried no line")
             self.stats.native_series_mate_found += 1
+            self._root_child_mate_screen_cache[cache_key] = probe.series
+            self._root_child_native_mate_cache_keys.add(cache_key)
+            self._mark_root_child_proven_mate(position_key)
+            self._store_persistent_mate_proof(
+                state,
+                probe.series,
+                proof_work=work,
+            )
         elif probe.status is SeriesMateStatus.EXHAUSTED:
             self.stats.native_series_mate_exhausted += 1
+            self._root_child_mate_screen_cache[cache_key] = None
+            self._root_child_native_mate_cache_keys.add(cache_key)
+            self._mark_root_child_exact_exhausted(position_key)
+            self._store_persistent_mate_proof(
+                state,
+                None,
+                proof_work=work,
+                exhausted=True,
+            )
         elif probe.status is SeriesMateStatus.WORK_LIMIT:
             self.stats.native_series_mate_work_limit_hits += 1
         elif probe.status is SeriesMateStatus.DEADLINE:
@@ -1677,43 +1756,153 @@ class SeriesSearcher:
 
     def _repair_selected_root_python(
         self,
+        root: ProgressiveState,
         candidate: ScoredSeries,
         depth: int,
         state: CandidateHorizonState,
     ) -> ScoredSeries:
         """Pure-Python exact-leaf overlay used when no native subtree exists."""
 
+        manifest_key = self._tt_key(root)
+        manifest = self._selected_pv_python_root_manifests.get(manifest_key)
+        if manifest is None:
+            generated, width_complete = self._generate(
+                root,
+                ply_from_root=1,
+                tactical_protection=bool(
+                    self._root_tactical_frontier_protection
+                ),
+            )
+            collection: tuple[SeriesResult, ...] | _NativeSeriesBatch
+            if isinstance(generated, _NativeSeriesBatch):
+                collection = generated
+                retained_count = len(generated)
+            else:
+                ordered = self._ordered(
+                    root,
+                    generated,
+                    root.board.turn,
+                    1,
+                    tactical_protection=bool(
+                        self._root_tactical_frontier_protection
+                    ),
+                )
+                collection = tuple(ordered)
+                retained_count = len(ordered)
+            manifest = _SeriesCacheEntry(collection, width_complete)
+            self._selected_pv_python_root_manifests[manifest_key] = manifest
+            manifest_weight = max(1, retained_count)
+            self._selected_pv_python_root_manifest_weight += manifest_weight
+            self.stats.series_generation_cache_peak = max(
+                self.stats.series_generation_cache_peak,
+                self._series_generation_cache_weight
+                + self._selected_pv_python_root_manifest_weight,
+            )
+            self.stats.series_generation_cache_entries_peak = max(
+                self.stats.series_generation_cache_entries_peak,
+                len(self._series_generation_cache)
+                + len(self._selected_pv_python_root_manifests),
+            )
+        else:
+            self._selected_pv_python_root_manifests.move_to_end(manifest_key)
+            self.stats.series_generation_cache_hits += 1
+
         proof_keys: list[_TTKey] = []
+        proof_overrides: dict[_TTKey, SeriesResult] = {}
         for proof in state.retained_proofs:
+            if not proof.rooted_path or proof.rooted_path[0] != candidate.series:
+                raise _WorkLimit
+            cursor = root
+            for supplied in (*proof.rooted_path, proof.mate_reply):
+                replay_work = len(supplied.moves)
+                if (
+                    self.limits.max_generation_positions is not None
+                    and self.stats.generation_positions + replay_work
+                    > self.limits.max_generation_positions
+                ):
+                    self.stats.generation_work_limit_hits += 1
+                    raise _WorkLimit
+                self._check_deadline()
+                try:
+                    replayed = play_series(cursor, supplied.moves).with_transposition_count(
+                        supplied.transposition_count
+                    )
+                except ValueError as error:
+                    raise _WorkLimit from error
+                self.stats.generated_raw_series += 1
+                self.stats.generated_unique_series += 1
+                self.stats.series_generation_positions += replay_work
+                self.stats.generation_positions += replay_work
+                if replayed != supplied:
+                    raise _WorkLimit
+                cursor = replayed.final_state
             leaf = proof.rooted_path[-1].final_state
             key = self._tt_key(leaf)
-            self._selected_pv_leaf_mate_overrides[key] = proof.mate_reply
+            proof_overrides[key] = proof.mate_reply
             proof_keys.append(key)
         if not proof_keys:  # pragma: no cover - policy invariant
             raise RuntimeError("selected-PV repair has no retained proof")
-        # Ordinary TT entries have no proof-set namespace. Clear them before
-        # enabling the exact leaf theorem so an old depth-zero value cannot
-        # bypass the newly retained mate. The overlay then stays active for
-        # the remainder of this searcher run.
         if self._tt_transaction_stack:  # pragma: no cover - root invariant
             raise RuntimeError("selected-PV repair entered during a TT transaction")
-        self._tt.clear()
-        self._selected_pv_leaf_override_hits.clear()
-        score, child_pv, proof_bounds = self._minimax(
-            candidate.series.final_state,
-            depth - 1,
-            -MATE_SCORE * 2,
-            MATE_SCORE * 2,
-            1,
+        proof_set_identity: _SelectedPvProofSetIdentity = (
+            candidate.series.moves,
+            candidate.series.san,
+            self._tt_key(candidate.series.final_state),
+            candidate.series.ended_by_check,
+            candidate.series.outcome,
+            candidate.series.unused_moves,
+            candidate.series.transposition_count,
+            tuple(
+                sorted(proof.identity_sha256 for proof in state.retained_proofs)
+            ),
         )
-        if proof_keys[-1] not in self._selected_pv_leaf_override_hits:
-            raise _WorkLimit
-        return ScoredSeries(
-            candidate.series,
-            score,
-            child_pv,
-            proof_bounds,
-        )
+        proof_tt = self._selected_pv_proof_tt_namespaces.get(proof_set_identity)
+        new_namespace = proof_tt is None
+        if proof_tt is None:
+            if (
+                len(self._selected_pv_proof_tt_namespaces)
+                >= SELECTED_PV_PROOF_TT_NAMESPACE_CAPACITY
+            ):
+                self._selected_pv_proof_tt_namespaces.popitem(last=False)
+            proof_tt = {}
+            self._selected_pv_proof_tt_namespaces[proof_set_identity] = proof_tt
+
+        ordinary_tt = self._tt
+        ordinary_overrides = self._selected_pv_leaf_mate_overrides
+        ordinary_override_hits = self._selected_pv_leaf_override_hits
+        proof_override_hits: set[_TTKey] = set()
+        self._tt = proof_tt
+        self._selected_pv_leaf_mate_overrides = proof_overrides
+        self._selected_pv_leaf_override_hits = proof_override_hits
+        completed = False
+        try:
+            score, child_pv, proof_bounds = self._minimax(
+                candidate.series.final_state,
+                depth - 1,
+                -MATE_SCORE * 2,
+                MATE_SCORE * 2,
+                1,
+            )
+            if proof_keys[-1] not in proof_override_hits:
+                raise _WorkLimit
+            completed = True
+            return ScoredSeries(
+                candidate.series,
+                score,
+                child_pv,
+                proof_bounds,
+            )
+        finally:
+            self._tt = ordinary_tt
+            self._selected_pv_leaf_mate_overrides = ordinary_overrides
+            self._selected_pv_leaf_override_hits = ordinary_override_hits
+            if not completed:
+                proof_tt.clear()
+                if new_namespace:
+                    self._selected_pv_proof_tt_namespaces.pop(
+                        proof_set_identity,
+                        None,
+                    )
 
     def _repair_selected_root_native(
         self,
@@ -1727,37 +1916,49 @@ class SeriesSearcher:
         session = self._native_subtree_session
         if session is None:  # pragma: no cover - caller invariant
             raise RuntimeError("native selected-PV repair has no session")
-        external_work, remaining_nanoseconds = self._native_work_context()
-        manifest = session.enumerate_root(
-            root,
-            preferred_series=candidate.series.machine_notation,
-            external_work=external_work,
-            remaining_nanoseconds=remaining_nanoseconds,
-            forced_preferred=candidate.series,
-        )
-        self._sync_native_subtree_stats(manifest.work.cumulative_stats)
-        self._selective = self._selective or manifest.selective
-        self._evaluation_work_limit_reached = (
-            self._evaluation_work_limit_reached
-            or manifest.evaluation_work_limit_reached
-        )
-        if manifest.status == 1:
-            raise _WorkLimit
-        if manifest.status == 2:
-            raise _Timeout
-        if manifest.status == 3:
-            raise _AdjudicationPending
-        if manifest.status != 0:
-            raise _WorkLimit
-        retained = next(
-            (
-                item
-                for item in manifest.candidates
-                if item.order_key == candidate.series.machine_notation
-                and item.series == candidate.series
-            ),
-            None,
-        )
+        def enumerate_retained(forced: SeriesResult | None):
+            external_work, remaining_nanoseconds = self._native_work_context()
+            current_manifest = session.enumerate_root(
+                root,
+                preferred_series=candidate.series.machine_notation,
+                external_work=external_work,
+                remaining_nanoseconds=remaining_nanoseconds,
+                forced_preferred=forced,
+            )
+            self._sync_native_subtree_stats(
+                current_manifest.work.cumulative_stats
+            )
+            self._selective = self._selective or current_manifest.selective
+            self._evaluation_work_limit_reached = (
+                self._evaluation_work_limit_reached
+                or current_manifest.evaluation_work_limit_reached
+            )
+            if current_manifest.status == 1:
+                raise _WorkLimit
+            if current_manifest.status == 2:
+                raise _Timeout
+            if current_manifest.status == 3:
+                raise _AdjudicationPending
+            if current_manifest.status != 0:
+                raise _WorkLimit
+            current_retained = next(
+                (
+                    item
+                    for item in current_manifest.candidates
+                    if item.order_key == candidate.series.machine_notation
+                    and item.series == candidate.series
+                ),
+                None,
+            )
+            return current_manifest, current_retained
+
+        # Most Python-owned roots already exist in the native retained width.
+        # Reuse that canonical manifest without paying for an unnecessary
+        # authoritative replay. Only force-retain the selected legal root when
+        # the independent native ordering really omitted it.
+        manifest, retained = enumerate_retained(None)
+        if retained is None:
+            manifest, retained = enumerate_retained(candidate.series)
         if retained is None:
             raise _WorkLimit
         native_proofs = tuple(
@@ -1816,7 +2017,7 @@ class SeriesSearcher:
         state: CandidateHorizonState,
     ) -> ScoredSeries:
         if self._native_subtree_session is None:
-            return self._repair_selected_root_python(candidate, depth, state)
+            return self._repair_selected_root_python(root, candidate, depth, state)
         return self._repair_selected_root_native(root, candidate, depth, state)
 
     def _mark_root_child_proven_mate(

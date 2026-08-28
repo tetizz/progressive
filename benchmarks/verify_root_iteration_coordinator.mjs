@@ -921,7 +921,7 @@ async function testCheckedPvPolicyVeto() {
   assert.equal(result.selected.safety_override, false);
   assert.equal(
     result.selection_policy,
-    "repair-once-then-veto-adverse-checked-pv-mates-v1",
+    "repair-once-then-veto-adverse-selected-pv-boundary-mates-v2",
   );
   assert.equal(result.selection_policy_filtered, true);
   assert.equal(result.pv_horizon_line_rejections, 1);

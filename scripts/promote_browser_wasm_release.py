@@ -42,17 +42,29 @@ BROWSER_PREFIX_SCHEMA = "spc-browser-prefix-contract-receipt-v1"
 MATE_PARITY_SCHEMA = "spc-mate-wasm-receipt-v3"
 OPERA_CDP_SCHEMA = "spc-opera-root-session-cdp-receipt-v1"
 OPERA_WORKER_SCHEMA = "spc-opera-root-d5-benchmark-v2"
-OPERA_CHECKED_HORIZON_SCHEMA = "spc-opera-checked-pv-horizon-receipt-v5"
+OPERA_CHECKED_HORIZON_SCHEMA = "spc-opera-checked-pv-horizon-receipt-v6"
 OPERA_CHECKED_HORIZON_FILENAME = "opera-checked-pv-horizon-receipt.json"
 CANDIDATE_SCHEMA = "spc-browser-wasm-release-candidate-v1"
 CHECKED_HORIZON_EVIDENCE_SCHEMA = "spc-checked-horizon-wasm-evidence-v1"
-CHECKED_PV_SELECTION_POLICY = "repair-once-then-veto-adverse-checked-pv-mates-v1"
+CHECKED_PV_SELECTION_POLICY = (
+    "repair-once-then-veto-adverse-selected-pv-boundary-mates-v2"
+)
 SAME_ROOT_REPAIR_POLICY_SCHEMA = "spc-same-root-horizon-repair-policy-v1"
 PV_HORIZON_POLICY_VETO_SCHEMA = "spc-pv-horizon-candidate-veto-v1"
 THRESHOLD_VETO_WITNESS_SCHEMA = "spc-opera-same-root-repair-limit-witness-v1"
 SELECTED_D5_HORIZON_CERTIFICATION_SCHEMA = (
-    "spc-opera-selected-d5-horizon-certification-v1"
+    "spc-opera-selected-d5-boundary-ladder-certification-v2"
 )
+BOUNDARY_LADDER_PROBE_SCHEMA = "spc-opera-selected-pv-boundary-probe-v1"
+FOUND_STOP_WITNESS_SCHEMA = "spc-opera-selected-pv-found-stop-witness-v1"
+UNKNOWN_FAIL_CLOSED_WITNESS_SCHEMA = (
+    "spc-opera-selected-pv-unknown-fail-closed-witness-v1"
+)
+UNKNOWN_FAIL_CLOSED_EVIDENCE_SCHEMA = (
+    "spc-opera-selected-pv-unknown-fail-closed-evidence-v1"
+)
+UNKNOWN_CREDIT_CONSTRAINT_SCHEMA = "spc-opera-boundary-probe-credit-constraint-v1"
+BOUNDARY_LADDER_ORDER = "leaf-first-odd-rooted-prefix"
 RAW_TRACE_ATTESTATION_SCHEMA = "spc-opera-checked-pv-raw-trace-attestation-v1"
 SELECTED_D5_FIXTURE_ID = "b3-known-adverse-series5-2026-08-26-v1"
 MAXIMUM_SUCCESSFUL_SAME_ROOT_REPAIRS = 1
@@ -132,8 +144,11 @@ OPERA_CHECKED_HORIZON_CHECKS = frozenset(
         "selected_b3_after_f3_policy_veto",
         "selected_b3_full_d5_pv_bound_to_compiled_trace",
         "selected_b3_known_adverse_series5_horizon_absent",
-        "selected_b3_horizon_exhaustively_certified",
-        "selected_b3_root_child_exhaustively_certified",
+        "selected_b3_ordered_boundary_ladder_certified",
+        "selected_b3_boundary_ladder_authoritative_replay",
+        "selected_b3_boundary_ladder_work_conserved",
+        "f3_found_stops_boundary_ladder",
+        "unknown_fail_closed_observed",
         "global_work_respected",
         "no_interruption",
         "deadline_respected",
@@ -210,6 +225,9 @@ class OperaCheckedHorizonEvidence:
     principal_variation_sha256: str
     selected_fixture_id: str
     known_adverse_excluded: bool
+    selected_boundary_ladder_certified: bool
+    found_stop_observed: bool
+    unknown_fail_closed_observed: bool
     selected_horizon_exhaustively_certified: bool
     selected_root_child_exhaustively_certified: bool
     raw_safety_trace_count: int
@@ -1110,7 +1128,11 @@ def _validate_retained_proof(value: object, *, root: str, depth: int, label: str
     if set(proof) != {"schema", "rooted_path", "mate_reply"} or proof.get("schema") != "spc-retained-root-horizon-proof-v1":
         raise ReleaseGateError(f"{label} does not have the exact retained-proof shape")
     path = _list(proof.get("rooted_path"), f"{label} rooted path")
-    if len(path) != depth + 1 or len(path) > 8:
+    if (
+        not 1 <= len(path) <= depth + 1
+        or len(path) > 8
+        or len(path) % 2 != 1
+    ):
         raise ReleaseGateError(f"{label} rooted path has the wrong depth")
     normalized_path = [
         _validate_series(item, f"{label} rooted series {index}")
@@ -4369,14 +4391,11 @@ def validate_opera_checked_horizon_receipt(
         "selected_series5_semantic_sha256",
         "known_adverse_series5_semantic_sha256",
         "known_adverse_present",
-        "horizon_request_sequence",
-        "horizon_status",
-        "horizon_call_work_credit",
-        "horizon_work_used",
-        "root_child_request_sequence",
-        "root_child_status",
-        "root_child_call_work_credit",
-        "root_child_work_used",
+        "boundary_probe_order",
+        "expected_nonterminal_rooted_path_lengths",
+        "boundary_probes",
+        "found_stop_witness",
+        "unknown_fail_closed_witness_sha256",
         "safety_work_used",
         "safety_call_work_credit",
     }
@@ -4422,91 +4441,25 @@ def validate_opera_checked_horizon_receipt(
     if selected_series5_semantic_sha256 == known_adverse_semantic_sha256:
         raise ReleaseGateError("Opera checked-PV selected b3 retained the known adverse series 5")
 
-    selected_horizon_candidates = [
-        trace
-        for trace in normalized_raw_safety
-        if _mapping(trace.get("request"), "Opera checked-PV selected horizon request")
-        .get("candidate", {})
-        .get("order_key")
-        == selected_root
-        and _mapping(trace.get("request"), "Opera checked-PV selected horizon request")
-        .get("candidate", {})
-        .get("root_series", {})
-        .get("machine_notation")
-        == selected_series5.get("machine_notation")
-        and _mapping(trace.get("request"), "Opera checked-PV selected horizon request").get(
-            "call_work_credit"
-        )
-        == PV_HORIZON_MATE_WORK_LIMIT
-        and _mapping(trace.get("response"), "Opera checked-PV selected horizon response").get(
-            "status"
-        )
-        == "exhausted"
+    expected_ladder = [
+        (5, 4, "pv-horizon", principal_variation[4], principal_variation[3]["child_boundary"]),
+        (3, 2, "pv-horizon", principal_variation[2], principal_variation[1]["child_boundary"]),
+        (1, 0, "root-child", principal_variation[0], _boundary_from_state(ProgressiveState.initial())),
     ]
-    if len(selected_horizon_candidates) != 1:
-        raise ReleaseGateError("Opera checked-PV selected b3 horizon is not uniquely exhausted")
-    selected_horizon = _validate_exhausted_safety_trace(
-        selected_horizon_candidates[0],
-        expected_root=selected_root,
-        expected_series=selected_series5,
-        expected_parent_boundary=_mapping(
-            principal_variation[-2].get("child_boundary"),
-            "Opera checked-PV selected horizon parent",
-        ),
-        expected_replay_suffix="pv-horizon-replay-4",
-        expected_call_work_credit=PV_HORIZON_MATE_WORK_LIMIT,
-        root_identity=root_identity,
-        prefix_identity=prefix_identity,
-        maximum_work=CERTIFIED_SAFETY_RESERVE_POSITIONS,
-        label="Opera checked-PV selected b3 horizon exhaustion",
-    )
-    horizon_request = _mapping(selected_horizon["request"], "selected horizon request")
-    horizon_response = _mapping(selected_horizon["response"], "selected horizon response")
-    root_child_credit = CERTIFIED_SAFETY_RESERVE_POSITIONS - int(
-        horizon_response.get("work_used")
-    )
-    selected_root_child_candidates = [
-        trace
-        for trace in normalized_raw_safety
-        if _mapping(trace.get("request"), "Opera checked-PV selected root-child request")
-        .get("candidate", {})
-        .get("order_key")
-        == selected_root
-        and _mapping(trace.get("request"), "Opera checked-PV selected root-child request")
-        .get("candidate", {})
-        .get("root_series", {})
-        .get("machine_notation")
-        == principal_variation[0].get("machine_notation")
-        and _mapping(trace.get("request"), "Opera checked-PV selected root-child request").get(
-            "call_work_credit"
+    if (
+        selected_witness.get("boundary_probe_order") != BOUNDARY_LADDER_ORDER
+        or selected_witness.get("expected_nonterminal_rooted_path_lengths") != [5, 3, 1]
+    ):
+        raise ReleaseGateError(
+            "Opera checked-PV selected D5 boundary ladder is not leaf-first odd-prefix order"
         )
-        == root_child_credit
-        and _mapping(trace.get("response"), "Opera checked-PV selected root-child response").get(
-            "status"
-        )
-        == "exhausted"
-    ]
-    if len(selected_root_child_candidates) != 1:
-        raise ReleaseGateError("Opera checked-PV selected b3 root-child is not uniquely exhausted")
-    selected_root_child = _validate_exhausted_safety_trace(
-        selected_root_child_candidates[0],
-        expected_root=selected_root,
-        expected_series=principal_variation[0],
-        expected_parent_boundary=_boundary_from_state(ProgressiveState.initial()),
-        expected_replay_suffix="root-child-replay-0",
-        expected_call_work_credit=root_child_credit,
-        root_identity=root_identity,
-        prefix_identity=prefix_identity,
-        maximum_work=CERTIFIED_SAFETY_RESERVE_POSITIONS,
-        label="Opera checked-PV selected b3 root-child exhaustion",
+    probe_records = _list(
+        selected_witness.get("boundary_probes"),
+        "Opera checked-PV selected D5 boundary probes",
     )
-    root_child_request = _mapping(selected_root_child["request"], "selected root-child request")
-    root_child_response = _mapping(selected_root_child["response"], "selected root-child response")
-    horizon_candidate = _mapping(horizon_request.get("candidate"), "selected horizon candidate")
-    root_child_candidate = _mapping(
-        root_child_request.get("candidate"),
-        "selected root-child candidate",
-    )
+    if len(probe_records) != len(expected_ladder):
+        raise ReleaseGateError("Opera checked-PV selected D5 boundary ladder is incomplete")
+
     expected_candidate_keys = {
         "candidate_identity",
         "order_index",
@@ -4520,60 +4473,128 @@ def validate_opera_checked_horizon_receipt(
         "safety_override",
         "mate_claim_quarantined",
     }
-    if (
-        set(horizon_candidate) != expected_candidate_keys
-        or set(root_child_candidate) != expected_candidate_keys
-        or selected_root_child["request_sequence"] <= selected_horizon["request_sequence"]
-        or selected_root_child["posted_monotonic_ms"]
-        < selected_horizon["received_monotonic_ms"]
-        or selected_root_child["worker"] != selected_horizon["worker"]
-        or any(
-            root_child_request.get(key) != horizon_request.get(key)
-            for key in (
-                "session_id",
-                "request_id",
-                "iteration_id",
-                "generation",
-                "safety_revision",
-                "incumbent_epoch",
-                "deadline_monotonic_ms",
-                "deadline_epoch_ms",
-                "candidate_identity",
+    expected_probe_keys = {
+        "schema",
+        "rooted_path_length",
+        "scope",
+        "replay_index",
+        "request_sequence",
+        "status",
+        "call_work_credit",
+        "work_used",
+        "cumulative_work_before",
+        "cumulative_work_after",
+        "cache",
+    }
+    selected_ladder: list[dict[str, Any]] = []
+    cumulative_work = 0
+    prior_trace: dict[str, Any] | None = None
+    prior_request: Mapping[str, Any] | None = None
+    prior_candidate: Mapping[str, Any] | None = None
+    seen_sequences: set[int] = set()
+    for ladder_index, (probe_value, expected) in enumerate(zip(probe_records, expected_ladder)):
+        rooted_length, replay_index, scope, expected_series, parent_boundary = expected
+        probe = dict(_mapping(probe_value, f"Opera checked-PV boundary probe {ladder_index}"))
+        if set(probe) != expected_probe_keys:
+            raise ReleaseGateError("Opera checked-PV boundary probe has the wrong shape")
+        sequence = _integer(
+            probe.get("request_sequence"),
+            f"Opera checked-PV boundary probe {ladder_index} request sequence",
+            1,
+        )
+        if sequence in seen_sequences:
+            raise ReleaseGateError("Opera checked-PV boundary ladder reused a Worker request")
+        seen_sequences.add(sequence)
+        matches = [trace for trace in normalized_raw_safety if trace["request_sequence"] == sequence]
+        if len(matches) != 1:
+            raise ReleaseGateError("Opera checked-PV boundary probe is not uniquely raw-trace bound")
+        remaining_probes = len(expected_ladder) - ladder_index
+        remaining_credit = CERTIFIED_SAFETY_RESERVE_POSITIONS - cumulative_work
+        expected_credit = (
+            remaining_credit
+            if scope == "root-child"
+            else min(PV_HORIZON_MATE_WORK_LIMIT, remaining_credit - (remaining_probes - 1))
+        )
+        trace = _validate_exhausted_safety_trace(
+            matches[0],
+            expected_root=selected_root,
+            expected_series=expected_series,
+            expected_parent_boundary=parent_boundary,
+            expected_replay_suffix=f"{scope}-replay-{replay_index}",
+            expected_call_work_credit=expected_credit,
+            root_identity=root_identity,
+            prefix_identity=prefix_identity,
+            maximum_work=CERTIFIED_SAFETY_RESERVE_POSITIONS,
+            label=f"Opera checked-PV selected boundary probe {rooted_length}",
+        )
+        request = _mapping(trace["request"], f"selected boundary {rooted_length} request")
+        response = _mapping(trace["response"], f"selected boundary {rooted_length} response")
+        candidate = _mapping(request.get("candidate"), f"selected boundary {rooted_length} candidate")
+        cache = dict(_mapping(probe.get("cache"), f"selected boundary {rooted_length} cache"))
+        work_used = _integer(response.get("work_used"), f"selected boundary {rooted_length} work", 1)
+        if (
+            probe.get("schema") != BOUNDARY_LADDER_PROBE_SCHEMA
+            or probe.get("rooted_path_length") != rooted_length
+            or probe.get("scope") != scope
+            or probe.get("replay_index") != replay_index
+            or probe.get("status") != "exhausted"
+            or probe.get("call_work_credit") != expected_credit
+            or probe.get("work_used") != work_used
+            or probe.get("cumulative_work_before") != cumulative_work
+            or probe.get("cumulative_work_after") != cumulative_work + work_used
+            or cache != {
+                "schema": "spc-root-mate-proof-cache-receipt-v1",
+                "hit": False,
+                "proof_status": "exhausted",
+                "evidence": "native-worker-dispatch",
+            }
+            or set(candidate) != expected_candidate_keys
+            or candidate.get("owner_worker_id")
+            != _mapping(trace.get("worker"), "selected boundary Worker").get("channel_id")
+            or candidate.get("score") != summary.get("score")
+            or candidate.get("proof_bounds") != summary.get("proof_bounds")
+            or candidate.get("child_pv") != principal_variation[1:]
+            or candidate.get("terminal") is not False
+            or candidate.get("safety_override") is not False
+            or candidate.get("mate_claim_quarantined") is not False
+        ):
+            raise ReleaseGateError(
+                "Opera checked-PV selected boundary probe drifted from its replay, work, or cache receipt"
             )
-        )
-        or int(root_child_request.get("remaining_time_ms"))
-        > int(horizon_request.get("remaining_time_ms"))
-        or horizon_request.get("generation") != 1
-        or horizon_request.get("session_id") != 1
-        or any(
-            root_child_candidate.get(key) != horizon_candidate.get(key)
-            for key in (
-                "candidate_identity",
-                "order_index",
-                "order_key",
-                "score",
-                "terminal",
-                "owner_worker_id",
-                "proof_bounds",
-                "child_pv",
-                "safety_override",
-                "mate_claim_quarantined",
-            )
-        )
-        or horizon_candidate.get("owner_worker_id")
-        != _mapping(selected_horizon.get("worker"), "selected horizon Worker").get(
-            "channel_id"
-        )
-        or horizon_candidate.get("score") != summary.get("score")
-        or horizon_candidate.get("proof_bounds") != summary.get("proof_bounds")
-        or horizon_candidate.get("child_pv") != principal_variation[1:]
-        or horizon_candidate.get("terminal") is not False
-        or horizon_candidate.get("safety_override") is not False
-        or horizon_candidate.get("mate_claim_quarantined") is not False
-    ):
-        raise ReleaseGateError(
-            "Opera checked-PV selected b3 safety stages are not bound to the same Worker and search"
-        )
+        if prior_trace is not None and prior_request is not None and prior_candidate is not None:
+            if (
+                trace["request_sequence"] <= prior_trace["request_sequence"]
+                or trace["posted_monotonic_ms"] < prior_trace["received_monotonic_ms"]
+                or trace["worker"] != prior_trace["worker"]
+                or any(
+                    request.get(key) != prior_request.get(key)
+                    for key in (
+                        "session_id", "request_id", "iteration_id", "generation",
+                        "safety_revision", "incumbent_epoch", "deadline_monotonic_ms",
+                        "deadline_epoch_ms", "candidate_identity",
+                    )
+                )
+                or int(request.get("remaining_time_ms"))
+                > int(prior_request.get("remaining_time_ms"))
+                or any(
+                    candidate.get(key) != prior_candidate.get(key)
+                    for key in (
+                        "candidate_identity", "order_index", "order_key", "score",
+                        "terminal", "owner_worker_id", "proof_bounds", "child_pv",
+                        "safety_override", "mate_claim_quarantined",
+                    )
+                )
+            ):
+                raise ReleaseGateError(
+                    "Opera checked-PV boundary ladder is not one ordered Worker search"
+                )
+        elif request.get("generation") != 1 or request.get("session_id") != 1:
+            raise ReleaseGateError("Opera checked-PV boundary ladder has the wrong root session")
+        cumulative_work += work_used
+        selected_ladder.append(trace)
+        prior_trace = trace
+        prior_request = request
+        prior_candidate = candidate
 
     known_adverse_present = any(
         _mapping(trace.get("request"), "Opera checked-PV raw selected safety request")
@@ -4599,18 +4620,381 @@ def validate_opera_checked_horizon_receipt(
     if known_adverse_present:
         raise ReleaseGateError("Opera checked-PV selected b3 trace contains the known adverse series 5")
 
-    horizon_work = int(horizon_response.get("work_used"))
-    root_child_work = int(root_child_response.get("work_used"))
+    first_selected_request = _mapping(
+        selected_ladder[0]["request"],
+        "Opera checked-PV first selected boundary request",
+    )
+    first_selected_worker = _mapping(
+        selected_ladder[0]["worker"],
+        "Opera checked-PV first selected boundary Worker",
+    )
+    found_stop = dict(
+        _mapping(
+            selected_witness.get("found_stop_witness"),
+            "Opera checked-PV FOUND-stop witness",
+        )
+    )
+    expected_found_stop_keys = {
+        "schema",
+        "selected_root_series",
+        "candidate_identity",
+        "found_request_sequence",
+        "found_rooted_path_length",
+        "found_status",
+        "next_research_request_sequence",
+        "shallower_worker_dispatches_before_repair",
+        "action",
+    }
+    f3_safety_request = _mapping(f3_safety["request"], "Opera checked-PV f3 safety request")
+    shallower_before_repair = [
+        trace
+        for trace in normalized_raw_safety
+        if f3_safety["request_sequence"] < trace["request_sequence"] < f3_repair["request_sequence"]
+        and _mapping(trace.get("request"), "Opera checked-PV intervening safety request").get(
+            "candidate_identity"
+        )
+        == f3_safety_request.get("candidate_identity")
+        and _mapping(trace.get("request"), "Opera checked-PV intervening safety request").get(
+            "safety_revision"
+        )
+        == f3_safety_request.get("safety_revision")
+    ]
+    if (
+        set(found_stop) != expected_found_stop_keys
+        or found_stop.get("schema") != FOUND_STOP_WITNESS_SCHEMA
+        or found_stop.get("selected_root_series") != "f2f3"
+        or found_stop.get("candidate_identity") != f3_safety_request.get("candidate_identity")
+        or found_stop.get("found_request_sequence") != f3_safety["request_sequence"]
+        or found_stop.get("found_rooted_path_length")
+        != len(_list(first_proof.get("rooted_path"), "Opera checked-PV first proof path"))
+        or found_stop.get("found_status") != "found"
+        or found_stop.get("next_research_request_sequence") != f3_repair["request_sequence"]
+        or found_stop.get("shallower_worker_dispatches_before_repair") != 0
+        or shallower_before_repair
+        or found_stop.get("action") != "stop-and-reject-selected-line"
+    ):
+        raise ReleaseGateError("Opera checked-PV FOUND did not stop the boundary ladder")
+
+    unknown_evidence = dict(
+        _mapping(
+            payload.get("unknown_fail_closed_evidence"),
+            "Opera checked-PV UNKNOWN fail-closed evidence",
+        )
+    )
+    if set(unknown_evidence) != {
+        "schema",
+        "worker_factory_calls",
+        "trusted_worker_events_only",
+        "raw_horizon_safety_traces",
+        "raw_horizon_research_traces",
+        "result_summary",
+        "witness",
+    } or (
+        unknown_evidence.get("schema") != UNKNOWN_FAIL_CLOSED_EVIDENCE_SCHEMA
+        or unknown_evidence.get("trusted_worker_events_only") is not True
+    ):
+        raise ReleaseGateError("Opera checked-PV UNKNOWN evidence has the wrong shape")
+
+    unknown_workers = [
+        _worker_identity(value, f"Opera checked-PV UNKNOWN Worker {index}")
+        for index, value in enumerate(
+            _list(
+                unknown_evidence.get("worker_factory_calls"),
+                "Opera checked-PV UNKNOWN Worker factory calls",
+            )
+        )
+    ]
+    if unknown_workers != normalized_workers:
+        raise ReleaseGateError(
+            "Opera checked-PV UNKNOWN run did not use a fresh exact native Worker factory"
+        )
+
+    unknown_raw_safety = _list(
+        unknown_evidence.get("raw_horizon_safety_traces"),
+        "Opera checked-PV UNKNOWN raw safety traces",
+    )
+    unknown_raw_research = _list(
+        unknown_evidence.get("raw_horizon_research_traces"),
+        "Opera checked-PV UNKNOWN raw research traces",
+    )
+    unknown_witness = dict(
+        _mapping(
+            unknown_evidence.get("witness"),
+            "Opera checked-PV UNKNOWN fail-closed witness",
+        )
+    )
+    unknown_attestation = dict(
+        _mapping(
+            unknown_witness.get("raw_trace_attestation"),
+            "Opera checked-PV UNKNOWN raw trace attestation",
+        )
+    )
+    if (
+        set(unknown_attestation)
+        != {
+            "schema",
+            "horizon_safety_trace_count",
+            "horizon_safety_trace_sha256",
+            "horizon_research_trace_count",
+            "horizon_research_trace_sha256",
+        }
+        or unknown_attestation.get("schema") != RAW_TRACE_ATTESTATION_SCHEMA
+        or unknown_attestation.get("horizon_safety_trace_count")
+        != len(unknown_raw_safety)
+        or unknown_attestation.get("horizon_safety_trace_sha256")
+        != _canonical_sha256(unknown_raw_safety)
+        or unknown_attestation.get("horizon_research_trace_count")
+        != len(unknown_raw_research)
+        or unknown_attestation.get("horizon_research_trace_sha256")
+        != _canonical_sha256(unknown_raw_research)
+        or not unknown_raw_safety
+    ):
+        raise ReleaseGateError("Opera checked-PV UNKNOWN raw trace attestation drifted")
+
+    normalized_unknown_safety: list[dict[str, Any]] = []
+    for index, value in enumerate(unknown_raw_safety):
+        trace = _validate_trace_envelope(
+            value,
+            f"Opera checked-PV UNKNOWN raw safety trace {index}",
+        )
+        request = _require_fields_match(
+            trace["request"],
+            root_identity,
+            f"Opera checked-PV UNKNOWN raw safety request {index}",
+        )
+        response = _require_fields_match(
+            trace["response"],
+            root_identity,
+            f"Opera checked-PV UNKNOWN raw safety response {index}",
+        )
+        credit = _integer(request.get("call_work_credit"), "UNKNOWN safety credit", 1)
+        work_used = _integer(response.get("work_used"), "UNKNOWN safety work", 0)
+        if (
+            trace["worker"] not in unknown_workers
+            or request.get("schema") != "spc-root-safety-task-v1"
+            or response.get("status") not in {"found", "exhausted", "unknown"}
+            or any(response.get(key) != requested for key, requested in request.items())
+            or work_used > credit
+            or credit > CERTIFIED_SAFETY_RESERVE_POSITIONS
+            or _number(request.get("deadline_monotonic_ms"), "UNKNOWN safety deadline")
+            <= float(trace["received_monotonic_ms"])
+        ):
+            raise ReleaseGateError("Opera checked-PV UNKNOWN safety trace is not factory-bound")
+        normalized_unknown_safety.append(trace)
+
+    normalized_unknown_research: list[dict[str, Any]] = []
+    for index, value in enumerate(unknown_raw_research):
+        trace = _validate_trace_envelope(
+            value,
+            f"Opera checked-PV UNKNOWN raw research trace {index}",
+        )
+        request = _require_fields_match(
+            trace["request"],
+            root_identity,
+            f"Opera checked-PV UNKNOWN raw research request {index}",
+        )
+        response = _require_fields_match(
+            trace["response"],
+            root_identity,
+            f"Opera checked-PV UNKNOWN raw research response {index}",
+        )
+        if (
+            trace["worker"] not in unknown_workers
+            or request.get("schema") != "spc-root-horizon-research-task-v1"
+            or response.get("schema") != "spc-root-horizon-research-result-v1"
+        ):
+            raise ReleaseGateError("Opera checked-PV UNKNOWN research trace is not factory-bound")
+        normalized_unknown_research.append(trace)
+
+    expected_unknown_witness_keys = {
+        "schema",
+        "evidence_scope",
+        "selection_policy",
+        "selected_root_series",
+        "candidate_identity",
+        "owner_worker_id",
+        "fault_injection",
+        "deeper_exhausted_request_sequence",
+        "unknown_request_sequence",
+        "unknown_rooted_path_length",
+        "unknown_status",
+        "unknown_work_used",
+        "shallower_worker_dispatches_after_unknown",
+        "requested_depth",
+        "completed_depth",
+        "interruption_code",
+        "cache_entry_absent",
+        "unknown_action",
+        "shallower_probe_action",
+        "cache_policy",
+        "raw_trace_attestation",
+    }
+    injection = dict(
+        _mapping(
+            unknown_witness.get("fault_injection"),
+            "Opera checked-PV UNKNOWN constrained-credit injection",
+        )
+    )
+    unknown_result = dict(
+        _mapping(
+            unknown_evidence.get("result_summary"),
+            "Opera checked-PV UNKNOWN result summary",
+        )
+    )
+    if (
+        set(unknown_witness) != expected_unknown_witness_keys
+        or unknown_witness.get("schema") != UNKNOWN_FAIL_CLOSED_WITNESS_SCHEMA
+        or unknown_witness.get("evidence_scope")
+        != "observed-native-worker-constrained-credit"
+        or unknown_witness.get("selection_policy") != CHECKED_PV_SELECTION_POLICY
+        or unknown_witness.get("selected_root_series") != selected_root
+        or set(injection)
+        != {
+            "schema",
+            "target_rooted_path_length",
+            "original_call_work_credit",
+            "constrained_call_work_credit",
+            "injection_count",
+        }
+        or injection.get("schema") != UNKNOWN_CREDIT_CONSTRAINT_SCHEMA
+        or injection.get("target_rooted_path_length") != 3
+        or injection.get("constrained_call_work_credit") != 1
+        or injection.get("injection_count") != 1
+        or unknown_witness.get("unknown_rooted_path_length") != 3
+        or unknown_witness.get("unknown_status") != "unknown"
+        or unknown_witness.get("unknown_work_used") != 1
+        or unknown_witness.get("shallower_worker_dispatches_after_unknown") != 0
+        or unknown_witness.get("requested_depth") != 5
+        or unknown_witness.get("completed_depth") != 4
+        or unknown_witness.get("interruption_code") != "root-safety-unknown"
+        or unknown_witness.get("cache_entry_absent") is not True
+        or unknown_witness.get("unknown_action") != "stop-and-discard-current-depth"
+        or unknown_witness.get("shallower_probe_action") != "forbidden-after-unknown"
+        or unknown_witness.get("cache_policy") != "never-store-unknown"
+        or unknown_result
+        != {
+            "requested_depth": 5,
+            "completed_depth": 4,
+            "timed_out": False,
+            "work_limit_reached": False,
+            "interruption_code": "root-safety-unknown",
+            "selection_policy": CHECKED_PV_SELECTION_POLICY,
+        }
+    ):
+        raise ReleaseGateError("Opera checked-PV UNKNOWN witness is not observed fail-closed evidence")
+
+    deep_sequence = _integer(
+        unknown_witness.get("deeper_exhausted_request_sequence"),
+        "Opera checked-PV UNKNOWN deeper request sequence",
+        1,
+    )
+    unknown_sequence = _integer(
+        unknown_witness.get("unknown_request_sequence"),
+        "Opera checked-PV UNKNOWN request sequence",
+        deep_sequence + 1,
+    )
+    deep_matches = [
+        trace for trace in normalized_unknown_safety
+        if trace["request_sequence"] == deep_sequence
+    ]
+    unknown_matches = [
+        trace for trace in normalized_unknown_safety
+        if trace["request_sequence"] == unknown_sequence
+    ]
+    if len(deep_matches) != 1 or len(unknown_matches) != 1:
+        raise ReleaseGateError("Opera checked-PV UNKNOWN ladder traces are not uniquely bound")
+    deep_trace = _validate_exhausted_safety_trace(
+        deep_matches[0],
+        expected_root=selected_root,
+        expected_series=principal_variation[4],
+        expected_parent_boundary=principal_variation[3]["child_boundary"],
+        expected_replay_suffix="pv-horizon-replay-4",
+        expected_call_work_credit=PV_HORIZON_MATE_WORK_LIMIT,
+        root_identity=root_identity,
+        prefix_identity=prefix_identity,
+        maximum_work=CERTIFIED_SAFETY_RESERVE_POSITIONS,
+        label="Opera checked-PV UNKNOWN deeper boundary probe",
+    )
+    unknown_trace = json.loads(json.dumps(unknown_matches[0]))
+    actual_unknown_response = _mapping(
+        unknown_trace.get("response"),
+        "Opera checked-PV UNKNOWN boundary response",
+    )
+    if actual_unknown_response.get("status") != "unknown":
+        raise ReleaseGateError("Opera checked-PV UNKNOWN boundary did not return UNKNOWN")
+    unknown_trace["response"]["status"] = "exhausted"
+    _validate_exhausted_safety_trace(
+        unknown_trace,
+        expected_root=selected_root,
+        expected_series=principal_variation[2],
+        expected_parent_boundary=principal_variation[1]["child_boundary"],
+        expected_replay_suffix="pv-horizon-replay-2",
+        expected_call_work_credit=1,
+        root_identity=root_identity,
+        prefix_identity=prefix_identity,
+        maximum_work=CERTIFIED_SAFETY_RESERVE_POSITIONS,
+        label="Opera checked-PV UNKNOWN internal boundary probe",
+    )
+    deep_request = _mapping(deep_trace["request"], "Opera checked-PV UNKNOWN deep request")
+    unknown_request = _mapping(
+        unknown_matches[0]["request"],
+        "Opera checked-PV UNKNOWN internal request",
+    )
+    original_credit = CERTIFIED_SAFETY_RESERVE_POSITIONS - int(
+        _mapping(deep_trace["response"], "Opera checked-PV UNKNOWN deep response")["work_used"]
+    ) - 1
+    shallower_after_unknown = [
+        trace
+        for trace in normalized_unknown_safety
+        if trace["request_sequence"] > unknown_sequence
+        and _mapping(trace["request"], "Opera checked-PV UNKNOWN later request").get(
+            "candidate_identity"
+        )
+        == unknown_request.get("candidate_identity")
+        and str(
+            _mapping(
+                _mapping(trace["request"], "Opera checked-PV UNKNOWN later request").get(
+                    "authoritative_root_replay"
+                ),
+                "Opera checked-PV UNKNOWN later replay",
+            ).get("request_id", "")
+        ).endswith(":root-child-replay-0")
+    ]
+    if (
+        deep_trace["worker"] != unknown_matches[0]["worker"]
+        or unknown_matches[0]["posted_monotonic_ms"] < deep_trace["received_monotonic_ms"]
+        or injection.get("original_call_work_credit") != original_credit
+        or unknown_witness.get("candidate_identity")
+        != unknown_request.get("candidate_identity")
+        or unknown_witness.get("owner_worker_id")
+        != _mapping(unknown_matches[0]["worker"], "Opera checked-PV UNKNOWN Worker").get(
+            "channel_id"
+        )
+        or any(
+            deep_request.get(key) != unknown_request.get(key)
+            for key in (
+                "session_id",
+                "request_id",
+                "iteration_id",
+                "generation",
+                "safety_revision",
+                "incumbent_epoch",
+                "candidate_identity",
+            )
+        )
+        or shallower_after_unknown
+        or selected_witness.get("unknown_fail_closed_witness_sha256")
+        != _canonical_sha256(unknown_witness)
+    ):
+        raise ReleaseGateError("Opera checked-PV UNKNOWN did not stop and discard D5 exactly")
     if (
         selected_witness.get("schema") != SELECTED_D5_HORIZON_CERTIFICATION_SCHEMA
         or selected_witness.get("fixture_id") != SELECTED_D5_FIXTURE_ID
         or selected_witness.get("selected_root_series") != selected_root
         or selected_witness.get("candidate_identity")
-        != horizon_request.get("candidate_identity")
+        != first_selected_request.get("candidate_identity")
         or selected_witness.get("owner_worker_id")
-        != _mapping(selected_horizon.get("worker"), "selected horizon Worker").get(
-            "channel_id"
-        )
+        != first_selected_worker.get("channel_id")
         or selected_witness.get("principal_variation_sha256")
         != principal_variation_sha256
         or selected_witness.get("selected_series5_semantic_sha256")
@@ -4618,24 +5002,14 @@ def validate_opera_checked_horizon_receipt(
         or selected_witness.get("known_adverse_series5_semantic_sha256")
         != known_adverse_semantic_sha256
         or selected_witness.get("known_adverse_present") is not False
-        or selected_witness.get("horizon_request_sequence")
-        != selected_horizon.get("request_sequence")
-        or selected_witness.get("horizon_status") != "exhausted"
-        or selected_witness.get("horizon_call_work_credit")
-        != PV_HORIZON_MATE_WORK_LIMIT
-        or selected_witness.get("horizon_work_used") != horizon_work
-        or selected_witness.get("root_child_request_sequence")
-        != selected_root_child.get("request_sequence")
-        or selected_witness.get("root_child_status") != "exhausted"
-        or selected_witness.get("root_child_call_work_credit") != root_child_credit
-        or selected_witness.get("root_child_work_used") != root_child_work
-        or selected_witness.get("safety_work_used") != horizon_work + root_child_work
+        or found_stop != selected_witness.get("found_stop_witness")
+        or selected_witness.get("safety_work_used") != cumulative_work
         or selected_witness.get("safety_call_work_credit")
         != CERTIFIED_SAFETY_RESERVE_POSITIONS
-        or horizon_work + root_child_work > CERTIFIED_SAFETY_RESERVE_POSITIONS
+        or cumulative_work > CERTIFIED_SAFETY_RESERVE_POSITIONS
     ):
         raise ReleaseGateError(
-            "Opera checked-PV selected D5 horizon witness digest or identity drifted"
+            "Opera checked-PV selected D5 boundary-ladder witness digest or identity drifted"
         )
 
     return OperaCheckedHorizonEvidence(
@@ -4650,6 +5024,9 @@ def validate_opera_checked_horizon_receipt(
         principal_variation_sha256=principal_variation_sha256,
         selected_fixture_id=SELECTED_D5_FIXTURE_ID,
         known_adverse_excluded=True,
+        selected_boundary_ladder_certified=True,
+        found_stop_observed=True,
+        unknown_fail_closed_observed=True,
         selected_horizon_exhaustively_certified=True,
         selected_root_child_exhaustively_certified=True,
         raw_safety_trace_count=len(raw_safety_traces),
@@ -4947,6 +5324,13 @@ def promote_release(
                     ),
                     "selected_fixture_id": checked_horizon.selected_fixture_id,
                     "known_adverse_excluded": checked_horizon.known_adverse_excluded,
+                    "selected_boundary_ladder_certified": (
+                        checked_horizon.selected_boundary_ladder_certified
+                    ),
+                    "found_stop_observed": checked_horizon.found_stop_observed,
+                    "unknown_fail_closed_observed": (
+                        checked_horizon.unknown_fail_closed_observed
+                    ),
                     "selected_horizon_exhaustively_certified": (
                         checked_horizon.selected_horizon_exhaustively_certified
                     ),
@@ -4993,6 +5377,15 @@ def promote_release(
                 ),
                 "opera_selected_b3_known_adverse_horizon_excluded": (
                     checked_horizon.known_adverse_excluded
+                ),
+                "opera_selected_b3_boundary_ladder_certified": (
+                    checked_horizon.selected_boundary_ladder_certified
+                ),
+                "opera_found_stops_boundary_ladder": (
+                    checked_horizon.found_stop_observed
+                ),
+                "opera_unknown_fail_closed_observed": (
+                    checked_horizon.unknown_fail_closed_observed
                 ),
                 "opera_selected_b3_horizon_exhaustively_certified": (
                     checked_horizon.selected_horizon_exhaustively_certified

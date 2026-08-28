@@ -17,7 +17,7 @@ BROWSER_CHECKED_PV_SELECTION_POLICY = (
     "repair-once-then-veto-adverse-checked-pv-mates-v1"
 )
 SELECTED_PV_SELECTION_POLICY = (
-    "repair-once-then-veto-adverse-selected-pv-mates-v1"
+    "repair-once-then-veto-adverse-selected-pv-boundary-mates-v2"
 )
 RETAINED_ROOT_HORIZON_PROOF_SCHEMA = "spc-retained-root-horizon-proof-v1"
 SAME_ROOT_HORIZON_REPAIR_POLICY_SCHEMA = (
@@ -197,13 +197,13 @@ def certify_selected_pv_horizon(
     selected_pv: tuple[SeriesResult, ...],
     probe: Callable[[ProgressiveState], SeriesMateProbe],
 ) -> SelectedPvHorizonCertification:
-    """Certifies the adverse one-series horizon after one selected canonical PV.
+    """Certifies every adverse one-series boundary on one selected canonical PV.
 
-    Every supplied series is replayed through the rules oracle. A terminal leaf
-    or a leaf where the root mover acts next needs no adverse-mate probe. For an
-    opponent-to-move leaf, only exact native ``EXHAUSTED`` is safe. ``FOUND``
-    carries a second replayed mate proof into same-root repair; every resource
-    or compatibility stop remains UNKNOWN and cannot certify the selection.
+    Every supplied series is replayed through the rules oracle. Nonterminal
+    opponent-to-move boundaries are probed leaf-first. Only exact native
+    ``EXHAUSTED`` at every such boundary is safe. ``FOUND`` carries the exact
+    replayed prefix and mate proof into same-root repair; every resource or
+    compatibility stop remains UNKNOWN and cannot certify the selection.
     """
 
     replayed_path = _replay_selected_path(root, selected_pv)
@@ -214,68 +214,80 @@ def certify_selected_pv_horizon(
             None,
             message="selected PV failed authoritative replay",
         )
-    leaf_series = replayed_path[-1]
-    if leaf_series.outcome is not None:
+    adverse_boundaries = tuple(
+        (index, series)
+        for index, series in enumerate(replayed_path)
+        if series.outcome is None
+        and series.final_state.board.turn != root.board.turn
+    )
+    if not adverse_boundaries:
+        leaf_series = replayed_path[-1]
+        if leaf_series.outcome is not None:
+            message = "selected PV is already terminal"
+        else:
+            message = "next-series mate would favor the root mover"
         return SelectedPvHorizonCertification(
             SelectedPvHorizonStatus.NOT_APPLICABLE,
             True,
             None,
-            message="selected PV is already terminal",
-        )
-    leaf = leaf_series.final_state
-    if leaf.board.turn == root.board.turn:
-        return SelectedPvHorizonCertification(
-            SelectedPvHorizonStatus.NOT_APPLICABLE,
-            True,
-            None,
-            message="next-series mate would favor the root mover",
+            message=message,
         )
 
-    result = probe(leaf)
-    if type(result) is not SeriesMateProbe:
+    work_used = 0
+    last_message = ""
+    for index, boundary_series in reversed(adverse_boundaries):
+        boundary = boundary_series.final_state
+        result = probe(boundary)
+        if type(result) is not SeriesMateProbe:
+            return SelectedPvHorizonCertification(
+                SelectedPvHorizonStatus.UNKNOWN,
+                True,
+                None,
+                message="mate probe returned an invalid result",
+                work_used=work_used,
+            )
+        work_used += result.positions_visited + result.moves_generated
+        last_message = result.message
+        if result.status is SeriesMateStatus.EXHAUSTED and result.series is None:
+            continue
+        if result.status is SeriesMateStatus.FOUND and result.series is not None:
+            try:
+                replayed_mate = play_series(
+                    boundary,
+                    result.series.moves,
+                ).with_transposition_count(result.series.transposition_count)
+            except Exception:
+                replayed_mate = None
+            if (
+                replayed_mate is not None
+                and _same_series(replayed_mate, result.series)
+                and replayed_mate.outcome is Outcome.CHECKMATE
+                and replayed_mate.ended_by_check
+            ):
+                proof = SelectedPvHorizonProof.create(
+                    replayed_path[: index + 1],
+                    replayed_mate,
+                )
+                return SelectedPvHorizonCertification(
+                    SelectedPvHorizonStatus.FOUND,
+                    True,
+                    result.status,
+                    proof=proof,
+                    message=result.message,
+                    work_used=work_used,
+                )
         return SelectedPvHorizonCertification(
             SelectedPvHorizonStatus.UNKNOWN,
-            True,
-            None,
-            message="mate probe returned an invalid result",
-        )
-    work_used = result.positions_visited + result.moves_generated
-    if result.status is SeriesMateStatus.EXHAUSTED and result.series is None:
-        return SelectedPvHorizonCertification(
-            SelectedPvHorizonStatus.EXHAUSTED,
             True,
             result.status,
             message=result.message,
             work_used=work_used,
         )
-    if result.status is SeriesMateStatus.FOUND and result.series is not None:
-        try:
-            replayed_mate = play_series(
-                leaf,
-                result.series.moves,
-            ).with_transposition_count(result.series.transposition_count)
-        except Exception:
-            replayed_mate = None
-        if (
-            replayed_mate is not None
-            and _same_series(replayed_mate, result.series)
-            and replayed_mate.outcome is Outcome.CHECKMATE
-            and replayed_mate.ended_by_check
-        ):
-            proof = SelectedPvHorizonProof.create(replayed_path, replayed_mate)
-            return SelectedPvHorizonCertification(
-                SelectedPvHorizonStatus.FOUND,
-                True,
-                result.status,
-                proof=proof,
-                message=result.message,
-                work_used=work_used,
-            )
     return SelectedPvHorizonCertification(
-        SelectedPvHorizonStatus.UNKNOWN,
+        SelectedPvHorizonStatus.EXHAUSTED,
         True,
-        result.status,
-        message=result.message,
+        SeriesMateStatus.EXHAUSTED,
+        message=last_message,
         work_used=work_used,
     )
 

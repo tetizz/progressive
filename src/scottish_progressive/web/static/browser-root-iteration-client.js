@@ -21,7 +21,7 @@
   const MAX_ASPIRATION_ATTEMPTS = 4;
   const ROOT_TACTICAL_POLICY = "canonical-boundary-policy-v1";
   const CHECKED_PV_SELECTION_POLICY =
-    "repair-once-then-veto-adverse-checked-pv-mates-v1";
+    "repair-once-then-veto-adverse-selected-pv-boundary-mates-v2";
   const MATE_CLAIM_SELECTION_POLICY =
     "require-sign-matching-exact-proof-for-nonterminal-mate-band-v1";
   const MAX_SAME_ROOT_HORIZON_REPAIRS = 1;
@@ -965,21 +965,28 @@
     return Object.freeze({ ...value, moves: Object.freeze(moves), child_boundary: childBoundary });
   }
 
-  function checkedPvHorizon(candidate) {
+  function selectedPvOpponentBoundaries(candidate) {
     const rawPv = candidate?.child_pv;
-    if (!Array.isArray(rawPv) || rawPv.length === 0) return null;
+    if (!Array.isArray(rawPv)) return Object.freeze([]);
     const pv = rawPv.map(normalizeRootSeries);
-    const horizon = pv.at(-1);
-    if (horizon.outcome !== null || horizon.ended_by_check !== true) return null;
-    const matePly = pv.length + 2;
-    // Only an opponent mate invalidates the selected line. At odd plies the
-    // root mover would be the mating side, which is favorable rather than a
-    // reason to veto its candidate.
-    if (matePly % 2 !== 0) return null;
-    return Object.freeze({
-      pv: Object.freeze(pv),
-      matePly,
-    });
+    const rootedLength = pv.length + 1;
+    const boundaries = [];
+    // A complete series flips the mover. Starting at the deepest exact PV
+    // prefix, only odd rooted-path lengths leave the opponent to move.
+    for (
+      let pathLength = rootedLength % 2 === 1 ? rootedLength : rootedLength - 1;
+      pathLength >= 1;
+      pathLength -= 2
+    ) {
+      const prefix = pathLength === 1 ? [] : pv.slice(0, pathLength - 1);
+      const leaf = pathLength === 1 ? candidate?.root_series : prefix.at(-1);
+      if (leaf?.outcome !== null) continue;
+      boundaries.push(Object.freeze({
+        pv: Object.freeze(prefix),
+        matePly: pathLength + 1,
+      }));
+    }
+    return Object.freeze(boundaries);
   }
 
   function sameBoundary(left, right) {
@@ -2304,99 +2311,105 @@
               };
 
               let workUsed = 0;
-              const horizon = checkedPvHorizon(task.candidate);
-              if (horizon !== null) {
-                if (task.call_work_credit - workUsed <= 1) {
+              let lastSafety = null;
+              const opponentBoundaries = selectedPvOpponentBoundaries(task.candidate);
+              for (let index = 0; index < opponentBoundaries.length; index += 1) {
+                const horizon = opponentBoundaries[index];
+                const remainingProbes = opponentBoundaries.length - index;
+                const remainingCredit = task.call_work_credit - workUsed;
+                if (remainingCredit < remainingProbes) {
                   return {
                     ...task,
                     status: "unknown",
                     work_used: workUsed,
                     memory_bytes: channel.memoryBytes,
                     memory_peak_bytes: channel.memoryPeakBytes,
-                    safety_scope: "pv-horizon",
+                    safety_scope: horizon.pv.length === 0 ? "root-child" : "pv-horizon",
                   };
                 }
-                const horizonCredit = Math.min(
-                  PV_HORIZON_MATE_WORK_LIMIT,
-                  task.call_work_credit - workUsed - 1,
-                );
+                const reservedForShallowerBoundaries = remainingProbes - 1;
+                const credit = horizon.pv.length === 0
+                  ? remainingCredit
+                  : Math.min(
+                    PV_HORIZON_MATE_WORK_LIMIT,
+                    remainingCredit - reservedForShallowerBoundaries,
+                  );
+                const scope = horizon.pv.length === 0 ? "root-child" : "pv-horizon";
                 const horizonSafety = await proveBoundaryMate({
                   startBoundary: originalBoundary,
                   seriesPath: [rootSeries, ...horizon.pv],
                   matePly: horizon.matePly,
-                  credit: horizonCredit,
-                  scope: "pv-horizon",
+                  credit,
+                  scope,
                 });
                 workUsed += horizonSafety.work_used;
-                if (horizonSafety.status === "found") {
-                  const checkedMate = horizonSafety.reply_mate?.checked_prefix;
-                  const mateChild = normalizeExactBoundaryState(checkedMate?.next_state || {});
-                  if (mateChild === null) {
-                    throw new RootIterationClientError(
-                      "The checked-PV mate witness omitted its authoritative child boundary.",
-                      "browser-root-mate-proof-invalid",
-                    );
-                  }
-                  const mateReply = Object.freeze({
-                    moves: Object.freeze([...horizonSafety.reply_mate.moves]),
-                    machine_notation: horizonSafety.reply_mate.machine_notation,
-                    transposition_count: 1,
-                    child_boundary: mateChild,
-                    outcome: "checkmate",
-                    ended_by_check: true,
-                  });
-                  const {
-                    override_score: _discardedOverride,
-                    proof_bounds: _discardedProofBounds,
-                    reply_mate: _discardedReplyMate,
-                    ...evidence
-                  } = horizonSafety;
-                  return {
-                    ...evidence,
-                    status: "line-rejected",
-                    work_used: workUsed,
-                    reply_mate: mateReply,
-                    horizon_proof: Object.freeze({
-                      schema: "spc-retained-root-horizon-proof-v1",
-                      rooted_path: Object.freeze([rootSeries, ...horizon.pv]),
-                      mate_reply: mateReply,
-                    }),
-                    line_rejection: {
-                      schema: "spc-pv-horizon-line-rejection-v1",
-                      reason: "adverse-immediate-series-mate",
-                      mate_ply: horizon.matePly,
-                      horizon_series: horizon.pv.at(-1).machine_notation,
-                    },
-                  };
-                }
+                lastSafety = horizonSafety;
                 if (horizonSafety.status === "unknown") {
                   return {
                     ...horizonSafety,
                     work_used: workUsed,
                   };
                 }
-              }
-
-              const rootCredit = task.call_work_credit - workUsed;
-              if (rootCredit < 1) {
+                if (horizonSafety.status !== "found") continue;
+                if (scope === "root-child") {
+                  return {
+                    ...horizonSafety,
+                    work_used: workUsed,
+                  };
+                }
+                const checkedMate = horizonSafety.reply_mate?.checked_prefix;
+                const mateChild = normalizeExactBoundaryState(checkedMate?.next_state || {});
+                if (mateChild === null) {
+                  throw new RootIterationClientError(
+                    "The selected-PV mate witness omitted its authoritative child boundary.",
+                    "browser-root-mate-proof-invalid",
+                  );
+                }
+                const rootedPath = Object.freeze([rootSeries, ...horizon.pv]);
+                const mateReply = Object.freeze({
+                  moves: Object.freeze([...horizonSafety.reply_mate.moves]),
+                  machine_notation: horizonSafety.reply_mate.machine_notation,
+                  transposition_count: 1,
+                  child_boundary: mateChild,
+                  outcome: "checkmate",
+                  ended_by_check: true,
+                });
+                const {
+                  override_score: _discardedOverride,
+                  proof_bounds: _discardedProofBounds,
+                  reply_mate: _discardedReplyMate,
+                  ...evidence
+                } = horizonSafety;
                 return {
-                  ...task,
-                  status: "unknown",
+                  ...evidence,
+                  status: "line-rejected",
                   work_used: workUsed,
-                  memory_bytes: channel.memoryBytes,
-                  memory_peak_bytes: channel.memoryPeakBytes,
+                  reply_mate: mateReply,
+                  horizon_proof: Object.freeze({
+                    schema: "spc-retained-root-horizon-proof-v1",
+                    rooted_path: rootedPath,
+                    mate_reply: mateReply,
+                  }),
+                  line_rejection: {
+                    schema: "spc-pv-horizon-line-rejection-v1",
+                    reason: "adverse-immediate-series-mate",
+                    mate_ply: horizon.matePly,
+                    horizon_series: rootedPath.at(-1).machine_notation,
+                  },
                 };
               }
-              const rootSafety = await proveBoundaryMate({
-                startBoundary: originalBoundary,
-                seriesPath: [rootSeries],
-                matePly: 2,
-                credit: rootCredit,
-                scope: "root-child",
-              });
+              if (lastSafety?.status === "exhausted") {
+                return {
+                  ...lastSafety,
+                  work_used: workUsed,
+                };
+              }
               return {
-                ...rootSafety,
-                work_used: workUsed + rootSafety.work_used,
+                ...task,
+                status: "unknown",
+                work_used: workUsed,
+                memory_bytes: channel.memoryBytes,
+                memory_peak_bytes: channel.memoryPeakBytes,
               };
             };
             let iteration;

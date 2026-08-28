@@ -52,7 +52,7 @@ const WASM = "b".repeat(64);
 const MODULE = "c".repeat(64);
 const KERNEL = "d".repeat(64);
 const CHECKED_PV_SELECTION_POLICY =
-  "repair-once-then-veto-adverse-checked-pv-mates-v1";
+  "repair-once-then-veto-adverse-selected-pv-boundary-mates-v2";
 const SAME_ROOT_REPAIR_POLICY = Object.freeze({
   schema: "spc-same-root-horizon-repair-policy-v1",
   maximum_successful_same_root_repairs: 1,
@@ -438,6 +438,10 @@ class MockWorld {
     policyDrift = null,
     horizonMateFirst = false,
     horizonMateTwice = false,
+    internalBoundaryMateFirst = false,
+    internalBoundaryMateSeries = null,
+    internalBoundarySafetyUnknown = false,
+    terminalFinalPv = false,
     horizonSafetyUnknown = false,
     zeroNativeWork = false,
     rootSafetyWork = 1,
@@ -458,6 +462,11 @@ class MockWorld {
     this.policyDrift = policyDrift;
     this.horizonMateFirst = horizonMateFirst;
     this.horizonMateTwice = horizonMateTwice;
+    this.internalBoundaryMateSeries = Number.isSafeInteger(internalBoundaryMateSeries)
+      ? internalBoundaryMateSeries
+      : internalBoundaryMateFirst ? 4 : null;
+    this.internalBoundarySafetyUnknown = internalBoundarySafetyUnknown;
+    this.terminalFinalPv = terminalFinalPv;
     this.horizonSafetyUnknown = horizonSafetyUnknown;
     this.zeroNativeWork = zeroNativeWork;
     this.rootSafetyWork = rootSafetyWork;
@@ -705,7 +714,7 @@ class MockWorld {
       const work = setupWork(worker, payload, this.zeroNativeWork ? 0 : 1);
       let childPv = [];
       const pvLength = payload.candidate_identity === "c0"
-        ? this.horizonMateFirst
+        ? (this.horizonMateFirst || this.internalBoundaryMateSeries !== null)
           && payload.child_depth === 4
           && (!horizonResearch || this.horizonMateTwice)
           ? 4
@@ -725,9 +734,10 @@ class MockWorld {
             quietSeries,
           ));
           const endedByCheck = pvIndex === pvLength - 1;
+          const outcome = this.terminalFinalPv && endedByCheck ? "checkmate" : null;
           this.pvTransitions.set(
             JSON.stringify([start.fen, start.series, moves]),
-            { child, endedByCheck },
+            { child, endedByCheck, outcome },
           );
           start = child;
           return {
@@ -735,7 +745,7 @@ class MockWorld {
             machine_notation: moves.join("/"),
             transposition_count: 1,
             child_boundary: child,
-            outcome: null,
+            outcome,
             ended_by_check: endedByCheck,
           };
         });
@@ -788,6 +798,7 @@ class MockWorld {
         return prefixResult(payload, IDENTITY, {
           child: transition.child,
           endedByCheck: transition.endedByCheck,
+          outcome: transition.outcome,
         });
       }
       const candidate = worker.manifest?.candidates.find((item) => (
@@ -800,17 +811,22 @@ class MockWorld {
     }
     if (type === "root-safety") {
       this.deadlineEpochs.push(payload.deadline_epoch_ms);
+      const safetyWorkUsed = Math.min(this.rootSafetyWork, payload.call_work_credit);
       if (
         this.safetyUnknown
+        || payload.call_work_credit < this.rootSafetyWork
         || (
           this.horizonSafetyUnknown
           && payload.authoritative_child_boundary?.series === 6
+        ) || (
+          this.internalBoundarySafetyUnknown
+          && payload.authoritative_child_boundary?.series === 4
         )
       ) {
         const result = {
           ...payload,
           status: "unknown",
-          work_used: this.rootSafetyWork,
+          work_used: safetyWorkUsed,
           memory_bytes: MEMORY.initial_bytes,
           memory_peak_bytes: MEMORY.initial_bytes,
         };
@@ -824,6 +840,10 @@ class MockWorld {
           && payload.candidate_identity === "c0"
           && payload.authoritative_child_boundary?.series === 6
         ) || (
+          this.internalBoundaryMateSeries !== null
+          && payload.candidate_identity === "c0"
+          && payload.authoritative_child_boundary?.series === this.internalBoundaryMateSeries
+        ) || (
           this.favorableHorizonFirst
           && payload.candidate_identity === "c0"
           && payload.authoritative_child_boundary?.series === 5
@@ -832,7 +852,7 @@ class MockWorld {
         const result = {
           ...payload,
           status: "exhausted",
-          work_used: this.rootSafetyWork,
+          work_used: safetyWorkUsed,
           memory_bytes: MEMORY.initial_bytes,
           memory_peak_bytes: MEMORY.initial_bytes,
         };
@@ -859,7 +879,7 @@ class MockWorld {
       const result = {
         ...payload,
         status: "found",
-        work_used: this.rootSafetyWork,
+        work_used: safetyWorkUsed,
         override_score: childIsWhite ? CONFIG.mate_score - 2 : -CONFIG.mate_score + 2,
         proof_bounds: childIsWhite ? [1, 1] : [-1, -1],
         memory_bytes: MEMORY.initial_bytes,
@@ -1039,6 +1059,34 @@ async function preflight(client) {
   const result = await client.preflight({ sourceFingerprint: SOURCE });
   assert.equal(result.ready, true);
   return result;
+}
+
+function rootIterationApiWithSafetyMutation(mutateSafety) {
+  const modulePath = require.resolve(path.join(
+    root,
+    "src/scottish_progressive/web/static/browser-root-iteration-client.js",
+  ));
+  const previousCoordinator = globalThis.ScottishProgressiveRootCoordinator;
+  const previousRootApi = globalThis.ScottishProgressiveBrowserRootIteration;
+  const coordinatorWithMutatedSafety = Object.freeze({
+    ...coordinator,
+    runRootIteration: (options) => coordinator.runRootIteration({
+      ...options,
+      safetyProbe: async (...args) => mutateSafety(
+        await options.safetyProbe(...args),
+        ...args,
+      ),
+    }),
+  });
+  try {
+    globalThis.ScottishProgressiveRootCoordinator = coordinatorWithMutatedSafety;
+    delete require.cache[modulePath];
+    return require(modulePath);
+  } finally {
+    delete require.cache[modulePath];
+    globalThis.ScottishProgressiveRootCoordinator = previousCoordinator;
+    globalThis.ScottishProgressiveBrowserRootIteration = previousRootApi;
+  }
 }
 
 function testAspirationAggregateAndAffinityContract() {
@@ -1883,6 +1931,242 @@ async function testCheckedPvHorizonMateRejectsTheProvisionalWinner() {
   client.close();
 }
 
+async function testInternalOpponentBoundaryMateIsProbedLeafFirst() {
+  const world = new MockWorld({
+    internalBoundaryMateFirst: true,
+    zeroNativeWork: true,
+    rootSafetyWork: 7,
+    singleCandidate: true,
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  const result = await client.analyzeRoot(
+    payload(boundaryPayload(WHITE_FEN, 1), 5),
+    { deadlineMs: performance.now() + 20_000 },
+  );
+  const d5Safety = world.safetyReceipts.filter((receipt) => (
+    receipt.iteration_id.endsWith(":d5")
+    && receipt.candidate_identity === "c0"
+  ));
+  assert.deepEqual(
+    d5Safety.slice(0, 2).map((receipt) => receipt.authoritative_child_boundary?.series),
+    [6, 4],
+    "the exact selected-PV mate ladder must probe opponent boundaries leaf-first",
+  );
+  assert.equal(d5Safety[1]?.status, "found");
+  assert.equal(result.pv_horizon_line_rejections, 1);
+  assert.equal(result.pv_horizon_native_repairs, 1);
+  const repair = world.searchDispatches.find(({ task }) => (
+    task.iteration_id.endsWith(":d5")
+    && task.schema === "spc-root-horizon-research-task-v1"
+  ));
+  assert(repair, "the internal-boundary proof must return to the warm owner");
+  const rootedProof = repair.task.horizon_proofs[0].rooted_path;
+  assert.equal(rootedProof.length, 3);
+  assert.deepEqual(rootedProof[0].moves, candidateMoves(1, 0));
+  assert.deepEqual(
+    rootedProof.slice(1),
+    d5Safety[1].candidate.child_pv.slice(0, 2),
+  );
+  assert.equal(
+    result.work,
+    world.safetyReceipts.reduce((sum, receipt) => sum + receipt.work_used, 0),
+    "the published work total must include every exact ladder probe",
+  );
+  client.close();
+}
+
+async function testBlackRootInternalOpponentBoundaryMateUsesExactParity() {
+  const world = new MockWorld({
+    internalBoundaryMateSeries: 5,
+    zeroNativeWork: true,
+    rootSafetyWork: 7,
+    singleCandidate: true,
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  const result = await client.analyzeRoot(
+    payload(boundaryPayload(BLACK_FEN, 2), 5),
+    { deadlineMs: performance.now() + 20_000 },
+  );
+  const d5Safety = world.safetyReceipts.filter((receipt) => (
+    receipt.iteration_id.endsWith(":d5")
+    && receipt.candidate_identity === "c0"
+  ));
+  assert.deepEqual(
+    d5Safety.slice(0, 2).map((receipt) => receipt.authoritative_child_boundary?.series),
+    [7, 5],
+    "a Black root must probe White-to-move boundaries leaf-first",
+  );
+  assert.equal(d5Safety[1]?.status, "found");
+  assert.equal(d5Safety[1]?.override_score, CONFIG.mate_score - 2);
+  assert.deepEqual(d5Safety[1]?.proof_bounds, [1, 1]);
+  assert.equal(result.pv_horizon_line_rejections, 1);
+  assert.equal(result.pv_horizon_native_repairs, 1);
+  const repair = world.searchDispatches.find(({ task }) => (
+    task.iteration_id.endsWith(":d5")
+    && task.schema === "spc-root-horizon-research-task-v1"
+  ));
+  assert(repair, "the Black-root internal proof must return to its warm owner");
+  assert.equal(repair.task.horizon_proofs[0].rooted_path.length, 3);
+  assert.deepEqual(
+    repair.task.horizon_proofs[0].rooted_path[0].moves,
+    candidateMoves(2, 0),
+  );
+  client.close();
+}
+
+async function testTerminalPvLeafStillChecksEarlierOpponentBoundary() {
+  const world = new MockWorld({
+    internalBoundaryMateFirst: true,
+    terminalFinalPv: true,
+    zeroNativeWork: true,
+    singleCandidate: true,
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  const result = await client.analyzeRoot(
+    payload(boundaryPayload(WHITE_FEN, 1), 5),
+    { deadlineMs: performance.now() + 20_000 },
+  );
+  const d5Safety = world.safetyReceipts.filter((receipt) => (
+    receipt.iteration_id.endsWith(":d5")
+    && receipt.candidate_identity === "c0"
+  ));
+  assert.deepEqual(
+    d5Safety.map((receipt) => receipt.authoritative_child_boundary?.series),
+    [4],
+    "a terminal final PV series must be skipped without hiding the earlier S4 boundary",
+  );
+  assert.equal(d5Safety[0]?.candidate.child_pv.at(-1)?.outcome, "checkmate");
+  assert.equal(d5Safety[0]?.status, "found");
+  assert.equal(result.pv_horizon_line_rejections, 1);
+  assert.equal(result.pv_horizon_native_repairs, 1);
+  const repair = world.searchDispatches.find(({ task }) => (
+    task.iteration_id.endsWith(":d5")
+    && task.schema === "spc-root-horizon-research-task-v1"
+  ));
+  assert(repair, "the earlier adverse boundary must still force a warm-owner repair");
+  assert.equal(repair.task.horizon_proofs[0].rooted_path.length, 3);
+  client.close();
+}
+
+async function testMalformedInternalRootedProofsFailClosed() {
+  for (const [label, pathIndex, replacementMoves] of [
+    ["wrong retained root", 0, candidateMoves(1, 1)],
+    ["non-prefix internal series", 1, candidateMoves(2, 1)],
+  ]) {
+    let mutationCount = 0;
+    const isolatedRootApi = rootIterationApiWithSafetyMutation((safety) => {
+      if (safety?.status !== "line-rejected") return safety;
+      mutationCount += 1;
+      const mutated = structuredClone(safety);
+      mutated.horizon_proof.rooted_path[pathIndex].moves = [...replacementMoves];
+      mutated.horizon_proof.rooted_path[pathIndex].machine_notation = replacementMoves.join("/");
+      return mutated;
+    });
+    const world = new MockWorld({ internalBoundaryMateFirst: true });
+    const runner = new isolatedRootApi.RootIterationRunner({
+      workerUrl: "mock-worker.js",
+      workerFactory: world.factory,
+      navigatorValue: DESKTOP_NAVIGATOR,
+    });
+    const result = await runner.analyze(
+      payload(boundaryPayload(WHITE_FEN, 1), 5),
+      IDENTITY,
+      { deadlineMs: performance.now() + 20_000 },
+    );
+    assert.equal(mutationCount, 1, `${label} fixture must mutate one internal proof`);
+    assert.equal(result.completed_depth, 4, `${label} must not publish D5`);
+    assert.equal(
+      result.runtime_receipt.interruption_code,
+      "root-safety-result-invalid",
+      `${label} must be rejected by the retained-root proof contract`,
+    );
+    assert.equal(
+      world.searchDispatches.some(({ task }) => (
+        task.iteration_id.endsWith(":d5")
+        && task.schema === "spc-root-horizon-research-task-v1"
+      )),
+      false,
+      `${label} must fail before any warm-owner repair`,
+    );
+    runner.close();
+  }
+}
+
+async function testUnknownInternalOpponentBoundaryFailsClosed() {
+  const world = new MockWorld({
+    internalBoundaryMateFirst: true,
+    internalBoundarySafetyUnknown: true,
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  const result = await client.analyzeRoot(
+    payload(boundaryPayload(WHITE_FEN, 1), 5),
+    { deadlineMs: performance.now() + 20_000 },
+  );
+  assert.equal(result.completed_depth, 4);
+  assert.equal(result.runtime_receipt.interruption_code, "root-safety-unknown");
+  const d5Safety = world.safetyReceipts.filter((receipt) => (
+    receipt.iteration_id.endsWith(":d5")
+    && receipt.candidate_identity === "c0"
+  ));
+  assert.deepEqual(
+    d5Safety.map((receipt) => [
+      receipt.authoritative_child_boundary?.series,
+      receipt.status,
+    ]),
+    [[6, "exhausted"], [4, "unknown"]],
+  );
+  assert.equal(
+    d5Safety.some((receipt) => receipt.authoritative_child_boundary?.series === 2),
+    false,
+    "UNKNOWN at an internal boundary must not fall through to a shallower probe",
+  );
+  const unknownBoundary = d5Safety.find((receipt) => receipt.status === "unknown")
+    ?.authoritative_child_boundary;
+  assert(unknownBoundary, "the internal UNKNOWN receipt must retain its exact boundary");
+  const unknownCacheKey = rootClientApi.mateProofCacheKey(client.identity, unknownBoundary);
+  assert.equal(
+    client.rootRunner.mateProofCache.has(unknownCacheKey),
+    false,
+    "UNKNOWN internal proofs must never enter the exact mate cache",
+  );
+  const repeated = await client.analyzeRoot(
+    payload(boundaryPayload(WHITE_FEN, 1), 5),
+    { deadlineMs: performance.now() + 20_000 },
+  );
+  assert.equal(repeated.completed_depth, 4);
+  const repeatedUnknowns = world.safetyReceipts.filter((receipt) => (
+    receipt.candidate_identity === "c0"
+    && receipt.authoritative_child_boundary?.series === 4
+    && receipt.status === "unknown"
+  ));
+  assert.equal(
+    repeatedUnknowns.length,
+    2,
+    "a second request must re-probe rather than reuse an UNKNOWN internal boundary",
+  );
+  client.close();
+}
+
 async function testSecondDistinctCheckedPvMatePublishesExactPolicyVeto() {
   const world = new MockWorld({ horizonMateFirst: true, horizonMateTwice: true });
   const client = browserClientApi.createClient({
@@ -2473,6 +2757,11 @@ await testPersistentPoolTwoTurns();
 await testWhiteAndBlackMateMapping();
 await testUnprovedMateClaimQuarantinePublishesSafeRoot();
 await testCheckedPvHorizonMateRejectsTheProvisionalWinner();
+await testInternalOpponentBoundaryMateIsProbedLeafFirst();
+await testBlackRootInternalOpponentBoundaryMateUsesExactParity();
+await testTerminalPvLeafStillChecksEarlierOpponentBoundary();
+await testMalformedInternalRootedProofsFailClosed();
+await testUnknownInternalOpponentBoundaryFailsClosed();
 await testSecondDistinctCheckedPvMatePublishesExactPolicyVeto();
 await testCheckedPvHorizonIsRootedAndFailClosed();
 await testFavorableCheckedHorizonIsNotVetoed();
@@ -2513,6 +2802,11 @@ process.stdout.write(JSON.stringify({
   white_black_mate_mapping: true,
   unproved_mate_claim_quarantine_white_black: true,
   checked_pv_horizon_mate_rejected: true,
+  internal_opponent_boundary_mate_leaf_first: true,
+  black_root_internal_boundary_mate_parity: true,
+  terminal_pv_leaf_preserves_earlier_boundary: true,
+  malformed_internal_rooted_proofs_fail_closed: true,
+  unknown_internal_opponent_boundary_fails_closed: true,
   checked_pv_horizon_native_repaired: true,
   checked_pv_second_distinct_mate_policy_veto: true,
   checked_pv_horizon_dedicated_schema: true,

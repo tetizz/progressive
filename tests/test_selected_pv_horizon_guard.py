@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from scottish_progressive import search as search_module
+from scottish_progressive import series_mate as series_mate_module
+from scottish_progressive.mate_proof_cache import MateProofCache
 from scottish_progressive.model import ProgressiveState
 from scottish_progressive.rules import play_series
 from scottish_progressive.search import (
@@ -21,6 +23,7 @@ from scottish_progressive.selected_pv_horizon import (
     SAME_ROOT_HORIZON_REPAIR_POLICY_SCHEMA,
     CandidateHorizonState,
     HorizonPolicyAction,
+    SELECTED_PV_SELECTION_POLICY,
     SelectedPvHorizonStatus,
     certify_selected_pv_horizon,
     observe_horizon_proof,
@@ -48,6 +51,13 @@ ACTUAL_BLACK_MATE = play_series(
 
 def _probe(status: SeriesMateStatus, series=None) -> SeriesMateProbe:
     return SeriesMateProbe(status, status.value, series)
+
+
+def test_internal_boundary_ladder_uses_a_distinct_v2_policy_identity() -> None:
+    assert SELECTED_PV_SELECTION_POLICY == (
+        "repair-once-then-veto-adverse-selected-pv-boundary-mates-v2"
+    )
+    assert SELECTED_PV_SELECTION_POLICY != BROWSER_CHECKED_PV_SELECTION_POLICY
 
 
 def _browser_f3_proof_paths():
@@ -87,6 +97,304 @@ def _browser_b3_selected_path():
         rooted.append(result)
         state = result.final_state
     return tuple(rooted)
+
+
+def _mined_internal_boundary_path():
+    root = ProgressiveState.from_fen(
+        "rnbqkbnr/1pp1pppp/8/p2p4/8/5P2/PPPPP1PP/RNBQKBNR w KQkq - 0 3",
+        3,
+    )
+    state = root
+    rooted = []
+    for moves in (
+        ("b2b4", "b4a5", "e1f2"),
+        ("d5d4", "d4d3", "d3c2", "c2d1q"),
+        ("a5a6", "a6b7", "b7c8q", "c8b8", "b8a7"),
+        ("a8b8", "b8a8", "a8b8", "b8a8", "a8b8", "b8a8"),
+        ("b1c3", "c3b1", "b1c3", "c3b1", "b1c3", "c3b1", "a2a3"),
+    ):
+        result = play_series(state, moves)
+        rooted.append(result)
+        state = result.final_state
+    adverse_mate = play_series(
+        rooted[2].final_state,
+        ("a8a7", "d1c1", "c1b1", "b1a1", "d8d2", "a1e1"),
+    )
+    return root, tuple(rooted), adverse_mate
+
+
+def _black_internal_boundary_path():
+    root = ProgressiveState.from_fen(
+        "1r4k1/5ppp/8/8/Q7/8/8/6K1 b - - 0 1",
+        2,
+    )
+    state = root
+    rooted = []
+    for moves in (
+        ("f7f5", "b8b1"),
+        ("a4d1", "d1b1", "b1a1"),
+        ("f5f4", "f4f3", "f3f2"),
+        ("g1f1", "a1a3", "a3a1", "a1a3", "a3a1"),
+        ("g7g5", "g5g4", "g4g3", "g8f7", "f7e6", "e6d5"),
+    ):
+        result = play_series(state, moves)
+        rooted.append(result)
+        state = result.final_state
+    white_mate = play_series(
+        rooted[0].final_state,
+        ("g1f2", "a4e8"),
+    )
+    return root, tuple(rooted), white_mate
+
+
+def test_synthetic_internal_opponent_boundary_ladder_stops_at_first_found() -> None:
+    root, selected_pv, adverse_mate = _mined_internal_boundary_path()
+    probed_series_numbers = []
+
+    def probe(state):
+        probed_series_numbers.append(state.series_number)
+        if state.transposition_key == selected_pv[2].final_state.transposition_key:
+            return _probe(SeriesMateStatus.FOUND, adverse_mate)
+        return _probe(SeriesMateStatus.EXHAUSTED)
+
+    certification = certify_selected_pv_horizon(root, selected_pv, probe)
+
+    assert certification.status is SelectedPvHorizonStatus.FOUND
+    assert certification.proof is not None
+    assert certification.proof.rooted_path == selected_pv[:3]
+    assert certification.proof.mate_reply == adverse_mate
+    assert probed_series_numbers == [8, 6]
+
+
+@pytest.mark.parametrize("depth", (4, 5))
+def test_white_root_internal_mate_proof_has_black_score_sign_at_d4_d5(
+    depth: int,
+) -> None:
+    root, selected_pv, adverse_mate = _mined_internal_boundary_path()
+    internal_key = selected_pv[2].final_state.transposition_key
+
+    certification = certify_selected_pv_horizon(
+        root,
+        selected_pv[:depth],
+        lambda state: (
+            _probe(SeriesMateStatus.FOUND, adverse_mate)
+            if state.transposition_key == internal_key
+            else _probe(SeriesMateStatus.EXHAUSTED)
+        ),
+    )
+
+    assert certification.status is SelectedPvHorizonStatus.FOUND
+    assert certification.proof is not None
+    assert certification.proof.rooted_path == selected_pv[:3]
+    assert certification.proof.proof_bounds == (-1, -1)
+
+
+@pytest.mark.parametrize("depth", (4, 5))
+def test_black_root_internal_mate_proof_has_white_score_sign_at_d4_d5(
+    depth: int,
+) -> None:
+    root, selected_pv, white_mate = _black_internal_boundary_path()
+    first_adverse_key = selected_pv[0].final_state.transposition_key
+
+    certification = certify_selected_pv_horizon(
+        root,
+        selected_pv[:depth],
+        lambda state: (
+            _probe(SeriesMateStatus.FOUND, white_mate)
+            if state.transposition_key == first_adverse_key
+            else _probe(SeriesMateStatus.EXHAUSTED)
+        ),
+    )
+
+    assert certification.status is SelectedPvHorizonStatus.FOUND
+    assert certification.proof is not None
+    assert certification.proof.rooted_path == selected_pv[:1]
+    assert certification.proof.proof_bounds == (1, 1)
+
+
+def test_terminal_final_pv_still_checks_an_earlier_adverse_boundary() -> None:
+    root, selected_pv, adverse_mate = _mined_internal_boundary_path()
+    terminal_final = play_series(
+        selected_pv[3].final_state,
+        ("a7c7", "a2a4", "a4a5", "a1a4", "a4b4", "b4b8", "c7c6"),
+    )
+    terminal_path = selected_pv[:4] + (terminal_final,)
+    internal_key = selected_pv[2].final_state.transposition_key
+    probed_series_numbers = []
+
+    def probe(state):
+        probed_series_numbers.append(state.series_number)
+        if state.transposition_key == internal_key:
+            return _probe(SeriesMateStatus.FOUND, adverse_mate)
+        return _probe(SeriesMateStatus.EXHAUSTED)
+
+    certification = certify_selected_pv_horizon(root, terminal_path, probe)
+
+    assert terminal_final.outcome is not None
+    assert terminal_final.ended_by_check is True
+    assert certification.status is SelectedPvHorizonStatus.FOUND
+    assert certification.proof is not None
+    assert certification.proof.rooted_path == selected_pv[:3]
+    assert probed_series_numbers == [6]
+
+
+def test_internal_boundary_certification_reports_cumulative_probe_work() -> None:
+    root, selected_pv, adverse_mate = _mined_internal_boundary_path()
+    probes = iter(
+        (
+            SeriesMateProbe(
+                SeriesMateStatus.EXHAUSTED,
+                "safe final leaf",
+                positions_visited=5,
+                moves_generated=7,
+            ),
+            SeriesMateProbe(
+                SeriesMateStatus.FOUND,
+                "internal mate",
+                adverse_mate,
+                positions_visited=11,
+                moves_generated=13,
+            ),
+        )
+    )
+
+    certification = certify_selected_pv_horizon(
+        root,
+        selected_pv,
+        lambda _state: next(probes),
+    )
+
+    assert certification.status is SelectedPvHorizonStatus.FOUND
+    assert certification.work_used == 36
+
+
+def test_analyze_reuses_authoritative_exact_internal_boundary_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, selected_pv, _adverse_mate = _mined_internal_boundary_path()
+    cache = MateProofCache(capacity=8)
+    for index, proof_work in ((0, 10), (2, 20), (4, 30)):
+        cache.store_exhausted(
+            selected_pv[index].final_state,
+            proof_work=proof_work,
+        )
+    searcher = SeriesSearcher(
+        SearchLimits(depth_series=5, max_series_per_node=32),
+        mate_proof_cache=cache,
+    )
+    monkeypatch.setattr(
+        searcher,
+        "_root_child_safety_screen_required",
+        lambda: False,
+    )
+
+    def root_pass(
+        _root,
+        depth,
+        _prefix,
+        _mate_overrides,
+        _horizon_overrides,
+        _horizon_vetoes,
+        _root_frontier_override,
+    ):
+        pv = selected_pv[:depth]
+        candidate = ScoredSeries(pv[0], 100 + depth, pv[1:])
+        return candidate.score, pv, (candidate,), None
+
+    def unexpected_probe(*_args, **_kwargs):
+        raise AssertionError("exact cached boundary must not rerun the mate solver")
+
+    monkeypatch.setattr(searcher, "_search_root_pass", root_pass)
+    monkeypatch.setattr(
+        series_mate_module,
+        "find_native_series_mate",
+        unexpected_probe,
+    )
+
+    result = searcher.run(root)
+
+    assert result.completed_depth == 5
+    assert result.best_series == selected_pv[0]
+    assert result.work_limit_reached is False
+    assert result.timed_out is False
+    assert result.stats.selected_pv_horizon_probe_calls == 0
+    assert result.stats.mate_proof_cache_hits > 0
+
+
+def test_internal_found_proof_is_reused_from_the_authoritative_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, selected_pv, adverse_mate = _mined_internal_boundary_path()
+    cache = MateProofCache(capacity=8)
+    cache.store_exhausted(selected_pv[4].final_state, proof_work=30)
+    cache.store_found(
+        selected_pv[2].final_state,
+        adverse_mate,
+        proof_work=20,
+    )
+    searcher = SeriesSearcher(
+        SearchLimits(depth_series=5, max_series_per_node=32),
+        mate_proof_cache=cache,
+    )
+
+    monkeypatch.setattr(
+        series_mate_module,
+        "find_native_series_mate",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("persistent FOUND proof must not rerun the mate solver")
+        ),
+    )
+
+    certification = searcher._certify_selected_pv_horizon(root, selected_pv)
+
+    assert certification.status is SelectedPvHorizonStatus.FOUND
+    assert certification.proof is not None
+    assert certification.proof.rooted_path == selected_pv[:3]
+    assert certification.proof.mate_reply == adverse_mate
+    assert searcher.stats.selected_pv_horizon_probe_calls == 0
+    assert searcher.stats.mate_proof_cache_hits == 2
+    assert searcher.stats.mate_proof_cache_found_hits == 1
+    assert searcher.stats.mate_proof_cache_exhausted_hits == 1
+    assert searcher.stats.mate_proof_cache_work_saved == 50
+
+
+def test_unknown_internal_probe_is_never_cached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _root, selected_pv, _adverse_mate = _mined_internal_boundary_path()
+    boundary = selected_pv[2].final_state
+    cache = MateProofCache(capacity=8)
+    searcher = SeriesSearcher(
+        SearchLimits(depth_series=5, max_series_per_node=32),
+        mate_proof_cache=cache,
+    )
+    calls = 0
+
+    def unknown_probe(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return SeriesMateProbe(
+            SeriesMateStatus.WORK_LIMIT,
+            "synthetic incomplete proof",
+            positions_visited=7,
+            moves_generated=11,
+        )
+
+    monkeypatch.setattr(
+        series_mate_module,
+        "find_native_series_mate",
+        unknown_probe,
+    )
+
+    first = searcher._selected_pv_horizon_probe(boundary)
+    second = searcher._selected_pv_horizon_probe(boundary)
+
+    assert first.status is SeriesMateStatus.WORK_LIMIT
+    assert second.status is SeriesMateStatus.WORK_LIMIT
+    assert calls == 2
+    assert searcher.stats.selected_pv_horizon_probe_calls == 2
+    assert searcher.stats.mate_proof_cache_hits == 0
+    assert cache.lookup(boundary) is None
 
 
 def test_actual_quiet_series_five_leaf_is_replay_proven_adverse_mate() -> None:
@@ -367,16 +675,14 @@ def test_deadline_unknown_discards_current_depth_and_keeps_certified_prior_depth
         return candidate.score, pv, (candidate,), None
 
     monkeypatch.setattr(searcher, "_search_root_pass", root_pass)
-    probe_statuses = iter(
-        (
-            _probe(SeriesMateStatus.EXHAUSTED),
-            _probe(SeriesMateStatus.DEADLINE),
-        )
-    )
     monkeypatch.setattr(
         searcher,
         "_selected_pv_horizon_probe",
-        lambda _state: next(probe_statuses),
+        lambda state: (
+            _probe(SeriesMateStatus.EXHAUSTED)
+            if state.series_number == 2
+            else _probe(SeriesMateStatus.DEADLINE)
+        ),
     )
 
     result = searcher.run(root)
@@ -387,7 +693,7 @@ def test_deadline_unknown_discards_current_depth_and_keeps_certified_prior_depth
     assert result.best_series == selected_path[0]
     assert result.principal_variation == selected_path[:2]
     assert result.score == 102
-    assert result.stats.selected_pv_horizon_exhausted == 1
+    assert result.stats.selected_pv_horizon_exhausted == 2
     assert result.stats.selected_pv_horizon_unknown == 1
 
 
@@ -514,15 +820,16 @@ def test_all_vetoed_retained_frontier_widens_and_certifies_b3(
             width_complete=False,
         ),
     )
-    replies = iter((first_path[1], second_path[1], None))
+    mate_replies = {
+        first_path[0][-1].final_state.transposition_key: first_path[1],
+        second_path[0][-1].final_state.transposition_key: second_path[1],
+    }
 
-    def probe(_state):
-        reply = next(replies)
-        return (
-            _probe(SeriesMateStatus.EXHAUSTED)
-            if reply is None
-            else _probe(SeriesMateStatus.FOUND, reply)
-        )
+    def probe(state):
+        reply = mate_replies.get(state.transposition_key)
+        if reply is not None:
+            return _probe(SeriesMateStatus.FOUND, reply)
+        return _probe(SeriesMateStatus.EXHAUSTED)
 
     monkeypatch.setattr(searcher, "_selected_pv_horizon_probe", probe)
 
@@ -908,7 +1215,11 @@ def test_nonterminal_all_mating_widening_rejoins_horizon_certification(
 
     assert score == widened.score
     assert pv == b3_path
-    assert certified_leaves == [b3_path[-1].final_state]
+    assert certified_leaves == [
+        b3_path[4].final_state,
+        b3_path[2].final_state,
+        b3_path[0].final_state,
+    ]
 
 
 @pytest.mark.parametrize(

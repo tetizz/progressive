@@ -1972,9 +1972,10 @@ public:
                 request.horizon_proofs[proof_index];
             check_deadline();
             if (
-                supplied.rooted_path.size()
-                    != static_cast<std::size_t>(request.child_depth + 1)
-                || supplied.rooted_path.empty()
+                supplied.rooted_path.empty()
+                || supplied.rooted_path.size() % 2 == 0
+                || supplied.rooted_path.size()
+                    > static_cast<std::size_t>(request.child_depth + 1)
                 || supplied.rooted_path.size()
                     > RETAINED_ROOT_MAX_HORIZON_PROOF_PATH
                 || supplied.mate_reply.path.transposition_count != 1
@@ -2706,18 +2707,21 @@ public:
                 "native subtree reached quiet adjudication"
             );
         }
+        // A validated proof may end at any opponent boundary inside the
+        // requested depth.  Its exact adverse mate must outrank both static
+        // leaf evaluation and any heuristic TT entry at that boundary.
+        if (const auto* proof = active_horizon_proof(
+                state,
+                ply_from_root
+            )) {
+            return NodeResult{
+                proof->score,
+                {proof->mate_reply},
+                proof->proof_bounds,
+                true,
+            };
+        }
         if (depth == 0) {
-            if (const auto* proof = active_horizon_proof(
-                    state,
-                    ply_from_root
-                )) {
-                return NodeResult{
-                    proof->score,
-                    {proof->mate_reply},
-                    proof->proof_bounds,
-                    true,
-                };
-            }
             const LeafEvaluation leaf = evaluate(state);
             if (leaf.tactical_unstable) {
                 return tactical_leaf_extension(

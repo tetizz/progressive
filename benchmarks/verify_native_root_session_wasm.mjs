@@ -1199,7 +1199,10 @@ const horizonMateReply = Object.freeze({
   outcome: "checkmate",
   ended_by_check: true,
 });
-const horizonSession = create({ boundary: horizonBoundary });
+const horizonSession = create({
+  boundary: horizonBoundary,
+  config: { ...config, max_depth: 3 },
+});
 const horizonDeadline = Math.floor(performance.now() + 60_000);
 const horizonEnumeration = enumerate(
   horizonSession.session_id,
@@ -1225,7 +1228,7 @@ const horizonRequest = {
     candidate: horizonCandidate,
     manifest: horizonEnumeration,
     nativeBefore: horizonEnumeration.work.native_work_after,
-    childDepth: 0,
+    childDepth: 2,
     deadline: horizonDeadline,
     purpose: "horizon-research",
     iteration: "horizon-research",
@@ -1241,8 +1244,15 @@ const horizonRepair = call(
 );
 assert.equal(horizonRepair.schema, "spc-root-horizon-research-result-v1");
 assert.equal(horizonRepair.status, "complete", JSON.stringify(horizonRepair));
+assert.equal(horizonRepair.child_depth, 2);
 assert.equal(horizonRepair.bound, "exact");
 assert.equal(horizonRepair.score, -config.mate_score + 2);
+assert.deepEqual(horizonRepair.proof_bounds, [-1, -1]);
+assert.equal(horizonRepair.root_series.machine_notation, "b1b8");
+assert.deepEqual(
+  horizonRepair.child_pv.map((item) => item.machine_notation),
+  ["g8f7/a5e1"],
+);
 assert.equal(horizonRepair.horizon_proofs_validated, 1);
 assert.equal(horizonRepair.horizon_proof_hits, 1);
 assert.equal(horizonRepair.horizon_proof_hit_mask, 1);
@@ -1259,19 +1269,40 @@ const horizonWarm = call(
 assert.equal(horizonWarm.schema, "spc-root-horizon-research-result-v1");
 assert.equal(horizonWarm.status, "complete", JSON.stringify(horizonWarm));
 assert.equal(horizonWarm.score, horizonRepair.score);
+assert.deepEqual(horizonWarm.proof_bounds, horizonRepair.proof_bounds);
+assert.deepEqual(horizonWarm.root_series, horizonRepair.root_series);
+assert.deepEqual(horizonWarm.child_pv, horizonRepair.child_pv);
 assert.equal(
   horizonWarm.horizon_proof_set_identity,
   horizonRepair.horizon_proof_set_identity,
 );
 assert.equal(horizonWarm.horizon_proofs_validated, 1);
-// A depth-zero search consumes its retained proof before any transposition
-// lookup, so the warm call must report the same structural proof hit.
+// A short proof at the selected root must remain authoritative even when the
+// retained-root task can search two more complete series. It is consumed
+// before any deeper work or transposition lookup on both cold and warm calls.
 assert.equal(horizonWarm.horizon_proof_hits, 1);
 assert.equal(horizonWarm.horizon_proof_hit_mask, 1);
 const {
   horizon_proofs: _discardedHorizonProofs,
   ...missingDedicatedProofs
 } = horizonRequest;
+const evenPathInvalid = call(
+  wasm._spc_root_session_search_json,
+  [horizonSession.session_id],
+  {
+    ...horizonRequest,
+    task_id: "horizon-research-even-path",
+    native_work_before: horizonWarm.work.native_work_after,
+    horizon_proofs: [{
+      ...horizonProof,
+      rooted_path: [horizonCandidate.root_series, horizonMateReply],
+    }],
+  },
+);
+assert.equal(evenPathInvalid.status, "unsupported");
+assert.equal(evenPathInvalid.message, "native horizon proof path depth is invalid");
+assert.equal(evenPathInvalid.root_series, null);
+assert.equal(evenPathInvalid.horizon_proofs_validated, 0);
 for (const [task, expectedError, message] of [
   [
     {
@@ -1433,6 +1464,21 @@ process.stdout.write(`${JSON.stringify({
       && scout.tt_persistence === "rollback",
   },
   aspiration_fail_soft: aspirationFailSoft,
+  short_horizon_proof: {
+    child_depth: horizonRepair.child_depth,
+    rooted_path_length: horizonProof.rooted_path.length,
+    score: horizonRepair.score,
+    proof_bounds: horizonRepair.proof_bounds,
+    root_series: horizonRepair.root_series,
+    child_pv: horizonRepair.child_pv,
+    horizon_proofs_validated: horizonRepair.horizon_proofs_validated,
+    horizon_proof_hits: horizonRepair.horizon_proof_hits,
+    horizon_proof_hit_mask: horizonRepair.horizon_proof_hit_mask,
+    warm_score: horizonWarm.score,
+    warm_horizon_proof_hits: horizonWarm.horizon_proof_hits,
+    malformed_even_path_status: evenPathInvalid.status,
+    malformed_even_path_message: evenPathInvalid.message,
+  },
   deep_teacher: {
     boundary: materialBoundary,
     config: deepTeacherConfig,

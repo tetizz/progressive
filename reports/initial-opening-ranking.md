@@ -1,25 +1,25 @@
 # Initial-move ranking — Scottish Progressive Chess
 
-Generated: `2026-08-28T18:27:28+00:00`<br>
+Generated: `2026-08-28T19:25:08+00:00`<br>
 Engine: `spc-0.9.0`<br>
-Source fingerprint: `dc5bf3bca30fb059`<br>
+Source fingerprint: `b2e44c79b4ee6683`<br>
 Rules profile: `scottish-modern-common-v1`<br>
 Search: `exhaustive`, 1 Black/continuation series ply after the fixed White move<br>
 Total series horizon: `2`<br>
 Nodes: `6166`<br>
-Summed analysis time: `0.745s`
+Summed analysis time: `0.788s`
 
 > This is a depth-limited engine ranking, not a claim that the top move is objectively best. Every leaf that is not a proven terminal uses the current progressive-specific heuristic.
 
 | Rank | White move | Score | Classification | Best Black series | Unique / raw Black series | Confidence |
 |---:|:---|---:|:---|:---|---:|:---|
-| 1 | `e3` (`e2e3`) | -70 | Unclear | e5 / Qh4 | 268 / 445 | exhaustive at stated series depth; heuristic leaf evaluation |
+| 1 | `e3` (`e2e3`) | -70 | Unclear | e5 / Qh4 | 538 / 892 | exhaustive at stated series depth; heuristic leaf evaluation |
 | 2 | `e4` (`e2e4`) | -106 | Slight Disadvantage | d5 / dxe4 | 269 / 446 | exhaustive at stated series depth; heuristic leaf evaluation |
 | 3 | `Nf3` (`g1f3`) | -112 | Slight Disadvantage | d5 / Kd7 | 268 / 445 | exhaustive at stated series depth; heuristic leaf evaluation |
 | 4 | `Nc3` (`b1c3`) | -116 | Slight Disadvantage | f5 / Kf7 | 268 / 445 | exhaustive at stated series depth; heuristic leaf evaluation |
-| 5 | `c3` (`c2c3`) | -116 | Slight Disadvantage | e5 / Qh4 | 268 / 445 | exhaustive at stated series depth; heuristic leaf evaluation |
+| 5 | `c3` (`c2c3`) | -116 | Slight Disadvantage | e5 / Qh4 | 538 / 892 | exhaustive at stated series depth; heuristic leaf evaluation |
 | 6 | `b3` (`b2b3`) | -118 | Slight Disadvantage | d5 / Kd7 | 268 / 445 | exhaustive at stated series depth; heuristic leaf evaluation |
-| 7 | `g3` (`g2g3`) | -118 | Slight Disadvantage | f5 / Kf7 | 268 / 445 | exhaustive at stated series depth; heuristic leaf evaluation |
+| 7 | `g3` (`g2g3`) | -118 | Slight Disadvantage | f5 / Kf7 | 538 / 892 | exhaustive at stated series depth; heuristic leaf evaluation |
 | 8 | `h4` (`h2h4`) | -118 | Slight Disadvantage | d5 / Kd7 | 268 / 445 | exhaustive at stated series depth; heuristic leaf evaluation |
 | 9 | `a4` (`a2a4`) | -120 | Slight Disadvantage | e5 / Qh4 | 268 / 445 | exhaustive at stated series depth; heuristic leaf evaluation |
 | 10 | `Nh3` (`g1h3`) | -120 | Slight Disadvantage | d5 / Kd7 | 268 / 445 | exhaustive at stated series depth; heuristic leaf evaluation |

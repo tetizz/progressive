@@ -99,13 +99,17 @@ ALTERNATE_DEEP_PROOF = NativeHorizonProof(
 )
 
 
-def _session(*, width: int = 4) -> NativeSubtreeSession:
+def _session(
+    *,
+    width: int = 4,
+    requested_depth: int = 1,
+) -> NativeSubtreeSession:
     if not native_subtree_available():
         pytest.skip("source-matched native retained-root contract is unavailable")
     return NativeSubtreeSession(
         max_series_per_node=width,
         max_work=2_000_000,
-        requested_depth=1,
+        requested_depth=requested_depth,
         mate_score=MATE_SCORE,
         cache_capacity=16_384,
         external_cache_weight=0,
@@ -255,6 +259,230 @@ def test_exact_quiet_horizon_proof_substitutes_the_reply_mate() -> None:
     assert result.horizon_proofs_validated == 1
     assert result.horizon_proof_hits == 1
     assert result.horizon_proof_hit_mask == 0b1
+
+
+def test_short_odd_proof_prefix_hits_an_internal_boundary() -> None:
+    session = _session(width=16, requested_depth=3)
+    manifest = session.enumerate_root(
+        ROOT,
+        preferred_series=QUIET_ROOT_LINE.machine_notation,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    candidate = next(
+        item
+        for item in manifest.candidates
+        if item.order_key == QUIET_ROOT_LINE.machine_notation
+    )
+
+    result = session.search_root_candidate(
+        enumeration_identity=manifest.enumeration_identity,
+        candidate_identity=candidate.candidate_identity,
+        child_depth=2,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=manifest.work.native_work_after,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+        horizon_proofs=(
+            NativeHorizonProof(
+                rooted_path=(QUIET_ROOT_LINE,),
+                mate_reply=QUIET_ROOT_MATE,
+            ),
+        ),
+    )
+
+    assert result.status == 0
+    assert result.bound is NativeSubtreeBound.EXACT
+    assert result.score == -MATE_SCORE + 2
+    assert tuple(item.machine_notation for item in result.principal_variation) == (
+        QUIET_ROOT_LINE.machine_notation,
+        QUIET_ROOT_MATE.machine_notation,
+    )
+    assert result.proof_bounds == (-1, -1)
+    assert result.horizon_proofs_validated == 1
+    assert result.horizon_proof_hits == 1
+    assert result.horizon_proof_hit_mask == 0b1
+
+
+def test_short_odd_proof_prefix_warm_rerun_uses_the_same_proof_namespace() -> None:
+    session = _session(width=16, requested_depth=3)
+    manifest = session.enumerate_root(
+        ROOT,
+        preferred_series=QUIET_ROOT_LINE.machine_notation,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    candidate = next(
+        item
+        for item in manifest.candidates
+        if item.order_key == QUIET_ROOT_LINE.machine_notation
+    )
+    proof = NativeHorizonProof(
+        rooted_path=(QUIET_ROOT_LINE,),
+        mate_reply=QUIET_ROOT_MATE,
+    )
+
+    cold = session.search_root_candidate(
+        enumeration_identity=manifest.enumeration_identity,
+        candidate_identity=candidate.candidate_identity,
+        child_depth=2,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=manifest.work.native_work_after,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+        horizon_proofs=(proof,),
+    )
+    warm = session.search_root_candidate(
+        enumeration_identity=manifest.enumeration_identity,
+        candidate_identity=candidate.candidate_identity,
+        child_depth=2,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=cold.work.native_work_after,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+        horizon_proofs=(proof,),
+    )
+
+    assert warm.status == 0
+    assert warm.score == cold.score == -MATE_SCORE + 2
+    assert warm.principal_variation == cold.principal_variation
+    assert warm.horizon_proof_set_identity == cold.horizon_proof_set_identity
+    assert warm.horizon_proofs_validated == 1
+    assert warm.horizon_proof_hits == 1
+    assert warm.horizon_proof_hit_mask == 0b1
+    assert warm.work.call_stats[SUBTREE_STAT_FIELDS.index("tt_hits")] == 0
+
+
+def test_forced_candidate_outside_width_one_accepts_short_internal_proof() -> None:
+    session = _session(width=1, requested_depth=3)
+    manifest = session.enumerate_root(
+        ROOT,
+        preferred_series=QUIET_ROOT_LINE.machine_notation,
+        external_work=0,
+        remaining_nanoseconds=None,
+        forced_preferred=QUIET_ROOT_LINE,
+    )
+    assert manifest.retained_count == 1
+    assert manifest.selective is True
+    candidate = manifest.candidates[0]
+    assert candidate.order_key == QUIET_ROOT_LINE.machine_notation
+
+    result = session.search_root_candidate(
+        enumeration_identity=manifest.enumeration_identity,
+        candidate_identity=candidate.candidate_identity,
+        child_depth=2,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=manifest.work.native_work_after,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+        horizon_proofs=(
+            NativeHorizonProof(
+                rooted_path=(QUIET_ROOT_LINE,),
+                mate_reply=QUIET_ROOT_MATE,
+            ),
+        ),
+    )
+
+    assert result.status == 0
+    assert result.score == -MATE_SCORE + 2
+    assert tuple(item.machine_notation for item in result.principal_variation) == (
+        QUIET_ROOT_LINE.machine_notation,
+        QUIET_ROOT_MATE.machine_notation,
+    )
+    assert result.horizon_proof_hit_mask == 0b1
+
+
+@pytest.mark.parametrize(
+    ("proof", "child_depth"),
+    (
+        (
+            NativeHorizonProof(
+                rooted_path=DEEP_PROOF.rooted_path[:2],
+                mate_reply=DEEP_PROOF.mate_reply,
+            ),
+            2,
+        ),
+        (DEEP_PROOF, 0),
+    ),
+    ids=("even-prefix", "deeper-than-search"),
+)
+def test_invalid_horizon_proof_depths_fail_closed_before_tt_install(
+    proof: NativeHorizonProof,
+    child_depth: int,
+) -> None:
+    session = _deep_session()
+    manifest, candidate = _deep_manifest_and_candidate(session)
+
+    rejected = session.search_root_candidate(
+        enumeration_identity=manifest.enumeration_identity,
+        candidate_identity=candidate.candidate_identity,
+        child_depth=child_depth,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=manifest.work.native_work_after,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+        horizon_proofs=(proof,),
+    )
+
+    assert rejected.status == 4
+    assert rejected.bound is NativeSubtreeBound.UNKNOWN
+    assert rejected.message == "native horizon proof path depth is invalid"
+    assert rejected.work.tt_entries == manifest.work.tt_entries
+    assert rejected.horizon_proof_set_identity == ""
+    assert rejected.horizon_proofs_validated == 0
+
+
+def test_overlong_horizon_proof_is_rejected_by_the_public_transport() -> None:
+    with pytest.raises(TypeError, match="invalid series payload"):
+        NativeHorizonProof(
+            rooted_path=(DEEP_PROOF.rooted_path[0],) * 9,
+            mate_reply=DEEP_PROOF.mate_reply,
+        )
+
+
+def test_horizon_proof_for_another_candidate_fails_closed_before_tt_install() -> None:
+    session = _session(width=16, requested_depth=3)
+    manifest = session.enumerate_root(
+        ROOT,
+        preferred_series=QUIET_ROOT_LINE.machine_notation,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    candidate = next(
+        item
+        for item in manifest.candidates
+        if item.order_key == QUIET_ROOT_LINE.machine_notation
+    )
+
+    rejected = session.search_root_candidate(
+        enumeration_identity=manifest.enumeration_identity,
+        candidate_identity=candidate.candidate_identity,
+        child_depth=2,
+        alpha=-2 * MATE_SCORE,
+        beta=2 * MATE_SCORE,
+        external_work=manifest.work.native_work_after,
+        remaining_nanoseconds=None,
+        rollback_tt=False,
+        horizon_proofs=(
+            NativeHorizonProof(
+                rooted_path=(CHECKED_ROOT,),
+                mate_reply=BLACK_MATE,
+            ),
+        ),
+    )
+
+    assert rejected.status == 4
+    assert rejected.bound is NativeSubtreeBound.UNKNOWN
+    assert rejected.message == (
+        "native horizon proof is not rooted at the selected candidate"
+    )
+    assert rejected.work.tt_entries == manifest.work.tt_entries
+    assert rejected.horizon_proof_set_identity == ""
 
 
 def test_no_proof_search_preserves_the_pre_overlay_result_and_work() -> None:

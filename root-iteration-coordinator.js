@@ -16,7 +16,7 @@
   const UNKNOWN = "unknown";
   const WHITE = "white";
   const BLACK = "black";
-  const CHECKED_PV_SELECTION_POLICY = "repair-once-then-veto-adverse-checked-pv-mates-v1";
+  const CHECKED_PV_SELECTION_POLICY = "repair-once-then-veto-adverse-selected-pv-boundary-mates-v2";
   const PROOF_AWARE_SELECTION_POLICY = "exclude-proven-opponent-wins-unless-forced-v1";
   const MATE_CLAIM_SELECTION_POLICY = "require-sign-matching-exact-proof-for-nonterminal-mate-band-v1";
   const ROOT_CANDIDATE_TASK_SCHEMA = "spc-root-candidate-task-v1";
@@ -475,7 +475,8 @@
       || !Array.isArray(rootedPath)
       || rootedPath.length < 1
       || rootedPath.length > MAX_RETAINED_ROOT_HORIZON_PROOF_PATH
-      || rootedPath.length !== expectedPath.length
+      || rootedPath.length > expectedPath.length
+      || rootedPath.length % 2 !== 1
       || safety.line_rejection?.mate_ply !== rootedPath.length + 1
     ) {
       throw new RootCoordinatorError(
@@ -492,10 +493,9 @@
       { mate: true },
     );
     if (
-      normalizedPath.at(-1).ended_by_check !== true
-      || normalizedPath.at(-1).machine_notation
+      normalizedPath.at(-1).machine_notation
         !== safety.line_rejection.horizon_series
-      || !sameJsonValue(normalizedPath, expectedPath)
+      || !sameJsonValue(normalizedPath, expectedPath.slice(0, rootedPath.length))
       || !sameJsonValue(mateReply, safety.reply_mate)
     ) {
       throw new RootCoordinatorError(

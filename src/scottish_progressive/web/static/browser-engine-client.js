@@ -24,7 +24,7 @@
   const MAX_ESTIMATED_PEAK_MEMORY_BYTES = 192 * 1024 * 1024;
   const MATE_SCORE = 1_000_000;
   const CHECKED_PV_SELECTION_POLICY =
-    "repair-once-then-veto-adverse-checked-pv-mates-v1";
+    "repair-once-then-veto-adverse-selected-pv-boundary-mates-v2";
   const MATE_CLAIM_SELECTION_POLICY =
     "require-sign-matching-exact-proof-for-nonterminal-mate-band-v1";
   const MAX_SAME_ROOT_HORIZON_REPAIRS = 1;
