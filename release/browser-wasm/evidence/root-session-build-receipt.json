@@ -70,7 +70,7 @@
     "-sEXPORTED_FUNCTIONS=_spc_start_kernel_search_json,_spc_boundary_kernel_search_json,_spc_boundary_prefix_json,_spc_boundary_prefix_contract_json,_spc_start_kernel_abi_version,_spc_root_session_contract_json,_spc_root_session_create_json,_spc_root_session_enumerate_json,_spc_root_session_import_json,_spc_root_session_search_json,_spc_root_session_destroy,_spc_root_session_abi_version,_spc_series_mate_search_json,_spc_series_mate_abi_version,_malloc,_free",
     "-sEXPORTED_RUNTIME_METHODS=UTF8ToString,stringToNewUTF8,HEAPU8",
     "-o",
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\internal-boundary-mate-ladder-20260828\\build\\root-release-9a86dc3\\wasm\\spc-root-session.mjs"
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\internal-boundary-mate-ladder-20260828\\build\\root-release-c04f0f2\\wasm\\spc-root-session.mjs"
   ],
   "engine_version": "spc-0.9.0",
   "gates": {
@@ -173,7 +173,7 @@
       "sha256": "bef97b5453d10f1c19e2a61b712dee2a8346bb92c2c64a5582ec4aec9d12fa3c"
     }
   ],
-  "source_revision": "9a86dc3af71801e57bbaa293aaf2e1f39c748ad8",
+  "source_revision": "c04f0f2bfe414a0107fa845c63a4edd7d4de877a",
   "status": "built-not-certified",
   "support_files": [],
   "thread_count": 1,

@@ -4,7 +4,7 @@
   "failures": 0,
   "differential_cases": 6,
   "artifact": {
-    "source_revision": "9a86dc3af71801e57bbaa293aaf2e1f39c748ad8",
+    "source_revision": "c04f0f2bfe414a0107fa845c63a4edd7d4de877a",
     "source_fingerprint": "1fea7e9f1d9b5bc7",
     "kernel_sha256": "bb2886c7a49e622c25c7772a27bc9c798855225687859f73e0132d4201bd20b6",
     "wasm_sha256": "8612ef9211e1025297b2fc293140a66b414f2e18a4f7f9c205c1fa0eceaf780c",
@@ -383,14 +383,14 @@
     "within_cap": true,
     "unknown_or_limit_count": 0,
     "max_work": 100000000,
-    "accounted_work": 41255159
+    "accounted_work": 41408144
   },
   "deadline": {
     "status": "complete",
     "deadline_reached": false,
     "unknown_or_limit_count": 0,
     "deadline_limit_ms": 300000.0,
-    "remaining_time_ms": 266302.59999990463
+    "remaining_time_ms": 265396.5
   },
   "gates": {
     "initial_root_enumeration_python_parity": true,
@@ -401,5 +401,5 @@
     "deadline_receipts": true,
     "complete_rival_bound_coverage": true
   },
-  "oracle_signature_sha256": "b11687fbf8fcf540fd8a0446ec77b3997f411fc15028f30bf8b0e95dfe30e7dd"
+  "oracle_signature_sha256": "9e6107b13d0c19bba242598cf9584422bb5f1a653de07ed7ab96870510994d5c"
 }

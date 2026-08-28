@@ -198,7 +198,7 @@
     "kernel_sha256": "bb2886c7a49e622c25c7772a27bc9c798855225687859f73e0132d4201bd20b6",
     "module_js_sha256": "33f1298a3fb26e206fb9f0bc52fd060c089ad200a3ba4191b82f085b11f62a7c",
     "source_fingerprint": "1fea7e9f1d9b5bc7",
-    "source_revision": "9a86dc3af71801e57bbaa293aaf2e1f39c748ad8",
+    "source_revision": "c04f0f2bfe414a0107fa845c63a4edd7d4de877a",
     "wasm_sha256": "8612ef9211e1025297b2fc293140a66b414f2e18a4f7f9c205c1fa0eceaf780c"
   },
   "case_set_sha256": "0866d42d1a9788086ea036c815c2abf6b71e82a934719798e15948acd4675b0f",
