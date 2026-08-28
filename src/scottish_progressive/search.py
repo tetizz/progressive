@@ -1484,7 +1484,7 @@ class SeriesSearcher:
         self,
         state: ProgressiveState,
     ) -> "SeriesMateStatus":
-        """Settles whether one D0 fallback permits an immediate reply mate.
+        """Settles whether one selected root permits an immediate reply mate.
 
         This is deliberately not a selector.  FOUND rejects exactly the
         candidate supplied by the caller; it does not advance to another
@@ -4923,17 +4923,14 @@ class SeriesSearcher:
             best_proof = None
             completed_depth = 0
 
-        if (
-            completed_depth == 0
-            and best_pv
-            and best_pv[0].outcome is None
-        ):
-            # No minimax iteration certified this nonterminal move.  Settle the
-            # one exact safety question that matters before publishing it: can
-            # the opponent end the game in the immediately following series?
-            # If that question is adverse or unresolved, publish no move.  In
-            # particular, never substitute an unchecked sibling and never call
-            # one proven-mating child evidence that every legal root loses.
+        if best_pv and best_pv[0].outcome is None:
+            # Every nonterminal move crosses one final exact publication gate,
+            # including a winner from a fully completed iterative depth.  The
+            # earlier root selector normally supplies a cached proof, making
+            # this defense-in-depth check free.  If that proof is adverse or
+            # unresolved, publish no move.  In particular, never substitute an
+            # unchecked sibling and never call one proven-mating child evidence
+            # that every legal root loses.
             from .series_mate import SeriesMateStatus
 
             fallback_status = self._certify_final_fallback_reply_mate(
@@ -4953,6 +4950,7 @@ class SeriesSearcher:
                 best_pv = ()
                 alternatives = ()
                 best_proof = None
+                completed_depth = 0
 
         elapsed = time.perf_counter() - started
         work_limit_reached = (

@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from scottish_progressive.league import (
     HUMAN_FIRST_GAME_CONTENDER_HYPOTHESES,
     HUMAN_FIRST_GAME_REFUTATION,
-    HUMAN_FIRST_GAME_REPLY_VERIFIER_WIDTH,
     HUMAN_FIRST_GAME_ROOT_WORK_LIMIT,
     HUMAN_FIRST_GAME_ROOT_WIDTH,
     _evaluate_human_first_game_refutation,
@@ -13,8 +12,9 @@ from scottish_progressive.league import (
 )
 from scottish_progressive.model import Outcome
 from scottish_progressive.profiles import baseline_profile
-from scottish_progressive.rules import generate_series, play_series
+from scottish_progressive.rules import play_series
 from scottish_progressive.search import ScoredSeries
+from scottish_progressive.series_mate import SeriesMateProbe, SeriesMateStatus
 
 
 def _fake_search_result(
@@ -61,7 +61,11 @@ def test_first_game_gate_selects_best_retained_safe_candidate_without_win_claim(
 
     assert gate["passed"] is True
     assert evidence["blunder_reply_verifier"]["mate_found"] is True
-    assert evidence["blunder_reply_verifier"]["verifier_width"] == 832
+    assert evidence["blunder_reply_verifier"]["verifier_kind"] == (
+        "exact-native-one-series"
+    )
+    assert evidence["blunder_reply_verifier"]["verifier_status"] == "found"
+    assert evidence["blunder_reply_verifier"]["verifier_width"] is None
     assert evidence["selected_series"] != evidence["blundering_series"]
     assert evidence["selected_is_best_retained_by_score"] is True
     assert evidence["selected_is_best_retained_safe"] is True
@@ -89,15 +93,16 @@ def test_first_game_gate_selects_best_retained_safe_candidate_without_win_claim(
     assert selected["reply_verifier"]["completed"] is True
     assert selected["reply_verifier"]["mate_found"] is False
     assert selected["reply_verifier"]["work_limit_reached"] is False
-    assert selected["reply_verifier"]["selected_reply"] is not None
+    assert selected["reply_verifier"]["selected_reply"] is None
     assert selected["reply_verifier"]["replay_error"] is None
     assert (
         selected["reply_verifier"]["work_positions"]
         < selected["reply_verifier"]["verifier_work_limit"]
     )
-    assert selected["reply_verifier"]["verifier_width"] == (
-        HUMAN_FIRST_GAME_REPLY_VERIFIER_WIDTH
-    )
+    assert selected["reply_verifier"]["verifier_kind"] == "exact-native-one-series"
+    assert selected["reply_verifier"]["verifier_status"] == "exhausted"
+    assert selected["reply_verifier"]["verifier_width"] is None
+    assert selected["reply_verifier"]["exact_width"] is True
     assert evidence["proof"] is None
     assert "not a forced-win proof" in evidence["quality_scope"]
 
@@ -119,26 +124,29 @@ def test_first_game_gate_rejects_a_safe_choice_when_a_better_retained_one_exists
     )
 
     def fake_analyze(state, limits, profile, evaluation_overlay):
-        del profile, evaluation_overlay
-        if state.series_number == 4:
-            return root_result
+        del limits, profile, evaluation_overlay
+        assert state.series_number == 4
+        return root_result
+
+    def fake_probe(state, **_kwargs):
         if state.transposition_key == blunder.final_state.transposition_key:
-            return _fake_search_result(
-                best_series=canonical_mate,
-                score=999_999,
-                depth=limits.depth_series,
-                proof="white",
+            return SeriesMateProbe(
+                SeriesMateStatus.FOUND,
+                "injected replayed mate",
+                series=canonical_mate,
             )
-        reply = generate_series(state, max_frontier_states=1)[0]
-        assert reply.outcome != Outcome.CHECKMATE
-        return _fake_search_result(
-            best_series=reply,
-            depth=limits.depth_series,
+        return SeriesMateProbe(
+            SeriesMateStatus.EXHAUSTED,
+            "injected exact miss",
         )
 
     monkeypatch.setattr(
         "scottish_progressive.league._analyze_gate_position",
         fake_analyze,
+    )
+    monkeypatch.setattr(
+        "scottish_progressive.series_mate.find_native_series_mate",
+        fake_probe,
     )
     gate = _evaluate_human_first_game_refutation(baseline_profile())
     evidence = gate["evidence"]
@@ -167,20 +175,25 @@ def test_first_game_gate_rejects_selected_line_with_replay_proven_reply_mate(
     )
 
     def fake_analyze(state, limits, profile, evaluation_overlay):
-        del profile, evaluation_overlay
-        if state.series_number == 4:
-            return root_result
+        del limits, profile, evaluation_overlay
+        assert state.series_number == 4
+        return root_result
+
+    def fake_probe(state, **_kwargs):
         assert state.transposition_key == blunder.final_state.transposition_key
-        return _fake_search_result(
-            best_series=canonical_mate,
-            score=999_999,
-            depth=limits.depth_series,
-            proof="white",
+        return SeriesMateProbe(
+            SeriesMateStatus.FOUND,
+            "injected replayed mate",
+            series=canonical_mate,
         )
 
     monkeypatch.setattr(
         "scottish_progressive.league._analyze_gate_position",
         fake_analyze,
+    )
+    monkeypatch.setattr(
+        "scottish_progressive.series_mate.find_native_series_mate",
+        fake_probe,
     )
     gate = _evaluate_human_first_game_refutation(baseline_profile())
     evidence = gate["evidence"]

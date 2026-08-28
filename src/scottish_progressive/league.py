@@ -48,11 +48,10 @@ LEAGUE_SCHEMA_VERSION = 3
 OPENING_SUITE_VERSION = "spc-league-boundaries-v4"
 PROMOTION_METHOD = "deterministic-fixed-suite-pairs-v1"
 
-HUMAN_FIRST_GAME_REPLY_VERIFIER_WIDTH = 832
-# The selected-PV safety lane receives one third of a non-collect-all search
-# allowance.  The fixed ...Bg4-f3 fixture needs 2,576,473 safety positions to
-# reject its first unsafe White reply and certify the repaired reply, so expose
-# a measured margin instead of failing on the obsolete 533,333-position share.
+# The human-game regression asks an existential one-series mate question, not
+# for a move to publish.  Give the exact native solver enough deterministic
+# work to settle the measured fixtures without coupling this internal oracle to
+# the public SearchResult publication policy.
 HUMAN_FIRST_GAME_REPLY_VERIFIER_WORK_LIMIT = 8_000_000
 HUMAN_FIRST_GAME_ROOT_WIDTH = 32
 # A complete collect-all depth-2 search of this fixed S4 fixture currently
@@ -993,18 +992,18 @@ def _one_series_reply_verifier(
     profile: EngineProfile,
     evaluation_overlay: EvaluationOverlay | None,
 ) -> dict[str, Any]:
-    """Runs the fixed wide verifier and replays its selected reply."""
+    """Settles the gate's one-series mate question without publishing a move."""
 
-    limits = SearchLimits(
-        depth_series=1,
-        max_series_per_node=HUMAN_FIRST_GAME_REPLY_VERIFIER_WIDTH,
+    del profile, evaluation_overlay
+    from .series_mate import SeriesMateStatus, find_native_series_mate
+
+    probe = find_native_series_mate(
+        state,
+        max_positions=None,
+        max_work=HUMAN_FIRST_GAME_REPLY_VERIFIER_WORK_LIMIT,
         time_limit_seconds=None,
-        max_generation_positions=HUMAN_FIRST_GAME_REPLY_VERIFIER_WORK_LIMIT,
-        collect_all_root_scores=False,
-        native_threads=1,
     )
-    result = _analyze_gate_position(state, limits, profile, evaluation_overlay)
-    selected = result.best_series
+    selected = probe.series
     replayed: SeriesResult | None = None
     replay_error: str | None = None
     if selected is not None:
@@ -1012,16 +1011,19 @@ def _one_series_reply_verifier(
             replayed = play_series(state, selected.moves)
         except BaseException as error:  # pragma: no cover - engine evidence is legal
             replay_error = f"{type(error).__name__}: {error}"
-    completed = (
-        result.requested_depth == 1
-        and result.completed_depth == 1
-        and not result.timed_out
-        and not result.work_limit_reached
-        and selected is not None
-        and replay_error is None
+    completed = bool(
+        replay_error is None
+        and (
+            probe.status is SeriesMateStatus.EXHAUSTED
+            or probe.status is SeriesMateStatus.FOUND
+            and replayed is not None
+            and replayed.outcome is Outcome.CHECKMATE
+            and replayed.ended_by_check
+        )
     )
     mate_found = bool(
-        completed
+        probe.status is SeriesMateStatus.FOUND
+        and completed
         and replayed is not None
         and replayed.outcome == Outcome.CHECKMATE
         and replayed.ended_by_check
@@ -1038,15 +1040,21 @@ def _one_series_reply_verifier(
             else replayed.outcome.value
         ),
         "replay_error": replay_error,
-        "requested_depth": result.requested_depth,
-        "completed_depth": result.completed_depth,
-        "timed_out": result.timed_out,
-        "work_limit_reached": result.work_limit_reached,
-        "work_positions": result.stats.work_positions,
-        "proof": result.proof,
-        "verifier_width": HUMAN_FIRST_GAME_REPLY_VERIFIER_WIDTH,
+        "requested_depth": 1,
+        "completed_depth": 1 if completed else 0,
+        "timed_out": probe.status is SeriesMateStatus.DEADLINE,
+        "work_limit_reached": probe.status is SeriesMateStatus.WORK_LIMIT,
+        "work_positions": probe.positions_visited + probe.moves_generated,
+        "proof": (
+            "white" if state.board.turn == chess.WHITE else "black"
+        ) if mate_found else None,
+        "verifier_kind": "exact-native-one-series",
+        "verifier_status": str(probe.status),
+        "verifier_positions": probe.positions_visited,
+        "verifier_edges": probe.moves_generated,
+        "verifier_width": None,
         "verifier_work_limit": HUMAN_FIRST_GAME_REPLY_VERIFIER_WORK_LIMIT,
-        "exact_width": result.exact_width,
+        "exact_width": probe.status is SeriesMateStatus.EXHAUSTED,
     }
 
 
@@ -1057,9 +1065,9 @@ def _evaluate_human_first_game_refutation(
 ) -> dict[str, Any]:
     """Rejects the live S4 blunder and certifies retained-set move quality.
 
-    The no-mate result is deliberately scoped to the fixed width-832 reply
-    verifier. The heuristic comparison is scoped to the fully scored retained
-    root set; neither selective check is presented as a forced-win proof.
+    Immediate reply-mate existence is settled by the exact native one-series
+    solver. The heuristic comparison is scoped to the fully scored retained
+    root set; that move-quality comparison is not a forced-win proof.
     """
 
     if (
@@ -1264,8 +1272,9 @@ def _evaluate_human_first_game_refutation(
             "retained_move_quality_passed": retained_move_quality_passed,
             "screened_selected_and_strictly_better": reply_screens,
             "quality_scope": (
-                "best width-832-reply-screened heuristic continuation among "
-                "the fully scored retained width-32 root set; not a forced-win proof"
+                "best exact-one-series-mate-screened heuristic continuation "
+                "among the fully scored retained width-32 root set; not a "
+                "forced-win proof"
             ),
             "class_coverage_scope": (
                 "the 16/16 slot counts are the mixed-selector contract; candidate "

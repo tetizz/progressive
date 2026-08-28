@@ -535,7 +535,7 @@ def test_all_mating_widening_interruption_keeps_best_safe_move_without_score(
     assert searcher.stats.root_safety_unknown_fallbacks == 0
 
 
-def test_only_legal_root_series_is_played_when_every_child_is_mating() -> None:
+def test_only_legal_root_series_is_withheld_when_its_reply_mate_is_proven() -> None:
     state = ProgressiveState.from_fen(
         "1nb1kbnr/ppNR2pp/4P3/8/5q2/2K5/PPP1PP2/5BN1 b k - 0 13",
         8,
@@ -554,17 +554,19 @@ def test_only_legal_root_series_is_played_when_every_child_is_mating() -> None:
         PROFILE,
     )
 
-    assert result.best_series is not None
-    assert result.best_series.moves == ("f4c7",)
-    assert result.completed_depth == 1
+    assert result.best_series is None
+    assert result.principal_variation == ()
+    assert result.alternatives == ()
+    assert result.completed_depth == 0
     assert not result.work_limit_reached
-    assert result.principal_variation[0] == result.best_series
-    reply = result.principal_variation[1]
-    assert reply.outcome is Outcome.CHECKMATE
-    assert play_series(result.best_series.final_state, reply.moves).outcome is (
-        Outcome.CHECKMATE
-    )
-    assert result.proof == "white"
+    assert result.proof is None
+    assert not result.root_scores_complete
+    assert result.stats.root_safety_proven_mate_children == 1
+    assert result.stats.root_safety_all_mating_widenings == 1
+    assert result.stats.final_fallback_reply_mate_probes == 0
+    assert result.stats.final_fallback_reply_mate_cache_hits == 1
+    assert result.stats.final_fallback_reply_mate_found == 1
+    assert result.stats.final_fallback_reply_mate_rejections == 1
 
 
 def test_capped_all_mating_widening_keeps_play_live_without_forced_proof(
@@ -1057,11 +1059,12 @@ def test_interrupted_safety_retry_keeps_the_last_completed_root_depth(
         _searcher: SeriesSearcher,
         state: ProgressiveState,
     ) -> SeriesResult | None:
-        return (
-            reply_mate
-            if state.position_hash == unsafe.final_state.position_hash
-            else None
+        if state.position_hash == unsafe.final_state.position_hash:
+            return reply_mate
+        _searcher._mark_root_child_exact_exhausted(  # noqa: SLF001
+            state.transposition_key
         )
+        return None
 
     monkeypatch.setattr(SeriesSearcher, "_search_root_pass", fake_pass)
     monkeypatch.setattr(SeriesSearcher, "_root_child_immediate_mate", fake_screen)
@@ -1431,14 +1434,21 @@ def test_raw_retry_timeout_restores_last_completed_root_metadata(
         "_search_root_pass",
         complete_then_interrupt_raw,
     )
+    def exact_screen(
+        searcher: SeriesSearcher,
+        state: ProgressiveState,
+    ) -> SeriesResult | None:
+        if state.transposition_key == unsafe.final_state.transposition_key:
+            return reply_mate
+        searcher._mark_root_child_exact_exhausted(  # noqa: SLF001
+            state.transposition_key
+        )
+        return None
+
     monkeypatch.setattr(
         SeriesSearcher,
         "_root_child_immediate_mate",
-        lambda _searcher, state: (
-            reply_mate
-            if state.transposition_key == unsafe.final_state.transposition_key
-            else None
-        ),
+        exact_screen,
     )
     result = SeriesSearcher(
         SearchLimits(
@@ -2051,7 +2061,7 @@ def test_s8_underpromotion_proof_runs_before_general_native_search() -> None:
     assert searcher.stats.root_safety_screen_stages == 0
 
 
-def test_nonpromotion_queen_mate_is_screened_and_reported() -> None:
+def test_nonpromotion_queen_mate_is_screened_and_withheld() -> None:
     blunder = play_series(S16_STATE, BLUNDERING_S16)
     human_mate = play_series(blunder.final_state, HUMAN_S17_MATE)
     assert human_mate.outcome == Outcome.CHECKMATE
@@ -2063,11 +2073,14 @@ def test_nonpromotion_queen_mate_is_screened_and_reported() -> None:
     assert play_series(blunder.final_state, screened.moves).outcome == Outcome.CHECKMATE
 
     result = analyze(S16_STATE, _play_limits(), PROFILE)
-    assert result.best_series is not None
-    assert result.score == MATE_SCORE - 2
-    assert len(result.principal_variation) >= 2
-    selected_child = play_series(S16_STATE, result.best_series.moves).final_state
-    selected_mate = result.principal_variation[1]
-    replayed = play_series(selected_child, selected_mate.moves)
-    assert replayed.outcome == Outcome.CHECKMATE
-    assert replayed.ended_by_check
+    assert result.best_series is None
+    assert result.principal_variation == ()
+    assert result.alternatives == ()
+    assert result.completed_depth == 0
+    assert result.proof is None
+    assert not result.root_scores_complete
+    assert result.stats.root_safety_proven_mate_children > 0
+    assert result.stats.final_fallback_reply_mate_probes == 0
+    assert result.stats.final_fallback_reply_mate_cache_hits == 1
+    assert result.stats.final_fallback_reply_mate_found == 1
+    assert result.stats.final_fallback_reply_mate_rejections == 1

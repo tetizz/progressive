@@ -183,17 +183,20 @@ def test_proactive_probe_skips_tractable_and_contract_sensitive_roots(
     ) is None
 
 
-def test_probe_deadline_reserves_time_for_ordinary_search(
+def test_probe_deadline_reserves_ordinary_search_before_final_gate_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = state_from_pfen(BUCEPHALUS_MISSED_S5_MATE_PFEN)
     fallback = play_series(state, tuple(HISTORICAL_LOSING_FALLBACK.split("/")))
-    observed: dict[str, float] = {}
+    observed: list[tuple[tuple[int, str, int, int], float]] = []
     ordinary_calls = 0
 
-    def deadline_probe(*_args: object, **kwargs: object) -> SeriesMateProbe:
+    def deadline_probe(
+        probed: ProgressiveState,
+        **kwargs: object,
+    ) -> SeriesMateProbe:
         seconds = float(kwargs["time_limit_seconds"])
-        observed["probe_seconds"] = seconds
+        observed.append((probed.transposition_key, seconds))
         time.sleep(seconds)
         return SeriesMateProbe(SeriesMateStatus.DEADLINE, "probe slice expired")
 
@@ -221,8 +224,14 @@ def test_probe_deadline_reserves_time_for_ordinary_search(
         ),
     )
 
-    assert 0 < observed["probe_seconds"] <= 0.03
+    assert len(observed) == 2
+    assert observed[0][0] == state.transposition_key
+    assert 0 < observed[0][1] <= 0.03
+    assert observed[1][0] == fallback.final_state.transposition_key
+    assert observed[0][1] < observed[1][1] <= 0.2
     assert ordinary_calls == 1
-    assert result.best_series == fallback
-    assert result.completed_depth == 1
-    assert not result.timed_out
+    assert result.best_series is None
+    assert result.completed_depth == 0
+    assert result.timed_out
+    assert result.stats.root_current_series_mate_unknown == 1
+    assert result.stats.final_fallback_reply_mate_unknown == 1
