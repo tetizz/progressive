@@ -665,7 +665,7 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
                 "d6h2",
                 "h2g3",
             ],
-            "work": 15_826,
+            "work": 25_643,
             "checkmates": 1,
             "max_depth_reached": 6,
         },
@@ -674,7 +674,7 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
             "proof_status": "unknown",
             "complete": False,
             "moves": [],
-            "work": 15_825,
+            "work": 25_642,
             "checkmates": 0,
             "max_depth_reached": 0,
         },
@@ -683,7 +683,16 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
             "proof_status": "exhausted",
             "complete": True,
             "moves": [],
-            "work": 10_725,
+            "work": 16_066,
+            "checkmates": 0,
+            "max_depth_reached": 5,
+        },
+        "s6-selective-miss-exact-cap-minus-one": {
+            "kernel_status": "work_limit",
+            "proof_status": "unknown",
+            "complete": False,
+            "moves": [],
+            "work": 16_065,
             "checkmates": 0,
             "max_depth_reached": 5,
         },
@@ -692,7 +701,7 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
             "proof_status": "found",
             "complete": True,
             "moves": ["a1d4", "a8a2", "a2d2", "d4f2"],
-            "work": 3_253,
+            "work": 5_474,
             "checkmates": 1,
             "max_depth_reached": 4,
         },
@@ -709,7 +718,7 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
                 "g5e6",
                 "d1d8",
             ],
-            "work": 45_694,
+            "work": 79_715,
             "checkmates": 1,
             "max_depth_reached": 7,
         },
@@ -727,7 +736,7 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
             "proof_status": "exhausted",
             "complete": True,
             "moves": [],
-            "work": 214,
+            "work": 836,
             "checkmates": 0,
             "max_depth_reached": 0,
         },
@@ -741,10 +750,76 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
             "max_depth_reached": 0,
         },
     }
+    accelerated_inputs = {
+        "s6-staged-root-found": {
+            "fen": "rnbNkb1r/pppp2pp/8/5p2/8/3B1P2/PPPP2PP/RNBnK2R b kq - 0 7",
+            "series": 6,
+            "max_positions": 0,
+            "max_work": 25_643,
+            "time_limit_ms": 30_000,
+        },
+        "s6-staged-root-cap-minus-one": {
+            "fen": "rnbNkb1r/pppp2pp/8/5p2/8/3B1P2/PPPP2PP/RNBnK2R b kq - 0 7",
+            "series": 6,
+            "max_positions": 0,
+            "max_work": 25_642,
+            "time_limit_ms": 30_000,
+        },
+        "s6-selective-miss-exact-exhausted": {
+            "fen": "6bk/8/8/8/8/8/8/K7 b - - 0 1",
+            "series": 6,
+            "max_positions": 0,
+            "max_work": 16_066,
+            "time_limit_ms": 30_000,
+        },
+        "s6-selective-miss-exact-cap-minus-one": {
+            "fen": "6bk/8/8/8/8/8/8/K7 b - - 0 1",
+            "series": 6,
+            "max_positions": 0,
+            "max_work": 16_065,
+            "time_limit_ms": 30_000,
+        },
+        "authentic-s8-staged-root-invariant": {
+            "fen": "rn1k1bn1/4pp2/5Q2/8/2P5/5P2/3P3P/qNBbK1NR b K - 0 13",
+            "series": 8,
+            "max_positions": 0,
+            "max_work": 1_000_000,
+            "time_limit_ms": 30_000,
+        },
+        "s7-staged-root-found": {
+            "fen": "rnk3nr/pp3ppp/8/8/8/1Pp1P3/P1PP1PPP/R1b1K1NR w K - 0 13",
+            "series": 7,
+            "max_positions": 0,
+            "max_work": 10_000_000,
+            "time_limit_ms": 30_000,
+        },
+        "s7-staged-root-work-limit": {
+            "fen": "rnk3nr/pp3ppp/8/8/8/1Pp1P3/P1PP1PPP/R1b1K1NR w K - 0 13",
+            "series": 7,
+            "max_positions": 0,
+            "max_work": 10,
+            "time_limit_ms": 30_000,
+        },
+        "s7-staged-root-exhausted": {
+            "fen": "8/8/8/8/8/2k5/8/K7 w - - 0 1",
+            "series": 7,
+            "max_positions": 0,
+            "max_work": 1_000_000,
+            "time_limit_ms": 30_000,
+        },
+        "s7-nonchecking-stuck-is-not-mate": {
+            "fen": "8/8/8/8/8/5k2/6q1/7K w - - 0 1",
+            "series": 7,
+            "max_positions": 0,
+            "max_work": 1_000_000,
+            "time_limit_ms": 30_000,
+        },
+    }
     accelerated_cases = [
         {
             "name": name,
-            "input_sha256": promoter._canonical_sha256({"input": name}),
+            "input": accelerated_inputs[name],
+            "input_sha256": promoter._canonical_sha256(accelerated_inputs[name]),
             "wasm_output_sha256": promoter._canonical_sha256({"output": name}),
             **spec,
         }
@@ -754,6 +829,7 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
         "schema": promoter.MATE_PARITY_SCHEMA,
         "status": "passed",
         "failures": 0,
+        "work_accounting": "positions-plus-generated-edges-v1",
         "artifact": identity,
         "cases": mate_cases,
         "case_set_sha256": promoter._canonical_sha256(mate_cases),
@@ -3233,6 +3309,41 @@ def test_rejects_resigned_accelerated_mate_work_drift(tmp_path: Path) -> None:
 
     _rewrite(fixture, "mate_parity", mutate)
     with pytest.raises(promoter.ReleaseGateError, match="result changed"):
+        _validate(fixture)
+
+
+def test_rejects_resigned_accelerated_mate_input_drift(tmp_path: Path) -> None:
+    fixture = _valid_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        accelerated = payload["accelerated_cases"]
+        accelerated[0]["input"]["fen"] = "8/8/8/8/8/8/8/K6k b - - 0 1"
+        accelerated[0]["input_sha256"] = promoter._canonical_sha256(
+            accelerated[0]["input"]
+        )
+        payload["accelerated_case_set_sha256"] = promoter._canonical_sha256(
+            accelerated
+        )
+
+    _rewrite(fixture, "mate_parity", mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="input changed"):
+        _validate(fixture)
+
+
+def test_rejects_accelerated_mate_input_type_drift(tmp_path: Path) -> None:
+    fixture = _valid_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        accelerated = payload["accelerated_cases"]
+        # Python considers False equal to integer zero; canonical JSON must
+        # still distinguish the wire types bound by the release contract.
+        accelerated[0]["input"]["max_positions"] = False
+        payload["accelerated_case_set_sha256"] = promoter._canonical_sha256(
+            accelerated
+        )
+
+    _rewrite(fixture, "mate_parity", mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="input changed"):
         _validate(fixture)
 
 

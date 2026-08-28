@@ -178,6 +178,10 @@ enum class PathCountOverflowMode : std::uint8_t {
 struct SeriesGenerationStats {
     std::uint64_t positions_visited = 0;
     std::uint64_t frontier_score_positions = 0;
+    // Literal legal move variants consumed by the opt-in edge-inclusive work
+    // contract. Ordinary complete-series callers keep their historical
+    // position-only budget and do not pay this counter.
+    std::uint64_t generated_edges = 0;
     std::uint64_t raw_series = 0;
     std::uint64_t unique_series = 0;
     std::uint64_t transpositions_merged = 0;
@@ -256,6 +260,11 @@ struct CompleteSeriesRequest {
     // delivered mate. Exact/full-window callers leave this false so their
     // canonical retained frontier and principal variation stay unchanged.
     bool stop_on_mover_mate = false;
+    // The mate-proof ABI promises max_work in dequeued generation positions
+    // plus generated legal edges. The staged root prepass opts into that
+    // exact-compatible meter; all other callers preserve the established
+    // position/frontier-score contract.
+    bool edge_inclusive_work = false;
 };
 
 struct CompleteSeriesResponse {

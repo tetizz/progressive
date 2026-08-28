@@ -1215,8 +1215,8 @@ void add_mate_stats(
     }
 
     // max_positions historically counts dequeued mate-search nodes only,
-    // while the subtree generator accounts positions plus scored frontier
-    // edges. Preserve that public distinction by leaving max_positions calls
+    // while the subtree generator's ordinary mode accounts positions plus
+    // scored frontier positions. Preserve that public distinction by leaving max_positions calls
     // on the exact solver instead of translating between incomparable units.
     const std::optional<std::uint64_t> budget = request.max_work;
     spc::native::SubtreeSearchConfig config{
@@ -1232,6 +1232,8 @@ void add_mate_stats(
         spc::native::FullWeights{100, 100, 100, 100, 100, 100, 100},
         1,
         1,
+        std::nullopt,
+        true,
     };
     spc::native::SubtreeState root{
         spc::native::BoardState{
@@ -1282,10 +1284,14 @@ void add_mate_stats(
             request.deadline
         );
         SeriesMateSearchStats stage_stats;
+        // The mate ABI's two work counters stay literal: positions_visited is
+        // dequeued generator states, while moves_generated is every consumed
+        // legal move variant. Frontier scoring remains separate telemetry and
+        // is not charged again in this exact-compatible meter.
         stage_stats.positions_visited =
             result.work.call_stats.series_generation_positions;
         stage_stats.moves_generated =
-            result.work.call_stats.frontier_score_positions;
+            result.work.call_stats.series_generation_edges;
         stage_stats.transpositions_merged =
             result.work.call_stats.intra_series_transpositions;
         stage_stats.peak_frontier =

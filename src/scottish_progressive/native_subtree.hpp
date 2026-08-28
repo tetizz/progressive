@@ -80,6 +80,10 @@ struct SubtreeSearchConfig {
     // Absent by default. No production profile activates this field until a
     // separately certified model is packaged and selected by its manifest.
     std::optional<SubtreeDeepTeacherValueModel> deep_teacher_value_model;
+    // Internal mate-proof sessions replace frontier-score charging with
+    // literal legal-edge charging, matching the exact mate ABI. Public root
+    // sessions leave this false and retain their certified work geometry.
+    bool edge_inclusive_generation_work = false;
 };
 
 struct SubtreeSearchStats {
@@ -96,6 +100,7 @@ struct SubtreeSearchStats {
     std::uint64_t branch_caps = 0;
     std::uint64_t series_generation_positions = 0;
     std::uint64_t frontier_score_positions = 0;
+    std::uint64_t series_generation_edges = 0;
     std::uint64_t static_evaluation_positions = 0;
     std::uint64_t evaluation_reach_positions = 0;
     std::uint64_t evaluation_capture_positions = 0;

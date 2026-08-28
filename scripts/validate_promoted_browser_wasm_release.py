@@ -74,7 +74,7 @@ EVIDENCE_SPECS = (
     (
         "mate_parity",
         "evidence/mate-parity-receipt.json",
-        "spc-mate-wasm-receipt-v2",
+        "spc-mate-wasm-receipt-v3",
     ),
     (
         "opera",

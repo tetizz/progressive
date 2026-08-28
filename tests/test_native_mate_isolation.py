@@ -21,15 +21,15 @@ from scottish_progressive.series_mate import (
 
 
 NATIVE_SOURCE_HASHES = {
-    "_native_eval.cpp": "afd24385fabf8d21b9eb5d88b4302ee9707cbf032120718375c1acc7c84f3e85",
-    "native_eval.hpp": "85b426f8f868def00dea0d7a7f6f9d048d9836cde1018dc1ae0d61e33c25ac5f",
-    "native_subtree.cpp": "138bf4a1ecb2fe771193d81d40e61c827ad50972e58318f934c76e55995398a4",
-    "native_subtree.hpp": "a7dfd79ae0659fcff725c7fa79da98b296d7beb7ee2f530952bbc40d235bc335",
+    "_native_eval.cpp": "72f1b4a8a13de98807972908b7cb5fce13b3530e34400eb027ed110168d9abdc",
+    "native_eval.hpp": "abe00ee31ad2cbb5eed7c4830a25f80d2c502bfef87307ff4aa0474d426466d2",
+    "native_subtree.cpp": "b9d656dc74cc5aef121c644671bdbf10d5cc9a5f6cd4f0a8263011aed4df80aa",
+    "native_subtree.hpp": "bb97ca5cc1578207b968176a1773029bc1b1e9af2c838b63f6e09ba346241fa6",
     "native_selfplay.cpp": "0406e35656b509a8c4351c1c68df5c06736ad06cf65c995479790c0aa1436c09",
     "native_selfplay.hpp": "6bfaaaa56bf4e271202cb6ab0f8a20171a6b2c4db85e90f79c8b302ad97a9b60",
 }
 NATIVE_IDENTITY = (
-    "e1a1743de14916f6da915de089d86b43920b06fdc2cc16134c7e7764d458d947"
+    "5fe503396ecb0a0258ffa7fa85dcdb7e777bce65eb2fa6f77425df73f3958d87"
 )
 NATIVE_SURFACE = {
     "SOURCE_IDENTITY",

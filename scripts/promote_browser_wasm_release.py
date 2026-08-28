@@ -39,7 +39,7 @@ ROOT_SMOKE_SCHEMA = "spc-root-session-wasm-smoke-v1"
 ROOT_PARITY_SCHEMA = "spc-root-d5-oracle-v1"
 PREFIX_PARITY_SCHEMA = "spc-prefix-parity-receipt-v2"
 BROWSER_PREFIX_SCHEMA = "spc-browser-prefix-contract-receipt-v1"
-MATE_PARITY_SCHEMA = "spc-mate-wasm-receipt-v2"
+MATE_PARITY_SCHEMA = "spc-mate-wasm-receipt-v3"
 OPERA_CDP_SCHEMA = "spc-opera-root-session-cdp-receipt-v1"
 OPERA_WORKER_SCHEMA = "spc-opera-root-d5-benchmark-v2"
 OPERA_CHECKED_HORIZON_SCHEMA = "spc-opera-checked-pv-horizon-receipt-v5"
@@ -2346,6 +2346,10 @@ def _validate_mate_parity(receipt: Receipt, build: BuildEvidence) -> int:
     payload = receipt.payload
     if payload.get("schema") != MATE_PARITY_SCHEMA or payload.get("status") != "passed":
         raise ReleaseGateError("mate parity receipt did not pass")
+    if payload.get("work_accounting") != (
+        "positions-plus-generated-edges-v1"
+    ):
+        raise ReleaseGateError("mate parity work accounting is not literal")
     _require_identity(payload.get("artifact"), build.identity, "mate parity")
     if payload.get("failures") != 0:
         raise ReleaseGateError("mate parity receipt reports failures")
@@ -2399,6 +2403,13 @@ def _validate_mate_parity(receipt: Receipt, build: BuildEvidence) -> int:
     )
     expected_accelerated = {
         "s6-staged-root-found": {
+            "input": {
+                "fen": "rnbNkb1r/pppp2pp/8/5p2/8/3B1P2/PPPP2PP/RNBnK2R b kq - 0 7",
+                "series": 6,
+                "max_positions": 0,
+                "max_work": 25_643,
+                "time_limit_ms": 30_000,
+            },
             "kernel_status": "found",
             "proof_status": "found",
             "complete": True,
@@ -2410,38 +2421,82 @@ def _validate_mate_parity(receipt: Receipt, build: BuildEvidence) -> int:
                 "d6h2",
                 "h2g3",
             ],
-            "work": 15_826,
+            "work": 25_643,
             "checkmates": 1,
             "max_depth_reached": 6,
         },
         "s6-staged-root-cap-minus-one": {
+            "input": {
+                "fen": "rnbNkb1r/pppp2pp/8/5p2/8/3B1P2/PPPP2PP/RNBnK2R b kq - 0 7",
+                "series": 6,
+                "max_positions": 0,
+                "max_work": 25_642,
+                "time_limit_ms": 30_000,
+            },
             "kernel_status": "work_limit",
             "proof_status": "unknown",
             "complete": False,
             "moves": [],
-            "work": 15_825,
+            "work": 25_642,
             "checkmates": 0,
             "max_depth_reached": 0,
         },
         "s6-selective-miss-exact-exhausted": {
+            "input": {
+                "fen": "6bk/8/8/8/8/8/8/K7 b - - 0 1",
+                "series": 6,
+                "max_positions": 0,
+                "max_work": 16_066,
+                "time_limit_ms": 30_000,
+            },
             "kernel_status": "exhausted",
             "proof_status": "exhausted",
             "complete": True,
             "moves": [],
-            "work": 10_725,
+            "work": 16_066,
+            "checkmates": 0,
+            "max_depth_reached": 5,
+        },
+        "s6-selective-miss-exact-cap-minus-one": {
+            "input": {
+                "fen": "6bk/8/8/8/8/8/8/K7 b - - 0 1",
+                "series": 6,
+                "max_positions": 0,
+                "max_work": 16_065,
+                "time_limit_ms": 30_000,
+            },
+            "kernel_status": "work_limit",
+            "proof_status": "unknown",
+            "complete": False,
+            "moves": [],
+            "work": 16_065,
             "checkmates": 0,
             "max_depth_reached": 5,
         },
         "authentic-s8-staged-root-invariant": {
+            "input": {
+                "fen": "rn1k1bn1/4pp2/5Q2/8/2P5/5P2/3P3P/qNBbK1NR b K - 0 13",
+                "series": 8,
+                "max_positions": 0,
+                "max_work": 1_000_000,
+                "time_limit_ms": 30_000,
+            },
             "kernel_status": "found",
             "proof_status": "found",
             "complete": True,
             "moves": ["a1d4", "a8a2", "a2d2", "d4f2"],
-            "work": 3_253,
+            "work": 5_474,
             "checkmates": 1,
             "max_depth_reached": 4,
         },
         "s7-staged-root-found": {
+            "input": {
+                "fen": "rnk3nr/pp3ppp/8/8/8/1Pp1P3/P1PP1PPP/R1b1K1NR w K - 0 13",
+                "series": 7,
+                "max_positions": 0,
+                "max_work": 10_000_000,
+                "time_limit_ms": 30_000,
+            },
             "kernel_status": "found",
             "proof_status": "found",
             "complete": True,
@@ -2454,11 +2509,18 @@ def _validate_mate_parity(receipt: Receipt, build: BuildEvidence) -> int:
                 "g5e6",
                 "d1d8",
             ],
-            "work": 45_694,
+            "work": 79_715,
             "checkmates": 1,
             "max_depth_reached": 7,
         },
         "s7-staged-root-work-limit": {
+            "input": {
+                "fen": "rnk3nr/pp3ppp/8/8/8/1Pp1P3/P1PP1PPP/R1b1K1NR w K - 0 13",
+                "series": 7,
+                "max_positions": 0,
+                "max_work": 10,
+                "time_limit_ms": 30_000,
+            },
             "kernel_status": "work_limit",
             "proof_status": "unknown",
             "complete": False,
@@ -2468,15 +2530,29 @@ def _validate_mate_parity(receipt: Receipt, build: BuildEvidence) -> int:
             "max_depth_reached": 0,
         },
         "s7-staged-root-exhausted": {
+            "input": {
+                "fen": "8/8/8/8/8/2k5/8/K7 w - - 0 1",
+                "series": 7,
+                "max_positions": 0,
+                "max_work": 1_000_000,
+                "time_limit_ms": 30_000,
+            },
             "kernel_status": "exhausted",
             "proof_status": "exhausted",
             "complete": True,
             "moves": [],
-            "work": 214,
+            "work": 836,
             "checkmates": 0,
             "max_depth_reached": 0,
         },
         "s7-nonchecking-stuck-is-not-mate": {
+            "input": {
+                "fen": "8/8/8/8/8/5k2/6q1/7K w - - 0 1",
+                "series": 7,
+                "max_positions": 0,
+                "max_work": 1_000_000,
+                "time_limit_ms": 30_000,
+            },
             "kernel_status": "exhausted",
             "proof_status": "exhausted",
             "complete": True,
@@ -2502,6 +2578,20 @@ def _validate_mate_parity(receipt: Receipt, build: BuildEvidence) -> int:
                 raise ReleaseGateError(
                     f"accelerated mate case {name!r} has an invalid {key}"
                 )
+        expected_input = _mapping(expected["input"], "expected accelerated input")
+        actual_input = _mapping(
+            case.get("input"),
+            f"accelerated mate case {name!r} input",
+        )
+        expected_input_sha256 = _canonical_sha256(expected_input)
+        if (
+            actual_input != expected_input
+            or _canonical_sha256(actual_input) != case.get("input_sha256")
+            or case.get("input_sha256") != expected_input_sha256
+        ):
+            raise ReleaseGateError(
+                f"accelerated mate case {name!r} input changed"
+            )
         if (
             case.get("kernel_status") != expected["kernel_status"]
             or case.get("proof_status") != expected["proof_status"]

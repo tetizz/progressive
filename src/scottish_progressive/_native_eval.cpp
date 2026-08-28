@@ -3690,44 +3690,55 @@ struct NativeGenerationContext {
         return true;
     }
 
+    bool work_limit_reached() const {
+        if (!request.max_positions.has_value()) {
+            return false;
+        }
+        const std::uint64_t limit = *request.max_positions;
+        const auto& stats = response.stats;
+        if (stats.positions_visited >= limit) {
+            return true;
+        }
+        const std::uint64_t remaining = limit - stats.positions_visited;
+        return request.edge_inclusive_work
+            ? stats.generated_edges >= remaining
+            : stats.frontier_score_positions >= remaining;
+    }
+
+    bool stop_on_work_limit() {
+        response.stats.work_limit_reached = true;
+        response.status = SeriesGenerationStatus::WorkLimit;
+        return false;
+    }
+
     bool charge_position() {
         if (deadline_reached()) {
             return false;
         }
-        auto& stats = response.stats;
-        if (
-            request.max_positions.has_value()
-            && (
-                stats.positions_visited >= *request.max_positions
-                || stats.frontier_score_positions
-                    >= *request.max_positions - stats.positions_visited
-            )
-        ) {
-            stats.work_limit_reached = true;
-            response.status = SeriesGenerationStatus::WorkLimit;
-            return false;
+        if (work_limit_reached()) {
+            return stop_on_work_limit();
         }
-        return add(stats.positions_visited, 1);
+        return add(response.stats.positions_visited, 1);
     }
 
     bool charge_frontier_score() {
         if (deadline_reached()) {
             return false;
         }
-        auto& stats = response.stats;
-        if (
-            request.max_positions.has_value()
-            && (
-                stats.positions_visited >= *request.max_positions
-                || stats.frontier_score_positions
-                    >= *request.max_positions - stats.positions_visited
-            )
-        ) {
-            stats.work_limit_reached = true;
-            response.status = SeriesGenerationStatus::WorkLimit;
-            return false;
+        if (!request.edge_inclusive_work && work_limit_reached()) {
+            return stop_on_work_limit();
         }
-        return add(stats.frontier_score_positions, 1);
+        return add(response.stats.frontier_score_positions, 1);
+    }
+
+    bool charge_generated_edge() {
+        if (!request.edge_inclusive_work) {
+            return true;
+        }
+        if (work_limit_reached()) {
+            return stop_on_work_limit();
+        }
+        return add(response.stats.generated_edges, 1);
     }
 };
 
@@ -5195,6 +5206,13 @@ bool replay_required_prefix(
             root.board,
             index == 0 ? request.ep_targets : std::vector<int>{}
         );
+        if (request.edge_inclusive_work) {
+            for (std::size_t edge = 0; edge < expanded.size(); ++edge) {
+                if (!context.charge_generated_edge()) {
+                    return false;
+                }
+            }
+        }
         const auto selected = std::find_if(
             expanded.begin(),
             expanded.end(),
@@ -5385,6 +5403,9 @@ CompleteSeriesResponse generate_complete_series(
                 if (context.deadline_reached()) {
                     return false;
                 }
+                if (!context.charge_generated_edge()) {
+                    return false;
+                }
                 NativeFrontierState candidate{
                     expanded.child,
                     item.moves,
@@ -5505,6 +5526,7 @@ CompleteSeriesResponse generate_complete_series(
             );
         const bool parallel_expansion =
             request.worker_threads > 1
+            && !request.edge_inclusive_work
             // A bound-only mate exit must charge exactly through the proving
             // frontier item. Pre-expanding the whole frontier would make the
             // logical work result depend on execution thread count.

@@ -474,6 +474,9 @@ void append_deep_teacher_model(
         + std::to_string(config.max_series_per_node);
     result += "|root-width" + std::to_string(requested_root_width);
     result += terminal_mate_scan ? "|terminal-scan1" : "|terminal-scan0";
+    if (terminal_mate_scan && config.edge_inclusive_generation_work) {
+        result += "|mate-edge-work-v1";
+    }
     result += "|maxwork";
     result += config.max_work.has_value()
         ? std::to_string(*config.max_work)
@@ -553,6 +556,7 @@ void append_deep_teacher_model(
     SPC_SUBTREE_DELTA(branch_caps);
     SPC_SUBTREE_DELTA(series_generation_positions);
     SPC_SUBTREE_DELTA(frontier_score_positions);
+    SPC_SUBTREE_DELTA(series_generation_edges);
     SPC_SUBTREE_DELTA(static_evaluation_positions);
     SPC_SUBTREE_DELTA(evaluation_reach_positions);
     SPC_SUBTREE_DELTA(evaluation_capture_positions);
@@ -1633,14 +1637,25 @@ public:
             stats.frontier_score_positions,
             generation.frontier_score_positions
         );
+        stats.series_generation_edges = saturating_add(
+            stats.series_generation_edges,
+            generation.generated_edges
+        );
         stats.generation_positions = saturating_add(
             stats.generation_positions,
             generation.positions_visited
         );
-        stats.generation_positions = saturating_add(
-            stats.generation_positions,
-            generation.frontier_score_positions
-        );
+        if (config.edge_inclusive_generation_work) {
+            stats.generation_positions = saturating_add(
+                stats.generation_positions,
+                generation.generated_edges
+            );
+        } else {
+            stats.generation_positions = saturating_add(
+                stats.generation_positions,
+                generation.frontier_score_positions
+            );
+        }
         stats.frontier_prunes = saturating_add(
             stats.frontier_prunes,
             generation.frontier_prunes
@@ -1770,6 +1785,7 @@ public:
         request.worker_threads = config.worker_threads;
         request.tactical_protection = tactical;
         request.stop_on_mover_mate = stop_on_mover_mate;
+        request.edge_inclusive_work = config.edge_inclusive_generation_work;
         // Equivalent move-order multiplicity is telemetry, never a search
         // score or ordering input. Let finite high-series searches continue
         // after that counter exceeds its transport representation. Browser
@@ -1882,6 +1898,7 @@ public:
         request.deadline = deadline;
         request.worker_threads = 1;
         request.tactical_protection = false;
+        request.edge_inclusive_work = config.edge_inclusive_generation_work;
         CompleteSeriesResponse response = generate_complete_series(request);
         record_generation(response.stats);
         if (response.status == SeriesGenerationStatus::WorkLimit) {

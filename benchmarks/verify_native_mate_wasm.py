@@ -103,7 +103,8 @@ ACCELERATED_CASES = (
         "fen": BUCEPHALUS_3AAEF_S6_FEN,
         "series": 6,
         "max_positions": 0,
-        "max_work": 1_000_000,
+        # Exact independently replayed work: completion at the cap is legal.
+        "max_work": 25_643,
         "time_limit_ms": 30_000,
     },
     {
@@ -111,7 +112,8 @@ ACCELERATED_CASES = (
         "fen": BUCEPHALUS_3AAEF_S6_FEN,
         "series": 6,
         "max_positions": 0,
-        "max_work": 15_825,
+        # One less than the independently replayed truthful FOUND receipt.
+        "max_work": 25_642,
         "time_limit_ms": 30_000,
     },
     {
@@ -119,7 +121,16 @@ ACCELERATED_CASES = (
         "fen": "6bk/8/8/8/8/8/8/K7 b - - 0 1",
         "series": 6,
         "max_positions": 0,
-        "max_work": 1_000_000,
+        # Exact independently replayed work across prepass plus fallback.
+        "max_work": 16_066,
+        "time_limit_ms": 30_000,
+    },
+    {
+        "name": "s6-selective-miss-exact-cap-minus-one",
+        "fen": "6bk/8/8/8/8/8/8/K7 b - - 0 1",
+        "series": 6,
+        "max_positions": 0,
+        "max_work": 16_065,
         "time_limit_ms": 30_000,
     },
     {
@@ -380,7 +391,7 @@ def main() -> int:
         ]
         or staged_s6["stats"]["positions_visited"]
             + staged_s6["stats"]["moves_generated"]
-            != 15_826
+            != 25_643
         or staged_s6["stats"]["checkmates"] != 1
         or staged_s6["stats"]["max_depth_reached"] != 6
     ):
@@ -393,7 +404,7 @@ def main() -> int:
         or staged_s6_limited["moves"]
         or staged_s6_limited["stats"]["positions_visited"]
             + staged_s6_limited["stats"]["moves_generated"]
-            != 15_825
+            != 25_642
         or staged_s6_limited["stats"]["checkmates"] != 0
         or staged_s6_limited["stats"]["max_depth_reached"] != 0
     ):
@@ -408,11 +419,25 @@ def main() -> int:
         or staged_s6_miss["moves"]
         or staged_s6_miss["stats"]["positions_visited"]
             + staged_s6_miss["stats"]["moves_generated"]
-            != 10_725
+            != 16_066
         or staged_s6_miss["stats"]["checkmates"] != 0
         or staged_s6_miss["stats"]["max_depth_reached"] != 5
     ):
         raise AssertionError("selective Series-6 miss did not reach exact exhaustion")
+    staged_s6_miss_limited = accelerated_by_name[
+        "s6-selective-miss-exact-cap-minus-one"
+    ]
+    if (
+        staged_s6_miss_limited["kernel_status"] != "work_limit"
+        or staged_s6_miss_limited["proof_status"] != "unknown"
+        or staged_s6_miss_limited["complete"] is not False
+        or staged_s6_miss_limited["moves"]
+        or staged_s6_miss_limited["stats"]["positions_visited"]
+            + staged_s6_miss_limited["stats"]["moves_generated"]
+            != 16_065
+        or staged_s6_miss_limited["stats"]["checkmates"] != 0
+    ):
+        raise AssertionError("selective Series-6 exact fallback exceeded total work")
     staged_s8 = accelerated_by_name["authentic-s8-staged-root-invariant"]
     if (
         staged_s8["kernel_status"] != "found"
@@ -421,7 +446,7 @@ def main() -> int:
         or staged_s8["moves"] != ["a1d4", "a8a2", "a2d2", "d4f2"]
         or staged_s8["stats"]["positions_visited"]
             + staged_s8["stats"]["moves_generated"]
-            != 3_253
+            != 5_474
         or staged_s8["stats"]["checkmates"] != 1
         or staged_s8["stats"]["max_depth_reached"] != 4
     ):
@@ -442,7 +467,7 @@ def main() -> int:
         ]
         or staged["stats"]["positions_visited"]
             + staged["stats"]["moves_generated"]
-            != 45_694
+            != 79_715
         or staged["stats"]["checkmates"] != 1
         or staged["stats"]["max_depth_reached"] != 7
     ):
@@ -465,6 +490,9 @@ def main() -> int:
         or staged_exhausted["proof_status"] != "exhausted"
         or staged_exhausted["complete"] is not True
         or staged_exhausted["moves"]
+        or staged_exhausted["stats"]["positions_visited"]
+            + staged_exhausted["stats"]["moves_generated"]
+            != 836
     ):
         raise AssertionError("late-series staged root exhaustion changed")
     nonchecking_stuck = accelerated_by_name["s7-nonchecking-stuck-is-not-mate"]
@@ -473,6 +501,9 @@ def main() -> int:
         or nonchecking_stuck["proof_status"] != "exhausted"
         or nonchecking_stuck["complete"] is not True
         or nonchecking_stuck["moves"]
+        or nonchecking_stuck["stats"]["positions_visited"]
+            + nonchecking_stuck["stats"]["moves_generated"]
+            != 1
         or nonchecking_stuck["stats"]["checkmates"] != 0
     ):
         raise AssertionError("non-checking stuck line was mislabeled as mate")
@@ -482,6 +513,14 @@ def main() -> int:
         accelerated_results,
         strict=True,
     ):
+        accounted_work = (
+            result["stats"]["positions_visited"]
+            + result["stats"]["moves_generated"]
+        )
+        if accounted_work > int(case["max_work"]):
+            raise AssertionError(
+                f"{case['name']} exceeded its literal position-plus-edge cap"
+            )
         if result["kernel_status"] != "found":
             continue
         replayed = play_series(
@@ -521,6 +560,7 @@ def main() -> int:
     accelerated_receipts = [
         {
             "name": case["name"],
+            "input": wire,
             "input_sha256": canonical_sha256(wire),
             "wasm_output_sha256": canonical_sha256(result),
             "kernel_status": result["kernel_status"],
@@ -541,9 +581,10 @@ def main() -> int:
     ]
 
     receipt = {
-        "schema": "spc-mate-wasm-receipt-v2",
+        "schema": "spc-mate-wasm-receipt-v3",
         "status": "passed",
         "failures": 0,
+        "work_accounting": "positions-plus-generated-edges-v1",
         "artifact": identity,
         "cases": case_receipts,
         "case_set_sha256": canonical_sha256(case_receipts),

@@ -25,7 +25,7 @@ The input receipt schemas are:
 - `spc-root-d5-oracle-v1`
 - `spc-prefix-parity-receipt-v2`
 - `spc-browser-prefix-contract-receipt-v1`
-- `spc-mate-wasm-receipt-v2`
+- `spc-mate-wasm-receipt-v3`
 - `spc-opera-root-session-cdp-receipt-v1`, containing an
   `spc-opera-root-d5-benchmark-v2` Worker receipt
 
