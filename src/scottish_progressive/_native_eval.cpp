@@ -9299,9 +9299,10 @@ PyObject* py_subtree_enumerate_root(PyObject*, PyObject* arguments) {
     unsigned long long external_work = 0;
     PyObject* credit_object = nullptr;
     PyObject* remaining_object = nullptr;
+    PyObject* forced_preferred_object = nullptr;
     if (!PyArg_ParseTuple(
             arguments,
-            "OOOKpKOO:subtree_enumerate_root",
+            "OOOKpKOOO:subtree_enumerate_root",
             &capsule,
             &state_object,
             &preferred_object,
@@ -9309,7 +9310,8 @@ PyObject* py_subtree_enumerate_root(PyObject*, PyObject* arguments) {
             &terminal_mate_scan,
             &external_work,
             &credit_object,
-            &remaining_object
+            &remaining_object,
+            &forced_preferred_object
         )) {
         return nullptr;
     }
@@ -9319,6 +9321,8 @@ PyObject* py_subtree_enumerate_root(PyObject*, PyObject* arguments) {
     }
     spc::native::SubtreeState state;
     std::vector<std::string> preferred;
+    spc::native::CompleteSeriesCandidate forced_preferred;
+    const spc::native::CompleteSeriesCandidate* forced_preferred_pointer = nullptr;
     std::optional<std::uint64_t> call_work_credit;
     std::optional<std::chrono::steady_clock::time_point> deadline;
     try {
@@ -9334,6 +9338,15 @@ PyObject* py_subtree_enumerate_root(PyObject*, PyObject* arguments) {
         ) {
             return nullptr;
         }
+        if (forced_preferred_object != Py_None) {
+            if (!parse_horizon_proof_series(
+                    forced_preferred_object,
+                    forced_preferred
+                )) {
+                return nullptr;
+            }
+            forced_preferred_pointer = &forced_preferred;
+        }
     } catch (const std::bad_alloc&) {
         return PyErr_NoMemory();
     }
@@ -9348,7 +9361,8 @@ PyObject* py_subtree_enumerate_root(PyObject*, PyObject* arguments) {
             terminal_mate_scan != 0,
             external_work,
             call_work_credit,
-            deadline
+            deadline,
+            forced_preferred_pointer
         );
     } catch (...) {
         failure = std::current_exception();

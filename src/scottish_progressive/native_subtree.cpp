@@ -3327,7 +3327,8 @@ RetainedRootEnumerationResult SubtreeSearchSession::enumerate_retained_root(
     bool terminal_mate_scan,
     std::uint64_t external_work,
     std::optional<std::uint64_t> call_work_credit,
-    std::optional<std::chrono::steady_clock::time_point> deadline
+    std::optional<std::chrono::steady_clock::time_point> deadline,
+    const CompleteSeriesCandidate* forced_preferred
 ) {
     const SubtreeSearchStats before = impl_->stats;
     RetainedRootEnumerationResult result;
@@ -3394,20 +3395,71 @@ RetainedRootEnumerationResult SubtreeSearchSession::enumerate_retained_root(
         );
         result.width_complete = generated.width_complete;
         result.generation_checking_series = generated.checking_series;
+        std::optional<RetainedRootCandidate> forced_root;
+        if (forced_preferred != nullptr) {
+            if (
+                terminal_mate_scan
+                || preferred_series.empty()
+                || forced_preferred->path.moves != preferred_series
+            ) {
+                throw StopSearch(
+                    SubtreeSearchStatus::Unsupported,
+                    "forced preferred root is inconsistent with enumeration"
+                );
+            }
+            // Proof repair is candidate-local.  The selected Python root can be
+            // outside the native root's independently ordered width even though
+            // it is a fully legal complete series.  Replay the full supplied
+            // result (not notation alone), retain its exact path multiplicity,
+            // and replace the deterministic tail.  This manifest must remain
+            // selective: force-retention is not evidence of wider root coverage.
+            CompleteSeriesCandidate replayed = impl_->replay_imported_candidate(
+                state,
+                *forced_preferred
+            );
+            replayed.path.transposition_count =
+                forced_preferred->path.transposition_count;
+            forced_root = impl_->make_root_candidate(
+                std::move(replayed),
+                state.board.white_to_move,
+                0
+            );
+            result.width_complete = false;
+            impl_->selective = true;
+        }
         result.candidates.reserve(generated.series->size());
+        if (forced_root.has_value()) {
+            result.candidates.push_back(std::move(*forced_root));
+        }
         for (
             std::size_t ordinal = 0;
             ordinal < generated.series->size();
             ++ordinal
         ) {
+            if (
+                forced_preferred != nullptr
+                && result.candidates.size() >= requested_width
+            ) {
+                break;
+            }
             const std::size_t index = impl_->ordered_index(
                 ordinal,
                 generated.preferred_index
             );
+            if (
+                forced_preferred != nullptr
+                && (*generated.series)[index].path.moves == preferred_series
+            ) {
+                continue;
+            }
             RetainedRootCandidate candidate = impl_->make_root_candidate(
                 (*generated.series)[index],
                 state.board.white_to_move,
-                static_cast<std::uint64_t>(ordinal)
+                static_cast<std::uint64_t>(
+                    forced_preferred == nullptr
+                        ? ordinal
+                        : result.candidates.size()
+                )
             );
             if (
                 !terminal_mate_scan
@@ -3420,9 +3472,11 @@ RetainedRootEnumerationResult SubtreeSearchSession::enumerate_retained_root(
                 // A terminal-scan result is a compact proof witness, not a
                 // broadened candidate manifest. Reindex the filtered output
                 // so its transport remains canonical and gap-free.
-                candidate.order_index = static_cast<std::uint64_t>(
-                    result.candidates.size()
-                );
+                if (terminal_mate_scan || forced_preferred != nullptr) {
+                    candidate.order_index = static_cast<std::uint64_t>(
+                        result.candidates.size()
+                    );
+                }
                 result.candidates.push_back(std::move(candidate));
             }
         }

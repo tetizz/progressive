@@ -310,7 +310,8 @@ public:
         bool terminal_mate_scan,
         std::uint64_t external_work,
         std::optional<std::uint64_t> call_work_credit,
-        std::optional<std::chrono::steady_clock::time_point> deadline
+        std::optional<std::chrono::steady_clock::time_point> deadline,
+        const CompleteSeriesCandidate* forced_preferred = nullptr
     );
 
     // Imports a coordinator-generated retained list without regenerating the

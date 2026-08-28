@@ -553,6 +553,65 @@ def test_cached_root_enumeration_keeps_canonical_storage_and_exact_preference() 
     assert repeated_call["series_generation_cache_hits"] == 1
 
 
+def test_retained_root_forces_authoritative_preferred_series_outside_width() -> None:
+    """A selected root must remain searchable after an exact horizon proof.
+
+    Black's ``f6/Kf7`` reply to ``e4`` is selected by the Python-owned root at
+    depth five, but is outside the native Series-2 width-32 ordering.  Horizon
+    repair passes that already-legal complete series as the preferred root.  A
+    mere reorder-if-present contract drops it and turns a proved bad PV into a
+    technical no-move result instead of re-searching the retained root under
+    the proof namespace.
+    """
+
+    state = play_series(ProgressiveState.initial(), ("e2e4",)).final_state
+    preferred = "f7f6/e8f7"
+    session = _session(width=32, depth=8)
+    canonical = session.enumerate_root(
+        state,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    assert canonical.status == 0
+    canonical_keys = tuple(item.order_key for item in canonical.candidates)
+    assert len(canonical_keys) == 32
+    assert preferred not in canonical_keys
+
+    retained = session.enumerate_root(
+        state,
+        preferred_series=preferred,
+        external_work=canonical.work.native_work_after,
+        remaining_nanoseconds=None,
+        forced_preferred=play_series(state, tuple(preferred.split("/"))),
+    )
+    assert retained.status == 0
+    assert retained.retained_count == len(retained.candidates) == 32
+    assert retained.width_complete is False
+    assert retained.candidates[0].order_key == preferred
+    assert tuple(item.order_key for item in retained.candidates[1:]) == canonical_keys[:-1]
+    assert _series_signature(retained.candidates[0].series) == _series_signature(
+        play_series(state, tuple(preferred.split("/")))
+    )
+    assert retained.work.call_native_work > 0
+
+
+def test_retained_root_rejects_malformed_forced_preferred_series() -> None:
+    state = play_series(ProgressiveState.initial(), ("e2e4",)).final_state
+    preferred = play_series(state, ("f7f6", "e8f7"))
+    malformed = replace(preferred, final_state=ProgressiveState.initial())
+    retained = _session(width=32, depth=8).enumerate_root(
+        state,
+        preferred_series=preferred.machine_notation,
+        external_work=0,
+        remaining_nanoseconds=None,
+        forced_preferred=malformed,
+    )
+    assert retained.status == 4
+    assert not retained.enumeration_identity
+    assert not retained.candidates
+
+
 def test_terminal_mate_scan_stages_are_root_only_cache_isolated_and_fail_closed() -> None:
     state = ProgressiveState.from_fen(
         "rnk3nr/pp3ppp/8/8/8/1Pp1P3/P1PP1PPP/R1b1K1NR w K - 0 13",
@@ -1402,6 +1461,7 @@ def test_raw_boundary_contract_rejects_invalid_state_fields() -> None:
             4,
             False,
             0,
+            None,
             None,
             None,
         )

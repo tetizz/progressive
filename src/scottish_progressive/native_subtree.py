@@ -660,7 +660,15 @@ class NativeSubtreeSession:
         call_work_credit: int | None = None,
         requested_width: int | None = None,
         terminal_mate_scan: bool = False,
+        forced_preferred: SeriesResult | None = None,
     ) -> NativeRootEnumerationResult:
+        if forced_preferred is not None and (
+            type(forced_preferred) is not SeriesResult
+            or preferred_series != forced_preferred.machine_notation
+        ):
+            raise ValueError(
+                "forced preferred root must match the preferred complete series"
+            )
         preferred = (
             ()
             if preferred_series is None
@@ -675,6 +683,11 @@ class NativeSubtreeSession:
             external_work,
             call_work_credit,
             remaining_nanoseconds,
+            (
+                None
+                if forced_preferred is None
+                else _horizon_series_transport(forced_preferred)
+            ),
         )
         result = _enumeration_result(state, raw)
         if result.status == 0 and not result.terminal_mate_scan:

@@ -1733,6 +1733,7 @@ class SeriesSearcher:
             preferred_series=candidate.series.machine_notation,
             external_work=external_work,
             remaining_nanoseconds=remaining_nanoseconds,
+            forced_preferred=candidate.series,
         )
         self._sync_native_subtree_stats(manifest.work.cumulative_stats)
         self._selective = self._selective or manifest.selective
