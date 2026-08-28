@@ -1372,9 +1372,9 @@ const probeExpression = String.raw`(async () => {
       "session_id", "source_fingerprint", "thread_count",
     ]);
     const SAFETY_CANDIDATE_KEYS = Object.freeze([
-      "candidate_identity", "child_pv", "order_index", "order_key",
-      "owner_worker_id", "proof_bounds", "root_series", "safety_override",
-      "score", "terminal",
+      "candidate_identity", "child_pv", "mate_claim_quarantined",
+      "order_index", "order_key", "owner_worker_id", "proof_bounds",
+      "root_series", "safety_override", "score", "terminal",
     ]);
     const exhaustedResponseKeys = Object.freeze([
       ...SAFETY_REQUEST_KEYS,
@@ -1390,6 +1390,7 @@ const probeExpression = String.raw`(async () => {
         && exactInteger(candidate.order_index, 0, 31)
         && candidate.order_key === "b2b3"
         && candidate.owner_worker_id === entry.worker.channel_id
+        && candidate.mate_claim_quarantined === false
         && candidate.terminal === false
         && candidate.safety_override === false
         && candidate.score === result.score
