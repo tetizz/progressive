@@ -1,7 +1,7 @@
 {
   "abi_version": 1,
   "allocator": "dlmalloc",
-  "certificate_id": "spc-mate-6d198e6ff9d017dc",
+  "certificate_id": "spc-mate-2255e5fedbd9421d",
   "contract_version": 1,
   "engine": {
     "engine_version": "spc-0.9.0",
@@ -44,7 +44,7 @@
     "_malloc",
     "_free"
   ],
-  "kernel_sha256": "297f8a4e47b3c814174a3206eb1282b71e3cb3a00def72da2f61744e3786fa64",
+  "kernel_sha256": "bb2886c7a49e622c25c7772a27bc9c798855225687859f73e0132d4201bd20b6",
   "mate_capability_certified": true,
   "memory": {
     "estimated_peak_bytes": 134217728,
@@ -64,10 +64,10 @@
   },
   "runtime_variant": "single",
   "schema": "spc-series-mate-certificate-v1",
-  "source_fingerprint": "b68312c9c10103a6",
+  "source_fingerprint": "1fea7e9f1d9b5bc7",
   "status": "certified",
   "support_files": [],
   "thread_count": 1,
-  "wasm_sha256": "e1452e93394cc173c42dd94cf1c13d8d3ad54d97ba980685373da97803eac50c",
+  "wasm_sha256": "8612ef9211e1025297b2fc293140a66b414f2e18a4f7f9c205c1fa0eceaf780c",
   "wasm_simd": false
 }

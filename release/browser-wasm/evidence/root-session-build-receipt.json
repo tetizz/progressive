@@ -25,7 +25,7 @@
     "root_session_version": 2,
     "series_mate_version": 1
   },
-  "artifact_set_sha256": "e5482871e8eaa1532402e1fd3019b8bb6c0f8246adf5d2c38ab4e30f23ff7507",
+  "artifact_set_sha256": "5474b17778b9609b9c8240bab97eec9553a30f7eb811d31584f139974789e338",
   "artifacts": [
     {
       "bytes": 27497,
@@ -33,21 +33,21 @@
       "sha256": "33f1298a3fb26e206fb9f0bc52fd060c089ad200a3ba4191b82f085b11f62a7c"
     },
     {
-      "bytes": 851302,
+      "bytes": 851475,
       "path": "spc-root-session.wasm",
-      "sha256": "e1452e93394cc173c42dd94cf1c13d8d3ad54d97ba980685373da97803eac50c"
+      "sha256": "8612ef9211e1025297b2fc293140a66b414f2e18a4f7f9c205c1fa0eceaf780c"
     }
   ],
   "certificate_id": null,
   "command": [
     "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\cycle4-production-overlay-scaffold-20260824\\build\\emsdk\\upstream\\emscripten\\em++.exe",
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\mate-safe-series6-integration-20260828\\src\\scottish_progressive\\_native_eval.cpp",
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\mate-safe-series6-integration-20260828\\src\\scottish_progressive\\native_subtree.cpp",
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\mate-safe-series6-integration-20260828\\src\\scottish_progressive\\native_subtree_wasm.cpp",
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\mate-safe-series6-integration-20260828\\src\\scottish_progressive\\native_root_session_wasm.cpp",
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\mate-safe-series6-integration-20260828\\src\\scottish_progressive\\_native_mate.cpp",
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\internal-boundary-mate-ladder-20260828\\src\\scottish_progressive\\_native_eval.cpp",
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\internal-boundary-mate-ladder-20260828\\src\\scottish_progressive\\native_subtree.cpp",
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\internal-boundary-mate-ladder-20260828\\src\\scottish_progressive\\native_subtree_wasm.cpp",
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\internal-boundary-mate-ladder-20260828\\src\\scottish_progressive\\native_root_session_wasm.cpp",
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\internal-boundary-mate-ladder-20260828\\src\\scottish_progressive\\_native_mate.cpp",
     "-I",
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\mate-safe-series6-integration-20260828\\src\\scottish_progressive",
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\internal-boundary-mate-ladder-20260828\\src\\scottish_progressive",
     "-std=c++20",
     "-O3",
     "-flto",
@@ -70,7 +70,7 @@
     "-sEXPORTED_FUNCTIONS=_spc_start_kernel_search_json,_spc_boundary_kernel_search_json,_spc_boundary_prefix_json,_spc_boundary_prefix_contract_json,_spc_start_kernel_abi_version,_spc_root_session_contract_json,_spc_root_session_create_json,_spc_root_session_enumerate_json,_spc_root_session_import_json,_spc_root_session_search_json,_spc_root_session_destroy,_spc_root_session_abi_version,_spc_series_mate_search_json,_spc_series_mate_abi_version,_malloc,_free",
     "-sEXPORTED_RUNTIME_METHODS=UTF8ToString,stringToNewUTF8,HEAPU8",
     "-o",
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\mate-safe-series6-integration-20260828\\build\\root-release-3deba94-r1\\wasm\\spc-root-session.mjs"
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\internal-boundary-mate-ladder-20260828\\build\\root-release-9a86dc3\\wasm\\spc-root-session.mjs"
   ],
   "engine_version": "spc-0.9.0",
   "gates": {
@@ -82,7 +82,7 @@
     "root_session_smoke": false,
     "under_60_seconds_w32_d5": false
   },
-  "kernel_sha256": "297f8a4e47b3c814174a3206eb1282b71e3cb3a00def72da2f61744e3786fa64",
+  "kernel_sha256": "bb2886c7a49e622c25c7772a27bc9c798855225687859f73e0132d4201bd20b6",
   "memory_envelope": {
     "estimated_peak_bytes": 134217728,
     "growth_enabled": true,
@@ -120,12 +120,12 @@
     "root_contract_eval_capacity": 262144,
     "root_contract_tt_capacity": 262144
   },
-  "source_fingerprint": "b68312c9c10103a6",
+  "source_fingerprint": "1fea7e9f1d9b5bc7",
   "source_inputs": [
     {
-      "bytes": 321287,
+      "bytes": 321868,
       "path": "src/scottish_progressive/_native_eval.cpp",
-      "sha256": "72f1b4a8a13de98807972908b7cb5fce13b3530e34400eb027ed110168d9abdc"
+      "sha256": "868575c607835a91335441bbbbf01e5e85346d8e4732f832e108ac7de69e5c18"
     },
     {
       "bytes": 76583,
@@ -148,14 +148,14 @@
       "sha256": "ddd5e26010211891ed0561bfe889bc24347aec50754295a144c389eb49aa9407"
     },
     {
-      "bytes": 141128,
+      "bytes": 143623,
       "path": "src/scottish_progressive/native_subtree.cpp",
-      "sha256": "b9d656dc74cc5aef121c644671bdbf10d5cc9a5f6cd4f0a8263011aed4df80aa"
+      "sha256": "6efcaed359f0930d2e95163691698520851c5d7142cf50c79781fa62bc431a1b"
     },
     {
-      "bytes": 13807,
+      "bytes": 13874,
       "path": "src/scottish_progressive/native_subtree.hpp",
-      "sha256": "bb97ca5cc1578207b968176a1773029bc1b1e9af2c838b63f6e09ba346241fa6"
+      "sha256": "5b017ce90dedcab1418f784b93bd1fe630c76f279177157468071c928dcf7048"
     },
     {
       "bytes": 52604,
@@ -173,7 +173,7 @@
       "sha256": "bef97b5453d10f1c19e2a61b712dee2a8346bb92c2c64a5582ec4aec9d12fa3c"
     }
   ],
-  "source_revision": "3deba940dc86d25b2cdb56b60c824ebb1dcf5113",
+  "source_revision": "9a86dc3af71801e57bbaa293aaf2e1f39c748ad8",
   "status": "built-not-certified",
   "support_files": [],
   "thread_count": 1,
@@ -182,5 +182,5 @@
     "sha256": "2acdfaaf9bf1a17a6f15ca3f0c1e5e7efc935e9fd079eb426ec8daf4bef4f290",
     "version": "emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 6.0.8 (aeb67926e7de656da38bc807d83050af93578758)\nCopyright (C) 2026 the Emscripten authors (see AUTHORS.txt)\nThis is free and open source software under the MIT license.\nThere is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE."
   },
-  "wasm_sha256": "e1452e93394cc173c42dd94cf1c13d8d3ad54d97ba980685373da97803eac50c"
+  "wasm_sha256": "8612ef9211e1025297b2fc293140a66b414f2e18a4f7f9c205c1fa0eceaf780c"
 }
