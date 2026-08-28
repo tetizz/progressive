@@ -218,21 +218,30 @@ def test_first_proof_repairs_same_root_and_second_distinct_proof_vetoes() -> Non
 
 
 def test_shared_policy_constants_match_the_promoted_browser_receipt() -> None:
+    repository = Path(__file__).parents[1]
+    release_path = repository / "release" / "browser-wasm"
     receipt_path = (
-        Path(__file__).parents[1]
-        / "release"
-        / "browser-wasm"
+        release_path
         / "evidence"
         / "opera-checked-pv-horizon-receipt.json"
+    )
+    # Keep this policy test bound to whichever release the promotion gate
+    # actually signed instead of making every safe artifact refresh edit source
+    # code solely to replace a literal receipt digest.
+    release = json.loads((release_path / "release-receipt.json").read_bytes())
+    checked_record = next(
+        record
+        for record in release["evidence_receipts"]
+        if record["path"] == "evidence/opera-checked-pv-horizon-receipt.json"
     )
     raw = receipt_path.read_bytes()
     receipt = json.loads(raw)
 
-    assert hashlib.sha256(raw).hexdigest() == (
-        "7d3a740f8ac3957d29a677f94d5a4ff838637ab11a4d5cb5737b277b365b4a5f"
-    )
+    assert hashlib.sha256(raw).hexdigest() == checked_record["sha256"]
     assert receipt["schema"] == "spc-opera-checked-pv-horizon-receipt-v5"
-    assert receipt["source_fingerprint"] == "26fe40a25f325fe4"
+    assert receipt["source_fingerprint"] == release["artifact"]["source_fingerprint"]
+    assert receipt["wasm_sha256"] == release["artifact"]["wasm_sha256"]
+    assert receipt["module_js_sha256"] == release["artifact"]["module_js_sha256"]
     assert receipt["best_full_series"] == ["b2b3"]
     assert receipt["selection_policy"] == BROWSER_CHECKED_PV_SELECTION_POLICY
     assert receipt["same_root_repair_policy"] == {
