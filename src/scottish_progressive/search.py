@@ -86,6 +86,19 @@ ROOT_CHILD_EARLY_MATE_SCREEN_FRONTIER = 4_096
 ROOT_CHILD_MATE_SCREEN_CHEAP_FRONTIER = 32
 ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT = 3_000_000
 ROOT_MATE_CLAIM_SAFETY_RESERVE_LIMIT = 20_000_000
+# Starting at Series 5, a width-capped best-move search can hide even a cheap
+# mate in the mover's current combinatorial series.  Probe that selective lane
+# before ordinary search.  The isolated native solver is exact on FOUND and
+# replay-validates its line; a bounded miss remains UNKNOWN and simply falls
+# through.  Earlier, tractable series and sub-500k analysis jobs retain their
+# established search path and exact work receipts.
+ROOT_CURRENT_SERIES_MATE_WORK_LIMIT = 250_000
+ROOT_CURRENT_SERIES_MATE_WORK_DENOMINATOR = 64
+ROOT_CURRENT_SERIES_MATE_MIN_WORK = 1_000
+ROOT_CURRENT_SERIES_MATE_MIN_TOTAL_WORK = 500_000
+ROOT_CURRENT_SERIES_MATE_MIN_SERIES = 5
+ROOT_CURRENT_SERIES_MATE_TIME_LIMIT_SECONDS = 1.0
+ROOT_CURRENT_SERIES_MATE_TIME_DENOMINATOR = 10
 # Preserve one fifth of the shared safety allowance for the established
 # staged current-series screens whenever the exact native solver is unknown.
 # At the hosted 10M search cap the exact lane still receives 1.28M work,
@@ -286,6 +299,11 @@ class SearchStats:
     root_mate_claim_move_only_fallbacks: int = 0
     root_mate_claim_final_discards: int = 0
     root_mate_claim_prior_depth_discards: int = 0
+    root_current_series_mate_probes: int = 0
+    root_current_series_mate_found: int = 0
+    root_current_series_mate_exhausted: int = 0
+    root_current_series_mate_unknown: int = 0
+    root_current_series_mate_work: int = 0
     selected_pv_horizon_probe_calls: int = 0
     selected_pv_horizon_found: int = 0
     selected_pv_horizon_exhausted: int = 0
@@ -1340,13 +1358,113 @@ class SeriesSearcher:
     def _record_native_series_mate_probe(
         self,
         probe: SeriesMateProbe,
+        *,
+        charge_root_safety: bool = True,
     ) -> None:
         work = probe.positions_visited + probe.moves_generated
         self.stats.native_series_mate_positions += probe.positions_visited
         self.stats.native_series_mate_edges += probe.moves_generated
-        self._root_child_mate_screen_work += work
-        self.stats.root_safety_screen_positions += work
+        if charge_root_safety:
+            self._root_child_mate_screen_work += work
+            self.stats.root_safety_screen_positions += work
         self.stats.generation_positions += work
+
+    def _root_current_series_mate(
+        self,
+        state: ProgressiveState,
+        *,
+        required_prefix: tuple[str, ...],
+    ) -> SeriesResult | None:
+        """Returns a replay-proven mate-now on selective Series-5+ roots.
+
+        This is a positive-proof lane only.  ``EXHAUSTED`` is useful
+        telemetry, while every resource or compatibility stop stays UNKNOWN;
+        neither outcome certifies a negative, and ordinary search continues
+        with the remaining time and work.  Fixed intra-series prefixes and
+        collect-all label searches retain their existing complete-root
+        contracts.
+        """
+
+        if (
+            self.limits.collect_all_root_scores
+            or required_prefix
+            or state.series_number < ROOT_CURRENT_SERIES_MATE_MIN_SERIES
+            or (
+                self.limits.max_generation_positions is not None
+                and self.limits.max_generation_positions
+                < ROOT_CURRENT_SERIES_MATE_MIN_TOTAL_WORK
+            )
+        ):
+            return None
+
+        available = self.limits.max_generation_positions
+        if available is None:
+            work_limit = ROOT_CURRENT_SERIES_MATE_WORK_LIMIT
+        else:
+            available -= self.stats.generation_positions
+            if available < ROOT_CURRENT_SERIES_MATE_MIN_WORK:
+                return None
+            work_limit = min(
+                ROOT_CURRENT_SERIES_MATE_WORK_LIMIT,
+                available // ROOT_CURRENT_SERIES_MATE_WORK_DENOMINATOR,
+            )
+            if work_limit < ROOT_CURRENT_SERIES_MATE_MIN_WORK:
+                return None
+
+        remaining_seconds = (
+            None
+            if self._deadline is None
+            else max(0.0, self._deadline - time.perf_counter())
+        )
+        if remaining_seconds == 0:
+            return None
+        probe_seconds = (
+            ROOT_CURRENT_SERIES_MATE_TIME_LIMIT_SECONDS
+            if remaining_seconds is None
+            else min(
+                ROOT_CURRENT_SERIES_MATE_TIME_LIMIT_SECONDS,
+                remaining_seconds / ROOT_CURRENT_SERIES_MATE_TIME_DENOMINATOR,
+            )
+        )
+        if probe_seconds <= 0:
+            return None
+
+        from .series_mate import SeriesMateStatus, find_native_series_mate
+
+        self.stats.root_current_series_mate_probes += 1
+        self.stats.native_series_mate_calls += 1
+        probe = find_native_series_mate(
+            state,
+            max_positions=None,
+            max_work=work_limit,
+            time_limit_seconds=probe_seconds,
+        )
+        self._record_native_series_mate_probe(
+            probe,
+            charge_root_safety=False,
+        )
+        self.stats.root_current_series_mate_work += (
+            probe.positions_visited + probe.moves_generated
+        )
+        if probe.status is SeriesMateStatus.FOUND:
+            if probe.series is None:  # pragma: no cover - adapter invariant
+                raise RuntimeError("native root mate status carried no line")
+            self.stats.native_series_mate_found += 1
+            self.stats.root_current_series_mate_found += 1
+            self._selective = True
+            return probe.series
+        if probe.status is SeriesMateStatus.EXHAUSTED:
+            self.stats.native_series_mate_exhausted += 1
+            self.stats.root_current_series_mate_exhausted += 1
+            return None
+        if probe.status is SeriesMateStatus.WORK_LIMIT:
+            self.stats.native_series_mate_work_limit_hits += 1
+        elif probe.status is SeriesMateStatus.DEADLINE:
+            self.stats.native_series_mate_deadline_hits += 1
+        else:
+            self.stats.native_series_mate_unsupported += 1
+        self.stats.root_current_series_mate_unknown += 1
+        return None
 
     def _selected_pv_horizon_probe(
         self,
@@ -3807,10 +3925,7 @@ class SeriesSearcher:
         self._root_mate_claim_emergency_fallback = None
 
         widened_terminal = self._root_widened_terminal_series
-        if (
-            widened_terminal is not None
-            and self._root_child_safety_screen_required()
-        ):
+        if widened_terminal is not None:
             mover = state.board.turn
             score = self._terminal_score(widened_terminal, mover, 1)
             if score is None:  # pragma: no cover - cache invariant
@@ -4306,6 +4421,17 @@ class SeriesSearcher:
                     adjudication == "proven-draw-no-mating-material"
                 ),
             )
+
+        # A positive exact proof that the mover can finish the game in this
+        # series outranks every heuristic, fallback, and interrupted deeper
+        # search.  A bounded miss remains UNKNOWN and ordinary iterative search
+        # continues with the remaining budget.
+        root_current_series_mate = self._root_current_series_mate(
+            state,
+            required_prefix=required_prefix,
+        )
+        if root_current_series_mate is not None:
+            self._root_widened_terminal_series = root_current_series_mate
 
         completed_depth = 0
         timed_out = False

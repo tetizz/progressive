@@ -63,6 +63,9 @@ def test_browser_root_worker_pool_contract() -> None:
         "checked_pv_horizon_root_chain_fail_closed": True,
         "stale_horizon_safety_reply_fail_closed": True,
         "favorable_checked_horizon_not_vetoed": True,
+        "proactive_s5_terminal_mate_before_ordinary_search": True,
+        "unproven_proactive_terminal_mate_continues_ordinary_search": True,
+        "proactive_probe_timeout_recovers_ordinary_search": True,
     }
 
 

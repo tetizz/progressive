@@ -9,6 +9,14 @@
   const MATE_SCORE = 1_000_000;
   const MAX_LOCAL_DEPTH = 5;
   const PV_HORIZON_MATE_WORK_LIMIT = 3_500_000;
+  const ROOT_CURRENT_SERIES_MATE_WORK_LIMIT = 250_000;
+  const ROOT_CURRENT_SERIES_MATE_WORK_DENOMINATOR = 64;
+  const ROOT_CURRENT_SERIES_MATE_MIN_WORK = 1_000;
+  const ROOT_CURRENT_SERIES_MATE_MIN_TOTAL_WORK = 500_000;
+  const ROOT_CURRENT_SERIES_MATE_MIN_SERIES = 5;
+  const ROOT_CURRENT_SERIES_MATE_TIME_LIMIT_MS = 1_000;
+  const ROOT_CURRENT_SERIES_MATE_TIME_DENOMINATOR = 10;
+  const ROOT_CURRENT_SERIES_MATE_RECEIPT_GRACE_MS = 100;
   const ASPIRATION_INITIAL_DELTA = 2_048;
   const MAX_ASPIRATION_ATTEMPTS = 4;
   const ROOT_TACTICAL_POLICY = "canonical-boundary-policy-v1";
@@ -1823,6 +1831,112 @@
           deadlineMs: absoluteDeadline,
           signal,
         });
+        const playLimits = normalizedRootPlayLimits(identity);
+        if (!playLimits) {
+          throw new RootIterationClientError(
+            "The root work reservation is not certificate-bound.",
+            "browser-root-play-limits-invalid",
+          );
+        }
+        if (
+          originalBoundary.series >= ROOT_CURRENT_SERIES_MATE_MIN_SERIES
+          && payload.max_generation_positions
+            >= ROOT_CURRENT_SERIES_MATE_MIN_TOTAL_WORK
+        ) {
+          const proactiveMateCredit = Math.min(
+            0xffffffff,
+            playLimits.safety_reserve_positions,
+            ROOT_CURRENT_SERIES_MATE_WORK_LIMIT,
+            Math.max(
+              1,
+              Math.floor(
+                payload.max_generation_positions
+                  / ROOT_CURRENT_SERIES_MATE_WORK_DENOMINATOR,
+              ),
+            ),
+            payload.max_generation_positions - 1,
+          );
+          const probeStarted = monotonicNow();
+          const probeTimeCredit = Math.min(
+            ROOT_CURRENT_SERIES_MATE_TIME_LIMIT_MS,
+            Math.floor(
+              Math.max(0, absoluteDeadline - probeStarted)
+                / ROOT_CURRENT_SERIES_MATE_TIME_DENOMINATOR,
+            ),
+          );
+          if (
+            proactiveMateCredit >= ROOT_CURRENT_SERIES_MATE_MIN_WORK
+            && probeTimeCredit > 0
+          ) {
+            const probeDeadline = Math.min(
+              absoluteDeadline,
+              probeStarted + probeTimeCredit,
+            );
+            let proactiveMate = null;
+            try {
+              proactiveMate = await this._probeRootTerminalMate({
+                requestBase: {
+                  request_id: requestId,
+                  iteration_id: `${requestId}:root-terminal-mate-probe`,
+                  deadline_monotonic_ms: probeDeadline,
+                },
+                originalBoundary,
+                identity,
+                expected,
+                callWorkCredit: proactiveMateCredit,
+                deadlineEpochMs: monotonicDeadlineEpoch(probeDeadline),
+                receiptDeadlineMs: Math.min(
+                  absoluteReceiptDeadline,
+                  probeDeadline + ROOT_CURRENT_SERIES_MATE_RECEIPT_GRACE_MS,
+                ),
+                signal,
+              });
+            } catch (error) {
+              const recoverableWorkerDeadline = (
+                error?.code === "browser-root-deadline"
+                && this.crashError
+                && !signal?.aborted
+                && monotonicNow() < absoluteDeadline
+              );
+              if (!recoverableWorkerDeadline) throw error;
+              // No receipt means the exact work used is unknowable. Charge the
+              // full allowance, discard every affected session, and resume on
+              // a fresh identity-bound pool rather than publishing unmetered
+              // work or stopping before Depth 1.
+              safetyWork += proactiveMateCredit;
+              await this._ensurePool(identity, absoluteDeadline, signal);
+              await this._resetSessions({
+                identity,
+                expected,
+                boundary: originalBoundary,
+                requestId,
+                deadlineMs: absoluteDeadline,
+                signal,
+              });
+            }
+            if (proactiveMate !== null) {
+              safetyWork += proactiveMate.reply.work_used;
+            }
+            if (proactiveMate?.reply.status === "found") {
+              return this._terminalMateResult({
+                payload,
+                identity,
+                expected,
+                geometry,
+                originalBoundary,
+                depth: 1,
+                hostStarted,
+                safetyReserve: proactiveMateCredit,
+                rootTaskCount: 0,
+                trigger: "proactive-current-series-terminal-mate",
+                rescue: proactiveMate,
+                safetyWork,
+                mateCacheHits,
+                mateCacheMisses,
+              });
+            }
+          }
+        }
         for (let depth = 1; depth <= payload.depth; depth += 1) {
           if (signal?.aborted) throw abortError();
           if (monotonicNow() >= absoluteDeadline) {
@@ -1882,13 +1996,6 @@
               );
             }
             const remaining = payload.max_generation_positions - initialWork;
-            const playLimits = normalizedRootPlayLimits(identity);
-            if (!playLimits) {
-              throw new RootIterationClientError(
-                "The root work reservation is not certificate-bound.",
-                "browser-root-play-limits-invalid",
-              );
-            }
             if (remaining <= 1) {
               throw new RootIterationClientError(
                 "The root request has no work left beside its certified safety reserve.",

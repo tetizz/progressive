@@ -38,6 +38,15 @@ const PROMOTION_MATE_CHILD = Object.freeze({
   ),
   promoted_hex: "8000000000000000",
 });
+const MISSED_S5_MATE_FEN =
+  "rn1q1bnr/2pppk1p/b7/pp3pB1/3P4/8/PPPNPPPP/R1Q1KBNR w KQ - 1 7";
+const MISSED_S5_MATE_MOVES = Object.freeze([
+  "d4d5", "d2e4", "g5f6", "c1g5", "g5h5",
+]);
+const MISSED_S5_MATE_CHILD = Object.freeze(boundaryPayload(
+  "rn1q1bnr/2pppk1p/b4B2/pp1P1p1Q/4N3/8/PPP1PPPP/R3KBNR b KQ - 4 7",
+  6,
+));
 const SOURCE = "a".repeat(16);
 const WASM = "b".repeat(64);
 const MODULE = "c".repeat(64);
@@ -81,6 +90,11 @@ const PLAY_LIMITS = Object.freeze({
   default_generation_positions: CONFIG.max_work,
   safety_reserve_positions: 4_000_000,
 });
+const ROOT_CURRENT_SERIES_MATE_CREDIT = Math.min(
+  PLAY_LIMITS.safety_reserve_positions,
+  250_000,
+  Math.floor(CONFIG.max_work / 64),
+);
 const PREFIX_CONTRACT = Object.freeze({
   schema: prefixApi.CONTRACT_SCHEMA,
   result_schema: prefixApi.RESULT_SCHEMA,
@@ -430,6 +444,8 @@ class MockWorld {
     singleCandidate = false,
     favorableHorizonFirst = false,
     unprovedMateFirst = false,
+    proactiveTerminalMateStatus = "exhausted",
+    proactiveTerminalMateWork = 0,
   } = {}) {
     this.foundFirst = foundFirst;
     this.foundAll = foundAll;
@@ -448,14 +464,19 @@ class MockWorld {
     this.singleCandidate = singleCandidate;
     this.favorableHorizonFirst = favorableHorizonFirst;
     this.unprovedMateFirst = unprovedMateFirst;
+    this.proactiveTerminalMateStatus = proactiveTerminalMateStatus;
+    this.proactiveTerminalMateWork = proactiveTerminalMateWork;
     this.workers = [];
     this.live = 0;
     this.peakLive = 0;
     this.probes = 0;
     this.searchDispatches = [];
+    this.enumerationRequests = [];
     this.prefixWorkerNames = [];
     this.safetyReceipts = [];
     this.terminalMateReceipts = [];
+    this.proactiveTerminalMateReceipts = [];
+    this.proactiveTerminalMateRequests = [];
     this.crashed = false;
     this.createBoundaries = [];
     this.canonicalProtections = [];
@@ -535,6 +556,7 @@ class MockWorld {
       strictKeys(payload, ENUMERATE_KEYS);
       assert.equal(payload.schema, "spc-root-session-enumerate-v1");
       this.deadlineEpochs.push(payload.deadline_epoch_ms);
+      this.enumerationRequests.push({ ...payload });
       if (this.promotionMateDeferral) {
         assert.deepEqual(
           worker.boundary,
@@ -858,6 +880,29 @@ class MockWorld {
       assert.equal(payload.schema, "spc-root-terminal-mate-task-v1");
       assert.equal(payload.mate_certificate_id, IDENTITY.mate_certificate_id);
       assert.deepEqual(payload.boundary, worker.boundary);
+      const proactive = payload.iteration_id.endsWith(":root-terminal-mate-probe");
+      if (proactive) this.proactiveTerminalMateRequests.push({ ...payload });
+      if (proactive && this.proactiveTerminalMateStatus === "no-reply") {
+        return NO_REPLY;
+      }
+      if (proactive && this.proactiveTerminalMateStatus !== "found") {
+        assert(["exhausted", "unknown"].includes(this.proactiveTerminalMateStatus));
+        const result = {
+          ...payload,
+          status: this.proactiveTerminalMateStatus,
+          work_used: Math.min(this.proactiveTerminalMateWork, payload.call_work_credit),
+          memory_bytes: MEMORY.initial_bytes,
+          memory_peak_bytes: MEMORY.initial_bytes,
+        };
+        this.proactiveTerminalMateReceipts.push(result);
+        return result;
+      }
+      if (proactive) {
+        assert.deepEqual(
+          worker.boundary,
+          rootClientApi.canonicalBoundary(boundaryPayload(MISSED_S5_MATE_FEN, 5)),
+        );
+      }
       if (this.terminalMateStatus !== "found") {
         const result = {
           ...payload,
@@ -869,10 +914,14 @@ class MockWorld {
         this.terminalMateReceipts.push(result);
         return result;
       }
-      const moves = this.promotionMateDeferral
+      const moves = proactive
+        ? [...MISSED_S5_MATE_MOVES]
+        : this.promotionMateDeferral
         ? [...PROMOTION_MATE_MOVES]
         : omittedTerminalMateMoves(worker.boundary.series);
-      const child = this.promotionMateDeferral
+      const child = proactive
+        ? exactState(MISSED_S5_MATE_CHILD)
+        : this.promotionMateDeferral
         ? exactState(PROMOTION_MATE_CHILD)
         : exactState(boundaryPayload(
           flipFen(worker.boundary.fen),
@@ -890,7 +939,10 @@ class MockWorld {
       const result = {
         ...payload,
         status: "found",
-        work_used: Math.min(11, payload.call_work_credit),
+        work_used: Math.min(
+          proactive ? this.proactiveTerminalMateWork : 11,
+          payload.call_work_credit,
+        ),
         score: rootWhite ? CONFIG.mate_score - 1 : -CONFIG.mate_score + 1,
         proof_bounds: rootWhite ? [1, 1] : [-1, -1],
         memory_bytes: MEMORY.initial_bytes,
@@ -905,7 +957,8 @@ class MockWorld {
         },
         checked_prefix: checked,
       };
-      this.terminalMateReceipts.push(result);
+      if (proactive) this.proactiveTerminalMateReceipts.push(result);
+      else this.terminalMateReceipts.push(result);
       return result;
     }
     throw new Error(`unexpected mock Worker request ${type}`);
@@ -1985,6 +2038,136 @@ async function testFavorableCheckedHorizonIsNotVetoed() {
   client.close();
 }
 
+async function testProactiveS5TerminalMateWinsBeforeOrdinarySearch() {
+  const boundary = boundaryPayload(MISSED_S5_MATE_FEN, 5);
+  const world = new MockWorld({
+    proactiveTerminalMateStatus: "found",
+    proactiveTerminalMateWork: 505,
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  const result = await client.analyzeRoot(payload(boundary, 5), {
+    deadlineMs: performance.now() + 20_000,
+  });
+  assert.equal(result.status, "complete");
+  assert.equal(result.publishable, true);
+  assert.equal(result.safety_certified, true);
+  assert.equal(result.authoritative_replay_certified, true);
+  assert.equal(result.completed_depth, 1);
+  assert.deepEqual(result.best_full_series, MISSED_S5_MATE_MOVES);
+  assert.deepEqual(result.principal_variation[0].moves, MISSED_S5_MATE_MOVES);
+  assert.equal(result.score, CONFIG.mate_score - 1);
+  assert.equal(result.proof, "white");
+  assert.deepEqual(result.proof_bounds, [1, 1]);
+  assert.equal(result.checked_prefix.outcome, "checkmate");
+  assert.equal(result.checked_prefix.ended_by_check, true);
+  assert.deepEqual(result.checked_prefix.next_state, exactState(MISSED_S5_MATE_CHILD));
+  assert.equal(result.stats.root_tasks, 0);
+  assert.equal(result.stats.safety_status, "terminal-mate-rescue");
+  assert.equal(result.stats.terminal_mate_rescues, 1);
+  assert.equal(result.stats.safety_reserve_positions, ROOT_CURRENT_SERIES_MATE_CREDIT);
+  assert.equal(
+    result.runtime_receipt.terminal_mate_rescue.trigger,
+    "proactive-current-series-terminal-mate",
+  );
+  assert.equal(result.runtime_receipt.terminal_mate_rescue.status, "found");
+  assert.equal(
+    result.runtime_receipt.terminal_mate_rescue.work_used,
+    world.proactiveTerminalMateWork,
+  );
+  assertPolicyReceiptSurfaces(result, []);
+  assert.equal(result.work, world.proactiveTerminalMateWork);
+  assert.equal(result.stats.generation_positions, world.proactiveTerminalMateWork);
+  assert.equal(world.proactiveTerminalMateReceipts.length, 1);
+  assert.equal(
+    world.proactiveTerminalMateReceipts[0].call_work_credit,
+    ROOT_CURRENT_SERIES_MATE_CREDIT,
+  );
+  assert.equal(world.searchDispatches.length, 0);
+  assert.equal(world.safetyReceipts.length, 0);
+  assert.equal(world.terminalMateReceipts.length, 0);
+  assert(world.workers.every((worker) => worker.manifest === null));
+  client.close();
+}
+
+async function testUnprovenProactiveTerminalMateContinuesOrdinarySearch() {
+  for (const proactiveTerminalMateStatus of ["exhausted", "unknown"]) {
+    const world = new MockWorld({
+      proactiveTerminalMateStatus,
+      proactiveTerminalMateWork: 13,
+    });
+    const client = browserClientApi.createClient({
+      workerUrl: "mock-worker.js",
+      workerFactory: world.factory,
+      navigatorValue: DESKTOP_NAVIGATOR,
+    });
+    await preflight(client);
+    const result = await client.analyzeRoot(
+      payload(boundaryPayload(MISSED_S5_MATE_FEN, 5), 1),
+      { deadlineMs: performance.now() + 20_000 },
+    );
+    assert.equal(result.completed_depth, 1);
+    assert.equal(world.proactiveTerminalMateReceipts.length, 1);
+    assert.equal(
+      world.proactiveTerminalMateReceipts[0].status,
+      proactiveTerminalMateStatus,
+    );
+    assert.equal(world.proactiveTerminalMateReceipts[0].work_used, 13);
+    assert(world.enumerationRequests.length >= 1);
+    assert.equal(world.enumerationRequests[0].external_work, 13);
+    assert(
+      world.enumerationRequests[0].deadline_monotonic_ms
+        > world.proactiveTerminalMateReceipts[0].deadline_monotonic_ms,
+    );
+    assert(
+      world.proactiveTerminalMateReceipts[0].remaining_time_ms <= 1_000,
+    );
+    assert(
+      world.enumerationRequests[0].remaining_time_ms
+        > world.proactiveTerminalMateReceipts[0].remaining_time_ms,
+    );
+    assert(world.searchDispatches.length > 0);
+    assert(result.work >= 13);
+    client.close();
+  }
+}
+
+async function testProactiveProbeTimeoutRecoversOrdinarySearch() {
+  const world = new MockWorld({
+    proactiveTerminalMateStatus: "no-reply",
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  const probesBeforeAnalyze = world.probes;
+  const result = await client.analyzeRoot(
+    payload(boundaryPayload(MISSED_S5_MATE_FEN, 5), 1),
+    { deadlineMs: performance.now() + 1_000 },
+  );
+  assert.equal(result.completed_depth, 1);
+  assert.equal(world.proactiveTerminalMateRequests.length, 1);
+  assert.equal(world.proactiveTerminalMateReceipts.length, 0);
+  assert.equal(
+    world.probes - probesBeforeAnalyze,
+    GEOMETRY.desktop_workers * 2,
+  );
+  assert(world.enumerationRequests.length >= 1);
+  assert.equal(
+    world.enumerationRequests[0].external_work,
+    ROOT_CURRENT_SERIES_MATE_CREDIT,
+  );
+  assert(world.searchDispatches.length > 0);
+  assert.equal(world.live, GEOMETRY.desktop_workers);
+  client.close();
+}
+
 async function testAllMatingFrontierRescuesTerminalRootMate() {
   for (const [boundary, expectedScore, expectedProof] of [
     [boundaryPayload(WHITE_FEN, 1), CONFIG.mate_score - 1, "white"],
@@ -2229,6 +2412,9 @@ await testCheckedPvHorizonMateRejectsTheProvisionalWinner();
 await testSecondDistinctCheckedPvMatePublishesExactPolicyVeto();
 await testCheckedPvHorizonIsRootedAndFailClosed();
 await testFavorableCheckedHorizonIsNotVetoed();
+await testProactiveS5TerminalMateWinsBeforeOrdinarySearch();
+await testUnprovenProactiveTerminalMateContinuesOrdinarySearch();
+await testProactiveProbeTimeoutRecoversOrdinarySearch();
 await testCrashReturnsLastSafeAndReprobes();
 await testNestedDeadlineAndExactWorkLimitClassification();
 await testMateProofCacheAcrossFiveDepthsAndBoundaries();
@@ -2267,6 +2453,9 @@ process.stdout.write(JSON.stringify({
   checked_pv_horizon_root_chain_fail_closed: true,
   stale_horizon_safety_reply_fail_closed: true,
   favorable_checked_horizon_not_vetoed: true,
+  proactive_s5_terminal_mate_before_ordinary_search: true,
+  unproven_proactive_terminal_mate_continues_ordinary_search: true,
+  proactive_probe_timeout_recovers_ordinary_search: true,
   pruned_bounds_publish: true,
   immediate_mate_with_alternatives: true,
   all_mating_frontier_terminal_mate_rescue: true,
