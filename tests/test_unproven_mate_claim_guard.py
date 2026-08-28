@@ -26,7 +26,8 @@ GAME1_S3_PFEN = (
 )
 GAME1_FALSE_MATE_ROOT = ("e2e3", "d1f3", "f1b5")
 GAME1_BUCE_REFUTATION = ("c7c6", "c8g4", "g4f3", "c6b5")
-GAME1_SERIOUS_ROOT = ("c1b2", "b2f6", "f6g7")
+GAME1_OLD_UNSAFE_ROOT = ("c1b2", "b2f6", "f6g7")
+GAME1_SAFE_FALLBACK = ("e2e4", "e4e5", "e5f6")
 
 
 def _require_source_matched_native() -> None:
@@ -80,25 +81,41 @@ def test_game1_s3_low_budget_fails_closed_without_false_mate() -> None:
     assert result.stats.work_positions <= 5_000_000
 
 
-def test_game1_s3_serious_budget_completes_d5_without_false_mate() -> None:
-    """The 20M gate reconsiders each depth and completes on the safe root."""
+def test_game1_s3_serious_budget_widens_and_keeps_proven_mates_out() -> None:
+    """The 20M gate widens rather than publishing the old unsafe D5 line.
+
+    The internal-boundary ladder proves that the former ``c1b2/Bxf6/Bxg7``
+    winner permits a later one-series mate. Exact-adverse alternatives must
+    trigger the 832-root widening; if that wider proof work reaches the fixed
+    budget, only a reply-mate-exhausted move may survive without its shallow
+    score, depth, alternatives, or proof.
+    """
 
     _require_source_matched_native()
     result = analyze(_game1_state(), _game1_limits(20_000_000))
 
-    assert result.completed_depth == 5
+    assert result.completed_depth == 0
     assert not result.timed_out
-    assert not result.work_limit_reached
+    assert result.work_limit_reached
     assert result.best_series is not None
-    assert result.best_series.moves == GAME1_SERIOUS_ROOT
-    assert abs(result.score) < MATE_SCORE - 10_000
+    assert result.best_series.moves == GAME1_SAFE_FALLBACK
+    assert result.best_series.moves != GAME1_OLD_UNSAFE_ROOT
+    assert result.score == result.root_evaluation.total == -46
+    assert result.principal_variation == (result.best_series,)
+    assert result.alternatives == ()
     assert result.proof is None
+    assert not result.exact_width
+    assert not result.root_scores_complete
     assert result.stats.root_mate_claim_quarantines >= 3
     assert result.stats.root_mate_claim_prior_depth_discards == 0
     assert result.stats.root_mate_claim_final_discards == 0
+    assert result.stats.root_safety_all_mating_widenings >= 1
+    assert result.stats.root_safety_widened_candidates > 32
+    assert result.stats.root_safety_widened_exact_children >= 1
+    assert result.stats.final_fallback_reply_mate_exhausted == 1
     assert result.stats.selected_pv_horizon_unknown == 0
     assert result.stats.root_safety_unknown_interruptions == 0
-    assert result.stats.work_positions <= 20_000_000
+    assert result.stats.work_positions == 20_000_000
 
 
 def test_candidate_local_mate_proof_handles_both_signs_and_terminal_root() -> None:

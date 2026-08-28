@@ -192,6 +192,9 @@ def test_completed_d8_bucephalus_reply_mate_never_publishes() -> None:
     assert result.alternatives == ()
     assert result.proof is None
     assert not result.root_scores_complete
+    assert not result.work_limit_reached
+    assert result.stats.generation_work_limit_hits == 0
+    assert result.stats.selected_pv_horizon_repair_interruptions == 0
     assert result.stats.final_fallback_reply_mate_found == 1
     assert result.stats.final_fallback_reply_mate_rejections == 1
 

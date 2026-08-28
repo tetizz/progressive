@@ -166,6 +166,94 @@ def test_synthetic_internal_opponent_boundary_ladder_stops_at_first_found() -> N
     assert probed_series_numbers == [8, 6]
 
 
+def test_cached_internal_found_preempts_uncached_deeper_probe() -> None:
+    root, selected_pv, adverse_mate = _mined_internal_boundary_path()
+    internal_key = selected_pv[2].final_state.transposition_key
+    cache_peeks = []
+    dispatched = []
+
+    def cached_probe(state):
+        cache_peeks.append(state.series_number)
+        if state.transposition_key == internal_key:
+            return _probe(SeriesMateStatus.FOUND, adverse_mate)
+        return None
+
+    def expensive_probe(state):
+        dispatched.append(state.series_number)
+        raise AssertionError("cached internal mate must preempt deeper dispatch")
+
+    certification = certify_selected_pv_horizon(
+        root,
+        selected_pv,
+        expensive_probe,
+        cached_probe=cached_probe,
+    )
+
+    assert certification.status is SelectedPvHorizonStatus.FOUND
+    assert certification.proof is not None
+    assert certification.proof.rooted_path == selected_pv[:3]
+    assert certification.proof.mate_reply == adverse_mate
+    assert certification.proof.identity_sha256 == (
+        certification.proof.recomputed_identity_sha256()
+    )
+    assert certification.proof.proof_bounds == (-1, -1)
+    assert cache_peeks == [8, 6]
+    assert dispatched == []
+
+
+def test_cached_exhausted_boundary_is_skipped_before_leaf_first_dispatch() -> None:
+    root, selected_pv, _adverse_mate = _mined_internal_boundary_path()
+    deepest_key = selected_pv[4].final_state.transposition_key
+    cache_peeks = []
+    dispatched = []
+
+    def cached_probe(state):
+        cache_peeks.append(state.series_number)
+        if state.transposition_key == deepest_key:
+            return _probe(SeriesMateStatus.EXHAUSTED)
+        return None
+
+    def probe(state):
+        dispatched.append(state.series_number)
+        return _probe(SeriesMateStatus.EXHAUSTED)
+
+    certification = certify_selected_pv_horizon(
+        root,
+        selected_pv,
+        probe,
+        cached_probe=cached_probe,
+    )
+
+    assert certification.status is SelectedPvHorizonStatus.EXHAUSTED
+    assert cache_peeks == [8, 6, 4]
+    assert dispatched == [6, 4]
+
+
+def test_cached_unknown_boundary_is_ignored_and_never_skips_dispatch() -> None:
+    root, selected_pv, _adverse_mate = _mined_internal_boundary_path()
+    deepest_key = selected_pv[4].final_state.transposition_key
+    dispatched = []
+
+    def cached_probe(state):
+        if state.transposition_key == deepest_key:
+            return _probe(SeriesMateStatus.WORK_LIMIT)
+        return None
+
+    def probe(state):
+        dispatched.append(state.series_number)
+        return _probe(SeriesMateStatus.EXHAUSTED)
+
+    certification = certify_selected_pv_horizon(
+        root,
+        selected_pv,
+        probe,
+        cached_probe=cached_probe,
+    )
+
+    assert certification.status is SelectedPvHorizonStatus.EXHAUSTED
+    assert dispatched == [8, 6, 4]
+
+
 @pytest.mark.parametrize("depth", (4, 5))
 def test_white_root_internal_mate_proof_has_black_score_sign_at_d4_d5(
     depth: int,
@@ -356,6 +444,36 @@ def test_internal_found_proof_is_reused_from_the_authoritative_cache(
     assert searcher.stats.mate_proof_cache_found_hits == 1
     assert searcher.stats.mate_proof_cache_exhausted_hits == 1
     assert searcher.stats.mate_proof_cache_work_saved == 50
+
+
+def test_in_process_exact_found_preempts_uncached_deeper_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, selected_pv, adverse_mate = _mined_internal_boundary_path()
+    boundary = selected_pv[2].final_state
+    searcher = SeriesSearcher(
+        SearchLimits(depth_series=5, max_series_per_node=32)
+    )
+    cache_key = searcher._tt_key(boundary)
+    searcher._root_child_mate_screen_cache[cache_key] = adverse_mate
+    searcher._mark_root_child_proven_mate(boundary.transposition_key)
+
+    monkeypatch.setattr(
+        series_mate_module,
+        "find_native_series_mate",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("cached internal mate must preempt deeper solver work")
+        ),
+    )
+
+    certification = searcher._certify_selected_pv_horizon(root, selected_pv)
+
+    assert certification.status is SelectedPvHorizonStatus.FOUND
+    assert certification.proof is not None
+    assert certification.proof.rooted_path == selected_pv[:3]
+    assert certification.proof.mate_reply == adverse_mate
+    assert searcher.stats.selected_pv_horizon_probe_calls == 0
+    assert searcher.stats.native_series_mate_calls == 0
 
 
 def test_unknown_internal_probe_is_never_cached(
@@ -760,6 +878,92 @@ def test_all_horizon_vetoed_frontier_never_returns_the_vetoed_move(
     assert searcher.stats.selected_pv_horizon_candidate_vetoes == 1
     assert searcher.stats.selected_pv_horizon_all_vetoed_frontiers == 1
     assert searcher._root_scores_complete is False
+
+
+def test_all_vetoed_widening_receives_horizon_and_mate_claim_exclusions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = ProgressiveState.initial()
+    first_path, second_path = _browser_f3_proof_paths()
+    claim_path = _browser_b3_selected_path()
+    claim = ScoredSeries(
+        claim_path[0],
+        search_module.MATE_SCORE - 3,
+        claim_path[1:],
+    )
+    first_candidate = ScoredSeries(first_path[0][0], 617, first_path[0][1:])
+    repaired_candidate = ScoredSeries(second_path[0][0], 500, second_path[0][1:])
+    searcher = SeriesSearcher(
+        SearchLimits(depth_series=5, max_series_per_node=1)
+    )
+    monkeypatch.setattr(
+        searcher,
+        "_root_child_safety_screen_required",
+        lambda: False,
+    )
+
+    def root_pass(
+        _root,
+        _depth,
+        _prefix,
+        _mate_overrides,
+        horizon_overrides,
+        horizon_vetoes,
+        _root_frontier_override,
+    ):
+        if not searcher._root_mate_claim_quarantines:
+            return claim.score, (claim.series,), (claim,), None
+        if horizon_vetoes:
+            return 0, (), (), None
+        selected = horizon_overrides.get("f2f3", first_candidate)
+        return (
+            selected.score,
+            (selected.series,) + selected.principal_variation,
+            (selected,),
+            None,
+        )
+
+    monkeypatch.setattr(searcher, "_search_root_pass", root_pass)
+    monkeypatch.setattr(
+        searcher,
+        "_repair_selected_root",
+        lambda _root, _candidate, _depth, _state: repaired_candidate,
+    )
+    replies = iter((first_path[1], second_path[1]))
+    monkeypatch.setattr(
+        searcher,
+        "_selected_pv_horizon_probe",
+        lambda _state: _probe(SeriesMateStatus.FOUND, next(replies)),
+    )
+    widened_exclusions = []
+
+    def widen(_root, _prefix, exclusions):
+        widened_exclusions.append(exclusions)
+        return search_module._GeneratedSeriesList([], width_complete=False)
+
+    monkeypatch.setattr(
+        searcher,
+        "_selected_pv_horizon_widened_frontier",
+        widen,
+    )
+
+    with pytest.raises(search_module._HorizonPolicyExhausted):
+        searcher._search_root(root, 5, ())
+
+    assert searcher._root_mate_claim_quarantines == {
+        claim.series.machine_notation
+    }
+    assert searcher._selected_pv_root_vetoes == {
+        first_candidate.series.machine_notation
+    }
+    assert widened_exclusions == [
+        frozenset(
+            {
+                claim.series.machine_notation,
+                first_candidate.series.machine_notation,
+            }
+        )
+    ]
 
 
 def test_all_vetoed_retained_frontier_widens_and_certifies_b3(
@@ -1220,6 +1424,79 @@ def test_nonterminal_all_mating_widening_rejoins_horizon_certification(
         b3_path[2].final_state,
         b3_path[0].final_state,
     ]
+
+
+@pytest.mark.parametrize(
+    ("sibling_bounds", "expect_widening"),
+    (((-1, -1), True), ((-1, 1), False)),
+    ids=("exact-adverse", "unknown"),
+)
+def test_exact_adverse_unmarked_sibling_participates_in_all_mating_widening(
+    monkeypatch: pytest.MonkeyPatch,
+    sibling_bounds: tuple[int, int],
+    expect_widening: bool,
+) -> None:
+    root = ProgressiveState.from_fen(
+        "6k1/8/8/q7/8/8/5PPP/1R4K1 w - - 0 1",
+        1,
+    )
+    selected_series = play_series(root, ("b1b8",))
+    selected_mate = play_series(
+        selected_series.final_state,
+        ("g8f7", "a5e1"),
+    )
+    sibling_series = play_series(root, ("b1b2",))
+    sibling_mate = play_series(sibling_series.final_state, ("a5e1",))
+    selected = ScoredSeries(
+        selected_series,
+        -search_module.MATE_SCORE + 2,
+        (selected_mate,),
+        (-1, -1),
+    )
+    sibling = ScoredSeries(
+        sibling_series,
+        -search_module.MATE_SCORE + 2,
+        (sibling_mate,),
+        sibling_bounds,
+    )
+    searcher = SeriesSearcher(
+        SearchLimits(depth_series=1, max_series_per_node=32)
+    )
+    monkeypatch.setattr(
+        searcher,
+        "_root_child_safety_screen_required",
+        lambda: True,
+    )
+
+    def root_pass(*_args):
+        return (
+            selected.score,
+            (selected.series,) + selected.principal_variation,
+            (selected, sibling),
+            None,
+        )
+
+    widening_calls = []
+
+    def widen(*_args):
+        widening_calls.append(True)
+        return 321, (), (), None
+
+    monkeypatch.setattr(searcher, "_search_root_pass", root_pass)
+    monkeypatch.setattr(searcher, "_root_all_mating_widening", widen)
+
+    result = searcher._search_root(root, 1, ())
+
+    assert bool(widening_calls) is expect_widening
+    assert (
+        sibling.series.final_state.transposition_key
+        not in searcher._root_child_proven_mate_keys
+    )
+    if expect_widening:
+        assert result == (321, (), (), None)
+    else:
+        assert result[0] == selected.score
+        assert result[1] == (selected.series, selected_mate)
 
 
 @pytest.mark.parametrize(

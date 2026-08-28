@@ -2313,11 +2313,26 @@
               let workUsed = 0;
               let lastSafety = null;
               const opponentBoundaries = selectedPvOpponentBoundaries(task.candidate);
-              for (let index = 0; index < opponentBoundaries.length; index += 1) {
-                const horizon = opponentBoundaries[index];
-                const remainingProbes = opponentBoundaries.length - index;
+              const cachedFoundIndex = opponentBoundaries.findIndex((horizon) => {
+                const leaf = horizon.pv.length === 0 ? rootSeries : horizon.pv.at(-1);
+                const child = normalizeExactBoundaryState(leaf?.child_boundary || {});
+                if (child === null) return false;
+                const cacheKey = mateProofCacheKey(identity, child);
+                return this.mateProofCache.get(cacheKey)?.status === "found";
+              });
+              const orderedBoundaries = cachedFoundIndex > 0
+                ? Object.freeze([
+                  opponentBoundaries[cachedFoundIndex],
+                  ...opponentBoundaries.slice(0, cachedFoundIndex),
+                  ...opponentBoundaries.slice(cachedFoundIndex + 1),
+                ])
+                : opponentBoundaries;
+              for (let index = 0; index < orderedBoundaries.length; index += 1) {
+                const horizon = orderedBoundaries[index];
+                const remainingProbes = orderedBoundaries.length - index;
                 const remainingCredit = task.call_work_credit - workUsed;
-                if (remainingCredit < remainingProbes) {
+                const cachedFoundFirst = cachedFoundIndex >= 0 && index === 0;
+                if (!cachedFoundFirst && remainingCredit < remainingProbes) {
                   return {
                     ...task,
                     status: "unknown",
@@ -2328,12 +2343,13 @@
                   };
                 }
                 const reservedForShallowerBoundaries = remainingProbes - 1;
-                const credit = horizon.pv.length === 0
-                  ? remainingCredit
-                  : Math.min(
+                let credit = 0;
+                if (!cachedFoundFirst) {
+                  credit = horizon.pv.length === 0 ? remainingCredit : Math.min(
                     PV_HORIZON_MATE_WORK_LIMIT,
                     remainingCredit - reservedForShallowerBoundaries,
                   );
+                }
                 const scope = horizon.pv.length === 0 ? "root-child" : "pv-horizon";
                 const horizonSafety = await proveBoundaryMate({
                   startBoundary: originalBoundary,

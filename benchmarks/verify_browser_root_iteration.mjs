@@ -491,6 +491,7 @@ class MockWorld {
     this.canonicalProtections = [];
     this.deadlineEpochs = [];
     this.pvTransitions = new Map();
+    this.deepestBoundaryQuietSeries = 0;
   }
 
   factory = (_url, options) => new MockWorker(this, options);
@@ -725,8 +726,10 @@ class MockWorld {
         childPv = Array.from({ length: pvLength }, (_, pvIndex) => {
           const series = start.series;
           const moves = candidateMoves(series, horizonResearch ? 1 : 0);
-          const quietSeries = horizonResearch && this.horizonMateTwice && pvIndex === pvLength - 1
-            ? 1
+          const quietSeries = pvIndex === pvLength - 1
+            ? horizonResearch && this.horizonMateTwice
+              ? 1
+              : this.deepestBoundaryQuietSeries
             : 0;
           const child = exactState(boundaryPayload(
             flipFen(start.fen),
@@ -871,6 +874,10 @@ class MockWorld {
         flipFen(child.fen),
         child.series + 1,
       ));
+      this.pvTransitions.set(
+        JSON.stringify([child.fen, child.series, mateMoves]),
+        { child: mateChild, endedByCheck: true, outcome: "checkmate" },
+      );
       const checked = prefixResult(mateRequest, IDENTITY, {
         child: mateChild,
         outcome: "checkmate",
@@ -2024,6 +2031,81 @@ async function testBlackRootInternalOpponentBoundaryMateUsesExactParity() {
   client.close();
 }
 
+async function testCachedInternalMateShortCircuitsUncachedDeeperBoundary() {
+  for (const [boundary, internalSeries, deeperSeries, expectedMateMoves] of [
+    [boundaryPayload(WHITE_FEN, 1), 4, 6, ["a7a6", "h7h6"]],
+    [boundaryPayload(BLACK_FEN, 2), 5, 7, ["a2a3", "h2h3", "g2g3"]],
+  ]) {
+    const world = new MockWorld({
+      internalBoundaryMateSeries: internalSeries,
+      zeroNativeWork: true,
+      rootSafetyWork: 7,
+      singleCandidate: true,
+    });
+    const client = browserClientApi.createClient({
+      workerUrl: "mock-worker.js",
+      workerFactory: world.factory,
+      navigatorValue: DESKTOP_NAVIGATOR,
+    });
+    await preflight(client);
+    const request = payload(boundary, 5);
+    const first = await client.analyzeRoot(request, {
+      deadlineMs: performance.now() + 20_000,
+    });
+    assert.equal(first.pv_horizon_line_rejections, 1);
+    assert.deepEqual(
+      world.safetyReceipts.filter((receipt) => (
+        receipt.iteration_id.endsWith(":d5")
+        && receipt.candidate_identity === "c0"
+      )).slice(0, 2).map((receipt) => receipt.authoritative_child_boundary?.series),
+      [deeperSeries, internalSeries],
+      "the cold run must establish an exact cached internal mate after the deeper miss",
+    );
+
+    const safetyStart = world.safetyReceipts.length;
+    const searchStart = world.searchDispatches.length;
+    const rootChildReceipt = world.safetyReceipts.find((receipt) => (
+      receipt.authoritative_child_boundary?.series === boundary.series + 1
+    ));
+    assert(rootChildReceipt, "the warmup must populate the exact root-child exhaustion");
+    client.rootRunner.mateProofCache.delete(rootClientApi.mateProofCacheKey(
+      IDENTITY,
+      rootChildReceipt.authoritative_child_boundary,
+    ));
+    world.rootSafetyWork = 998;
+    world.deepestBoundaryQuietSeries = 1;
+    const second = await client.analyzeRoot({
+      ...request,
+      max_generation_positions: 1_000,
+    }, {
+      deadlineMs: performance.now() + 20_000,
+    });
+    const secondD5Safety = world.safetyReceipts.slice(safetyStart).filter((receipt) => (
+      receipt.iteration_id.endsWith(":d5")
+      && receipt.candidate_identity === "c0"
+    ));
+    assert.deepEqual(
+      secondD5Safety,
+      [],
+      "a replayed cached internal mate must reject before dispatching the changed deeper boundary",
+    );
+    assert.equal(second.pv_horizon_line_rejections, 1);
+    assert.equal(second.pv_horizon_native_repairs, 1);
+    assert(second.runtime_receipt.mate_cache.hits > 0);
+    const repair = world.searchDispatches.slice(searchStart).find(({ task }) => (
+      task.iteration_id.endsWith(":d5")
+      && task.schema === "spc-root-horizon-research-task-v1"
+    ));
+    assert(repair, "the cached internal proof must remain authoritative for warm-owner repair");
+    const proof = repair.task.horizon_proofs[0];
+    assert.equal(proof.rooted_path.length, 3);
+    assert.equal(proof.rooted_path.at(-1).child_boundary.series, internalSeries);
+    assert.deepEqual(proof.mate_reply.moves, expectedMateMoves);
+    assert.equal(proof.mate_reply.child_boundary.series, internalSeries + 1);
+    client.close();
+  }
+}
+
 async function testTerminalPvLeafStillChecksEarlierOpponentBoundary() {
   const world = new MockWorld({
     internalBoundaryMateFirst: true,
@@ -2759,6 +2841,7 @@ await testUnprovedMateClaimQuarantinePublishesSafeRoot();
 await testCheckedPvHorizonMateRejectsTheProvisionalWinner();
 await testInternalOpponentBoundaryMateIsProbedLeafFirst();
 await testBlackRootInternalOpponentBoundaryMateUsesExactParity();
+await testCachedInternalMateShortCircuitsUncachedDeeperBoundary();
 await testTerminalPvLeafStillChecksEarlierOpponentBoundary();
 await testMalformedInternalRootedProofsFailClosed();
 await testUnknownInternalOpponentBoundaryFailsClosed();
@@ -2804,6 +2887,7 @@ process.stdout.write(JSON.stringify({
   checked_pv_horizon_mate_rejected: true,
   internal_opponent_boundary_mate_leaf_first: true,
   black_root_internal_boundary_mate_parity: true,
+  cached_internal_found_short_circuits_uncached_deeper_boundary_white_black: true,
   terminal_pv_leaf_preserves_earlier_boundary: true,
   malformed_internal_rooted_proofs_fail_closed: true,
   unknown_internal_opponent_boundary_fails_closed: true,

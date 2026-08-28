@@ -1,13 +1,13 @@
 # Initial-move ranking — Scottish Progressive Chess
 
-Generated: `2026-08-28T19:25:08+00:00`<br>
+Generated: `2026-08-28T20:23:47+00:00`<br>
 Engine: `spc-0.9.0`<br>
-Source fingerprint: `b2e44c79b4ee6683`<br>
+Source fingerprint: `1fea7e9f1d9b5bc7`<br>
 Rules profile: `scottish-modern-common-v1`<br>
 Search: `exhaustive`, 1 Black/continuation series ply after the fixed White move<br>
 Total series horizon: `2`<br>
 Nodes: `6166`<br>
-Summed analysis time: `0.788s`
+Summed analysis time: `0.787s`
 
 > This is a depth-limited engine ranking, not a claim that the top move is objectively best. Every leaf that is not a proven terminal uses the current progressive-specific heuristic.
 

@@ -196,14 +196,22 @@ def certify_selected_pv_horizon(
     root: ProgressiveState,
     selected_pv: tuple[SeriesResult, ...],
     probe: Callable[[ProgressiveState], SeriesMateProbe],
+    *,
+    cached_probe: Callable[
+        [ProgressiveState], SeriesMateProbe | None
+    ]
+    | None = None,
 ) -> SelectedPvHorizonCertification:
     """Certifies every adverse one-series boundary on one selected canonical PV.
 
     Every supplied series is replayed through the rules oracle. Nonterminal
-    opponent-to-move boundaries are probed leaf-first. Only exact native
-    ``EXHAUSTED`` at every such boundary is safe. ``FOUND`` carries the exact
-    replayed prefix and mate proof into same-root repair; every resource or
-    compatibility stop remains UNKNOWN and cannot certify the selection.
+    opponent-to-move boundaries are probed leaf-first. An optional exact-cache
+    peek runs across those boundaries first, so a retained ``FOUND`` proof can
+    preempt expensive deeper work and retained ``EXHAUSTED`` boundaries need
+    not be dispatched again. Only exact ``EXHAUSTED`` at every boundary is
+    safe. ``FOUND`` carries the exact replayed prefix and mate proof into
+    same-root repair; every resource or compatibility stop remains UNKNOWN
+    and is never consumed as cached evidence.
     """
 
     replayed_path = _replay_selected_path(root, selected_pv)
@@ -233,9 +241,61 @@ def certify_selected_pv_horizon(
             message=message,
         )
 
-    work_used = 0
+    def replay_found_mate(
+        boundary: ProgressiveState,
+        result: SeriesMateProbe,
+    ) -> SeriesResult | None:
+        if result.status is not SeriesMateStatus.FOUND or result.series is None:
+            return None
+        try:
+            replayed_mate = play_series(
+                boundary,
+                result.series.moves,
+            ).with_transposition_count(result.series.transposition_count)
+        except Exception:
+            return None
+        if (
+            not _same_series(replayed_mate, result.series)
+            or replayed_mate.outcome is not Outcome.CHECKMATE
+            or not replayed_mate.ended_by_check
+        ):
+            return None
+        return replayed_mate
+
+    cached_exhausted: set[int] = set()
     last_message = ""
+    if cached_probe is not None:
+        for index, boundary_series in reversed(adverse_boundaries):
+            boundary = boundary_series.final_state
+            cached = cached_probe(boundary)
+            if type(cached) is not SeriesMateProbe:
+                continue
+            if (
+                cached.status is SeriesMateStatus.EXHAUSTED
+                and cached.series is None
+            ):
+                cached_exhausted.add(index)
+                last_message = cached.message
+                continue
+            replayed_mate = replay_found_mate(boundary, cached)
+            if replayed_mate is None:
+                continue
+            proof = SelectedPvHorizonProof.create(
+                replayed_path[: index + 1],
+                replayed_mate,
+            )
+            return SelectedPvHorizonCertification(
+                SelectedPvHorizonStatus.FOUND,
+                True,
+                cached.status,
+                proof=proof,
+                message=cached.message,
+            )
+
+    work_used = 0
     for index, boundary_series in reversed(adverse_boundaries):
+        if index in cached_exhausted:
+            continue
         boundary = boundary_series.final_state
         result = probe(boundary)
         if type(result) is not SeriesMateProbe:
@@ -250,32 +310,20 @@ def certify_selected_pv_horizon(
         last_message = result.message
         if result.status is SeriesMateStatus.EXHAUSTED and result.series is None:
             continue
-        if result.status is SeriesMateStatus.FOUND and result.series is not None:
-            try:
-                replayed_mate = play_series(
-                    boundary,
-                    result.series.moves,
-                ).with_transposition_count(result.series.transposition_count)
-            except Exception:
-                replayed_mate = None
-            if (
-                replayed_mate is not None
-                and _same_series(replayed_mate, result.series)
-                and replayed_mate.outcome is Outcome.CHECKMATE
-                and replayed_mate.ended_by_check
-            ):
-                proof = SelectedPvHorizonProof.create(
-                    replayed_path[: index + 1],
-                    replayed_mate,
-                )
-                return SelectedPvHorizonCertification(
-                    SelectedPvHorizonStatus.FOUND,
-                    True,
-                    result.status,
-                    proof=proof,
-                    message=result.message,
-                    work_used=work_used,
-                )
+        replayed_mate = replay_found_mate(boundary, result)
+        if replayed_mate is not None:
+            proof = SelectedPvHorizonProof.create(
+                replayed_path[: index + 1],
+                replayed_mate,
+            )
+            return SelectedPvHorizonCertification(
+                SelectedPvHorizonStatus.FOUND,
+                True,
+                result.status,
+                proof=proof,
+                message=result.message,
+                work_used=work_used,
+            )
         return SelectedPvHorizonCertification(
             SelectedPvHorizonStatus.UNKNOWN,
             True,

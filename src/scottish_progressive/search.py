@@ -1613,6 +1613,39 @@ class SeriesSearcher:
         self.stats.final_fallback_reply_mate_unknown += 1
         return probe.status
 
+    def _selected_pv_horizon_cached_probe(
+        self,
+        state: ProgressiveState,
+    ) -> "SeriesMateProbe | None":
+        """Peeks at replay-valid exact in-process boundary evidence only."""
+
+        from .series_mate import SeriesMateProbe, SeriesMateStatus
+
+        cache_key = self._tt_key(state)
+        if cache_key not in self._root_child_mate_screen_cache:
+            return None
+        cached_mate = self._root_child_mate_screen_cache[cache_key]
+        position_key = state.transposition_key
+        if (
+            cached_mate is not None
+            and position_key in self._root_child_proven_mate_keys
+        ):
+            return SeriesMateProbe(
+                SeriesMateStatus.FOUND,
+                "reused exact in-process mate proof",
+                cached_mate,
+            )
+        if (
+            cached_mate is None
+            and cache_key in self._root_child_native_mate_cache_keys
+            and position_key in self._root_child_native_mate_exhausted_keys
+        ):
+            return SeriesMateProbe(
+                SeriesMateStatus.EXHAUSTED,
+                "reused exact in-process mate exhaustion",
+            )
+        return None
+
     def _selected_pv_horizon_probe(
         self,
         state: ProgressiveState,
@@ -1625,28 +1658,12 @@ class SeriesSearcher:
             find_native_series_mate,
         )
 
+        cached = self._selected_pv_horizon_cached_probe(state)
+        if cached is not None:
+            return cached
+
         cache_key = self._tt_key(state)
         position_key = state.transposition_key
-        if cache_key in self._root_child_native_mate_cache_keys:
-            cached_mate = self._root_child_mate_screen_cache.get(cache_key)
-            if (
-                position_key in self._root_child_proven_mate_keys
-                and cached_mate is not None
-            ):
-                return SeriesMateProbe(
-                    SeriesMateStatus.FOUND,
-                    "reused exact in-process mate proof",
-                    cached_mate,
-                )
-            if (
-                position_key in self._root_child_native_mate_exhausted_keys
-                and cached_mate is None
-            ):
-                return SeriesMateProbe(
-                    SeriesMateStatus.EXHAUSTED,
-                    "reused exact in-process mate exhaustion",
-                )
-
         persistent = self._persistent_mate_proof(state)
         if persistent is not None:
             status, cached_mate = persistent
@@ -1733,6 +1750,7 @@ class SeriesSearcher:
             root,
             pv,
             self._selected_pv_horizon_probe,
+            cached_probe=self._selected_pv_horizon_cached_probe,
         )
         if certification.status is SelectedPvHorizonStatus.FOUND:
             self.stats.selected_pv_horizon_found += 1
@@ -2288,6 +2306,7 @@ class SeriesSearcher:
         if persistent is not None:
             status, mate = persistent
             self._root_child_mate_screen_cache[cache_key] = mate
+            self._root_child_native_mate_cache_keys.add(cache_key)
             if status == "found":
                 assert mate is not None
                 self._mark_root_child_proven_mate(position_key)
@@ -4434,7 +4453,7 @@ class SeriesSearcher:
                         self._selected_pv_horizon_widened_frontier(
                             state,
                             required_prefix,
-                            frozenset(horizon_vetoes),
+                            self._root_policy_exclusions(horizon_vetoes),
                         )
                     )
                     if widened_frontier:
@@ -4482,8 +4501,13 @@ class SeriesSearcher:
                     # loss.
                     if alternatives and all(
                         item.series.outcome is None
-                        and item.series.final_state.transposition_key
-                        in self._root_child_proven_mate_keys
+                        and (
+                            item.series.final_state.transposition_key
+                            in self._root_child_proven_mate_keys
+                            or _root_candidate_is_proven_adverse(
+                                state.board.turn, item
+                            )
+                        )
                         for item in alternatives
                     ):
                         if state.series_number <= ROOT_ALL_MATING_WIDEN_MAX_SERIES:
@@ -4559,6 +4583,17 @@ class SeriesSearcher:
                             provisional.machine_notation
                         )
                         return score, pv, alternatives, proof
+
+                if (
+                    widened_nonterminal
+                    and child_key in self._root_child_proven_mate_keys
+                ):
+                    # The widened selector proved that this root permits an
+                    # immediate reply mate. That mate ends the game, so no
+                    # later PV boundary is reachable or needs a second repair.
+                    # Preserve the forced-loss line only until the final exact
+                    # publication gate rejects it from user-facing output.
+                    return score, pv, alternatives, proof
 
             certification = self._certify_selected_pv_horizon(state, pv)
             if certification.status in {

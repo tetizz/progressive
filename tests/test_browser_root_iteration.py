@@ -61,6 +61,7 @@ def test_browser_root_worker_pool_contract() -> None:
         "checked_pv_horizon_mate_rejected": True,
         "internal_opponent_boundary_mate_leaf_first": True,
         "black_root_internal_boundary_mate_parity": True,
+        "cached_internal_found_short_circuits_uncached_deeper_boundary_white_black": True,
         "terminal_pv_leaf_preserves_earlier_boundary": True,
         "malformed_internal_rooted_proofs_fail_closed": True,
         "unknown_internal_opponent_boundary_fails_closed": True,

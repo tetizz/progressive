@@ -1774,15 +1774,15 @@ def test_depth_three_replays_horizon_mate_and_selects_certified_e3() -> None:
     assert result.best_series != proof_path[0]
     assert result.score == 506
     assert result.completed_depth == 3
-    assert result.stats.work_positions == 249_124
+    assert result.stats.work_positions == 249_123
     assert result.stats.root_pvs_zero_window_searches > 0
     assert result.stats.native_series_mate_calls == 4
     assert result.stats.native_series_mate_found == 1
     assert result.stats.native_series_mate_exhausted == 3
-    assert result.stats.root_safety_exact_exhausted_children == 2
+    assert result.stats.root_safety_exact_exhausted_children == 3
     assert result.stats.selected_pv_horizon_probe_calls == 2
     assert result.stats.selected_pv_horizon_found == 1
-    assert result.stats.selected_pv_horizon_exhausted == 1
+    assert result.stats.selected_pv_horizon_exhausted == 2
     assert result.stats.selected_pv_horizon_line_rejections == 1
     assert result.stats.selected_pv_horizon_native_repairs == 1
     assert result.stats.selected_pv_horizon_candidate_vetoes == 0
@@ -1855,7 +1855,7 @@ def test_website_depth_four_horizon_unknown_retains_only_completed_depth_two() -
     assert len(result.principal_variation) == 2
     assert result.proof is None
     assert not result.exact_width
-    assert result.stats.work_positions == 3_181_117
+    assert result.stats.work_positions == 3_181_113
     assert result.stats.root_safety_screen_positions == 2_833_024
     assert result.stats.selected_pv_horizon_found == 1
     assert result.stats.selected_pv_horizon_native_repairs == 1
