@@ -25,7 +25,7 @@
     "root_session_version": 2,
     "series_mate_version": 1
   },
-  "artifact_set_sha256": "073fc056b8e4488cec8d40cbf09bcb4be10be991b197fa0b68bd67499c0f0dfa",
+  "artifact_set_sha256": "e5482871e8eaa1532402e1fd3019b8bb6c0f8246adf5d2c38ab4e30f23ff7507",
   "artifacts": [
     {
       "bytes": 27497,
@@ -33,21 +33,21 @@
       "sha256": "33f1298a3fb26e206fb9f0bc52fd060c089ad200a3ba4191b82f085b11f62a7c"
     },
     {
-      "bytes": 850703,
+      "bytes": 851302,
       "path": "spc-root-session.wasm",
-      "sha256": "fe5a39268d79a808a6c3e342a1821d1fdb47cb3a9c1e46b75828c1a81030dd02"
+      "sha256": "e1452e93394cc173c42dd94cf1c13d8d3ad54d97ba980685373da97803eac50c"
     }
   ],
   "certificate_id": null,
   "command": [
     "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\cycle4-production-overlay-scaffold-20260824\\build\\emsdk\\upstream\\emscripten\\em++.exe",
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\root-release-40cbb24-20260828\\src\\scottish_progressive\\_native_eval.cpp",
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\root-release-40cbb24-20260828\\src\\scottish_progressive\\native_subtree.cpp",
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\root-release-40cbb24-20260828\\src\\scottish_progressive\\native_subtree_wasm.cpp",
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\root-release-40cbb24-20260828\\src\\scottish_progressive\\native_root_session_wasm.cpp",
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\root-release-40cbb24-20260828\\src\\scottish_progressive\\_native_mate.cpp",
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\mate-safe-series6-integration-20260828\\src\\scottish_progressive\\_native_eval.cpp",
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\mate-safe-series6-integration-20260828\\src\\scottish_progressive\\native_subtree.cpp",
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\mate-safe-series6-integration-20260828\\src\\scottish_progressive\\native_subtree_wasm.cpp",
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\mate-safe-series6-integration-20260828\\src\\scottish_progressive\\native_root_session_wasm.cpp",
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\mate-safe-series6-integration-20260828\\src\\scottish_progressive\\_native_mate.cpp",
     "-I",
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\root-release-40cbb24-20260828\\src\\scottish_progressive",
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\mate-safe-series6-integration-20260828\\src\\scottish_progressive",
     "-std=c++20",
     "-O3",
     "-flto",
@@ -70,7 +70,7 @@
     "-sEXPORTED_FUNCTIONS=_spc_start_kernel_search_json,_spc_boundary_kernel_search_json,_spc_boundary_prefix_json,_spc_boundary_prefix_contract_json,_spc_start_kernel_abi_version,_spc_root_session_contract_json,_spc_root_session_create_json,_spc_root_session_enumerate_json,_spc_root_session_import_json,_spc_root_session_search_json,_spc_root_session_destroy,_spc_root_session_abi_version,_spc_series_mate_search_json,_spc_series_mate_abi_version,_malloc,_free",
     "-sEXPORTED_RUNTIME_METHODS=UTF8ToString,stringToNewUTF8,HEAPU8",
     "-o",
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\root-release-40cbb24-20260828\\build\\root-release-ee3bc61-r4\\wasm\\spc-root-session.mjs"
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\mate-safe-series6-integration-20260828\\build\\root-release-3deba94-r1\\wasm\\spc-root-session.mjs"
   ],
   "engine_version": "spc-0.9.0",
   "gates": {
@@ -82,7 +82,7 @@
     "root_session_smoke": false,
     "under_60_seconds_w32_d5": false
   },
-  "kernel_sha256": "64b837ecf5c060ca8e120f08db4927d99e8f297cdca18d764b65f40a93f428f1",
+  "kernel_sha256": "297f8a4e47b3c814174a3206eb1282b71e3cb3a00def72da2f61744e3786fa64",
   "memory_envelope": {
     "estimated_peak_bytes": 134217728,
     "growth_enabled": true,
@@ -120,22 +120,22 @@
     "root_contract_eval_capacity": 262144,
     "root_contract_tt_capacity": 262144
   },
-  "source_fingerprint": "358d43d03f6454fc",
+  "source_fingerprint": "b68312c9c10103a6",
   "source_inputs": [
     {
-      "bytes": 320634,
+      "bytes": 321287,
       "path": "src/scottish_progressive/_native_eval.cpp",
-      "sha256": "afd24385fabf8d21b9eb5d88b4302ee9707cbf032120718375c1acc7c84f3e85"
+      "sha256": "72f1b4a8a13de98807972908b7cb5fce13b3530e34400eb027ed110168d9abdc"
     },
     {
-      "bytes": 76017,
+      "bytes": 76583,
       "path": "src/scottish_progressive/_native_mate.cpp",
-      "sha256": "039ceb6d0f79dc48380665204e70ae7b1baee2aff874d6fc380717d962ae82c1"
+      "sha256": "211ad26cda988de716ea2a043c02c3290f60f4dad174d9e140c14a60800c5ad4"
     },
     {
-      "bytes": 10999,
+      "bytes": 11549,
       "path": "src/scottish_progressive/native_eval.hpp",
-      "sha256": "85b426f8f868def00dea0d7a7f6f9d048d9836cde1018dc1ae0d61e33c25ac5f"
+      "sha256": "abe00ee31ad2cbb5eed7c4830a25f80d2c502bfef87307ff4aa0474d426466d2"
     },
     {
       "bytes": 102043,
@@ -148,14 +148,14 @@
       "sha256": "ddd5e26010211891ed0561bfe889bc24347aec50754295a144c389eb49aa9407"
     },
     {
-      "bytes": 140405,
+      "bytes": 141128,
       "path": "src/scottish_progressive/native_subtree.cpp",
-      "sha256": "138bf4a1ecb2fe771193d81d40e61c827ad50972e58318f934c76e55995398a4"
+      "sha256": "b9d656dc74cc5aef121c644671bdbf10d5cc9a5f6cd4f0a8263011aed4df80aa"
     },
     {
-      "bytes": 13486,
+      "bytes": 13807,
       "path": "src/scottish_progressive/native_subtree.hpp",
-      "sha256": "a7dfd79ae0659fcff725c7fa79da98b296d7beb7ee2f530952bbc40d235bc335"
+      "sha256": "bb97ca5cc1578207b968176a1773029bc1b1e9af2c838b63f6e09ba346241fa6"
     },
     {
       "bytes": 52604,
@@ -173,7 +173,7 @@
       "sha256": "bef97b5453d10f1c19e2a61b712dee2a8346bb92c2c64a5582ec4aec9d12fa3c"
     }
   ],
-  "source_revision": "ee3bc61147c164cd63309b045fc8795fdaf311b0",
+  "source_revision": "3deba940dc86d25b2cdb56b60c824ebb1dcf5113",
   "status": "built-not-certified",
   "support_files": [],
   "thread_count": 1,
@@ -182,5 +182,5 @@
     "sha256": "2acdfaaf9bf1a17a6f15ca3f0c1e5e7efc935e9fd079eb426ec8daf4bef4f290",
     "version": "emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 6.0.8 (aeb67926e7de656da38bc807d83050af93578758)\nCopyright (C) 2026 the Emscripten authors (see AUTHORS.txt)\nThis is free and open source software under the MIT license.\nThere is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE."
   },
-  "wasm_sha256": "fe5a39268d79a808a6c3e342a1821d1fdb47cb3a9c1e46b75828c1a81030dd02"
+  "wasm_sha256": "e1452e93394cc173c42dd94cf1c13d8d3ad54d97ba980685373da97803eac50c"
 }

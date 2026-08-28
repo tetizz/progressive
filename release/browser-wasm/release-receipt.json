@@ -1,15 +1,15 @@
 {
   "artifact": {
     "allocator": "dlmalloc",
-    "artifact_set_sha256": "073fc056b8e4488cec8d40cbf09bcb4be10be991b197fa0b68bd67499c0f0dfa",
+    "artifact_set_sha256": "e5482871e8eaa1532402e1fd3019b8bb6c0f8246adf5d2c38ab4e30f23ff7507",
     "exception_strategy": "emscripten",
-    "kernel_sha256": "64b837ecf5c060ca8e120f08db4927d99e8f297cdca18d764b65f40a93f428f1",
+    "kernel_sha256": "297f8a4e47b3c814174a3206eb1282b71e3cb3a00def72da2f61744e3786fa64",
     "module_js_sha256": "33f1298a3fb26e206fb9f0bc52fd060c089ad200a3ba4191b82f085b11f62a7c",
     "runtime_variant": "single",
-    "source_fingerprint": "358d43d03f6454fc",
-    "source_revision": "ee3bc61147c164cd63309b045fc8795fdaf311b0",
+    "source_fingerprint": "b68312c9c10103a6",
+    "source_revision": "3deba940dc86d25b2cdb56b60c824ebb1dcf5113",
     "thread_count": 1,
-    "wasm_sha256": "fe5a39268d79a808a6c3e342a1821d1fdb47cb3a9c1e46b75828c1a81030dd02",
+    "wasm_sha256": "e1452e93394cc173c42dd94cf1c13d8d3ad54d97ba980685373da97803eac50c",
     "wasm_simd": false
   },
   "authorization": {
@@ -18,12 +18,12 @@
     "transition": "verified-combined-wasm-to-pages-ready"
   },
   "browser_bundle": {
-    "artifact_set_sha256": "e8a445132e77aae4e551f34a7d6d1365d42750e4ffa2e81f4de2982c4ef51342",
+    "artifact_set_sha256": "d901ce780190a4d231fc89d138aece4dcf1c89b0eeedb02a234a7b53c8adb5db",
     "files": [
       {
-        "bytes": 20304,
+        "bytes": 20305,
         "path": "browser-engine-manifest.json",
-        "sha256": "d91f036b9a4706c8c348cd5d49640276f582283f9b523c098591c42f9411d9af"
+        "sha256": "32c61d581efb576d9b0709660f1399c183434867d582e181c55969525297fdce"
       },
       {
         "bytes": 27497,
@@ -31,30 +31,30 @@
         "sha256": "33f1298a3fb26e206fb9f0bc52fd060c089ad200a3ba4191b82f085b11f62a7c"
       },
       {
-        "bytes": 850703,
+        "bytes": 851302,
         "path": "single/spc-root-session.wasm",
-        "sha256": "fe5a39268d79a808a6c3e342a1821d1fdb47cb3a9c1e46b75828c1a81030dd02"
+        "sha256": "e1452e93394cc173c42dd94cf1c13d8d3ad54d97ba980685373da97803eac50c"
       }
     ],
     "path": "browser-engine"
   },
-  "build_command_sha256": "a865d44c926c58c9bfda87cbb472047b2318fb3f6929a00810debaf1c5ef88fe",
-  "certificate_set_sha256": "ea00996c819bb2439e3c58227e42f26a7323925ffb9ef86c4fa6569aaeb37845",
+  "build_command_sha256": "24f6843509ce23d3a126fb22f8b933c8aa6f492a6692698978934a1b5e4d6a8e",
+  "certificate_set_sha256": "9b1f58b0badb3b796babfbb8ee13d4a28de40fecffb70677279237fd4c7b061e",
   "certificates": {
     "mate": {
-      "certificate_id": "spc-mate-ecfb2fdcbf028da3",
+      "certificate_id": "spc-mate-6d198e6ff9d017dc",
       "path": "certificates/mate-certificate.json",
-      "sha256": "61c5a7fc88152d810e8ebe97f96e3e66c505c6e015fd5f6c46b7158335ce987e"
+      "sha256": "3ac1c4f9d30b9bc9d569a773e68eb57693ebbf174608e9d2bc594af4fdae250d"
     },
     "prefix": {
-      "certificate_id": "spc-prefix-dc9e271d7346be3c",
+      "certificate_id": "spc-prefix-939a2ef3323597f2",
       "path": "certificates/prefix-certificate.json",
-      "sha256": "eeb401c7ff8fb321ef468f773c24e44c360c16377dde4a1b768dc97eaf8fad02"
+      "sha256": "d19cc784ac9cc8cc8f2c42c6e3adb5ccf93cb3953623a63434794e28eac9f4ca"
     },
     "root_session": {
-      "certificate_id": "spc-root-session-8c27a26d6004f34f",
+      "certificate_id": "spc-root-session-564df00ab275f539",
       "path": "certificates/root-session-certificate.json",
-      "sha256": "31a5056a2b7f3b0d869d8b4195801ce7704b627a2b41a5deb0a979fc2a5b48d6"
+      "sha256": "fcf4e5187c9413fbfe810a162410820f37573fd576af3108f89c7f977880d300"
     }
   },
   "dependency_closure": {
@@ -74,65 +74,65 @@
       "src/scottish_progressive/_native_mate.cpp"
     ],
     "schema": "spc-wasm-dependency-closure-v2",
-    "source_revision": "ee3bc61147c164cd63309b045fc8795fdaf311b0",
+    "source_revision": "3deba940dc86d25b2cdb56b60c824ebb1dcf5113",
     "target": "ordinary-worker-root-session-prefix-mate"
   },
   "evidence_receipts": [
     {
-      "bytes": 7972,
+      "bytes": 8035,
       "label": "build",
       "path": "evidence/root-session-build-receipt.json",
       "schema": "spc-root-session-build-receipt-v1",
-      "sha256": "1dcd4a6a0857bbd22380c0d6ff400b57953d5d966909da96262ef0c809a60865"
+      "sha256": "879c4b42c9e531613166e018b95568b6bae42d35634fcb925342b4bee7f3f416"
     },
     {
       "bytes": 46583,
       "label": "root_smoke",
       "path": "evidence/root-session-smoke-receipt.json",
       "schema": "spc-root-session-wasm-smoke-v1",
-      "sha256": "a2cb8024df47ad87b67184834ba4a2748eda7672e03664e6db65463ddf7637a3"
+      "sha256": "afbf86d91f7dbac72d15cff27319e5135653dd77d4c7c6f22d2837c72770842c"
     },
     {
       "bytes": 16105,
       "label": "root_parity",
       "path": "evidence/root-session-parity-receipt.json",
       "schema": "spc-root-d5-oracle-v1",
-      "sha256": "2b9a804a6e22ef4688977de41054aecf2aa49f890d42b9135a17cbc154773371"
+      "sha256": "716a0b2b2891e9c4971ea201ce48628fdbf5da418541bb6a525555c111d3272d"
     },
     {
       "bytes": 6269,
       "label": "prefix_parity",
       "path": "evidence/prefix-parity-receipt.json",
       "schema": "spc-prefix-parity-receipt-v2",
-      "sha256": "f293df0ebd6fbf3ea70a40961b4dec3f37a42a58154f83115c3ae6a9b8905452"
+      "sha256": "9292af1702066ec270f1caf3109ea5e8c1a358a68a06e0fc8cd394d9538f0637"
     },
     {
       "bytes": 998,
       "label": "browser_prefix",
       "path": "evidence/browser-prefix-receipt.json",
       "schema": "spc-browser-prefix-contract-receipt-v1",
-      "sha256": "57986ec036e1191352107f7c92485ffd9bbabf712a7dc3f8f2ae4c765a68a92e"
+      "sha256": "b6573e13903777deb0d575d0ba07ecdbe506651159721c0125d81c048bc4a532"
     },
     {
-      "bytes": 6052,
+      "bytes": 11412,
       "label": "mate_parity",
       "path": "evidence/mate-parity-receipt.json",
-      "schema": "spc-mate-wasm-receipt-v2",
-      "sha256": "797f5c811359fbaf2b0909425109907c7e21d706242680ba49ca265bbd3ae324"
+      "schema": "spc-mate-wasm-receipt-v3",
+      "sha256": "914c2bae07574d0100b8d6417334251fa307ba73e2af82ad20e22d1bf414b98a"
     },
     {
-      "bytes": 172610,
+      "bytes": 172632,
       "label": "opera",
       "path": "evidence/opera-d1-d5-receipt.json",
       "schema": "spc-opera-root-session-cdp-receipt-v1",
-      "sha256": "326796ff017abd5b0fcd9ae8eea05bba502e5e093d3b8d7ba15df961ead03bf0"
+      "sha256": "0c885035b52f7cef9fa9b8c41d289bd3d9749c7fee8cbfb928c6e5f6e69493b0"
     },
     {
-      "bytes": 404821,
+      "bytes": 403937,
       "label": "opera_checked_horizon",
       "path": "evidence/opera-checked-pv-horizon-receipt.json",
       "schema": "spc-opera-checked-pv-horizon-receipt-v5",
-      "sha256": "3689cd80fc15b7d70cdb853ad4481b890228a7f26d686a017eaf47fed1861308"
+      "sha256": "0ea545a250e1c97a7f202a3120ee307255a2fbdbb5238f2a62196a78acc0718c"
     }
   ],
   "gates": {
@@ -168,59 +168,59 @@
       "workers": [
         {
           "id": "root-0",
-          "native_work_after": 6086579,
+          "native_work_after": 6127016,
           "peak_bytes": 67108864
         },
         {
           "id": "root-1",
-          "native_work_after": 5756102,
+          "native_work_after": 6149278,
           "peak_bytes": 67108864
         },
         {
           "id": "root-2",
-          "native_work_after": 6721805,
+          "native_work_after": 6751708,
           "peak_bytes": 67108864
         },
         {
           "id": "root-3",
-          "native_work_after": 6128058,
+          "native_work_after": 5824800,
           "peak_bytes": 67108864
         },
         {
           "id": "root-4",
-          "native_work_after": 4517787,
+          "native_work_after": 4514004,
           "peak_bytes": 67108864
         },
         {
           "id": "root-5",
-          "native_work_after": 3958646,
+          "native_work_after": 3972860,
           "peak_bytes": 67108864
         },
         {
           "id": "root-6",
-          "native_work_after": 3815887,
+          "native_work_after": 3749513,
           "peak_bytes": 67108864
         },
         {
           "id": "root-7",
-          "native_work_after": 4366813,
+          "native_work_after": 4366816,
           "peak_bytes": 67108864
         }
       ]
     },
     "opera_checked_horizon": {
-      "elapsed_seconds": 45.4225,
+      "elapsed_seconds": 45.72460000002384,
       "known_adverse_excluded": true,
-      "local_checkout_asset_set_sha256": "c423cf500b664e2ad90e10bfff1689a0df696920111d9afc4d6d32b21141abe7",
+      "local_checkout_asset_set_sha256": "e7d042abb07a012c16e701080f583e01bb964c8b95341971466c3a910184bb1d",
       "principal_variation_sha256": "625afbfded18f1a8f6a86cacad5fa7b96d6a26324149186efbbb5452d9ebe3ab",
       "pv_horizon_candidate_vetoes": 1,
       "pv_horizon_line_rejections": 2,
       "pv_horizon_native_repairs": 1,
       "raw_trace_attestation": {
         "horizon_research_trace_count": 3,
-        "horizon_research_trace_sha256": "bce649a4415bda3cf334304b0fc4027e191b819c1d757c10e810da948d8d454d",
+        "horizon_research_trace_sha256": "ed9cbae3f5c4adc4b24c265cee7495f4ea5abfb2afbff3db07ee8e7db83d1641",
         "horizon_safety_trace_count": 8,
-        "horizon_safety_trace_sha256": "862d9dc3f0c5d88b04051a8f18fddc4c4469839efd8c5311df8a2f8d8e955353",
+        "horizon_safety_trace_sha256": "59fa46ba46471e793a750c369fbacc65060695af667b4b9b9d4c14d31549daa7",
         "schema": "spc-opera-checked-pv-raw-trace-attestation-v1"
       },
       "selected_d5_horizon_certification_witness": {
@@ -229,17 +229,17 @@
         "horizon_call_work_credit": 3500000,
         "horizon_request_sequence": 10,
         "horizon_status": "exhausted",
-        "horizon_work_used": 2297441,
+        "horizon_work_used": 2324089,
         "known_adverse_present": false,
         "known_adverse_series5_semantic_sha256": "663cb236f4e4944298f168f2ac014d2bba35d3a7e12cac574559ad2e1898bdbe",
-        "owner_worker_id": "root-3",
+        "owner_worker_id": "root-7",
         "principal_variation_sha256": "625afbfded18f1a8f6a86cacad5fa7b96d6a26324149186efbbb5452d9ebe3ab",
-        "root_child_call_work_credit": 1702559,
+        "root_child_call_work_credit": 1675911,
         "root_child_request_sequence": 11,
         "root_child_status": "exhausted",
         "root_child_work_used": 486,
         "safety_call_work_credit": 4000000,
-        "safety_work_used": 2297927,
+        "safety_work_used": 2324575,
         "schema": "spc-opera-selected-d5-horizon-certification-v1",
         "selected_root_series": "b2b3",
         "selected_series5_semantic_sha256": "53b617aa0aa11caaf2b83048d6b8268ecff616bfcee21f47d9b7be1fbfbc1e5b"
@@ -248,15 +248,15 @@
       "selected_horizon_exhaustively_certified": true,
       "selected_root_child_exhaustively_certified": true,
       "selected_root_series": "b2b3",
-      "work": 48088509
+      "work": 47555876
     },
-    "opera_total_d1_through_d5_seconds": 35.16919999992847,
+    "opera_total_d1_through_d5_seconds": 33.536399999976155,
     "result": {
       "candidate_identity": "spc-root-candidate-v1|moves1:4:f2f3|count1|final201:spc-state-v1|00ff00000020df00|4200000000000042|2400000000000024|8100000000000081|0800000000000008|1000000000000010|ffff000000000000|000000000020dfff|0000000000000000|8100000000000081|b|h0|f1|s2|q0|ep0:|out0|check0",
       "completed_depth": 5,
       "coverage_complete": true,
       "move": "f2f3",
-      "order_shape_sha256": "af9ce300992b195263fb97a5eb3a3875ea9cb34685b7a132e9c7203a5f971836",
+      "order_shape_sha256": "d81570325a05a80ed57193e94a36dc476c5c99fae95fe3bf804fb9660930879f",
       "owner_worker_id": "root-4",
       "principal_variation": [
         {
@@ -613,17 +613,17 @@
       "score": 617,
       "width_complete": true,
       "work": {
-        "committed_work": 41354108,
+        "committed_work": 41458426,
         "exact_at_cap": false,
         "max_work": 100000000,
-        "remaining_work": 58645892,
+        "remaining_work": 58541574,
         "reserved_work": 0,
         "safety_committed_work": 486,
         "safety_reserve_work": 4000000,
         "within_cap": true
       }
     },
-    "root_d5_oracle_signature_sha256": "c0812623ce1f7311b6af6589ab01ab7ccd9c4416ac02dedc04a823f520cd0e70",
+    "root_d5_oracle_signature_sha256": "a3ec82e221486e07f7a0ecb96429741a8e5da0c581b59b9d6cd4d6b19db3c989",
     "width": 32,
     "workers": 8
   },
@@ -634,14 +634,14 @@
     "maximum_seconds": 60,
     "safety_reserve_positions": 4000000
   },
-  "release_id": "spc-browser-wasm-release-7065858d6c7a6c46",
+  "release_id": "spc-browser-wasm-release-fbbfd2f5bfa905f7",
   "root_tactical_policy": {
     "capability": true,
     "legacy_wire_root_tactical_protection": false,
     "policy": "canonical-boundary-policy-v1"
   },
   "schema": "spc-browser-wasm-release-promotion-v2",
-  "source_revision": "ee3bc61147c164cd63309b045fc8795fdaf311b0",
+  "source_revision": "3deba940dc86d25b2cdb56b60c824ebb1dcf5113",
   "status": "promoted",
   "toolchain": {
     "path": "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\cycle4-production-overlay-scaffold-20260824\\build\\emsdk\\upstream\\emscripten\\em++.exe",

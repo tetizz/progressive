@@ -4,12 +4,12 @@
   "failures": 0,
   "differential_cases": 6,
   "artifact": {
-    "source_revision": "ee3bc61147c164cd63309b045fc8795fdaf311b0",
-    "source_fingerprint": "358d43d03f6454fc",
-    "kernel_sha256": "64b837ecf5c060ca8e120f08db4927d99e8f297cdca18d764b65f40a93f428f1",
-    "wasm_sha256": "fe5a39268d79a808a6c3e342a1821d1fdb47cb3a9c1e46b75828c1a81030dd02",
+    "source_revision": "3deba940dc86d25b2cdb56b60c824ebb1dcf5113",
+    "source_fingerprint": "b68312c9c10103a6",
+    "kernel_sha256": "297f8a4e47b3c814174a3206eb1282b71e3cb3a00def72da2f61744e3786fa64",
+    "wasm_sha256": "e1452e93394cc173c42dd94cf1c13d8d3ad54d97ba980685373da97803eac50c",
     "module_js_sha256": "33f1298a3fb26e206fb9f0bc52fd060c089ad200a3ba4191b82f085b11f62a7c",
-    "artifact_set_sha256": "073fc056b8e4488cec8d40cbf09bcb4be10be991b197fa0b68bd67499c0f0dfa",
+    "artifact_set_sha256": "e5482871e8eaa1532402e1fd3019b8bb6c0f8246adf5d2c38ab4e30f23ff7507",
     "exception_strategy": "emscripten",
     "wasm_simd": false,
     "allocator": "dlmalloc",
@@ -383,14 +383,14 @@
     "within_cap": true,
     "unknown_or_limit_count": 0,
     "max_work": 100000000,
-    "accounted_work": 41354108
+    "accounted_work": 41458426
   },
   "deadline": {
     "status": "complete",
     "deadline_reached": false,
     "unknown_or_limit_count": 0,
     "deadline_limit_ms": 60000.0,
-    "remaining_time_ms": 24830.800000071526
+    "remaining_time_ms": 26463.600000023842
   },
   "gates": {
     "initial_root_enumeration_python_parity": true,
@@ -401,5 +401,5 @@
     "deadline_receipts": true,
     "complete_rival_bound_coverage": true
   },
-  "oracle_signature_sha256": "c0812623ce1f7311b6af6589ab01ab7ccd9c4416ac02dedc04a823f520cd0e70"
+  "oracle_signature_sha256": "a3ec82e221486e07f7a0ecb96429741a8e5da0c581b59b9d6cd4d6b19db3c989"
 }
