@@ -4381,6 +4381,7 @@ def validate_opera_checked_horizon_receipt(
         "proof_bounds",
         "child_pv",
         "safety_override",
+        "mate_claim_quarantined",
     }
     if (
         set(horizon_candidate) != expected_candidate_keys
@@ -4419,6 +4420,7 @@ def validate_opera_checked_horizon_receipt(
                 "proof_bounds",
                 "child_pv",
                 "safety_override",
+                "mate_claim_quarantined",
             )
         )
         or horizon_candidate.get("owner_worker_id")
@@ -4430,6 +4432,7 @@ def validate_opera_checked_horizon_receipt(
         or horizon_candidate.get("child_pv") != principal_variation[1:]
         or horizon_candidate.get("terminal") is not False
         or horizon_candidate.get("safety_override") is not False
+        or horizon_candidate.get("mate_claim_quarantined") is not False
     ):
         raise ReleaseGateError(
             "Opera checked-PV selected b3 safety stages are not bound to the same Worker and search"

@@ -1862,6 +1862,7 @@ def _opera_checked_horizon_fixture(
         "owner_worker_id": "root-1",
         "terminal": False,
         "safety_override": False,
+        "mate_claim_quarantined": False,
         "score": 250,
         "proof_bounds": [-1, 1],
         "root_series": copy.deepcopy(selected_pv[0]),
@@ -2828,6 +2829,31 @@ def test_checked_horizon_rejects_selected_root_child_on_wrong_worker(
         promoter.ReleaseGateError,
         match="same Worker|owner Worker|one bound search",
     ):
+        _validate_checked_fixture(context)
+
+
+def test_checked_horizon_rejects_quarantined_selected_mate_claim(
+    tmp_path: Path,
+) -> None:
+    context = _checked_promotion_fixture(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        witness = payload["selected_d5_horizon_certification_witness"]
+        for sequence_key in (
+            "horizon_request_sequence",
+            "root_child_request_sequence",
+        ):
+            trace = _raw_trace_by_sequence(
+                payload,
+                "raw_horizon_safety_traces",
+                witness[sequence_key],
+            )
+            trace["request"]["candidate"]["mate_claim_quarantined"] = True
+            trace["response"]["candidate"]["mate_claim_quarantined"] = True
+        _refresh_raw_trace_attestation(payload)
+
+    _rewrite_checked(context, mutate)
+    with pytest.raises(promoter.ReleaseGateError, match="same Worker|same.*search"):
         _validate_checked_fixture(context)
 
 
