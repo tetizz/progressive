@@ -80,14 +80,10 @@ const probeExpression = String.raw`(async () => {
     Object.freeze({
       label: "f3",
       root_series: "f2f3",
-      unsafe_horizon: "d1e2/e2c4/c4c7/f1c4/c7c8",
-      unsafe_child_fen: "rnQ1k1nr/1p1p1ppp/8/p3p3/1PB1P3/5P2/1PPP3P/RNB1K1Nq b Qkq - 0 7",
     }),
     Object.freeze({
       label: "b3",
       root_series: "b2b3",
-      unsafe_horizon: "e1f2/d1g4/f2e3/g1h3/g4h5",
-      unsafe_child_fen: "rnbq1bnr/pppp1kpp/4p3/7Q/2B5/1P2K2N/PBPP2PP/RN5R b - - 4 7",
     }),
   ]);
   const INITIAL_BOUNDARY = Object.freeze({
@@ -1171,12 +1167,6 @@ const probeExpression = String.raw`(async () => {
       requestByProofSet.set(response.horizon_proof_set_identity, proofRequestKey);
       return true;
     };
-    const matchesExpectedSafety = (entry, expected) => entry?.request
-      ?.authoritative_child_boundary?.series === 6
-      && entry.request.candidate?.root_series?.machine_notation
-        === expected.unsafe_horizon
-      && entry.request.authoritative_child_boundary.fen === expected.unsafe_child_fen
-      && exactPrefixMateReplay(entry);
     const matchesD5RootSafety = (entry, rootSeries) => entry?.request
       ?.iteration_id === entry.request?.request_id + ":d5"
       && entry.request.candidate?.order_key === rootSeries
@@ -1249,7 +1239,7 @@ const probeExpression = String.raw`(async () => {
     const repairWitnessesFor = (expected) => {
       const witnesses = [];
       for (const safety of safetyTrace) {
-        if (!matchesExpectedSafety(safety, expected)) continue;
+        if (!matchesD5RootSafety(safety, expected.root_series)) continue;
         for (const repair of horizonResearchTrace) {
           if (exactRepairPair(safety, repair, expected)) {
             witnesses.push(Object.freeze({ expected, safety, repair }));

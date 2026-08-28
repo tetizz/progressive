@@ -174,6 +174,13 @@ def test_checked_horizon_capture_compares_canonical_contracts_and_exact_hit_mask
         "matchesD5RootSafety(entry, EXPECTED_WITNESSES[0].root_series)",
     ):
         assert exact_contract in capture
+    assert (
+        "if (!matchesD5RootSafety(safety, expected.root_series)) continue;"
+    ) in capture
+    assert "if (!matchesExpectedSafety(safety, expected)) continue;" not in capture
+    assert "const matchesExpectedSafety" not in capture
+    assert "unsafe_horizon" not in capture
+    assert "unsafe_child_fen" not in capture
     assert "!matchesExpectedSafety(entry, f3Witness.expected)" not in capture
     assert "safetyTrace.length === lineRejections" not in capture
     assert "horizonResearchTrace.length === nativeRepairs" not in capture

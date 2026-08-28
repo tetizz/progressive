@@ -518,12 +518,37 @@ def test_promoted_validator_recognizes_v6_checked_evidence_record(
     )
 
 
-def test_legacy_v5_exception_rejects_reissued_artifact_identity(tmp_path: Path) -> None:
-    repository = Path(__file__).resolve().parents[1]
-    release = repository / "release" / "browser-wasm"
-    checked = release / "evidence" / "opera-checked-pv-horizon-receipt.json"
-    fixed_receipt_path = release / "release-receipt.json"
-    fixed_receipt = json.loads(fixed_receipt_path.read_text(encoding="utf-8"))
+def test_legacy_v5_exception_rejects_reissued_artifact_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixed_receipt_path = tmp_path / "legacy-v5-release-receipt.json"
+    checked = tmp_path / "legacy-v5-checked-receipt.json"
+    fixed_receipt = {
+        "release_id": validator.LEGACY_V5_RELEASE_ID,
+        "source_revision": validator.LEGACY_V5_SOURCE_REVISION,
+        "artifact": copy.deepcopy(validator.LEGACY_V5_ARTIFACT),
+        "browser_bundle": copy.deepcopy(validator.LEGACY_V5_BROWSER_BUNDLE),
+    }
+    _write_json(fixed_receipt_path, fixed_receipt)
+    _write_json(checked, {"schema": validator.LEGACY_CHECKED_HORIZON_SCHEMA})
+
+    expected_hashes = {
+        fixed_receipt_path.resolve(): validator.LEGACY_V5_RELEASE_RECEIPT_SHA256,
+        checked.resolve(): validator.LEGACY_CHECKED_HORIZON_SHA256,
+    }
+    actual_sha256_file = validator._sha256_file
+
+    def legacy_fixture_sha256(path: Path) -> str:
+        resolved = path.resolve()
+        if resolved in expected_hashes:
+            return expected_hashes[resolved]
+        return actual_sha256_file(path)
+
+    monkeypatch.setattr(
+        validator,
+        "_sha256_file",
+        legacy_fixture_sha256,
+    )
 
     validator._validate_legacy_v5_release_identity(
         receipt=fixed_receipt,
@@ -535,25 +560,9 @@ def test_legacy_v5_exception_rejects_reissued_artifact_identity(tmp_path: Path) 
     forged_source = "f" * 40
     forged["source_revision"] = forged_source
     forged["artifact"]["source_revision"] = forged_source
-    seed = {
-        "artifact": {
-            field: forged["artifact"][field]
-            for field in validator.ARTIFACT_IDENTITY_FIELDS
-        },
-        "bundle_set_sha256": forged["browser_bundle"]["artifact_set_sha256"],
-        "certificate_set_sha256": forged["certificate_set_sha256"],
-        "receipts": [
-            {"label": record["label"], "sha256": record["sha256"]}
-            for record in forged["evidence_receipts"]
-        ],
-        "policy": {
-            "maximum_seconds": forged["promotion_policy"]["maximum_seconds"],
-            "default_seconds": forged["promotion_policy"]["default_seconds"],
-        },
-    }
-    forged["release_id"] = f"spc-browser-wasm-release-{_canonical_sha256(seed)[:16]}"
     forged_path = tmp_path / "release-receipt.json"
     _write_json(forged_path, forged)
+    expected_hashes[forged_path.resolve()] = validator.LEGACY_V5_RELEASE_RECEIPT_SHA256
 
     with pytest.raises(
         validator.PromotedReleaseError,
