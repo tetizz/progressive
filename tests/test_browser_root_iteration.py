@@ -37,6 +37,7 @@ def test_browser_root_worker_pool_contract() -> None:
         "pooled_native_prefix": True,
         "preflight_heap_released": True,
         "white_black_mate_mapping": True,
+        "unproved_mate_claim_quarantine_white_black": True,
         "pruned_bounds_publish": True,
         "immediate_mate_with_alternatives": True,
         "all_mating_frontier_terminal_mate_rescue": True,

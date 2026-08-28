@@ -14,12 +14,15 @@
   const ROOT_TACTICAL_POLICY = "canonical-boundary-policy-v1";
   const CHECKED_PV_SELECTION_POLICY =
     "repair-once-then-veto-adverse-checked-pv-mates-v1";
+  const MATE_CLAIM_SELECTION_POLICY =
+    "require-sign-matching-exact-proof-for-nonterminal-mate-band-v1";
   const MAX_SAME_ROOT_HORIZON_REPAIRS = 1;
   const SAME_ROOT_REPAIR_POLICY = Object.freeze({
     schema: "spc-same-root-horizon-repair-policy-v1",
     maximum_successful_same_root_repairs: MAX_SAME_ROOT_HORIZON_REPAIRS,
   });
   const EMPTY_PV_HORIZON_POLICY_VETOES = Object.freeze([]);
+  const EMPTY_MATE_CLAIM_QUARANTINE_RECEIPTS = Object.freeze([]);
   const PV_HORIZON_POLICY_VETO_REASONS = new Set([
     "duplicate-horizon-proof", "missing-horizon-proof", "owner-recertification-failed",
     "repair-proof-not-hit", "repair-unsupported", "repair-work-limit",
@@ -317,6 +320,62 @@
   function sameJson(left, right) {
     return JSON.stringify(canonicalJsonValue(left))
       === JSON.stringify(canonicalJsonValue(right));
+  }
+
+  function publishableMateClaim(score, proofBounds) {
+    if (
+      !Number.isSafeInteger(score)
+      || Math.abs(score) >= 2 * MATE_SCORE
+      || !Array.isArray(proofBounds)
+      || proofBounds.length !== 2
+      || proofBounds.some((bound) => ![-1, 0, 1].includes(bound))
+    ) return false;
+    if (Math.abs(score) < MATE_SCORE - 10_000) return true;
+    const expected = score > 0 ? 1 : -1;
+    return sameArray(proofBounds, [expected, expected]);
+  }
+
+  function normalizeMateClaimQuarantineReceipts(
+    value,
+    { candidateIds, expectedCount },
+  ) {
+    if (!Array.isArray(value) || !(candidateIds instanceof Set)) return null;
+    const seen = new Set();
+    let observedCount = 0;
+    const receipts = [];
+    for (const entry of value) {
+      const keys = [
+        "candidate_identity", "currently_quarantined", "proof_bounds",
+        "quarantine_count", "score",
+      ];
+      if (
+        !entry
+        || typeof entry !== "object"
+        || Array.isArray(entry)
+        || !sameJson(Object.keys(entry).sort(), keys)
+        || typeof entry.candidate_identity !== "string"
+        || !candidateIds.has(entry.candidate_identity)
+        || seen.has(entry.candidate_identity)
+        || !exactInteger(entry.quarantine_count, 1)
+        || !Number.isSafeInteger(entry.score)
+        || Math.abs(entry.score) < MATE_SCORE - 10_000
+        || Math.abs(entry.score) >= 2 * MATE_SCORE
+        || typeof entry.currently_quarantined !== "boolean"
+        || !Array.isArray(entry.proof_bounds)
+        || entry.proof_bounds.length !== 2
+        || entry.proof_bounds.some((bound) => ![-1, 0, 1].includes(bound))
+        || entry.currently_quarantined
+          === publishableMateClaim(entry.score, entry.proof_bounds)
+      ) return null;
+      seen.add(entry.candidate_identity);
+      observedCount += entry.quarantine_count;
+      receipts.push(Object.freeze({
+        ...entry,
+        proof_bounds: Object.freeze([...entry.proof_bounds]),
+      }));
+    }
+    if (observedCount !== expectedCount) return null;
+    return Object.freeze(receipts);
   }
 
   function normalizeSameRootRepairPolicy(value) {
@@ -1619,6 +1678,11 @@
         root_bound_coverage_scope: "all-retained-candidates",
         unfiltered_score_winner_selected: true,
         selection_policy: CHECKED_PV_SELECTION_POLICY,
+        mate_claim_selection_policy: MATE_CLAIM_SELECTION_POLICY,
+        mate_claim_policy_filtered: false,
+        root_mate_claim_quarantines: 0,
+        mate_claim_quarantine_receipts:
+          EMPTY_MATE_CLAIM_QUARANTINE_RECEIPTS,
         selection_policy_filtered: false,
         pv_horizon_line_rejections: 0,
         pv_horizon_native_repairs: 0,
@@ -1642,6 +1706,11 @@
           pv_horizon_line_rejections: 0,
           pv_horizon_native_repairs: 0,
           pv_horizon_candidate_vetoes: 0,
+          mate_claim_selection_policy: MATE_CLAIM_SELECTION_POLICY,
+          mate_claim_policy_filtered: false,
+          root_mate_claim_quarantines: 0,
+          mate_claim_quarantine_receipts:
+            EMPTY_MATE_CLAIM_QUARANTINE_RECEIPTS,
           same_root_repair_policy: SAME_ROOT_REPAIR_POLICY,
           pv_horizon_policy_vetoes: EMPTY_PV_HORIZON_POLICY_VETOES,
           mate_cache_hits: mateCacheHits,
@@ -1676,6 +1745,11 @@
           root_bound_coverage_scope: "all-retained-candidates",
           unfiltered_score_winner_selected: true,
           selection_policy: CHECKED_PV_SELECTION_POLICY,
+          mate_claim_selection_policy: MATE_CLAIM_SELECTION_POLICY,
+          mate_claim_policy_filtered: false,
+          root_mate_claim_quarantines: 0,
+          mate_claim_quarantine_receipts:
+            EMPTY_MATE_CLAIM_QUARANTINE_RECEIPTS,
           selection_policy_filtered: false,
           pv_horizon_line_rejections: 0,
           pv_horizon_native_repairs: 0,
@@ -2300,11 +2374,41 @@
                 maximumProofs: maximumHorizonProofs,
               },
             );
+            const candidateIds = new Set(manifest.candidates.map(
+              (candidate) => candidate.candidate_identity,
+            ));
+            const mateClaimQuarantineReceipts = (
+              normalizeMateClaimQuarantineReceipts(
+                iteration.mate_claim_quarantine_receipts,
+                {
+                  candidateIds,
+                  expectedCount: iteration.root_mate_claim_quarantines,
+                },
+              )
+            );
+            const mateClaimFiltered = iteration.root_mate_claim_quarantines > 0;
+            const anyPolicyFiltered = (
+              iteration.pv_horizon_candidate_vetoes > 0 || mateClaimFiltered
+            );
             if (
               iteration.status !== "complete"
               || iteration.coverage_complete !== true
               || iteration.safety_certified !== true
               || iteration.selection_policy !== CHECKED_PV_SELECTION_POLICY
+              || iteration.mate_claim_selection_policy
+                !== MATE_CLAIM_SELECTION_POLICY
+              || !exactInteger(
+                iteration.root_mate_claim_quarantines,
+                0,
+                manifest.candidates.length * (MAX_ASPIRATION_ATTEMPTS + 3),
+              )
+              || iteration.mate_claim_policy_filtered !== mateClaimFiltered
+              || mateClaimQuarantineReceipts === null
+              || iteration.selected?.mate_claim_quarantined !== false
+              || !publishableMateClaim(
+                iteration.selected?.score,
+                iteration.selected?.proof_bounds,
+              )
               || !exactInteger(maximumHorizonProofs, 1, 30)
               || !exactInteger(
                 iteration.pv_horizon_line_rejections,
@@ -2329,12 +2433,15 @@
               || iteration.selection_policy_filtered
                 !== (iteration.pv_horizon_candidate_vetoes > 0)
               || iteration.coverage_scope !== (
-                iteration.selection_policy_filtered
+                anyPolicyFiltered
                   ? "selection-eligible-candidates"
                   : "all-retained-candidates"
               )
               || iteration.unfiltered_score_winner_selected
-                !== (iteration.pv_horizon_line_rejections === 0)
+                !== (
+                  iteration.pv_horizon_line_rejections === 0
+                  && !mateClaimFiltered
+                )
               || !["exhausted", "terminal"].includes(iteration.safety_status)
             ) {
               throw new RootIterationClientError(
@@ -2435,6 +2542,11 @@
               unfiltered_score_winner_selected:
                 iteration.unfiltered_score_winner_selected,
               selection_policy: iteration.selection_policy,
+              mate_claim_selection_policy: iteration.mate_claim_selection_policy,
+              mate_claim_policy_filtered: mateClaimFiltered,
+              root_mate_claim_quarantines:
+                iteration.root_mate_claim_quarantines,
+              mate_claim_quarantine_receipts: mateClaimQuarantineReceipts,
               selection_policy_filtered: iteration.selection_policy_filtered,
               pv_horizon_line_rejections: iteration.pv_horizon_line_rejections,
               pv_horizon_native_repairs: iteration.pv_horizon_native_repairs,
@@ -2457,6 +2569,13 @@
                 pv_horizon_line_rejections: iteration.pv_horizon_line_rejections,
                 pv_horizon_native_repairs: iteration.pv_horizon_native_repairs,
                 pv_horizon_candidate_vetoes: iteration.pv_horizon_candidate_vetoes,
+                mate_claim_selection_policy:
+                  iteration.mate_claim_selection_policy,
+                mate_claim_policy_filtered: mateClaimFiltered,
+                root_mate_claim_quarantines:
+                  iteration.root_mate_claim_quarantines,
+                mate_claim_quarantine_receipts:
+                  mateClaimQuarantineReceipts,
                 same_root_repair_policy: sameRootRepairPolicy,
                 pv_horizon_policy_vetoes: pvHorizonPolicyVetoes,
                 mate_cache_hits: mateCacheHits,
@@ -2503,6 +2622,13 @@
                 unfiltered_score_winner_selected:
                   iteration.unfiltered_score_winner_selected,
                 selection_policy: iteration.selection_policy,
+                mate_claim_selection_policy:
+                  iteration.mate_claim_selection_policy,
+                mate_claim_policy_filtered: mateClaimFiltered,
+                root_mate_claim_quarantines:
+                  iteration.root_mate_claim_quarantines,
+                mate_claim_quarantine_receipts:
+                  mateClaimQuarantineReceipts,
                 selection_policy_filtered: iteration.selection_policy_filtered,
                 pv_horizon_line_rejections: iteration.pv_horizon_line_rejections,
                 pv_horizon_native_repairs: iteration.pv_horizon_native_repairs,

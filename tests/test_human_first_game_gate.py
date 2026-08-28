@@ -88,6 +88,13 @@ def test_first_game_gate_selects_best_retained_safe_candidate_without_win_claim(
     assert selected["is_selected"] is True
     assert selected["reply_verifier"]["completed"] is True
     assert selected["reply_verifier"]["mate_found"] is False
+    assert selected["reply_verifier"]["work_limit_reached"] is False
+    assert selected["reply_verifier"]["selected_reply"] is not None
+    assert selected["reply_verifier"]["replay_error"] is None
+    assert (
+        selected["reply_verifier"]["work_positions"]
+        < selected["reply_verifier"]["verifier_work_limit"]
+    )
     assert selected["reply_verifier"]["verifier_width"] == (
         HUMAN_FIRST_GAME_REPLY_VERIFIER_WIDTH
     )

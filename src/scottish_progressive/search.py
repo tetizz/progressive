@@ -85,6 +85,7 @@ ROOT_CHILD_MATE_SCREEN_FRONTIER = 832
 ROOT_CHILD_EARLY_MATE_SCREEN_FRONTIER = 4_096
 ROOT_CHILD_MATE_SCREEN_CHEAP_FRONTIER = 32
 ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT = 3_000_000
+ROOT_MATE_CLAIM_SAFETY_RESERVE_LIMIT = 20_000_000
 # Preserve one fifth of the shared safety allowance for the established
 # staged current-series screens whenever the exact native solver is unknown.
 # At the hosted 10M search cap the exact lane still receives 1.28M work,
@@ -280,6 +281,11 @@ class SearchStats:
     root_safety_widening_positions: int = 0
     root_safety_widened_terminal_mates: int = 0
     root_safety_widened_exact_children: int = 0
+    root_mate_claim_quarantines: int = 0
+    root_mate_claim_all_quarantined: int = 0
+    root_mate_claim_move_only_fallbacks: int = 0
+    root_mate_claim_final_discards: int = 0
+    root_mate_claim_prior_depth_discards: int = 0
     selected_pv_horizon_probe_calls: int = 0
     selected_pv_horizon_found: int = 0
     selected_pv_horizon_exhausted: int = 0
@@ -559,6 +565,19 @@ class _RootAdjudicationPending(_AdjudicationPending):
         self.fallback = fallback
 
 
+class _RootMateClaimPending(Exception):
+    """All retained roots made unproved mate claims at this depth."""
+
+    def __init__(
+        self,
+        fallback: SeriesResult,
+        cause: _Timeout | _WorkLimit | None = None,
+    ) -> None:
+        super().__init__(type(cause).__name__ if cause is not None else "")
+        self.fallback = fallback
+        self.cause = cause
+
+
 class SeriesSearcher:
     """Deterministic alpha-beta search where one ply is one complete series."""
 
@@ -690,6 +709,8 @@ class SeriesSearcher:
         ] = {}
         self._selected_pv_leaf_override_hits: set[_TTKey] = set()
         self._selected_pv_root_vetoes: set[str] = set()
+        self._root_mate_claim_quarantines: set[str] = set()
+        self._root_mate_claim_emergency_fallback: SeriesResult | None = None
 
     def _tactical_frontier_protection_enabled(
         self,
@@ -2940,6 +2961,135 @@ class SeriesSearcher:
             self._write_tt(key, replacement)
         return best_score, best_pv, proof_bounds
 
+    @staticmethod
+    def _mate_score_has_matching_proof(
+        score: int,
+        proof_bounds: tuple[int, int],
+    ) -> bool:
+        if score >= MATE_SCORE - 10_000:
+            return proof_bounds == (1, 1)
+        if score <= -MATE_SCORE + 10_000:
+            return proof_bounds == (-1, -1)
+        return False
+
+    @classmethod
+    def _root_candidate_has_publishable_mate_claim(
+        cls,
+        score: int,
+        series: SeriesResult,
+        proof_bounds: tuple[int, int],
+    ) -> bool:
+        """Accept one mate-band root score only with its own exact proof."""
+
+        if abs(score) < MATE_SCORE - 10_000:
+            return True
+        if series.outcome is not None:
+            if series.outcome != Outcome.CHECKMATE:
+                return False
+            if not series.moves:
+                # A boundary checkmate has no mover to credit. The side still
+                # on move is the checkmated side, so its opponent is the
+                # authoritative winner. Non-empty series have already handed
+                # the turn across and retain the ordinary ended-by-check rule.
+                winner = not series.final_state.board.turn
+            else:
+                root_mover = not series.final_state.board.turn
+                winner = (
+                    root_mover if series.ended_by_check else not root_mover
+                )
+            expected = (
+                MATE_SCORE - 1 if winner == chess.WHITE else -MATE_SCORE + 1
+            )
+            return score == expected
+        return cls._mate_score_has_matching_proof(
+            score,
+            proof_bounds,
+        )
+
+    @classmethod
+    def _selected_root_has_publishable_mate_claim(
+        cls,
+        score: int,
+        series: SeriesResult,
+        alternatives: tuple[ScoredSeries, ...],
+    ) -> bool:
+        """Accept mate-band root scores only with candidate-local exact proof."""
+
+        if abs(score) < MATE_SCORE - 10_000:
+            return True
+        selected = next(
+            (
+                item
+                for item in alternatives
+                if item.series == series and item.score == score
+            ),
+            None,
+        )
+        proof_bounds = (
+            selected.proof_bounds
+            if selected is not None
+            else UNKNOWN_PROOF_BOUNDS
+        )
+        return cls._root_candidate_has_publishable_mate_claim(
+            score,
+            series,
+            proof_bounds,
+        )
+
+    def _quarantine_root_mate_claim(self, series: SeriesResult) -> None:
+        """Remove an unproved mate claim before it can affect root ranking."""
+
+        notation = series.machine_notation
+        if self._root_mate_claim_emergency_fallback is None:
+            self._root_mate_claim_emergency_fallback = series
+        if notation in self._root_mate_claim_quarantines:
+            return
+        self._root_mate_claim_quarantines.add(notation)
+        self.stats.root_mate_claim_quarantines += 1
+        self._selective = True
+        self._root_scores_complete = False
+        # A quarantined false winner can expose a different root whose
+        # established immediate-series safety proof needs more than the
+        # default 3M reserve. It may use the caller's remaining documented
+        # work allowance, but never exceed that public contract or 20M.
+        configured_work = self.limits.max_generation_positions
+        if configured_work is not None:
+            self._root_child_mate_screen_budget = max(
+                self._root_child_mate_screen_budget,
+                min(
+                    ROOT_MATE_CLAIM_SAFETY_RESERVE_LIMIT,
+                    configured_work,
+                ),
+            )
+
+    def _root_policy_exclusions(
+        self,
+        horizon_vetoes: set[str] | frozenset[str] = frozenset(),
+    ) -> frozenset[str]:
+        return frozenset(horizon_vetoes | self._root_mate_claim_quarantines)
+
+    def _root_policy_rejection_flags(self, notation: str) -> tuple[bool, bool]:
+        return (
+            notation in self._selected_pv_root_vetoes,
+            notation in self._root_mate_claim_quarantines,
+        )
+
+    def _record_root_policy_prior_depth_discard(
+        self,
+        horizon_vetoed: bool,
+        mate_quarantined: bool,
+    ) -> None:
+        if horizon_vetoed:
+            self.stats.selected_pv_horizon_prior_depth_discards += 1
+        if mate_quarantined:
+            self.stats.root_mate_claim_prior_depth_discards += 1
+
+    def _record_root_policy_move_only_fallback(self) -> None:
+        if self._selected_pv_root_vetoes:
+            self.stats.selected_pv_horizon_move_only_fallbacks += 1
+        if self._root_mate_claim_quarantines:
+            self.stats.root_mate_claim_move_only_fallbacks += 1
+
     def _search_root_pass(
         self,
         state: ProgressiveState,
@@ -3008,12 +3158,13 @@ class SeriesSearcher:
             self._native_subtree_session.insert_external_cache(
                 self._series_generation_cache_weight
             )
-        if root_horizon_vetoes:
+        root_exclusions = self._root_policy_exclusions(root_horizon_vetoes)
+        if root_exclusions:
             self._selective = True
             series = tuple(
                 result
                 for result in series
-                if result.machine_notation not in root_horizon_vetoes
+                if result.machine_notation not in root_exclusions
             )
             if not series:
                 self._root_scores_complete = False
@@ -3022,6 +3173,29 @@ class SeriesSearcher:
         root_alpha = -MATE_SCORE * 2
         root_beta = MATE_SCORE * 2
         has_non_adverse_exact = False
+
+        def move_only_fallback() -> SeriesResult:
+            exclusions = self._root_policy_exclusions(root_horizon_vetoes)
+            scored_fallback = next(
+                (
+                    item.series
+                    for item in _proof_safe_root_order(mover, scored)
+                    if item.series.machine_notation not in exclusions
+                ),
+                None,
+            )
+            if scored_fallback is not None:
+                return scored_fallback
+            frontier_fallback = next(
+                (
+                    candidate
+                    for candidate in series
+                    if candidate.machine_notation not in exclusions
+                ),
+                series[0],
+            )
+            return self._materialize_series(frontier_fallback)
+
         for result in series:
             try:
                 self._check_deadline()
@@ -3034,6 +3208,13 @@ class SeriesSearcher:
                         raise RuntimeError(
                             "selected-PV root repair drifted from its candidate"
                         )
+                    if not self._root_candidate_has_publishable_mate_claim(
+                        horizon_override.score,
+                        materialized,
+                        horizon_override.proof_bounds,
+                    ):
+                        self._quarantine_root_mate_claim(materialized)
+                        continue
                     scored.append(horizon_override)
                     if not _root_candidate_is_proven_adverse(
                         mover, horizon_override
@@ -3069,6 +3250,15 @@ class SeriesSearcher:
                                 child_state.board.turn,
                             ),
                         )
+                        if not self._root_candidate_has_publishable_mate_claim(
+                            scored_candidate.score,
+                            scored_candidate.series,
+                            scored_candidate.proof_bounds,
+                        ):
+                            self._quarantine_root_mate_claim(
+                                scored_candidate.series
+                            )
+                            continue
                         scored.append(scored_candidate)
                         if not _root_candidate_is_proven_adverse(
                             mover, scored_candidate
@@ -3147,7 +3337,7 @@ class SeriesSearcher:
                 raise _RootInterrupted(
                     tuple(scored),
                     error,
-                    self._materialize_series(series[0]),
+                    move_only_fallback(),
                 ) from error
             except _AdjudicationPending as error:
                 # A child reaching the quiet-series threshold can make the
@@ -3157,15 +3347,23 @@ class SeriesSearcher:
                 # draw or heuristic minimax score.
                 self._root_scores_complete = False
                 raise _RootAdjudicationPending(
-                    self._materialize_series(series[0])
+                    move_only_fallback()
                 ) from error
             if score_is_exact:
+                materialized = self._materialize_series(result)
                 scored_candidate = ScoredSeries(
-                    self._materialize_series(result),
+                    materialized,
                     score,
                     child_pv,
                     proof_bounds,
                 )
+                if not self._root_candidate_has_publishable_mate_claim(
+                    scored_candidate.score,
+                    scored_candidate.series,
+                    scored_candidate.proof_bounds,
+                ):
+                    self._quarantine_root_mate_claim(materialized)
+                    continue
                 scored.append(scored_candidate)
                 if not _root_candidate_is_proven_adverse(mover, scored_candidate):
                     has_non_adverse_exact = True
@@ -3176,17 +3374,22 @@ class SeriesSearcher:
             else:
                 self.stats.root_bound_candidates += 1
             if not self.limits.continue_after_root_mate and (
-                mover == chess.WHITE
-                and score == MATE_SCORE - 1
-                or mover == chess.BLACK
-                and score == -MATE_SCORE + 1
+                (
+                    mover == chess.WHITE
+                    and score == MATE_SCORE - 1
+                    or mover == chess.BLACK
+                    and score == -MATE_SCORE + 1
+                )
+                and self._mate_score_has_matching_proof(score, proof_bounds)
             ):
                 break
         # This flag intentionally means every retained root candidate has an
         # exact score. ``exact_width`` separately reports whether the retained
         # frontier contains every legal branch.
         self._root_scores_complete = (
-            not root_horizon_vetoes and len(scored) == len(series)
+            not root_horizon_vetoes
+            and not self._root_mate_claim_quarantines
+            and len(scored) == len(series)
         )
         scored = list(_proof_safe_root_order(mover, scored))
         if not scored:
@@ -3199,6 +3402,7 @@ class SeriesSearcher:
             all_branches_visited=(
                 width_complete
                 and not root_horizon_vetoes
+                and not self._root_mate_claim_quarantines
                 and len(scored) == len(series)
             ),
         )
@@ -3460,15 +3664,21 @@ class SeriesSearcher:
                 if exact_unscored_fallback is None:
                     exact_unscored_fallback = materialized
                 break
-            safe_scored.append(
-                ScoredSeries(
-                    materialized,
-                    score,
-                    child_pv,
-                    proof_bounds,
-                )
+            scored_candidate = ScoredSeries(
+                materialized,
+                score,
+                child_pv,
+                proof_bounds,
             )
             self.stats.root_safety_widened_exact_children += 1
+            if not self._root_candidate_has_publishable_mate_claim(
+                scored_candidate.score,
+                scored_candidate.series,
+                scored_candidate.proof_bounds,
+            ):
+                self._quarantine_root_mate_claim(materialized)
+                continue
+            safe_scored.append(scored_candidate)
 
         safe_scored.sort(
             key=lambda item: (
@@ -3593,6 +3803,8 @@ class SeriesSearcher:
         # to stop an interrupted depth from resurrecting one of its own vetoes.
         # A later, freshly started depth is allowed to reconsider that root.
         self._selected_pv_root_vetoes.clear()
+        self._root_mate_claim_quarantines.clear()
+        self._root_mate_claim_emergency_fallback = None
 
         widened_terminal = self._root_widened_terminal_series
         if (
@@ -3624,10 +3836,37 @@ class SeriesSearcher:
         # browser policy. The searcher-wide set below is only a final-return
         # block until a later depth positively certifies that root again.
         horizon_vetoes: set[str] = set()
+        mate_claim_quarantines = self._root_mate_claim_quarantines
         horizon_states: dict[str, CandidateHorizonState] = {}
         widened_frontier: _GeneratedSeriesList | None = None
         last_exact_exhausted: SeriesResult | None = None
         last_unknown: SeriesResult | None = None
+        mate_claim_unquarantined_fallback: SeriesResult | None = None
+
+        def quarantine_unproved_mate_claim(
+            score: int,
+            pv: tuple[SeriesResult, ...],
+            alternatives: tuple[ScoredSeries, ...],
+        ) -> bool:
+            nonlocal mate_claim_unquarantined_fallback
+            if not pv or self._selected_root_has_publishable_mate_claim(
+                score,
+                pv[0],
+                alternatives,
+            ):
+                return False
+
+            provisional = pv[0]
+            self._quarantine_root_mate_claim(provisional)
+            mate_claim_unquarantined_fallback = next(
+                (
+                    item.series
+                    for item in alternatives
+                    if item.series.machine_notation not in mate_claim_quarantines
+                ),
+                mate_claim_unquarantined_fallback,
+            )
+            return True
 
         while True:
             try:
@@ -3642,17 +3881,42 @@ class SeriesSearcher:
                     widened_frontier,
                 )
             except _RootInterrupted as interrupted:
-                if horizon_vetoes:
-                    # Keep only an explicitly unvetoed move-only fallback from
+                interrupted_scored_fallback = next(
+                    (
+                        item.series
+                        for item in _proof_safe_root_order(
+                            state.board.turn,
+                            interrupted.scored,
+                        )
+                        if item.series.machine_notation
+                        not in self._root_policy_exclusions(horizon_vetoes)
+                    ),
+                    None,
+                )
+                if horizon_vetoes or mate_claim_quarantines:
+                    # Keep only an explicitly unexcluded move-only fallback from
                     # the current frontier. Its score/proof never survives this
-                    # interrupted depth, and a vetoed seed can never escape.
+                    # interrupted depth, and a rejected seed can never escape.
                     fallback = self._root_safety_fallback(
+                        interrupted_scored_fallback,
                         interrupted.fallback,
+                        mate_claim_unquarantined_fallback,
                         last_exact_exhausted,
                         last_unknown,
-                        excluded_series=frozenset(horizon_vetoes),
+                        excluded_series=self._root_policy_exclusions(
+                            horizon_vetoes
+                        ),
                     )
                     if fallback is None:
+                        if (
+                            not horizon_vetoes
+                            and self._root_mate_claim_emergency_fallback
+                        ):
+                            self.stats.root_mate_claim_all_quarantined += 1
+                            raise _RootMateClaimPending(
+                                self._root_mate_claim_emergency_fallback,
+                                interrupted.cause,
+                            ) from interrupted
                         raise interrupted.cause from interrupted
                     raise _RootInterrupted(
                         (), interrupted.cause, fallback
@@ -3661,6 +3925,7 @@ class SeriesSearcher:
                     not self._root_child_safety_screen_required()
                     and not horizon_states
                     and not horizon_vetoes
+                    and not mate_claim_quarantines
                 ):
                     raise
                 # A retry has reset alpha/beta around new authoritative evidence.
@@ -3668,21 +3933,26 @@ class SeriesSearcher:
                 # expose only an exact-EXHAUSTED or explicitly UNKNOWN child as
                 # a move fallback. A replay-proven mate child is never eligible.
                 fallback = self._root_safety_fallback(
+                    interrupted_scored_fallback,
                     last_exact_exhausted,
                     last_unknown,
+                    mate_claim_unquarantined_fallback,
                     interrupted.fallback,
-                    excluded_series=frozenset(horizon_vetoes),
+                    excluded_series=self._root_policy_exclusions(
+                        horizon_vetoes
+                    ),
                 )
                 if fallback is None:
                     raise interrupted.cause from interrupted
                 raise _RootInterrupted((), interrupted.cause, fallback) from interrupted
             except (_Timeout, _WorkLimit) as error:
-                if horizon_vetoes:
+                if horizon_vetoes and not mate_claim_quarantines:
                     raise
                 if (
                     not self._root_child_safety_screen_required()
                     and not horizon_states
                     and not horizon_vetoes
+                    and not mate_claim_quarantines
                 ):
                     raise
                 # Root generation can be interrupted before _search_root_pass has
@@ -3694,9 +3964,21 @@ class SeriesSearcher:
                 fallback = self._root_safety_fallback(
                     last_exact_exhausted,
                     last_unknown,
-                    excluded_series=frozenset(horizon_vetoes),
+                    mate_claim_unquarantined_fallback,
+                    excluded_series=self._root_policy_exclusions(
+                        horizon_vetoes
+                    ),
                 )
                 if fallback is None:
+                    if (
+                        not horizon_vetoes
+                        and self._root_mate_claim_emergency_fallback
+                    ):
+                        self.stats.root_mate_claim_all_quarantined += 1
+                        raise _RootMateClaimPending(
+                            self._root_mate_claim_emergency_fallback,
+                            error,
+                        ) from error
                     raise
                 raise _RootInterrupted((), error, fallback) from error
             if not pv:
@@ -3716,9 +3998,22 @@ class SeriesSearcher:
                     # known-vetoed series may cross SearchResult.best_series.
                     self._root_scores_complete = False
                     raise _HorizonPolicyExhausted
+                if mate_claim_quarantines:
+                    if (
+                        self._root_mate_claim_emergency_fallback is None
+                    ):  # pragma: no cover
+                        raise RuntimeError(
+                            "mate-claim quarantine lost its legal fallback"
+                        )
+                    self.stats.root_mate_claim_all_quarantined += 1
+                    raise _RootMateClaimPending(
+                        self._root_mate_claim_emergency_fallback
+                    )
                 return score, pv, alternatives, proof
 
             provisional = pv[0]
+            if quarantine_unproved_mate_claim(score, pv, alternatives):
+                continue
             if provisional.outcome is not None:
                 self._selected_pv_root_vetoes.discard(
                     provisional.machine_notation
@@ -3751,7 +4046,7 @@ class SeriesSearcher:
                                 depth,
                                 required_prefix,
                                 alternatives,
-                                frozenset(horizon_vetoes),
+                                self._root_policy_exclusions(horizon_vetoes),
                             )
                             score, pv, alternatives, proof = widened
                             if not pv:
@@ -3759,6 +4054,12 @@ class SeriesSearcher:
                             provisional = pv[0]
                             if provisional.outcome is not None:
                                 return widened
+                            if quarantine_unproved_mate_claim(
+                                score,
+                                pv,
+                                alternatives,
+                            ):
+                                continue
                             child_state = provisional.final_state
                             child_key = child_state.transposition_key
                             override_key = self._tt_key(child_state)
@@ -3786,7 +4087,9 @@ class SeriesSearcher:
                             last_exact_exhausted,
                             provisional,
                             last_unknown,
-                            excluded_series=frozenset(horizon_vetoes),
+                            excluded_series=self._root_policy_exclusions(
+                                horizon_vetoes
+                            ),
                         )
                         if fallback is None:
                             raise
@@ -3888,7 +4191,9 @@ class SeriesSearcher:
                     ),
                     last_exact_exhausted,
                     last_unknown,
-                    excluded_series=frozenset(horizon_vetoes | {notation}),
+                    excluded_series=self._root_policy_exclusions(
+                        horizon_vetoes | {notation}
+                    ),
                 )
                 if fallback is None:
                     raise
@@ -3903,7 +4208,9 @@ class SeriesSearcher:
                     ),
                     last_exact_exhausted,
                     last_unknown,
-                    excluded_series=frozenset(horizon_vetoes | {notation}),
+                    excluded_series=self._root_policy_exclusions(
+                        horizon_vetoes | {notation}
+                    ),
                 )
                 raise _RootAdjudicationPending(fallback) from error
             self._selected_pv_root_vetoes.discard(notation)
@@ -3925,6 +4232,7 @@ class SeriesSearcher:
         self._preferred_root_series = None
         self._root_widened_terminal_series = None
         self._selected_pv_root_vetoes.clear()
+        self._root_mate_claim_quarantines.clear()
         self._root_tactical_frontier_protection = (
             _tactical_frontier_protection_eligible(
                 state,
@@ -4007,6 +4315,7 @@ class SeriesSearcher:
         alternatives: tuple[ScoredSeries, ...] = ()
         best_proof: str | None = None
         completed_root_scores_complete = False
+
         for depth in range(1, self.limits.depth_series + 1):
             try:
                 score, pv, root_alternatives, proof = self._search_root(
@@ -4014,46 +4323,114 @@ class SeriesSearcher:
                     depth,
                     required_prefix,
                 )
+            except _RootMateClaimPending as pending:
+                timed_out = isinstance(pending.cause, _Timeout)
+                work_limit_reached = isinstance(pending.cause, _WorkLimit)
+                prior_horizon_vetoed, prior_mate_quarantined = (
+                    self._root_policy_rejection_flags(
+                        best_pv[0].machine_notation
+                    )
+                    if completed_depth > 0 and best_pv
+                    else (False, False)
+                )
+                self._record_root_policy_prior_depth_discard(
+                    prior_horizon_vetoed,
+                    prior_mate_quarantined,
+                )
+                self._record_root_policy_move_only_fallback()
+                # Every score/PV claim from this depth is discarded. The
+                # deterministic legal series may now cross the boundary solely
+                # as the explicitly D0/root-evaluation liveness fallback.
+                self._root_mate_claim_quarantines.discard(
+                    pending.fallback.machine_notation
+                )
+                self._selective = True
+                self._root_scores_complete = False
+                best_score = root_evaluation.total
+                best_pv = (pending.fallback,)
+                alternatives = ()
+                best_proof = None
+                completed_depth = 0
+                completed_root_scores_complete = False
+                break
             except _RootInterrupted as interrupted:
                 timed_out = isinstance(interrupted.cause, _Timeout)
                 work_limit_reached = isinstance(interrupted.cause, _WorkLimit)
                 self._selective = True
-                prior_root_vetoed = bool(
-                    completed_depth > 0
-                    and best_pv
-                    and best_pv[0].machine_notation
-                    in self._selected_pv_root_vetoes
+                # The pass may stop after scoring a mate-looking root but before
+                # ordinary selected-root quarantine runs. Treat each such
+                # partial as UNKNOWN now; it cannot rank, become the fallback,
+                # or resurrect the same root from a completed shallow depth.
+                for item in interrupted.scored:
+                    if self._selected_root_has_publishable_mate_claim(
+                        item.score,
+                        item.series,
+                        (item,),
+                    ):
+                        continue
+                    notation = item.series.machine_notation
+                    if notation not in self._root_mate_claim_quarantines:
+                        self._root_mate_claim_quarantines.add(notation)
+                        self.stats.root_mate_claim_quarantines += 1
+                prior_horizon_vetoed, prior_mate_quarantined = (
+                    self._root_policy_rejection_flags(
+                        best_pv[0].machine_notation
+                    )
+                    if completed_depth > 0 and best_pv
+                    else (False, False)
                 )
-                if completed_depth == 0 or prior_root_vetoed:
+                prior_root_rejected = (
+                    prior_horizon_vetoed or prior_mate_quarantined
+                )
+                if completed_depth == 0 or prior_root_rejected:
                     self._root_scores_complete = False
-                    if interrupted.scored and not prior_root_vetoed:
+                    if interrupted.scored and not prior_root_rejected:
                         mover = state.board.turn
                         partial = _proof_safe_root_order(
                             mover,
-                            interrupted.scored,
+                            tuple(
+                                item
+                                for item in interrupted.scored
+                                if not any(
+                                    self._root_policy_rejection_flags(
+                                        item.series.machine_notation
+                                    )
+                                )
+                            ),
                         )
-                        best = partial[0]
-                        best_score = best.score
-                        best_pv = (best.series,) + best.principal_variation
-                        alternatives = partial
+                        if partial:
+                            best = partial[0]
+                            best_score = best.score
+                            best_pv = (best.series,) + best.principal_variation
+                            alternatives = partial
+                        else:
+                            best_score = root_evaluation.total
+                            best_pv = ()
+                            alternatives = ()
                     else:
                         # This is a move-only liveness fallback. Keep the
                         # explicitly labeled root evaluation rather than
                         # pretending the chosen series completed a search.
                         best_score = root_evaluation.total
+                        fallback_rejected = any(
+                            self._root_policy_rejection_flags(
+                                interrupted.fallback.machine_notation
+                            )
+                        )
                         if (
-                            interrupted.fallback.machine_notation
-                            not in self._selected_pv_root_vetoes
+                            not fallback_rejected
                         ):
                             best_pv = (interrupted.fallback,)
-                            if self._selected_pv_root_vetoes:
-                                self.stats.selected_pv_horizon_move_only_fallbacks += 1
+                            self._record_root_policy_move_only_fallback()
                         else:
                             best_pv = ()
                         alternatives = ()
                     best_proof = None
-                    if prior_root_vetoed:
-                        self.stats.selected_pv_horizon_prior_depth_discards += 1
+                    self._record_root_policy_prior_depth_discard(
+                        prior_horizon_vetoed,
+                        prior_mate_quarantined,
+                    )
+                    if prior_root_rejected:
                         completed_depth = 0
                         completed_root_scores_complete = False
                 else:
@@ -4083,14 +4460,18 @@ class SeriesSearcher:
                     self._root_scores_complete = completed_root_scores_complete
                 break
             except _AdjudicationPending as pending:
-                prior_root_vetoed = bool(
-                    completed_depth > 0
-                    and best_pv
-                    and best_pv[0].machine_notation
-                    in self._selected_pv_root_vetoes
+                prior_horizon_vetoed, prior_mate_quarantined = (
+                    self._root_policy_rejection_flags(
+                        best_pv[0].machine_notation
+                    )
+                    if completed_depth > 0 and best_pv
+                    else (False, False)
+                )
+                prior_root_rejected = (
+                    prior_horizon_vetoed or prior_mate_quarantined
                 )
                 if isinstance(pending, _RootAdjudicationPending) and (
-                    completed_depth == 0 or prior_root_vetoed
+                    completed_depth == 0 or prior_root_rejected
                 ):
                     # The current depth learned that the retained A is unsafe,
                     # then repair reached a position requiring manual proof.
@@ -4101,20 +4482,45 @@ class SeriesSearcher:
                     self._root_scores_complete = False
                     adjudication = "manual-proof-required"
                     best_score = root_evaluation.total
+                    fallback_rejected = bool(
+                        pending.fallback is not None
+                        and any(
+                            self._root_policy_rejection_flags(
+                                pending.fallback.machine_notation
+                            )
+                        )
+                    )
                     if (
                         pending.fallback is not None
-                        and pending.fallback.machine_notation
-                        not in self._selected_pv_root_vetoes
+                        and not fallback_rejected
                     ):
                         best_pv = (pending.fallback,)
-                        if self._selected_pv_root_vetoes:
-                            self.stats.selected_pv_horizon_move_only_fallbacks += 1
+                        self._record_root_policy_move_only_fallback()
                     else:
                         best_pv = ()
                     alternatives = ()
                     best_proof = None
-                    if prior_root_vetoed:
-                        self.stats.selected_pv_horizon_prior_depth_discards += 1
+                    self._record_root_policy_prior_depth_discard(
+                        prior_horizon_vetoed,
+                        prior_mate_quarantined,
+                    )
+                    completed_depth = 0
+                    completed_root_scores_complete = False
+                    break
+                if prior_root_rejected:
+                    # A semantic stop is no more entitled than a deadline to
+                    # resurrect a root rejected by the current deeper depth.
+                    self._selective = True
+                    self._root_scores_complete = False
+                    adjudication = "manual-proof-required"
+                    best_score = root_evaluation.total
+                    best_pv = ()
+                    alternatives = ()
+                    best_proof = None
+                    self._record_root_policy_prior_depth_discard(
+                        prior_horizon_vetoed,
+                        prior_mate_quarantined,
+                    )
                     completed_depth = 0
                     completed_root_scores_complete = False
                     break
@@ -4189,14 +4595,40 @@ class SeriesSearcher:
                 best_pv[0].machine_notation if best_pv else None
             )
 
-        if (
-            best_pv
-            and best_pv[0].machine_notation in self._selected_pv_root_vetoes
-        ):
+        publishable_alternatives: list[ScoredSeries] = []
+        for item in alternatives:
+            if self._root_candidate_has_publishable_mate_claim(
+                item.score,
+                item.series,
+                item.proof_bounds,
+            ):
+                publishable_alternatives.append(item)
+                continue
+            selected_claim = bool(
+                best_pv
+                and item.series == best_pv[0]
+                and item.score == best_score
+            )
+            if not selected_claim:
+                self._quarantine_root_mate_claim(item.series)
+            completed_root_scores_complete = False
+        if len(publishable_alternatives) != len(alternatives):
+            alternatives = tuple(publishable_alternatives)
+            best_proof = None
+
+        final_horizon_vetoed, final_mate_quarantined = (
+            self._root_policy_rejection_flags(best_pv[0].machine_notation)
+            if best_pv
+            else (False, False)
+        )
+        if final_horizon_vetoed or final_mate_quarantined:
             # A deeper iteration can discover that an earlier completed
-            # depth's root is unsafe before that deeper iteration stops. Never
-            # resurrect the now-vetoed prior choice through iterative fallback.
-            self.stats.selected_pv_horizon_prior_depth_discards += 1
+            # depth's root is unsafe or made an unproved mate claim before that
+            # deeper iteration stops. Never resurrect it through fallback.
+            self._record_root_policy_prior_depth_discard(
+                final_horizon_vetoed,
+                final_mate_quarantined,
+            )
             best_score = root_evaluation.total
             best_pv = ()
             alternatives = ()
@@ -4204,6 +4636,32 @@ class SeriesSearcher:
             completed_depth = 0
             completed_root_scores_complete = False
             self._root_scores_complete = False
+
+        selected_mate_claim_publishable = bool(
+            best_pv
+            and self._selected_root_has_publishable_mate_claim(
+                best_score,
+                best_pv[0],
+                alternatives,
+            )
+        )
+        if (
+            abs(best_score) >= MATE_SCORE - 10_000
+            and not selected_mate_claim_publishable
+        ):
+            # Defense in depth for interrupted/repaired paths that do not pass
+            # through the ordinary candidate-local quarantine. UNKNOWN may keep
+            # a legal root-only move, but it may never retain a mate-looking
+            # score, a completed depth, alternatives, or a continuation.
+            self.stats.root_mate_claim_final_discards += 1
+            self._selective = True
+            self._root_scores_complete = False
+            completed_root_scores_complete = False
+            best_score = root_evaluation.total
+            best_pv = best_pv[:1]
+            alternatives = ()
+            best_proof = None
+            completed_depth = 0
 
         elapsed = time.perf_counter() - started
         work_limit_reached = (

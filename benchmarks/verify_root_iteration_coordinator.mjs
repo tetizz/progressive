@@ -556,6 +556,168 @@ async function testProofAwareRootSelection() {
 }
 
 
+async function testUnprovedMateClaimsAreQuarantinedForBothMovers() {
+  const policy = "require-sign-matching-exact-proof-for-nonterminal-mate-band-v1";
+  for (const white of [true, false]) {
+    const claimScore = white ? MATE - 2 : -MATE + 2;
+    const safeScore = white ? 200 : -200;
+    const mismatchedProof = white ? [-1, -1] : [1, 1];
+    for (const [proofName, proof] of [
+      ["unknown", [-1, 1]],
+      ["mismatched", mismatchedProof],
+    ]) {
+      const definitions = [
+        { id: "claim", key: "a-claim", score: claimScore, proof },
+        { id: "safe", key: "b-safe", score: safeScore },
+      ];
+      const pool = workers(1, definitions);
+      const result = await api.runRootIteration({
+        request: request(1, {
+          series: white ? 1 : 2,
+          iteration_id: `mate-claim-${white ? "white" : "black"}-${proofName}`,
+        }),
+        manifest: manifest(definitions, { white }),
+        workers: pool,
+        safetyProbe: exhaustedSafety(),
+      });
+
+      assert.equal(result.selected.candidate_identity, "safe");
+      assert.equal(result.selected.score, safeScore);
+      assert.equal(result.mate_claim_selection_policy, policy);
+      assert.equal(result.mate_claim_policy_filtered, true);
+      assert.equal(result.root_mate_claim_quarantines, 1);
+      assert.equal(result.selection_policy_filtered, false);
+      assert.equal(result.pv_horizon_candidate_vetoes, 0);
+      assert.equal(result.coverage_scope, "selection-eligible-candidates");
+      assert.equal(result.unfiltered_score_winner_selected, false);
+      assert.deepEqual(result.mate_claim_quarantine_receipts, [{
+        candidate_identity: "claim",
+        quarantine_count: 1,
+        score: claimScore,
+        proof_bounds: proof,
+        currently_quarantined: true,
+      }]);
+      assert.deepEqual(
+        result.root_bounds.find((item) => item.candidate_identity === "claim"),
+        {
+          candidate_identity: "claim",
+          bound: "exact",
+          score: claimScore,
+          proof_bounds: proof,
+          selection_eligible: false,
+          mate_claim_quarantined: true,
+        },
+      );
+      assert(!pool[0].calls.some((task) => (
+        task.candidate_identity === "claim" && task.purpose === "selected-certification"
+      )));
+    }
+  }
+}
+
+
+async function testMateClaimsRequireProofAcrossExactAndRecertificationPaths() {
+  for (const white of [true, false]) {
+    const claimScore = white ? MATE - 2 : -MATE + 2;
+    const matchingProof = white ? [1, 1] : [-1, -1];
+    const definitions = [
+      { id: "claim", key: "a-claim", score: claimScore, proof: matchingProof },
+      { id: "safe", key: "b-safe", score: white ? 100 : -100 },
+    ];
+    const result = await api.runRootIteration({
+      request: request(1, {
+        series: white ? 1 : 2,
+        iteration_id: `proved-mate-claim-${white ? "white" : "black"}`,
+      }),
+      manifest: manifest(definitions, { white }),
+      workers: workers(1, definitions),
+      safetyProbe: exhaustedSafety(),
+    });
+    assert.equal(result.selected.candidate_identity, "claim");
+    assert.deepEqual(result.selected.proof_bounds, matchingProof);
+    assert.equal(result.selected.mate_claim_quarantined, false);
+    assert.equal(result.mate_claim_policy_filtered, false);
+    assert.equal(result.root_mate_claim_quarantines, 0);
+  }
+
+  const recertDefinitions = [
+    { id: "claim", key: "a-claim", score: MATE - 2, proof: [1, 1] },
+    { id: "safe", key: "b-safe", score: 100 },
+  ];
+  const recertPool = workers(1, recertDefinitions, {
+    mutate: (task, reply) => (
+      task.candidate_identity === "claim" && task.purpose === "selected-certification"
+        ? { ...reply, proof_bounds: [-1, 1] }
+        : reply
+    ),
+  });
+  const recertResult = await api.runRootIteration({
+    request: request(1, { iteration_id: "mate-claim-owner-recertification" }),
+    manifest: manifest(recertDefinitions),
+    workers: recertPool,
+    safetyProbe: exhaustedSafety(),
+  });
+  assert.equal(recertResult.selected.candidate_identity, "safe");
+  assert.equal(recertResult.root_mate_claim_quarantines, 1);
+  assert.deepEqual(
+    recertPool[0].calls
+      .filter((task) => task.candidate_identity === "claim")
+      .map((task) => task.purpose),
+    ["full", "selected-certification"],
+  );
+
+  const aspirationDefinitions = [
+    { id: "claim", key: "a-claim", score: MATE - 10_000 },
+    { id: "safe", key: "b-safe", score: MATE - 10_001 },
+  ];
+  const aspirationPool = workers(1, aspirationDefinitions);
+  const aspirationResult = await api.runRootIteration({
+    request: request(1, {
+      iteration_id: "mate-claim-aspiration-exact",
+      aspiration: { center_score: MATE - 10_000, initial_delta: 2_048 },
+    }),
+    manifest: manifest(aspirationDefinitions, { preferredSeries: ["e2e4"] }),
+    workers: aspirationPool,
+    safetyProbe: exhaustedSafety(),
+  });
+  assert.equal(aspirationResult.selected.candidate_identity, "safe");
+  assert.equal(aspirationResult.root_mate_claim_quarantines, 1);
+  assert.deepEqual(
+    aspirationPool[0].calls
+      .filter((task) => task.candidate_identity === "claim")
+      .map((task) => task.purpose),
+    ["aspiration"],
+  );
+}
+
+
+async function testAllUnprovedMateClaimsFailClosedDistinctly() {
+  const definitions = [
+    { id: "unknown", key: "a-unknown", score: MATE - 2 },
+    { id: "mismatched", key: "b-mismatched", score: MATE - 3, proof: [-1, -1] },
+  ];
+  let safetyCalls = 0;
+  await assert.rejects(api.runRootIteration({
+    request: request(1, { iteration_id: "all-mate-claims-quarantined" }),
+    manifest: manifest(definitions),
+    workers: workers(1, definitions),
+    safetyProbe: async (task) => {
+      safetyCalls += 1;
+      return exhaustedSafety()(task);
+    },
+  }), (error) => {
+    assert.equal(error?.code, "root-mate-claim-frontier-exhausted");
+    assert.deepEqual(error?.details, {
+      mate_claim_quarantines: 2,
+      quarantined_candidates: ["mismatched", "unknown"],
+    });
+    assert.equal(error?.work?.committed_work, 2);
+    return true;
+  });
+  assert.equal(safetyCalls, 0);
+}
+
+
 async function testBlackMirror() {
   const definitions = [
     { id: "b", key: "b7b6", score: -10 },
@@ -597,6 +759,9 @@ async function testTerminalProductionOrder() {
     });
     assert.equal(result.selected.candidate_identity, "mate-first");
     assert.equal(result.safety_status, "terminal");
+    assert.equal(result.selected.mate_claim_quarantined, false);
+    assert.equal(result.mate_claim_policy_filtered, false);
+    assert.equal(result.root_mate_claim_quarantines, 0);
     assert.equal(pool[0].calls.length, 0);
   }
 }
@@ -2119,6 +2284,9 @@ const streaming = await testStreamingWhiteAndStaleEpoch();
 await testCertifiedInitialFullWave();
 await testWhiteCanonicalTies();
 await testProofAwareRootSelection();
+await testUnprovedMateClaimsAreQuarantinedForBothMovers();
+await testMateClaimsRequireProofAcrossExactAndRecertificationPaths();
+await testAllUnprovedMateClaimsFailClosedDistinctly();
 await testBlackMirror();
 await testTerminalProductionOrder();
 await testSafetyRevisionAndBoundInvalidation();
@@ -2142,7 +2310,7 @@ await testUnsupportedEnvelope();
 
 process.stdout.write(`${JSON.stringify({
   schema: "spc-root-iteration-coordinator-verifier-v1",
-  scenarios: 27,
+  scenarios: 30,
   response_order_permutations: 8,
   response_order_worker_count: 8,
   streaming_first_wave: true,
@@ -2153,6 +2321,12 @@ process.stdout.write(`${JSON.stringify({
   proof_aware_white_black_veto: true,
   proof_aware_forced_loss_fallback: true,
   proof_aware_scout_research: true,
+  unproved_mate_claims_quarantined_white_black: true,
+  matching_mate_claim_proofs_accepted_white_black: true,
+  owner_recertification_mate_claim_guarded: true,
+  aspiration_exact_mate_claim_guarded: true,
+  terminal_mates_preserved: true,
+  all_unproved_mate_claims_fail_closed_distinctly: true,
   terminal_production_order: true,
   safety_revision_bound_invalidation: true,
   checked_pv_native_candidate_repair: true,

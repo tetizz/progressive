@@ -18,6 +18,7 @@
   const BLACK = "black";
   const CHECKED_PV_SELECTION_POLICY = "repair-once-then-veto-adverse-checked-pv-mates-v1";
   const PROOF_AWARE_SELECTION_POLICY = "exclude-proven-opponent-wins-unless-forced-v1";
+  const MATE_CLAIM_SELECTION_POLICY = "require-sign-matching-exact-proof-for-nonterminal-mate-band-v1";
   const ROOT_CANDIDATE_TASK_SCHEMA = "spc-root-candidate-task-v1";
   const ROOT_CANDIDATE_RESULT_SCHEMA = "spc-root-candidate-result-v1";
   const ROOT_HORIZON_RESEARCH_TASK_SCHEMA = "spc-root-horizon-research-task-v1";
@@ -707,6 +708,18 @@
       && proof[1] === opponent;
   }
 
+  function matchingExactMateProof(score, proofBounds, mateScore) {
+    if (!Number.isSafeInteger(score) || Math.abs(score) < mateScore - 10_000) {
+      return false;
+    }
+    const expected = score > 0 ? 1 : -1;
+    return sameArray(proofBounds, [expected, expected]);
+  }
+
+  function selectionEligible(record) {
+    return record.policyRejected !== true && record.mateClaimQuarantined !== true;
+  }
+
   function proofAwareRootPrecedes(left, right, whiteToMove) {
     if (right === null) return true;
     const leftAdverse = provenOpponentWin(left, whiteToMove);
@@ -960,7 +973,8 @@
     return reply;
   }
 
-  function makeExact(record, reply, ownerId, { override = false } = {}) {
+  function makeExact(record, reply, ownerId, mateScore, { override = false } = {}) {
+    const wasMateClaimQuarantined = record.mateClaimQuarantined === true;
     record.exact = true;
     record.bound = null;
     record.score = reply.score;
@@ -972,6 +986,12 @@
       : Object.freeze([]);
     record.ownerId = ownerId;
     record.override = override;
+    record.mateClaimQuarantined = !record.terminal
+      && Math.abs(record.score) >= mateScore - 10_000
+      && !matchingExactMateProof(record.score, record.proofBounds, mateScore);
+    if (record.mateClaimQuarantined && !wasMateClaimQuarantined) {
+      record.mateClaimQuarantineCount += 1;
+    }
   }
 
   function publicCandidate(record) {
@@ -986,6 +1006,7 @@
       proof_bounds: record.proofBounds,
       child_pv: record.childPv,
       safety_override: record.override,
+      mate_claim_quarantined: record.mateClaimQuarantined === true,
     });
   }
 
@@ -997,7 +1018,8 @@
           bound: record.exact ? EXACT : record.bound?.kind ?? UNKNOWN,
           score: record.exact ? record.score : record.bound?.score ?? null,
           proof_bounds: Object.freeze([...record.proofBounds]),
-          selection_eligible: record.policyRejected !== true,
+          selection_eligible: selectionEligible(record),
+          mate_claim_quarantined: record.mateClaimQuarantined === true,
         }))
         .sort((left, right) => left.candidate_identity.localeCompare(
           right.candidate_identity,
@@ -1050,6 +1072,8 @@
         bound: null,
         override: false,
         policyRejected: false,
+        mateClaimQuarantined: false,
+        mateClaimQuarantineCount: 0,
         horizonProofs: [],
         horizonProofSetIdentity: null,
         horizonNativeRepairs: 0,
@@ -1138,7 +1162,7 @@
       for (const record of records.values()) {
         if (
           record.exact
-          && record.policyRejected !== true
+          && selectionEligible(record)
           && proofAwareRootPrecedes(record, next, whiteToMove)
         ) next = record;
       }
@@ -1240,6 +1264,10 @@
           selection_policy: CHECKED_PV_SELECTION_POLICY,
           proof_selection_policy: PROOF_AWARE_SELECTION_POLICY,
           proof_aware_selection: true,
+          mate_claim_selection_policy: MATE_CLAIM_SELECTION_POLICY,
+          mate_claim_policy_filtered: false,
+          root_mate_claim_quarantines: 0,
+          mate_claim_quarantine_receipts: Object.freeze([]),
           selection_policy_filtered: false,
           pv_horizon_line_rejections: 0,
           pv_horizon_native_repairs: 0,
@@ -1531,7 +1559,7 @@
         if (purpose === "aspiration") {
           if (reply.bound === EXACT) {
             aspirationCounters.exactHits += 1;
-            makeExact(record, reply, worker.id);
+            makeExact(record, reply, worker.id, request.mate_score);
             recomputeIncumbent();
             return null;
           }
@@ -1578,12 +1606,12 @@
           return { worker, record, purpose: "aspiration" };
         }
         if (purpose !== "scout") {
-          makeExact(record, reply, worker.id);
+          makeExact(record, reply, worker.id, request.mate_score);
           recomputeIncumbent();
           return null;
         }
         if (reply.bound === EXACT) {
-          makeExact(record, reply, worker.id);
+          makeExact(record, reply, worker.id, request.mate_score);
           recomputeIncumbent();
           return null;
         }
@@ -1642,10 +1670,28 @@
         while (true) {
           recomputeIncumbent();
           if (!incumbent) {
-            const eligible = [...records.values()].filter(
-              (record) => record.policyRejected !== true,
-            );
+            const eligible = [...records.values()].filter(selectionEligible);
             if (eligible.length === 0) {
+              const mateClaimQuarantines = [...records.values()].filter(
+                (record) => record.mateClaimQuarantined === true,
+              );
+              if (mateClaimQuarantines.length > 0) {
+                throw new RootCoordinatorError(
+                  "Every retained root candidate was excluded or quarantined by the mate-claim proof policy.",
+                  "root-mate-claim-frontier-exhausted",
+                  {
+                    details: Object.freeze({
+                      mate_claim_quarantines: mateClaimQuarantines.length,
+                      quarantined_candidates: Object.freeze(
+                        mateClaimQuarantines.map(
+                          (record) => record.candidate.candidate_identity,
+                        ).sort(),
+                      ),
+                    }),
+                    work: ledger.snapshot(),
+                  },
+                );
+              }
               throw new RootCoordinatorError(
                 "Every retained root candidate was rejected by the checked-PV safety policy.",
                 "root-policy-frontier-exhausted",
@@ -1673,7 +1719,7 @@
           }
           const uncovered = [...records.values()]
             .filter((record) => (
-              record.policyRejected !== true
+              selectionEligible(record)
               && !coversFinal(record, incumbent, whiteToMove)
             ))
             .map((record) => record.candidate.candidate_identity);
@@ -1742,7 +1788,11 @@
             "root-selected-certification-mismatch",
           );
         }
-        makeExact(incumbent, outcome.reply, owner.id);
+        makeExact(incumbent, outcome.reply, owner.id, request.mate_score);
+        if (incumbent.mateClaimQuarantined) {
+          recomputeIncumbent();
+          return "mate-claim-quarantined";
+        }
         return true;
       };
 
@@ -1762,6 +1812,10 @@
           );
         }
         const ownerCertified = await certifySelectedOnOwner();
+        if (ownerCertified === "mate-claim-quarantined") {
+          await ensureFinalCoverage();
+          continue;
+        }
         if (!ownerCertified) {
           if (
             !Number.isSafeInteger(incumbent.horizonNativeRepairs)
@@ -1994,7 +2048,7 @@
             await rejectCandidate("repair-proof-not-hit", distinctProofsObserved);
             continue;
           }
-          makeExact(incumbent, repair.reply, owner.id);
+          makeExact(incumbent, repair.reply, owner.id, request.mate_score);
           incumbent.horizonProofSetIdentity = repair.reply.horizon_proof_set_identity;
           incumbent.safetyStatus = null;
           incumbent.horizonNativeRepairs += 1;
@@ -2020,7 +2074,7 @@
           score: safety.override_score,
           proof_bounds: safety.proof_bounds,
           child_pv: safety.reply_mate === undefined ? [] : [safety.reply_mate],
-        }, incumbent.ownerId, { override: true });
+        }, incumbent.ownerId, request.mate_score, { override: true });
         incumbent.safetyStatus = "found";
         safetyRevision += 1;
         recomputeIncumbent();
@@ -2038,7 +2092,7 @@
       }
       const coverageComplete = [...records.values()].every(
         (record) => (
-          record.policyRejected === true
+          !selectionEligible(record)
           || coversFinal(record, incumbent, whiteToMove)
         ),
       );
@@ -2049,9 +2103,23 @@
         );
       }
       const rootScoresComplete = [...records.values()].every((record) => record.exact);
-      const proofEligibleRecords = [...records.values()].filter(
-        (record) => record.policyRejected !== true,
+      const mateClaimQuarantineReceipts = [...records.values()]
+        .filter((record) => record.mateClaimQuarantineCount > 0)
+        .map((record) => Object.freeze({
+          candidate_identity: record.candidate.candidate_identity,
+          quarantine_count: record.mateClaimQuarantineCount,
+          score: record.score,
+          proof_bounds: Object.freeze([...record.proofBounds]),
+          currently_quarantined: record.mateClaimQuarantined === true,
+        }))
+        .sort((left, right) => left.candidate_identity.localeCompare(
+          right.candidate_identity,
+        ));
+      const rootMateClaimQuarantines = mateClaimQuarantineReceipts.reduce(
+        (total, receipt) => total + receipt.quarantine_count,
+        0,
       );
+      const proofEligibleRecords = [...records.values()].filter(selectionEligible);
       const provenAdverseCandidates = proofEligibleRecords.filter(
         (record) => provenOpponentWin(record, whiteToMove),
       ).length;
@@ -2092,6 +2160,10 @@
         selection_policy: CHECKED_PV_SELECTION_POLICY,
         proof_selection_policy: PROOF_AWARE_SELECTION_POLICY,
         proof_aware_selection: true,
+        mate_claim_selection_policy: MATE_CLAIM_SELECTION_POLICY,
+        mate_claim_policy_filtered: rootMateClaimQuarantines > 0,
+        root_mate_claim_quarantines: rootMateClaimQuarantines,
+        mate_claim_quarantine_receipts: Object.freeze(mateClaimQuarantineReceipts),
         proof_policy_filtered: proofPolicyFiltered,
         proven_adverse_candidates: provenAdverseCandidates,
         selection_policy_filtered: pvHorizonCandidateVetoes > 0,
@@ -2103,10 +2175,12 @@
           maximum_successful_same_root_repairs: MAX_SAME_ROOT_HORIZON_REPAIRS,
         }),
         pv_horizon_policy_vetoes: Object.freeze([...pvHorizonPolicyVetoes]),
-        coverage_scope: pvHorizonCandidateVetoes > 0
+        coverage_scope: pvHorizonCandidateVetoes > 0 || rootMateClaimQuarantines > 0
           ? "selection-eligible-candidates"
           : "all-retained-candidates",
-        unfiltered_score_winner_selected: pvHorizonLineRejections === 0,
+        unfiltered_score_winner_selected: (
+          pvHorizonLineRejections === 0 && rootMateClaimQuarantines === 0
+        ),
         coverage_complete: true,
         root_scores_complete: rootScoresComplete,
         root_bounds: publicRootBounds(records),

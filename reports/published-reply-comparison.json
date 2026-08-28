@@ -1,7 +1,7 @@
 {
-  "generated_at": "2026-08-27T15:14:00+00:00",
+  "generated_at": "2026-08-28T01:46:39+00:00",
   "engine_version": "spc-0.9.0",
-  "source_fingerprint": "26fe40a25f325fe4",
+  "source_fingerprint": "47defd096b2ded42",
   "ruleset_version": "scottish-modern-common-v1",
   "series_horizon": 3,
   "white_response_search": "deterministic tactical/diversity frontier and final screen retain at most 64 candidates per layer/node for full progressive evaluation; any pruning is selective",
@@ -30,7 +30,7 @@
           "unique_white_series": 5225,
           "intra_series_transpositions": 5172,
           "nodes": 64,
-          "elapsed_seconds": 0.045635599992237985
+          "elapsed_seconds": 0.04593439993914217
         },
         {
           "black_label": "e5 / Qe7",
@@ -48,7 +48,7 @@
           "unique_white_series": 4849,
           "intra_series_transpositions": 5668,
           "nodes": 64,
-          "elapsed_seconds": 0.04212960007134825
+          "elapsed_seconds": 0.041112300008535385
         },
         {
           "black_label": "d5 / dxe4",
@@ -66,7 +66,7 @@
           "unique_white_series": 3570,
           "intra_series_transpositions": 3557,
           "nodes": 64,
-          "elapsed_seconds": 0.02554330008570105
+          "elapsed_seconds": 0.02434280002489686
         },
         {
           "black_label": "e5 / f6",
@@ -84,7 +84,7 @@
           "unique_white_series": 3330,
           "intra_series_transpositions": 2997,
           "nodes": 64,
-          "elapsed_seconds": 0.022496999939903617
+          "elapsed_seconds": 0.022703499998897314
         },
         {
           "black_label": "d5 / e5",
@@ -102,7 +102,7 @@
           "unique_white_series": 4148,
           "intra_series_transpositions": 3538,
           "nodes": 64,
-          "elapsed_seconds": 0.030623700004070997
+          "elapsed_seconds": 0.031423899927176535
         },
         {
           "black_label": "d5 / d4",
@@ -120,7 +120,7 @@
           "unique_white_series": 3438,
           "intra_series_transpositions": 3205,
           "nodes": 64,
-          "elapsed_seconds": 0.025167200015857816
+          "elapsed_seconds": 0.026963199954479933
         },
         {
           "black_label": "e5 / Qh4",
@@ -138,7 +138,7 @@
           "unique_white_series": 4803,
           "intra_series_transpositions": 6031,
           "nodes": 64,
-          "elapsed_seconds": 0.04859359993133694
+          "elapsed_seconds": 0.04907940002158284
         },
         {
           "black_label": "e6 / Nf6",
@@ -156,7 +156,7 @@
           "unique_white_series": 8372,
           "intra_series_transpositions": 15398,
           "nodes": 127,
-          "elapsed_seconds": 0.061498899944126606
+          "elapsed_seconds": 0.062348000006750226
         },
         {
           "black_label": "e5 / Nh6",
@@ -174,7 +174,7 @@
           "unique_white_series": 4933,
           "intra_series_transpositions": 8722,
           "nodes": 64,
-          "elapsed_seconds": 0.04493410000577569
+          "elapsed_seconds": 0.04548119998071343
         },
         {
           "black_label": "d5 / Nc6",
@@ -192,7 +192,7 @@
           "unique_white_series": 4144,
           "intra_series_transpositions": 3049,
           "nodes": 64,
-          "elapsed_seconds": 0.028816399979405105
+          "elapsed_seconds": 0.030462299939244986
         }
       ]
     },
@@ -218,7 +218,7 @@
           "unique_white_series": 15625,
           "intra_series_transpositions": 34805,
           "nodes": 310,
-          "elapsed_seconds": 0.11263490002602339
+          "elapsed_seconds": 0.11447549995500594
         },
         {
           "black_label": "e6 / Bb4+",
@@ -236,7 +236,7 @@
           "unique_white_series": 3919,
           "intra_series_transpositions": 4984,
           "nodes": 64,
-          "elapsed_seconds": 0.05527760006953031
+          "elapsed_seconds": 0.04935690003912896
         },
         {
           "black_label": "c5 / cxd4",
@@ -254,7 +254,7 @@
           "unique_white_series": 7802,
           "intra_series_transpositions": 8065,
           "nodes": 127,
-          "elapsed_seconds": 0.051699899951927364
+          "elapsed_seconds": 0.059067499940283597
         },
         {
           "black_label": "d5 / Nc6",
@@ -272,7 +272,7 @@
           "unique_white_series": 5054,
           "intra_series_transpositions": 6097,
           "nodes": 64,
-          "elapsed_seconds": 0.05891719995997846
+          "elapsed_seconds": 0.059356700046919286
         },
         {
           "black_label": "c5 / d5",
@@ -290,7 +290,7 @@
           "unique_white_series": 5370,
           "intra_series_transpositions": 5127,
           "nodes": 64,
-          "elapsed_seconds": 0.05251219996716827
+          "elapsed_seconds": 0.054821499972604215
         },
         {
           "black_label": "d5 / c6",
@@ -308,7 +308,7 @@
           "unique_white_series": 4958,
           "intra_series_transpositions": 4314,
           "nodes": 64,
-          "elapsed_seconds": 0.051454200060106814
+          "elapsed_seconds": 0.054259900003671646
         },
         {
           "black_label": "d5 / h5",
@@ -326,7 +326,7 @@
           "unique_white_series": 5536,
           "intra_series_transpositions": 6125,
           "nodes": 64,
-          "elapsed_seconds": 0.061747899977490306
+          "elapsed_seconds": 0.058848700020462275
         },
         {
           "black_label": "e5 / e4",
@@ -344,7 +344,7 @@
           "unique_white_series": 14648,
           "intra_series_transpositions": 17036,
           "nodes": 310,
-          "elapsed_seconds": 0.09244809998199344
+          "elapsed_seconds": 0.08791719994042069
         },
         {
           "black_label": "d6 / Nf6",
@@ -362,7 +362,7 @@
           "unique_white_series": 8718,
           "intra_series_transpositions": 10062,
           "nodes": 127,
-          "elapsed_seconds": 0.06821950001176447
+          "elapsed_seconds": 0.0693827000213787
         },
         {
           "black_label": "f5 / Nf6",
@@ -380,7 +380,7 @@
           "unique_white_series": 7973,
           "intra_series_transpositions": 7811,
           "nodes": 127,
-          "elapsed_seconds": 0.05628479993902147
+          "elapsed_seconds": 0.05557229998521507
         },
         {
           "black_label": "e5 / exd4",
@@ -398,7 +398,7 @@
           "unique_white_series": 8121,
           "intra_series_transpositions": 8964,
           "nodes": 127,
-          "elapsed_seconds": 0.059518199996091425
+          "elapsed_seconds": 0.06007270002737641
         }
       ]
     }

@@ -49,7 +49,11 @@ OPENING_SUITE_VERSION = "spc-league-boundaries-v4"
 PROMOTION_METHOD = "deterministic-fixed-suite-pairs-v1"
 
 HUMAN_FIRST_GAME_REPLY_VERIFIER_WIDTH = 832
-HUMAN_FIRST_GAME_REPLY_VERIFIER_WORK_LIMIT = 1_600_000
+# The selected-PV safety lane receives one third of a non-collect-all search
+# allowance.  The fixed ...Bg4-f3 fixture needs 2,576,473 safety positions to
+# reject its first unsafe White reply and certify the repaired reply, so expose
+# a measured margin instead of failing on the obsolete 533,333-position share.
+HUMAN_FIRST_GAME_REPLY_VERIFIER_WORK_LIMIT = 8_000_000
 HUMAN_FIRST_GAME_ROOT_WIDTH = 32
 # A complete collect-all depth-2 search of this fixed S4 fixture currently
 # consumes 2,139,260 generated positions. Keep a measured safety margin so the

@@ -429,6 +429,7 @@ class MockWorld {
     rootSafetyWork = 1,
     singleCandidate = false,
     favorableHorizonFirst = false,
+    unprovedMateFirst = false,
   } = {}) {
     this.foundFirst = foundFirst;
     this.foundAll = foundAll;
@@ -446,6 +447,7 @@ class MockWorld {
     this.rootSafetyWork = rootSafetyWork;
     this.singleCandidate = singleCandidate;
     this.favorableHorizonFirst = favorableHorizonFirst;
+    this.unprovedMateFirst = unprovedMateFirst;
     this.workers = [];
     this.live = 0;
     this.peakLive = 0;
@@ -665,9 +667,16 @@ class MockWorld {
       const index = Number(payload.candidate_identity.slice(1));
       const white = worker.boundary.series % 2 === 1;
       const horizonScore = this.horizonMateTwice ? 100 : 80;
-      const score = horizonResearch
+      let score = horizonResearch
         ? white ? horizonScore : -horizonScore
         : white ? 100 - index * 10 : -100 + index * 10;
+      if (
+        this.unprovedMateFirst
+        && payload.candidate_identity === "c0"
+        && !horizonResearch
+      ) {
+        score = white ? CONFIG.mate_score - 3 : -CONFIG.mate_score + 3;
+      }
       const bound = payload.purpose === "scout" || payload.purpose === "aspiration"
         ? score <= payload.alpha ? "upper" : score >= payload.beta ? "lower" : "exact"
         : "exact";
@@ -1292,6 +1301,11 @@ async function testPersistentPoolTwoTurns() {
     ["unfiltered-winner disagreement", {
       unfiltered_score_winner_selected: false,
     }],
+    ["unproved mate-band score", {
+      score: CONFIG.mate_score - 3,
+      proof_bounds: [-1, 1],
+      proof: null,
+    }],
   ]) {
     assert.throws(
       () => browserClientApi.validatePublishedRootAnalysis({
@@ -1326,6 +1340,70 @@ async function testWhiteAndBlackMateMapping() {
     assert.equal(found.override_score, expectedOverride);
     assert.deepEqual(found.proof_bounds, expectedOverride < 0 ? [-1, -1] : [1, 1]);
     assert.notEqual(result.best_full_series.join("/"), candidateMoves(boundary.series, 0).join("/"));
+    client.close();
+  }
+}
+
+async function testUnprovedMateClaimQuarantinePublishesSafeRoot() {
+  for (const boundary of [
+    boundaryPayload(WHITE_FEN, 1),
+    boundaryPayload(BLACK_FEN, 2),
+  ]) {
+    const world = new MockWorld({ unprovedMateFirst: true });
+    const client = browserClientApi.createClient({
+      workerUrl: "mock-worker.js",
+      workerFactory: world.factory,
+      navigatorValue: DESKTOP_NAVIGATOR,
+    });
+    await preflight(client);
+    const result = await client.analyzeRoot(payload(boundary, 1), {
+      deadlineMs: performance.now() + 20_000,
+    });
+
+    assert.deepEqual(result.best_full_series, candidateMoves(boundary.series, 1));
+    assert(Math.abs(result.score) < CONFIG.mate_score - 10_000);
+    assert.deepEqual(result.proof_bounds, [-1, 1]);
+    assert.equal(result.mate_claim_policy_filtered, true);
+    assert.equal(result.root_mate_claim_quarantines, 1);
+    assert.equal(result.selection_policy_filtered, false);
+    assert.equal(result.root_bound_coverage_scope, "selection-eligible-candidates");
+    assert.equal(result.unfiltered_score_winner_selected, false);
+    assert.equal(result.stats.root_mate_claim_quarantines, 1);
+    assert.equal(result.runtime_receipt.root_mate_claim_quarantines, 1);
+    assert.equal(result.mate_claim_quarantine_receipts.length, 1);
+    assert.equal(
+      result.mate_claim_quarantine_receipts[0].candidate_identity,
+      "c0",
+    );
+    browserClientApi.validatePublishedRootAnalysis(
+      result,
+      payload(boundary, 1),
+      client.identity,
+    );
+    for (const [label, mutation] of [
+      ["mate policy drift", {
+        mate_claim_selection_policy: "untrusted-mate-policy-v0",
+      }],
+      ["mate quarantine count drift", {
+        root_mate_claim_quarantines: 2,
+      }],
+      ["mate quarantine receipt drift", {
+        mate_claim_quarantine_receipts: [{
+          ...result.mate_claim_quarantine_receipts[0],
+          currently_quarantined: false,
+        }],
+      }],
+    ]) {
+      assert.throws(
+        () => browserClientApi.validatePublishedRootAnalysis(
+          { ...result, ...mutation },
+          payload(boundary, 1),
+          client.identity,
+        ),
+        (error) => error?.code === "browser-root-result-invalid",
+        `${label} must fail closed`,
+      );
+    }
     client.close();
   }
 }
@@ -2146,6 +2224,7 @@ function testGeometry() {
 testAspirationAggregateAndAffinityContract();
 await testPersistentPoolTwoTurns();
 await testWhiteAndBlackMateMapping();
+await testUnprovedMateClaimQuarantinePublishesSafeRoot();
 await testCheckedPvHorizonMateRejectsTheProvisionalWinner();
 await testSecondDistinctCheckedPvMatePublishesExactPolicyVeto();
 await testCheckedPvHorizonIsRootedAndFailClosed();
@@ -2180,6 +2259,7 @@ process.stdout.write(JSON.stringify({
   pooled_native_prefix: true,
   preflight_heap_released: true,
   white_black_mate_mapping: true,
+  unproved_mate_claim_quarantine_white_black: true,
   checked_pv_horizon_mate_rejected: true,
   checked_pv_horizon_native_repaired: true,
   checked_pv_second_distinct_mate_policy_veto: true,
