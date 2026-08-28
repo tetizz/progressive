@@ -4137,10 +4137,8 @@ def validate_opera_checked_horizon_receipt(
     f3_safety = _validate_raw_safety_trace(
         safety_map["f3"],
         expected_root="f2f3",
-        expected_unsafe_horizon="d1e2/e2c4/c4c7/f1c4/c7c8",
-        expected_child_fen=(
-            "rnQ1k1nr/1p1p1ppp/8/p3p3/1PB1P3/5P2/1PPP3P/RNB1K1Nq b Qkq - 0 7"
-        ),
+        expected_unsafe_horizon=None,
+        expected_child_fen=None,
         root_identity=root_identity,
         prefix_identity=prefix_identity,
         maximum_work=100_000_000,

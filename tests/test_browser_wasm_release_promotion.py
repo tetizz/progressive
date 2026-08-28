@@ -1285,6 +1285,8 @@ def _opera_checked_horizon_fixture(
     evidence: promoter.ValidatedEvidence,
     certificates: dict[str, dict[str, object]],
     candidate: Path,
+    *,
+    reverse_f3_proofs: bool = False,
 ) -> tuple[Path, dict[str, object]]:
     origin = "http://127.0.0.1:8879"
     page_url = f"{origin}/?release-candidate"
@@ -1520,8 +1522,16 @@ def _opera_checked_horizon_fixture(
                 ["a2a3", "a3b4", "e2e4"],
                 ["a7a5", "d8g5", "g5g2", "g2h1"],
             ],
-            "unsafe_moves": ["d1e2", "e2c4", "c4c7", "f1c4", "c7c8"],
-            "child_fen": "rnQ1k1nr/1p1p1ppp/8/p3p3/1PB1P3/5P2/1PPP3P/RNB1K1Nq b Qkq - 0 7",
+            "unsafe_moves": (
+                ["d1e2", "e2c4", "c4c7", "f1b5", "c7c8"]
+                if reverse_f3_proofs
+                else ["d1e2", "e2c4", "c4c7", "f1c4", "c7c8"]
+            ),
+            "child_fen": (
+                "rnQ1k1nr/1p1p1ppp/8/pB2p3/1P2P3/5P2/1PPP3P/RNB1K1Nq b Qkq - 0 7"
+                if reverse_f3_proofs
+                else "rnQ1k1nr/1p1p1ppp/8/p3p3/1PB1P3/5P2/1PPP3P/RNB1K1Nq b Qkq - 0 7"
+            ),
             "candidate": "candidate-f3",
             "worker": 0,
         },
@@ -1714,7 +1724,11 @@ def _opera_checked_horizon_fixture(
             repaired_moves = [
                 [str(spec["root_move"])],
                 *copy.deepcopy(spec["child_moves"]),
-                ["d1e2", "e2c4", "c4c7", "f1b5", "c7c8"],
+                (
+                    ["d1e2", "e2c4", "c4c7", "f1c4", "c7c8"]
+                    if reverse_f3_proofs
+                    else ["d1e2", "e2c4", "c4c7", "f1b5", "c7c8"]
+                ),
             ]
             for moves in repaired_moves:
                 repaired_result = promoter.play_series(repaired_state, moves)
@@ -2550,7 +2564,9 @@ def _opera_checked_horizon_fixture(
     return receipt_path, payload
 
 
-def _checked_promotion_fixture(tmp_path: Path) -> dict[str, object]:
+def _checked_promotion_fixture(
+    tmp_path: Path, *, reverse_f3_proofs: bool = False
+) -> dict[str, object]:
     fixture = _valid_fixture(tmp_path)
     evidence = _validate(fixture)
     certificates = promoter.build_certificates(
@@ -2572,6 +2588,7 @@ def _checked_promotion_fixture(tmp_path: Path) -> dict[str, object]:
         evidence,
         certificates,
         candidate,
+        reverse_f3_proofs=reverse_f3_proofs,
     )
     return {
         "fixture": fixture,
@@ -2728,6 +2745,48 @@ def test_checked_horizon_receipt_omission_fails_closed(tmp_path: Path) -> None:
 
     _rewrite_checked(context, mutate)
     with pytest.raises(promoter.ReleaseGateError, match="every exact passing check"):
+        _validate_checked_fixture(context)
+
+
+def test_checked_horizon_accepts_reversed_distinct_f3_proof_order(
+    tmp_path: Path,
+) -> None:
+    context = _checked_promotion_fixture(tmp_path, reverse_f3_proofs=True)
+
+    checked = _validate_checked_fixture(context)
+
+    assert checked.selected_root_series == "b2b3"
+    assert checked.line_rejections == 2
+    assert checked.native_repairs == 1
+    assert checked.candidate_vetoes == 1
+
+
+def test_checked_horizon_rejects_re_signed_first_f3_path_tamper(
+    tmp_path: Path,
+) -> None:
+    context = _checked_promotion_fixture(tmp_path, reverse_f3_proofs=True)
+
+    def mutate(payload: dict[str, object]) -> None:
+        first = payload["horizon_safety_traces"]["f3"]
+        second = payload["threshold_veto_witness"]["second_safety_trace"]
+        first["request"]["candidate"]["root_series"] = copy.deepcopy(
+            second["request"]["candidate"]["root_series"]
+        )
+        first["response"]["candidate"] = copy.deepcopy(first["request"]["candidate"])
+        raw_first = _raw_trace_by_sequence(
+            payload,
+            "raw_horizon_safety_traces",
+            first["request_sequence"],
+        )
+        raw_first.clear()
+        raw_first.update(copy.deepcopy(first))
+        _refresh_raw_trace_attestation(payload)
+
+    _rewrite_checked(context, mutate)
+    with pytest.raises(
+        promoter.ReleaseGateError,
+        match="unsafe horizon.*not rooted|unsafe horizon boundary|retained proof",
+    ):
         _validate_checked_fixture(context)
 
 
