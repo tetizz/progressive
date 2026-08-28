@@ -2038,6 +2038,70 @@ async function testFavorableCheckedHorizonIsNotVetoed() {
   client.close();
 }
 
+async function testUnknownBeforeD1PublishesNoMoveForEitherColor() {
+  for (const boundary of [
+    boundaryPayload(WHITE_FEN, 1),
+    boundaryPayload(BLACK_FEN, 2),
+  ]) {
+    const world = new MockWorld({ safetyUnknown: true });
+    const client = browserClientApi.createClient({
+      workerUrl: "mock-worker.js",
+      workerFactory: world.factory,
+      navigatorValue: DESKTOP_NAVIGATOR,
+    });
+    await preflight(client);
+    let caught = null;
+    try {
+      await client.analyzeRoot(payload(boundary, 1), {
+        deadlineMs: performance.now() + 20_000,
+      });
+    } catch (error) {
+      caught = error;
+    }
+    assert(caught, "UNKNOWN safety before D1 must reject instead of returning a move");
+    assert.equal(caught.code, "root-safety-unknown");
+    assert.equal(caught.best_full_series, undefined);
+    assert.equal(caught.publishable, undefined);
+    assert.equal(client.rootRunner.lastSafe, null);
+    assert.equal(world.terminalMateReceipts.length, 0);
+    assert.equal(world.proactiveTerminalMateReceipts.length, 0);
+    client.close();
+  }
+}
+
+async function testUnknownAfterD1ReturnsOnlyCertifiedLastSafe() {
+  const world = new MockWorld({
+    horizonMateFirst: true,
+    horizonSafetyUnknown: true,
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  const result = await client.analyzeRoot(
+    payload(boundaryPayload(WHITE_FEN, 1), 5),
+    { deadlineMs: performance.now() + 20_000 },
+  );
+  const lastSafe = client.rootRunner.lastSafe;
+  assert(lastSafe, "D4 must remain the last fully certified publication");
+  assert.equal(result.completed_depth, 4);
+  assert.equal(lastSafe.completed_depth, 4);
+  assert.equal(result.safety_certified, true);
+  assert.equal(result.authoritative_replay_certified, true);
+  assert.equal(result.runtime_receipt.interruption_code, "root-safety-unknown");
+  assert.deepEqual(result.best_full_series, lastSafe.best_full_series);
+  assert.deepEqual(result.principal_variation, lastSafe.principal_variation);
+  assert.deepEqual(result.checked_prefix, lastSafe.checked_prefix);
+  assert.deepEqual(result.proof_bounds, lastSafe.proof_bounds);
+  assert.equal(result.score, lastSafe.score);
+  assert.equal(result.work, lastSafe.work);
+  assert.equal(result.runtime_receipt.terminal_mate_rescue, undefined);
+  assert.equal(world.terminalMateReceipts.length, 0);
+  client.close();
+}
+
 async function testProactiveS5TerminalMateWinsBeforeOrdinarySearch() {
   const boundary = boundaryPayload(MISSED_S5_MATE_FEN, 5);
   const world = new MockWorld({
@@ -2419,6 +2483,8 @@ await testCrashReturnsLastSafeAndReprobes();
 await testNestedDeadlineAndExactWorkLimitClassification();
 await testMateProofCacheAcrossFiveDepthsAndBoundaries();
 await testUnknownMateProofNeverCaches();
+await testUnknownBeforeD1PublishesNoMoveForEitherColor();
+await testUnknownAfterD1ReturnsOnlyCertifiedLastSafe();
 await testUnknownCheckedPvHorizonCannotFallThroughToRootChild();
 await testCheckedPvHorizonWithoutProbeCreditFailsClosed();
 await testImmediateMatePublishesWithBoundCoverage();
@@ -2465,6 +2531,8 @@ process.stdout.write(JSON.stringify({
   incomplete_bound_coverage_fails_closed: true,
   complete_mate_proof_cache: true,
   unknown_mate_proof_not_cached: true,
+  unknown_before_d1_has_no_move_white_black: true,
+  unknown_after_d1_preserves_only_certified_last_safe: true,
   unknown_checked_pv_horizon_fails_closed: true,
   unprobed_checked_pv_horizon_fails_closed: true,
   mate_cache_identity_boundary_bound: true,

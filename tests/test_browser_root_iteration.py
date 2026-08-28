@@ -47,6 +47,8 @@ def test_browser_root_worker_pool_contract() -> None:
         "incomplete_bound_coverage_fails_closed": True,
         "complete_mate_proof_cache": True,
         "unknown_mate_proof_not_cached": True,
+        "unknown_before_d1_has_no_move_white_black": True,
+        "unknown_after_d1_preserves_only_certified_last_safe": True,
         "unknown_checked_pv_horizon_fails_closed": True,
         "unprobed_checked_pv_horizon_fails_closed": True,
         "mate_cache_identity_boundary_bound": True,

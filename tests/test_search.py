@@ -598,13 +598,9 @@ def test_wide_frontier_scoring_cannot_overshoot_combined_work_cap() -> None:
     assert result.work_limit_reached
     assert not result.timed_out
     assert result.completed_depth == 0
-    assert result.best_series is not None
-    replayed = play_series(state, result.best_series.moves)
-    assert replayed.final_state.transposition_key == (
-        result.best_series.final_state.transposition_key
-    )
+    assert result.best_series is None
     assert result.score == result.root_evaluation.total
-    assert result.principal_variation == (result.best_series,)
+    assert result.principal_variation == ()
     assert result.alternatives == ()
     assert result.proof is None
     assert result.forced is None
@@ -617,6 +613,8 @@ def test_wide_frontier_scoring_cannot_overshoot_combined_work_cap() -> None:
     assert result.stats.static_evaluation_positions == 1
     assert result.stats.evaluation_reach_positions == 0
     assert result.stats.quiet_adjudication_positions == 0
+    assert result.stats.final_fallback_reply_mate_probes == 0
+    assert result.stats.final_fallback_reply_mate_unknown == 1
     assert result.stats.work_positions == (
         result.stats.series_generation_positions
         + result.stats.frontier_score_positions
@@ -725,15 +723,16 @@ def test_prefix_cache_reuse_cannot_bypass_generation_work_payment() -> None:
     )
     assert unpaid.work_limit_reached
     assert unpaid.completed_depth == 0
-    assert unpaid.best_series is not None
-    assert unpaid.best_series.moves[: len(prefix)] == prefix
-    assert unpaid.principal_variation == (unpaid.best_series,)
+    assert unpaid.best_series is None
+    assert unpaid.principal_variation == ()
     assert unpaid.alternatives == ()
     assert unpaid.proof is None
     assert unpaid.forced is None
     assert not unpaid.root_scores_complete
     assert unpaid.stats.work_positions == 71
     assert unpaid.stats.series_generation_cache_hits == 0
+    assert unpaid.stats.final_fallback_reply_mate_probes == 0
+    assert unpaid.stats.final_fallback_reply_mate_unknown == 1
 
     paid = analyze(
         state,
@@ -1035,9 +1034,8 @@ def test_high_series_quiet_transition_is_charged_to_global_work_budget() -> None
     assert result.adjudication_status == "manual-proof-required"
     assert result.work_limit_reached
     assert not result.timed_out
-    assert result.best_series is not None
-    assert result.best_series.moves == ("a7b8",)
-    assert result.principal_variation == (result.best_series,)
+    assert result.best_series is None
+    assert result.principal_variation == ()
     assert result.alternatives == ()
     assert result.score == result.root_evaluation.total
     assert result.proof is None
@@ -1051,6 +1049,8 @@ def test_high_series_quiet_transition_is_charged_to_global_work_budget() -> None
     assert result.stats.quiet_adjudication_positions == 30
     assert result.stats.quiet_adjudication_limit_hits == 1
     assert result.stats.generation_work_limit_hits == 1
+    assert result.stats.final_fallback_reply_mate_probes == 0
+    assert result.stats.final_fallback_reply_mate_unknown == 1
     assert result.elapsed_seconds < 0.5
 
 
@@ -1331,7 +1331,7 @@ def test_live_series_24_pending_first_pass_keeps_legal_root_fallback() -> None:
     assert result.stats.work_positions <= 250_000
 
 
-def test_series_101_pending_fallback_is_legal_deterministic_and_bounded() -> None:
+def test_series_101_pending_fallback_is_withheld_when_reply_safety_is_unknown() -> None:
     state = ProgressiveState.from_fen(
         "8/8/5n1b/8/3n4/8/1k4K1/8 w - - 129 89",
         101,
@@ -1347,16 +1347,10 @@ def test_series_101_pending_fallback_is_legal_deterministic_and_bounded() -> Non
     first = analyze(state, limits)
     second = analyze(state, limits)
 
-    assert first.best_series is not None
-    assert second.best_series is not None
-    assert first.best_series.moves == second.best_series.moves
-    assert first.best_series.used_moves == 101
-    replayed = play_series(state, first.best_series.moves)
-    assert replayed.final_state.transposition_key == (
-        first.best_series.final_state.transposition_key
-    )
+    assert first.best_series is None
+    assert second.best_series is None
     assert first.score == first.root_evaluation.total
-    assert first.principal_variation == (first.best_series,)
+    assert first.principal_variation == ()
     assert first.alternatives == ()
     assert first.completed_depth == 0
     assert first.adjudication_status == "manual-proof-required"
@@ -1364,15 +1358,17 @@ def test_series_101_pending_fallback_is_legal_deterministic_and_bounded() -> Non
     assert first.forced is None
     assert not first.exact_width
     assert not first.timed_out
-    assert not first.work_limit_reached
+    assert first.work_limit_reached
     assert not first.root_scores_complete
     assert first.stats.series_generation_positions == 101
     assert first.stats.quiet_adjudication_positions == 4_096
     assert first.stats.work_positions == second.stats.work_positions
-    assert first.stats.work_positions <= 50_000
+    assert first.stats.work_positions == 50_000
+    assert first.stats.final_fallback_reply_mate_probes == 1
+    assert first.stats.final_fallback_reply_mate_unknown == 1
 
 
-def test_series_101_root_generation_limit_keeps_budgeted_seed_series() -> None:
+def test_series_101_root_generation_limit_withholds_unverified_seed_series() -> None:
     state = ProgressiveState.from_fen(
         "8/8/5n1b/8/3n4/8/1k4K1/8 w - - 129 89",
         101,
@@ -1388,14 +1384,9 @@ def test_series_101_root_generation_limit_keeps_budgeted_seed_series() -> None:
         ),
     )
 
-    assert result.best_series is not None
-    assert result.best_series.used_moves == 101
-    replayed = play_series(state, result.best_series.moves)
-    assert replayed.final_state.transposition_key == (
-        result.best_series.final_state.transposition_key
-    )
+    assert result.best_series is None
     assert result.score == result.root_evaluation.total
-    assert result.principal_variation == (result.best_series,)
+    assert result.principal_variation == ()
     assert result.alternatives == ()
     assert result.completed_depth == 0
     assert result.work_limit_reached
@@ -1405,7 +1396,9 @@ def test_series_101_root_generation_limit_keeps_budgeted_seed_series() -> None:
     assert result.forced is None
     assert not result.exact_width
     assert not result.root_scores_complete
-    assert result.stats.work_positions <= 500
+    assert result.stats.work_positions == 500
+    assert result.stats.final_fallback_reply_mate_probes == 1
+    assert result.stats.final_fallback_reply_mate_unknown == 1
 
 
 def test_series_101_seed_never_overruns_insufficient_total_work() -> None:

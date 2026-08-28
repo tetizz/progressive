@@ -1780,8 +1780,8 @@ def test_depth_three_replays_horizon_mate_and_selects_certified_e3() -> None:
     assert result.stats.tactical_frontier_reserve_drops == 0
 
 
-def test_shallow_s4_unknown_returns_only_a_move_liveness_fallback() -> None:
-    """A 250k cap cannot certify the S5 negative and must not fake depth."""
+def test_shallow_s4_unknown_returns_no_unverified_move() -> None:
+    """A 250k cap cannot certify the S5 negative or publish its D0 fallback."""
 
     root = _early_s4_state()
     result = analyze(
@@ -1797,17 +1797,21 @@ def test_shallow_s4_unknown_returns_only_a_move_liveness_fallback() -> None:
         PROFILE,
     )
 
-    assert result.best_series is not None
+    assert result.best_series is None
     assert result.completed_depth == 0
     assert result.work_limit_reached
     assert not result.timed_out
     assert result.score == result.root_evaluation.total
-    assert result.principal_variation == (result.best_series,)
+    assert result.principal_variation == ()
     assert result.alternatives == ()
     assert result.proof is None
     assert not result.root_scores_complete
-    assert result.stats.native_series_mate_work_limit_hits == 1
+    assert result.stats.native_series_mate_work_limit_hits == 2
     assert result.stats.root_safety_unknown_interruptions == 1
+    assert result.stats.final_fallback_reply_mate_probes == 1
+    assert result.stats.final_fallback_reply_mate_unknown == 1
+    assert result.stats.final_fallback_reply_mate_work > 0
+    assert result.stats.generation_positions == 250_000
 
 
 def test_website_depth_four_horizon_unknown_retains_only_completed_depth_two() -> None:
@@ -1901,13 +1905,12 @@ def test_s7_small_safety_budget_discards_root_metadata_as_unknown() -> None:
     )
     result = searcher.run(S7_STATE)
 
-    assert result.best_series is not None
-    assert result.best_series.moves != BLUNDERING_S7
+    assert result.best_series is None
     assert result.completed_depth == 0
     assert not result.timed_out
     assert result.work_limit_reached
     assert result.score == result.root_evaluation.total
-    assert result.principal_variation == (result.best_series,)
+    assert result.principal_variation == ()
     assert result.alternatives == ()
     assert result.proof is None
     assert not result.root_scores_complete
@@ -1919,21 +1922,10 @@ def test_s7_small_safety_budget_discards_root_metadata_as_unknown() -> None:
         result.stats.root_safety_screen_positions
         == 250_000 // 3
     )
-
-    # This is intentionally only a move-liveness fallback. A fresh exact
-    # verifier exposes the real S8 mate that the old width-832 negative missed;
-    # no score, proof, or alternative from the discarded depth may leak.
-    selected_child = play_series(S7_STATE, result.best_series.moves).final_state
-    assert selected_child.transposition_key not in searcher._root_child_proven_mate_keys
-    assert (
-        selected_child.transposition_key
-        not in searcher._root_child_native_mate_exhausted_keys
-    )
-    verifier = _live_searcher()
-    mate = verifier._root_child_immediate_mate(selected_child)
-    assert mate is not None
-    assert play_series(selected_child, mate.moves).outcome == Outcome.CHECKMATE
-    assert verifier.stats.work_positions <= ROOT_CHILD_MATE_SCREEN_POSITION_LIMIT
+    assert result.stats.final_fallback_reply_mate_probes == 1
+    assert result.stats.final_fallback_reply_mate_unknown == 1
+    assert result.stats.final_fallback_reply_mate_work > 0
+    assert result.stats.generation_positions == 250_000
 
 
 def test_s7_cap32_misses_terminal_mate_that_cap832_ranks_first() -> None:

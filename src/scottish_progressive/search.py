@@ -53,7 +53,7 @@ if TYPE_CHECKING:
         SelectedPvHorizonCertification,
         SelectedPvHorizonProof,
     )
-    from .series_mate import SeriesMateProbe
+    from .series_mate import SeriesMateProbe, SeriesMateStatus
 
 
 MATE_SCORE = 1_000_000
@@ -99,6 +99,13 @@ ROOT_CURRENT_SERIES_MATE_MIN_TOTAL_WORK = 500_000
 ROOT_CURRENT_SERIES_MATE_MIN_SERIES = 5
 ROOT_CURRENT_SERIES_MATE_TIME_LIMIT_SECONDS = 1.0
 ROOT_CURRENT_SERIES_MATE_TIME_DENOMINATOR = 10
+# A depth-zero liveness fallback has not completed even one minimax iteration.
+# Before that last-resort move crosses the public boundary, give its opponent a
+# separate exact one-series mate query.  This lane is intentionally lazy and is
+# charged to the global work ledger, but not to the ordinary shared 3M root
+# screen: the ordinary screen may be the very work limit that produced the D0
+# fallback.  Only FOUND and EXHAUSTED settle the question.
+FINAL_FALLBACK_REPLY_MATE_WORK_LIMIT = 1_000_000
 # Preserve one fifth of the shared safety allowance for the established
 # staged current-series screens whenever the exact native solver is unknown.
 # At the hosted 10M search cap the exact lane still receives 1.28M work,
@@ -304,6 +311,13 @@ class SearchStats:
     root_current_series_mate_exhausted: int = 0
     root_current_series_mate_unknown: int = 0
     root_current_series_mate_work: int = 0
+    final_fallback_reply_mate_probes: int = 0
+    final_fallback_reply_mate_cache_hits: int = 0
+    final_fallback_reply_mate_found: int = 0
+    final_fallback_reply_mate_exhausted: int = 0
+    final_fallback_reply_mate_unknown: int = 0
+    final_fallback_reply_mate_work: int = 0
+    final_fallback_reply_mate_rejections: int = 0
     selected_pv_horizon_probe_calls: int = 0
     selected_pv_horizon_found: int = 0
     selected_pv_horizon_exhausted: int = 0
@@ -1465,6 +1479,121 @@ class SeriesSearcher:
             self.stats.native_series_mate_unsupported += 1
         self.stats.root_current_series_mate_unknown += 1
         return None
+
+    def _certify_final_fallback_reply_mate(
+        self,
+        state: ProgressiveState,
+    ) -> "SeriesMateStatus":
+        """Settles whether one D0 fallback permits an immediate reply mate.
+
+        This is deliberately not a selector.  FOUND rejects exactly the
+        candidate supplied by the caller; it does not advance to another
+        unchecked root.  EXHAUSTED is the sole exact-safe result.  Every
+        resource or compatibility stop remains UNKNOWN to the caller.
+        """
+
+        from .series_mate import SeriesMateStatus, find_native_series_mate
+
+        cache_key = self._tt_key(state)
+        position_key = state.transposition_key
+        if position_key in self._root_child_proven_mate_keys:
+            self.stats.final_fallback_reply_mate_cache_hits += 1
+            self.stats.final_fallback_reply_mate_found += 1
+            return SeriesMateStatus.FOUND
+        if position_key in self._root_child_native_mate_exhausted_keys:
+            self.stats.final_fallback_reply_mate_cache_hits += 1
+            self.stats.final_fallback_reply_mate_exhausted += 1
+            return SeriesMateStatus.EXHAUSTED
+
+        persistent = self._persistent_mate_proof(state)
+        if persistent is not None:
+            status, mate = persistent
+            self.stats.final_fallback_reply_mate_cache_hits += 1
+            self._root_child_mate_screen_cache[cache_key] = mate
+            self._root_child_native_mate_cache_keys.add(cache_key)
+            if status == "found":
+                assert mate is not None
+                self._mark_root_child_proven_mate(position_key)
+                self.stats.final_fallback_reply_mate_found += 1
+                return SeriesMateStatus.FOUND
+            self._mark_root_child_exact_exhausted(position_key)
+            self.stats.final_fallback_reply_mate_exhausted += 1
+            return SeriesMateStatus.EXHAUSTED
+
+        configured_work = self.limits.max_generation_positions
+        remaining_work = (
+            FINAL_FALLBACK_REPLY_MATE_WORK_LIMIT
+            if configured_work is None
+            else max(
+                0,
+                min(
+                    FINAL_FALLBACK_REPLY_MATE_WORK_LIMIT,
+                    configured_work - self.stats.generation_positions,
+                ),
+            )
+        )
+        if remaining_work < 1:
+            self.stats.final_fallback_reply_mate_unknown += 1
+            return SeriesMateStatus.WORK_LIMIT
+
+        remaining_seconds = (
+            None
+            if self._deadline is None
+            else max(0.0, self._deadline - time.perf_counter())
+        )
+        if remaining_seconds == 0:
+            self.stats.final_fallback_reply_mate_unknown += 1
+            return SeriesMateStatus.DEADLINE
+
+        self.stats.final_fallback_reply_mate_probes += 1
+        self.stats.native_series_mate_calls += 1
+        probe = find_native_series_mate(
+            state,
+            max_positions=None,
+            max_work=remaining_work,
+            time_limit_seconds=remaining_seconds,
+        )
+        work = probe.positions_visited + probe.moves_generated
+        self._record_native_series_mate_probe(
+            probe,
+            charge_root_safety=False,
+        )
+        self.stats.final_fallback_reply_mate_work += work
+        if probe.status is SeriesMateStatus.FOUND:
+            if probe.series is None:  # pragma: no cover - adapter invariant
+                raise RuntimeError("native final fallback mate status carried no line")
+            self.stats.native_series_mate_found += 1
+            self.stats.final_fallback_reply_mate_found += 1
+            self._root_child_mate_screen_cache[cache_key] = probe.series
+            self._root_child_native_mate_cache_keys.add(cache_key)
+            self._mark_root_child_proven_mate(position_key)
+            self._store_persistent_mate_proof(
+                state,
+                probe.series,
+                proof_work=work,
+            )
+            return probe.status
+        if probe.status is SeriesMateStatus.EXHAUSTED:
+            self.stats.native_series_mate_exhausted += 1
+            self.stats.final_fallback_reply_mate_exhausted += 1
+            self._root_child_mate_screen_cache[cache_key] = None
+            self._root_child_native_mate_cache_keys.add(cache_key)
+            self._mark_root_child_exact_exhausted(position_key)
+            self._store_persistent_mate_proof(
+                state,
+                None,
+                proof_work=work,
+                exhausted=True,
+            )
+            return probe.status
+        if probe.status is SeriesMateStatus.WORK_LIMIT:
+            self.stats.native_series_mate_work_limit_hits += 1
+        elif probe.status is SeriesMateStatus.DEADLINE:
+            self.stats.native_series_mate_deadline_hits += 1
+        else:
+            self.stats.native_series_mate_unsupported += 1
+        self.stats.final_fallback_reply_mate_unknown += 1
+        return probe.status
 
     def _selected_pv_horizon_probe(
         self,
@@ -4464,9 +4593,10 @@ class SeriesSearcher:
                     prior_mate_quarantined,
                 )
                 self._record_root_policy_move_only_fallback()
-                # Every score/PV claim from this depth is discarded. The
-                # deterministic legal series may now cross the boundary solely
-                # as the explicitly D0/root-evaluation liveness fallback.
+                # Every score/PV claim from this depth is discarded. Retain the
+                # deterministic legal series only as a provisional D0/root-
+                # evaluation candidate; the final exact reply-mate gate still
+                # decides whether any move may cross the public boundary.
                 self._root_mate_claim_quarantines.discard(
                     pending.fallback.machine_notation
                 )
@@ -4534,9 +4664,10 @@ class SeriesSearcher:
                             best_pv = ()
                             alternatives = ()
                     else:
-                        # This is a move-only liveness fallback. Keep the
+                        # This is only a provisional move candidate. Keep the
                         # explicitly labeled root evaluation rather than
-                        # pretending the chosen series completed a search.
+                        # pretending the chosen series completed a search; the
+                        # final exact gate may still withhold it.
                         best_score = root_evaluation.total
                         fallback_rejected = any(
                             self._root_policy_rejection_flags(
@@ -4602,8 +4733,9 @@ class SeriesSearcher:
                     # The current depth learned that the retained A is unsafe,
                     # then repair reached a position requiring manual proof.
                     # Preserve that honest adjudication state, but never revive
-                    # A: an explicitly unvetoed current-frontier B may survive
-                    # only as an unevaluated move-only fallback.
+                    # A: an explicitly unvetoed current-frontier B may remain
+                    # only as an unevaluated provisional fallback pending the
+                    # final exact reply-mate gate.
                     self._selective = True
                     self._root_scores_complete = False
                     adjudication = "manual-proof-required"
@@ -4671,11 +4803,12 @@ class SeriesSearcher:
                         alternatives = ()
                     break
                 if isinstance(pending, _RootAdjudicationPending):
-                    # No iteration completed, but root generation did. Return
-                    # its first deterministic legal series solely so engine
-                    # play remains live. Score/proof/alternatives deliberately
-                    # stay at the root/no-proof values because the child was
-                    # not adjudicated or evaluated.
+                    # No iteration completed, but root generation did. Stage
+                    # its first deterministic legal series as a provisional
+                    # fallback. Score/proof/alternatives deliberately stay at
+                    # the root/no-proof values because the child was not
+                    # adjudicated or evaluated; the final exact gate may still
+                    # withhold the move.
                     self._selective = True
                     self._root_scores_complete = False
                     adjudication = "manual-proof-required"
@@ -4776,9 +4909,10 @@ class SeriesSearcher:
             and not selected_mate_claim_publishable
         ):
             # Defense in depth for interrupted/repaired paths that do not pass
-            # through the ordinary candidate-local quarantine. UNKNOWN may keep
-            # a legal root-only move, but it may never retain a mate-looking
-            # score, a completed depth, alternatives, or a continuation.
+            # through the ordinary candidate-local quarantine. UNKNOWN may
+            # stage a legal root-only candidate for the final exact gate, but it
+            # may never retain a mate-looking score, a completed depth,
+            # alternatives, or a continuation.
             self.stats.root_mate_claim_final_discards += 1
             self._selective = True
             self._root_scores_complete = False
@@ -4788,6 +4922,37 @@ class SeriesSearcher:
             alternatives = ()
             best_proof = None
             completed_depth = 0
+
+        if (
+            completed_depth == 0
+            and best_pv
+            and best_pv[0].outcome is None
+        ):
+            # No minimax iteration certified this nonterminal move.  Settle the
+            # one exact safety question that matters before publishing it: can
+            # the opponent end the game in the immediately following series?
+            # If that question is adverse or unresolved, publish no move.  In
+            # particular, never substitute an unchecked sibling and never call
+            # one proven-mating child evidence that every legal root loses.
+            from .series_mate import SeriesMateStatus
+
+            fallback_status = self._certify_final_fallback_reply_mate(
+                best_pv[0].final_state
+            )
+            if fallback_status is not SeriesMateStatus.EXHAUSTED:
+                if fallback_status is SeriesMateStatus.FOUND:
+                    self.stats.final_fallback_reply_mate_rejections += 1
+                elif fallback_status is SeriesMateStatus.DEADLINE:
+                    timed_out = True
+                elif fallback_status is SeriesMateStatus.WORK_LIMIT:
+                    work_limit_reached = True
+                self._selective = True
+                self._root_scores_complete = False
+                completed_root_scores_complete = False
+                best_score = root_evaluation.total
+                best_pv = ()
+                alternatives = ()
+                best_proof = None
 
         elapsed = time.perf_counter() - started
         work_limit_reached = (

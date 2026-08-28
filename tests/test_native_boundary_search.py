@@ -862,7 +862,9 @@ def test_collect_all_s4_at_250k_fails_closed_without_partial_scores(
     assert result.proof is None
     assert not result.root_scores_complete
     assert result.stats.root_safety_proven_mate_children > 0
-    assert result.stats.native_series_mate_work_limit_hits == 1
+    assert result.stats.native_series_mate_work_limit_hits == 2
+    assert result.stats.final_fallback_reply_mate_probes == 1
+    assert result.stats.final_fallback_reply_mate_unknown == 1
 
 
 def test_timed_native_search_keeps_last_completed_iteration_on_deadline(
