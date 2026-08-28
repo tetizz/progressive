@@ -664,12 +664,12 @@ def test_shared_policy_constants_match_the_promoted_browser_receipt() -> None:
     receipt = json.loads(raw)
 
     assert hashlib.sha256(raw).hexdigest() == checked_record["sha256"]
-    assert receipt["schema"] == "spc-opera-checked-pv-horizon-receipt-v5"
+    assert receipt["schema"] == "spc-opera-checked-pv-horizon-receipt-v6"
     assert receipt["source_fingerprint"] == release["artifact"]["source_fingerprint"]
     assert receipt["wasm_sha256"] == release["artifact"]["wasm_sha256"]
     assert receipt["module_js_sha256"] == release["artifact"]["module_js_sha256"]
     assert receipt["best_full_series"] == ["b2b3"]
-    assert receipt["selection_policy"] == BROWSER_CHECKED_PV_SELECTION_POLICY
+    assert receipt["selection_policy"] == SELECTED_PV_SELECTION_POLICY
     assert receipt["same_root_repair_policy"] == {
         "schema": SAME_ROOT_HORIZON_REPAIR_POLICY_SCHEMA,
         "maximum_successful_same_root_repairs": MAX_SAME_ROOT_HORIZON_REPAIRS,
