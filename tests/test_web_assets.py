@@ -179,6 +179,54 @@ def test_checked_horizon_capture_compares_canonical_contracts_and_exact_hit_mask
     ) in capture
     assert "if (!matchesExpectedSafety(safety, expected)) continue;" not in capture
     assert "const matchesExpectedSafety" not in capture
+
+
+def test_safe_reselection_capture_uses_public_artifact_bound_production_path() -> None:
+    capture = (ROOT / "benchmarks" / "capture_opera_safe_reselection.mjs").read_text(
+        encoding="utf-8"
+    )
+
+    for contract in (
+        '"--candidate-receipt-url"',
+        "await client.preflight({",
+        "result = await client.analyzeRoot({",
+        'schema: "spc-opera-safe-reselection-receipt-v1"',
+        'status: "passed-not-certified"',
+        "product_publishable: false",
+        '"rnbqkb1r/pppp2pp/4p3/5p2/8/5P1N/PPPP1KPP/RNBn1B1R w kq - 0 7"',
+        '"f2e2", "d2d4", "c1g5", "g5d8", "d8e7"',
+        '"rnb1kb1r/ppppB1pp/4p3/5p2/3P4/5P1N/PPP1K1PP/RN1n1B1R b kq - 1 7"',
+        'const EXPECTED_POSITION_HASH = "c3504ae0c86022bb9c79b0ed8a89361c";',
+        "const EXPECTED_GENERATION_WORK = 9_213;",
+        "const EXPECTED_SELECTED_WORK = 7_276_223;",
+        "const EXPECTED_LANE_WORK = 39_737_928;",
+        "selected?.order_index === 61",
+        'selected?.frontier_stage === "widened-w512"',
+        'selected?.status === "exhausted"',
+        "safe?.isolated_session_destroyed === true",
+        "safe.isolated_worker_terminated === true",
+        '!own(result, "score")',
+        '!own(result, "proof")',
+        '!own(result, "proof_bounds")',
+        '"browser_engine_client"',
+        '"browser_root_iteration_client"',
+        '"root_iteration_coordinator"',
+        '"browser_engine_worker"',
+        '"wasm_kernel_adapter"',
+        '"compiled_module"',
+        '"compiled_wasm"',
+        'scope: "local-checkout-hash-bound-unsigned-v1"',
+    ):
+        assert contract in capture
+
+    for forbidden in (
+        "MockWorld",
+        "._runSafeRootReselect",
+        ".rootRunner",
+        "root-safe-reselector-session-create",
+        'channel.call("root-safety"',
+    ):
+        assert forbidden not in capture
     assert "unsafe_horizon" not in capture
     assert "unsafe_child_fen" not in capture
     assert "!matchesExpectedSafety(entry, f3Witness.expected)" not in capture
