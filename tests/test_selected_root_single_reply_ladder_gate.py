@@ -241,8 +241,17 @@ def test_unknown_ladder_probe_keeps_selected_root_eligible(
     assert searcher._selected_pv_root_vetoes == set()  # noqa: SLF001
 
 
+@pytest.mark.parametrize(
+    ("required_prefix", "seed_emergency"),
+    (
+        ((), False),
+        (BUCEPHALUS_3DFD_LOSING_ROOT, True),
+    ),
+)
 def test_recorded_black_s6_d0_fallback_is_rejected_at_final_publication(
     monkeypatch: pytest.MonkeyPatch,
+    required_prefix: tuple[str, ...],
+    seed_emergency: bool,
 ) -> None:
     """The actual work-limited 3dfd move cannot bypass the root-loop gate."""
 
@@ -265,6 +274,10 @@ def test_recorded_black_s6_d0_fallback_is_rejected_at_final_publication(
     )
 
     def interrupted(*_args, **_kwargs):
+        if seed_emergency:
+            searcher._selected_root_ladder_emergency_fallback = (  # noqa: SLF001
+                losing.machine_notation
+            )
         raise search_module._RootInterrupted(  # noqa: SLF001
             (),
             search_module._WorkLimit(),  # noqa: SLF001
@@ -283,7 +296,7 @@ def test_recorded_black_s6_d0_fallback_is_rejected_at_final_publication(
         exact_immediate_miss,
     )
 
-    result = searcher.run(root)
+    result = searcher.run(root, required_prefix=required_prefix)
 
     assert result.best_series is None
     assert result.principal_variation == ()
@@ -297,6 +310,11 @@ def test_recorded_black_s6_d0_fallback_is_rejected_at_final_publication(
     assert searcher.stats.selected_root_ladder_final_rejections == 1
     assert searcher.stats.selected_root_ladder_work == 628_052
     assert losing.machine_notation in searcher._selected_pv_root_vetoes  # noqa: SLF001
+    if required_prefix:
+        assert (  # noqa: SLF001
+            searcher._selected_root_ladder_emergency_fallback
+            == losing.machine_notation
+        )
 
 
 def test_final_safe_reselection_skips_recorded_ladder_and_publishes_no_rescue(
@@ -537,10 +555,19 @@ def test_selected_ladder_gate_is_color_symmetric_and_cache_is_separate() -> None
     assert searcher._root_child_native_mate_cache_keys == set()  # noqa: SLF001
 
 
-@pytest.mark.parametrize("width_complete", (True, False))
+@pytest.mark.parametrize(
+    ("width_complete", "required_prefix", "expect_emergency"),
+    (
+        (True, (), True),
+        (False, (), False),
+        (True, ("a1b1",), False),
+    ),
+)
 def test_all_ladder_vetoes_require_exact_frontier_for_least_bad_resistance(
     monkeypatch: pytest.MonkeyPatch,
     width_complete: bool,
+    required_prefix: tuple[str, ...],
+    expect_emergency: bool,
 ) -> None:
     root = ProgressiveState.from_fen(
         "7k/8/8/8/8/8/r7/K7 w - - 0 1",
@@ -617,10 +644,12 @@ def test_all_ladder_vetoes_require_exact_frontier_for_least_bad_resistance(
         lambda *_args: _not_applicable(),
     )
 
-    result = searcher.run(root)
-    assert widening_exclusions == [frozenset()]
+    result = searcher.run(root, required_prefix=required_prefix)
+    assert widening_exclusions == [
+        frozenset() if not required_prefix else frozenset(scored)
+    ]
 
-    if not width_complete:
+    if not expect_emergency:
         assert result.best_series is None
         assert result.principal_variation == ()
         assert result.alternatives == ()

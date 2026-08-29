@@ -5050,6 +5050,7 @@ class SeriesSearcher:
                     if (
                         horizon_vetoes == ladder_vetoes
                         and not mate_claim_quarantines
+                        and not required_prefix
                     ):
                         widening_exclusions = frozenset()
                     widened_frontier = (
@@ -5066,6 +5067,7 @@ class SeriesSearcher:
                         horizon_vetoes == ladder_vetoes
                         and ladder_vetoed_candidates
                         and not mate_claim_quarantines
+                        and not required_prefix
                         and widened_frontier is not None
                         and widened_frontier.width_complete
                     ):
@@ -5917,8 +5919,11 @@ class SeriesSearcher:
             if (
                 ladder_probe is not None
                 and ladder_probe.proven_losing
-                and best_pv[0].machine_notation
-                != self._selected_root_ladder_emergency_fallback
+                and (
+                    required_prefix
+                    or best_pv[0].machine_notation
+                    != self._selected_root_ladder_emergency_fallback
+                )
             ):
                 notation = best_pv[0].machine_notation
                 self._selected_pv_root_vetoes.add(notation)
