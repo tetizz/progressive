@@ -196,6 +196,7 @@ def test_isolated_native_mate_has_its_own_strict_identity_and_surface() -> None:
     assert native.SOURCE_IDENTITY == series_mate._native_mate_source_identity()
     assert {name for name in dir(native) if not name.startswith("__")} == {
         "SOURCE_IDENTITY",
+        "find_single_reply_mate_ladder",
         "find_series_mate",
     }
     assert series_mate._validated_native_mate_module(native) is native

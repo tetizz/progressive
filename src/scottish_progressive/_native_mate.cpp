@@ -136,6 +136,32 @@ struct SeriesMateSearchResponse {
     std::vector<std::string> moves;
 };
 
+struct SingleReplyMateLadderStats {
+    std::uint64_t attack_positions_visited = 0;
+    std::uint64_t attack_moves_generated = 0;
+    std::uint64_t reply_positions_visited = 0;
+    std::uint64_t reply_moves_generated = 0;
+    std::uint64_t mate_positions_visited = 0;
+    std::uint64_t mate_moves_generated = 0;
+    std::uint64_t attack_transpositions_merged = 0;
+    std::uint64_t mate_transpositions_merged = 0;
+    std::uint64_t checking_series = 0;
+    std::uint64_t forced_counterchecks = 0;
+    std::uint64_t mate_probes = 0;
+    std::uint64_t peak_attack_frontier = 0;
+    std::uint64_t attack_max_depth_reached = 0;
+    std::uint64_t mate_max_depth_reached = 0;
+};
+
+struct SingleReplyMateLadderResponse {
+    SeriesMateSearchStatus status = SeriesMateSearchStatus::Exhausted;
+    std::string message;
+    SingleReplyMateLadderStats stats;
+    std::vector<std::string> attack_moves;
+    std::vector<std::string> forced_reply_moves;
+    std::vector<std::string> mate_moves;
+};
+
 constexpr std::array<std::array<int, 2>, 8> KNIGHT_DELTAS = {{
     {{-2, -1}}, {{-2, 1}}, {{-1, -2}}, {{-1, 2}},
     {{1, -2}}, {{1, 2}}, {{2, -1}}, {{2, 1}},
@@ -1151,6 +1177,328 @@ struct MateSearchNodeWorse {
     return response;
 }
 
+[[nodiscard]] std::uint64_t ladder_saturating_sum(
+    std::uint64_t left,
+    std::uint64_t right
+) noexcept {
+    return right > std::numeric_limits<std::uint64_t>::max() - left
+        ? std::numeric_limits<std::uint64_t>::max()
+        : left + right;
+}
+
+[[nodiscard]] std::uint64_t single_reply_ladder_work(
+    const SingleReplyMateLadderStats& stats
+) noexcept {
+    std::uint64_t work = 0;
+    for (const std::uint64_t value : {
+             stats.attack_positions_visited,
+             stats.attack_moves_generated,
+             stats.reply_positions_visited,
+             stats.reply_moves_generated,
+             stats.mate_positions_visited,
+             stats.mate_moves_generated,
+         }) {
+        work = ladder_saturating_sum(work, value);
+    }
+    return work;
+}
+
+[[nodiscard]] bool charge_single_reply_ladder_work(
+    const SeriesMateSearchRequest& request,
+    SingleReplyMateLadderStats& stats,
+    std::uint64_t& counter
+) noexcept {
+    const std::uint64_t used = single_reply_ladder_work(stats);
+    if (request.max_work.has_value() && used >= *request.max_work) {
+        return false;
+    }
+    counter = ladder_saturating_sum(counter, 1);
+    return true;
+}
+
+void add_single_reply_mate_stats(
+    SingleReplyMateLadderStats& total,
+    const SeriesMateSearchStats& added
+) noexcept {
+    total.mate_positions_visited = ladder_saturating_sum(
+        total.mate_positions_visited,
+        added.positions_visited
+    );
+    total.mate_moves_generated = ladder_saturating_sum(
+        total.mate_moves_generated,
+        added.moves_generated
+    );
+    total.mate_transpositions_merged = ladder_saturating_sum(
+        total.mate_transpositions_merged,
+        added.transpositions_merged
+    );
+    total.mate_max_depth_reached = std::max(
+        total.mate_max_depth_reached,
+        added.max_depth_reached
+    );
+}
+
+[[nodiscard]] SingleReplyMateLadderResponse find_single_reply_mate_ladder(
+    const SeriesMateSearchRequest& request
+) {
+    SingleReplyMateLadderResponse response;
+    if (
+        request.series_number < 1
+        || request.series_number > 254
+        || king_square(evaluation_position(request.board), WHITE) < 0
+        || king_square(evaluation_position(request.board), BLACK) < 0
+    ) {
+        response.status = SeriesMateSearchStatus::Unsupported;
+        response.message = "native single-reply ladder request is out of range";
+        return response;
+    }
+    if (mate_search_deadline_reached(request)) {
+        response.status = SeriesMateSearchStatus::Deadline;
+        response.message = "native single-reply ladder deadline reached";
+        return response;
+    }
+
+    const bool attacker = request.board.white_to_move;
+    MateSearchNode root{
+        request.board,
+        {},
+        0,
+        mate_covering_priority(
+            request.board,
+            attacker,
+            0,
+            request.series_number
+        ),
+    };
+    std::priority_queue<
+        MateSearchNode,
+        std::vector<MateSearchNode>,
+        MateSearchNodeWorse
+    > open;
+    open.push(std::move(root));
+    std::unordered_map<
+        MateSearchIdentity,
+        std::size_t,
+        MateSearchIdentityHash
+    > minimum_depth;
+    minimum_depth.emplace(mate_search_identity(request.board, 0), 0);
+    response.stats.peak_attack_frontier = 1;
+
+    while (!open.empty()) {
+        if (mate_search_deadline_reached(request)) {
+            response.status = SeriesMateSearchStatus::Deadline;
+            response.message = "native single-reply ladder deadline reached";
+            return response;
+        }
+        if (
+            !charge_single_reply_ladder_work(
+                request,
+                response.stats,
+                response.stats.attack_positions_visited
+            )
+        ) {
+            response.status = SeriesMateSearchStatus::WorkLimit;
+            response.message = "native single-reply ladder work limit reached";
+            return response;
+        }
+
+        MateSearchNode item = open.top();
+        open.pop();
+        const std::size_t depth = item.moves.size();
+        const auto seen = minimum_depth.find(
+            mate_search_identity(item.board, item.pending_ep_targets)
+        );
+        if (seen != minimum_depth.end() && depth > seen->second) {
+            continue;
+        }
+        response.stats.attack_max_depth_reached = std::max(
+            response.stats.attack_max_depth_reached,
+            static_cast<std::uint64_t>(depth)
+        );
+
+        const auto variants = expand_legal_move_variants(
+            item.board,
+            depth == 0 ? request.ep_targets : std::vector<int>{}
+        );
+        for (const auto& expanded : variants) {
+            if (
+                (response.stats.attack_moves_generated & 63U) == 0
+                && mate_search_deadline_reached(request)
+            ) {
+                response.status = SeriesMateSearchStatus::Deadline;
+                response.message = "native single-reply ladder deadline reached";
+                return response;
+            }
+            if (
+                !charge_single_reply_ladder_work(
+                    request,
+                    response.stats,
+                    response.stats.attack_moves_generated
+                )
+            ) {
+                response.status = SeriesMateSearchStatus::WorkLimit;
+                response.message = "native single-reply ladder work limit reached";
+                return response;
+            }
+
+            std::vector<std::string> attack_moves = item.moves;
+            attack_moves.push_back(expanded.move.uci);
+            Bitboard attack_pending_ep_targets = item.pending_ep_targets;
+            update_pending_ep_targets(
+                attack_pending_ep_targets,
+                expanded,
+                attacker
+            );
+
+            if (expanded.delivered_check) {
+                ++response.stats.checking_series;
+                if (
+                    !charge_single_reply_ladder_work(
+                        request,
+                        response.stats,
+                        response.stats.reply_positions_visited
+                    )
+                ) {
+                    response.status = SeriesMateSearchStatus::WorkLimit;
+                    response.message =
+                        "native single-reply ladder work limit reached";
+                    return response;
+                }
+                const auto reply_ep_targets = canonical_boundary_ep_targets(
+                    expanded.child,
+                    attack_pending_ep_targets
+                );
+                const auto replies = expand_legal_move_variants(
+                    expanded.child,
+                    reply_ep_targets
+                );
+                for (std::size_t index = 0; index < replies.size(); ++index) {
+                    if (
+                        !charge_single_reply_ladder_work(
+                            request,
+                            response.stats,
+                            response.stats.reply_moves_generated
+                        )
+                    ) {
+                        response.status = SeriesMateSearchStatus::WorkLimit;
+                        response.message =
+                            "native single-reply ladder work limit reached";
+                        return response;
+                    }
+                }
+                if (replies.size() != 1 || !replies.front().delivered_check) {
+                    continue;
+                }
+
+                ++response.stats.forced_counterchecks;
+                const auto& forced_reply = replies.front();
+                Bitboard reply_pending_ep_targets = 0;
+                update_pending_ep_targets(
+                    reply_pending_ep_targets,
+                    forced_reply,
+                    !attacker
+                );
+                const auto mate_ep_targets = canonical_boundary_ep_targets(
+                    forced_reply.child,
+                    reply_pending_ep_targets
+                );
+                if (!has_legal_move(forced_reply.child, mate_ep_targets)) {
+                    // The forced countercheck itself mated the attacker, so it
+                    // cannot prove an attacker A/B/C winning ladder.
+                    continue;
+                }
+
+                const std::uint64_t used = single_reply_ladder_work(
+                    response.stats
+                );
+                if (request.max_work.has_value() && used >= *request.max_work) {
+                    response.status = SeriesMateSearchStatus::WorkLimit;
+                    response.message =
+                        "native single-reply ladder work limit reached";
+                    return response;
+                }
+                SeriesMateSearchRequest mate_request{
+                    forced_reply.child,
+                    request.series_number + 2,
+                    mate_ep_targets,
+                    std::nullopt,
+                    request.deadline,
+                    request.max_work.has_value()
+                        ? std::optional<std::uint64_t>{*request.max_work - used}
+                        : std::nullopt,
+                };
+                ++response.stats.mate_probes;
+                SeriesMateSearchResponse mate = find_series_mate(mate_request);
+                add_single_reply_mate_stats(response.stats, mate.stats);
+                if (mate.status == SeriesMateSearchStatus::Found) {
+                    response.status = SeriesMateSearchStatus::Found;
+                    response.message =
+                        "native single-reply countercheck mate ladder found";
+                    response.attack_moves = std::move(attack_moves);
+                    response.forced_reply_moves = {forced_reply.move.uci};
+                    response.mate_moves = std::move(mate.moves);
+                    return response;
+                }
+                if (mate.status == SeriesMateSearchStatus::Exhausted) {
+                    continue;
+                }
+                response.status = mate.status;
+                response.message = "native single-reply ladder mate probe: "
+                    + mate.message;
+                return response;
+            }
+            if (
+                attack_moves.size()
+                >= static_cast<std::uint64_t>(request.series_number)
+            ) {
+                continue;
+            }
+
+            BoardState child = expanded.child;
+            child.white_to_move = attacker;
+            const auto identity = mate_search_identity(
+                child,
+                attack_pending_ep_targets
+            );
+            const auto [found, inserted] = minimum_depth.emplace(
+                identity,
+                attack_moves.size()
+            );
+            // At an identical board plus pending-e.p. state, a shallower path
+            // has at least as many moves left to reach any checking boundary.
+            // Accepted A and B series both end by check, so earlier quiet/
+            // progress history cannot change their boundary adjudication.
+            // The deeper path is therefore existence-dominated exactly.
+            if (!inserted && found->second <= attack_moves.size()) {
+                ++response.stats.attack_transpositions_merged;
+                continue;
+            }
+            if (!inserted) {
+                found->second = attack_moves.size();
+            }
+            open.push(MateSearchNode{
+                child,
+                std::move(attack_moves),
+                attack_pending_ep_targets,
+                mate_covering_priority(
+                    child,
+                    attacker,
+                    depth + 1,
+                    request.series_number
+                ),
+            });
+            response.stats.peak_attack_frontier = std::max(
+                response.stats.peak_attack_frontier,
+                static_cast<std::uint64_t>(open.size())
+            );
+        }
+    }
+
+    response.status = SeriesMateSearchStatus::Exhausted;
+    response.message = "native single-reply ladder state space exhausted";
+    return response;
+}
+
 #if defined(__EMSCRIPTEN__) && defined(SPC_NATIVE_CORE_ONLY)
 struct FastMatePrepass {
     bool decisive = false;
@@ -2060,11 +2408,96 @@ IntegerParseStatus parse_optional_u64(
     return result;
 }
 
+[[nodiscard]] PyObject* single_reply_ladder_stats_tuple(
+    const SingleReplyMateLadderStats& stats
+) {
+    const std::array<std::uint64_t, 14> values = {
+        stats.attack_positions_visited,
+        stats.attack_moves_generated,
+        stats.reply_positions_visited,
+        stats.reply_moves_generated,
+        stats.mate_positions_visited,
+        stats.mate_moves_generated,
+        stats.attack_transpositions_merged,
+        stats.mate_transpositions_merged,
+        stats.checking_series,
+        stats.forced_counterchecks,
+        stats.mate_probes,
+        stats.peak_attack_frontier,
+        stats.attack_max_depth_reached,
+        stats.mate_max_depth_reached,
+    };
+    PyObject* result = PyTuple_New(static_cast<Py_ssize_t>(values.size()));
+    if (result == nullptr) {
+        return nullptr;
+    }
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        PyObject* value = PyLong_FromUnsignedLongLong(values[index]);
+        if (value == nullptr) {
+            Py_DECREF(result);
+            return nullptr;
+        }
+        PyTuple_SET_ITEM(result, static_cast<Py_ssize_t>(index), value);
+    }
+    return result;
+}
+
+[[nodiscard]] PyObject* single_reply_ladder_response_tuple(
+    const SingleReplyMateLadderResponse& response
+) {
+    PyObject* status = PyLong_FromLong(static_cast<long>(response.status));
+    PyObject* message = PyUnicode_FromString(response.message.c_str());
+    PyObject* stats = single_reply_ladder_stats_tuple(response.stats);
+    PyObject* attack = string_tuple(response.attack_moves);
+    PyObject* reply = string_tuple(response.forced_reply_moves);
+    PyObject* mate = string_tuple(response.mate_moves);
+    if (
+        status == nullptr
+        || message == nullptr
+        || stats == nullptr
+        || attack == nullptr
+        || reply == nullptr
+        || mate == nullptr
+    ) {
+        Py_XDECREF(status);
+        Py_XDECREF(message);
+        Py_XDECREF(stats);
+        Py_XDECREF(attack);
+        Py_XDECREF(reply);
+        Py_XDECREF(mate);
+        return nullptr;
+    }
+    PyObject* result = PyTuple_New(6);
+    if (result == nullptr) {
+        Py_DECREF(status);
+        Py_DECREF(message);
+        Py_DECREF(stats);
+        Py_DECREF(attack);
+        Py_DECREF(reply);
+        Py_DECREF(mate);
+        return nullptr;
+    }
+    PyTuple_SET_ITEM(result, 0, status);
+    PyTuple_SET_ITEM(result, 1, message);
+    PyTuple_SET_ITEM(result, 2, stats);
+    PyTuple_SET_ITEM(result, 3, attack);
+    PyTuple_SET_ITEM(result, 4, reply);
+    PyTuple_SET_ITEM(result, 5, mate);
+    return result;
+}
+
 [[nodiscard]] PyObject* unsupported_integer_response() {
     SeriesMateSearchResponse response;
     response.status = SeriesMateSearchStatus::Unsupported;
     response.message = "native series-mate integer argument is out of range";
     return series_mate_response_tuple(response);
+}
+
+[[nodiscard]] PyObject* unsupported_ladder_integer_response() {
+    SingleReplyMateLadderResponse response;
+    response.status = SeriesMateSearchStatus::Unsupported;
+    response.message = "native single-reply ladder integer argument is out of range";
+    return single_reply_ladder_response_tuple(response);
 }
 
 PyObject* py_find_series_mate(PyObject*, PyObject* arguments) {
@@ -2257,7 +2690,193 @@ PyObject* py_find_series_mate(PyObject*, PyObject* arguments) {
     return series_mate_response_tuple(response);
 }
 
+PyObject* py_find_single_reply_mate_ladder(PyObject*, PyObject* arguments) {
+    PyObject* pawns_object = nullptr;
+    PyObject* knights_object = nullptr;
+    PyObject* bishops_object = nullptr;
+    PyObject* rooks_object = nullptr;
+    PyObject* queens_object = nullptr;
+    PyObject* kings_object = nullptr;
+    PyObject* white_occupied_object = nullptr;
+    PyObject* black_occupied_object = nullptr;
+    PyObject* promoted_object = nullptr;
+    PyObject* castling_rights_object = nullptr;
+    int white_to_move = 0;
+    PyObject* series_number_object = nullptr;
+    PyObject* ep_targets_object = nullptr;
+    PyObject* remaining_nanoseconds_object = nullptr;
+    PyObject* max_work_object = nullptr;
+    if (!PyArg_ParseTuple(
+            arguments,
+            "OOOOOOOOOOpOOOO:find_single_reply_mate_ladder",
+            &pawns_object,
+            &knights_object,
+            &bishops_object,
+            &rooks_object,
+            &queens_object,
+            &kings_object,
+            &white_occupied_object,
+            &black_occupied_object,
+            &promoted_object,
+            &castling_rights_object,
+            &white_to_move,
+            &series_number_object,
+            &ep_targets_object,
+            &remaining_nanoseconds_object,
+            &max_work_object
+        )) {
+        return nullptr;
+    }
+
+    std::array<std::uint64_t, 10> words{};
+    const std::array<PyObject*, 10> word_objects = {
+        pawns_object,
+        knights_object,
+        bishops_object,
+        rooks_object,
+        queens_object,
+        kings_object,
+        white_occupied_object,
+        black_occupied_object,
+        promoted_object,
+        castling_rights_object,
+    };
+    for (std::size_t index = 0; index < word_objects.size(); ++index) {
+        const auto status = parse_u64(word_objects[index], words[index]);
+        if (status == IntegerParseStatus::OutOfRange) {
+            return unsupported_ladder_integer_response();
+        }
+        if (status == IntegerParseStatus::Error) {
+            return nullptr;
+        }
+    }
+    std::int64_t series_number = 0;
+    const auto series_status = parse_i64(series_number_object, series_number);
+    if (series_status == IntegerParseStatus::OutOfRange) {
+        return unsupported_ladder_integer_response();
+    }
+    if (series_status == IntegerParseStatus::Error) {
+        return nullptr;
+    }
+
+    std::vector<int> ep_targets;
+    std::optional<std::uint64_t> remaining_nanoseconds;
+    std::optional<std::uint64_t> max_work;
+    try {
+        const auto squares_status = parse_square_sequence(
+            ep_targets_object,
+            ep_targets
+        );
+        if (squares_status == IntegerParseStatus::OutOfRange) {
+            return unsupported_ladder_integer_response();
+        }
+        if (squares_status == IntegerParseStatus::Error) {
+            return nullptr;
+        }
+        auto status = parse_optional_u64(
+            remaining_nanoseconds_object,
+            remaining_nanoseconds,
+            false,
+            "remaining_nanoseconds"
+        );
+        if (status == IntegerParseStatus::OutOfRange) {
+            return unsupported_ladder_integer_response();
+        }
+        if (status == IntegerParseStatus::Error) {
+            return nullptr;
+        }
+        status = parse_optional_u64(
+            max_work_object,
+            max_work,
+            true,
+            "max_work"
+        );
+        if (status == IntegerParseStatus::OutOfRange) {
+            return unsupported_ladder_integer_response();
+        }
+        if (status == IntegerParseStatus::Error) {
+            return nullptr;
+        }
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    } catch (const std::length_error&) {
+        return PyErr_NoMemory();
+    } catch (...) {
+        PyErr_SetString(
+            PyExc_RuntimeError,
+            "native single-reply ladder argument parsing failed"
+        );
+        return nullptr;
+    }
+
+    SeriesMateSearchRequest request{
+        {
+            words[0],
+            words[1],
+            words[2],
+            words[3],
+            words[4],
+            words[5],
+            {words[7], words[6]},
+            words[8],
+            words[9],
+            white_to_move != 0,
+        },
+        series_number,
+        std::move(ep_targets),
+        std::nullopt,
+        std::nullopt,
+        max_work,
+    };
+    if (remaining_nanoseconds.has_value()) {
+        const auto now = std::chrono::steady_clock::now();
+        const auto bounded = std::min<std::uint64_t>(
+            *remaining_nanoseconds,
+            static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())
+        );
+        const auto requested = std::chrono::duration_cast<
+            std::chrono::steady_clock::duration
+        >(std::chrono::nanoseconds(static_cast<std::int64_t>(bounded)));
+        const auto maximum = std::chrono::steady_clock::time_point::max() - now;
+        request.deadline = now + std::min(requested, maximum);
+    }
+
+    SingleReplyMateLadderResponse response;
+    std::exception_ptr failure;
+    PyThreadState* saved_thread = PyEval_SaveThread();
+    try {
+        response = find_single_reply_mate_ladder(request);
+    } catch (...) {
+        failure = std::current_exception();
+    }
+    PyEval_RestoreThread(saved_thread);
+    try {
+        if (failure != nullptr) {
+            std::rethrow_exception(failure);
+        }
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    } catch (const std::length_error&) {
+        return PyErr_NoMemory();
+    } catch (...) {
+        PyErr_SetString(
+            PyExc_RuntimeError,
+            "native single-reply ladder search failed"
+        );
+        return nullptr;
+    }
+    return single_reply_ladder_response_tuple(response);
+}
+
 PyMethodDef METHODS[] = {
+    {
+        "find_single_reply_mate_ladder",
+        py_find_single_reply_mate_ladder,
+        METH_VARARGS,
+        PyDoc_STR(
+            "Prove a checking-series, forced-countercheck, immediate-mate ladder."
+        )
+    },
     {
         "find_series_mate",
         py_find_series_mate,
