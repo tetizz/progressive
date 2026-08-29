@@ -179,6 +179,11 @@ def test_checked_horizon_capture_compares_canonical_contracts_and_exact_hit_mask
     ) in capture
     assert "if (!matchesExpectedSafety(safety, expected)) continue;" not in capture
     assert "const matchesExpectedSafety" not in capture
+    assert "unsafe_horizon" not in capture
+    assert "unsafe_child_fen" not in capture
+    assert "!matchesExpectedSafety(entry, f3Witness.expected)" not in capture
+    assert "safetyTrace.length === lineRejections" not in capture
+    assert "horizonResearchTrace.length === nativeRepairs" not in capture
 
 
 def test_safe_reselection_capture_uses_public_artifact_bound_production_path() -> None:
@@ -205,14 +210,23 @@ def test_safe_reselection_capture_uses_public_artifact_bound_production_path() -
         'selected?.status === "exhausted"',
         "safe?.isolated_session_destroyed === true",
         "safe.isolated_worker_terminated === true",
+        "validateAuthoritativeAssetBindings(",
+        '"spc-browser-runtime-asset-set-v1"',
+        'throw new Error("candidate ID does not commit to its runtime asset set")',
+        "workerConstructorTrace.push(Object.freeze({",
+        "const worker = new NativeWorker(resolvedUrl.href, options);",
+        'await call("Network.setCacheDisabled", { cacheDisabled: true });',
+        "workerNames.has(\"scottish-progressive-root-safe-reselector\")",
+        "observedChildBoundarySha256 === EXPECTED_CHILD_BOUNDARY_SHA256",
+        "assertedChildPositionHash === EXPECTED_POSITION_HASH",
         '!own(result, "score")',
         '!own(result, "proof")',
         '!own(result, "proof_bounds")',
-        '"browser_engine_client"',
-        '"browser_root_iteration_client"',
-        '"root_iteration_coordinator"',
-        '"browser_engine_worker"',
-        '"wasm_kernel_adapter"',
+        "browser_engine_client:",
+        "browser_root_iteration_client:",
+        "root_iteration_coordinator:",
+        "browser_engine_worker:",
+        "wasm_kernel_adapter:",
         '"compiled_module"',
         '"compiled_wasm"',
         'scope: "local-checkout-hash-bound-unsigned-v1"',
@@ -227,11 +241,50 @@ def test_safe_reselection_capture_uses_public_artifact_bound_production_path() -
         'channel.call("root-safety"',
     ):
         assert forbidden not in capture
-    assert "unsafe_horizon" not in capture
-    assert "unsafe_child_fen" not in capture
-    assert "!matchesExpectedSafety(entry, f3Witness.expected)" not in capture
-    assert "safetyTrace.length === lineRejections" not in capture
-    assert "horizonResearchTrace.length === nativeRepairs" not in capture
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is required for capture binding tests")
+def test_safe_reselection_capture_rejects_a_tampered_authoritative_asset_hash() -> None:
+    capture_uri = (
+        ROOT / "benchmarks" / "capture_opera_safe_reselection.mjs"
+    ).resolve().as_uri()
+    script = f"""
+import assert from "node:assert/strict";
+import {{ validateAuthoritativeAssetBindings }} from {json.dumps(capture_uri)};
+
+const authority = {{
+  schema: "spc-browser-runtime-asset-set-v1",
+  source_revision: "a".repeat(40),
+  artifact_set_sha256: "b".repeat(64),
+  files: [{{
+    label: "browser_engine_worker",
+    path: "browser-engine-worker.js",
+    sha256: "c".repeat(64),
+    bytes: 128,
+  }}],
+}};
+const observed = structuredClone(authority.files);
+assert.equal(
+  validateAuthoritativeAssetBindings(authority, observed, authority.source_revision),
+  true,
+);
+observed[0].sha256 = "d".repeat(64);
+assert.throws(
+  () => validateAuthoritativeAssetBindings(
+    authority,
+    observed,
+    authority.source_revision,
+  ),
+  /browser_engine_worker SHA-256 mismatch/,
+);
+"""
+    subprocess.run(
+        [str(NODE), "--input-type=module", "-e", script],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_pages_never_binds_the_certified_local_engine_to_render_identity() -> None:

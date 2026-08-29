@@ -164,6 +164,18 @@ CHECKED_HORIZON_STATIC_ASSETS = {
     "wasm_kernel_adapter": "wasm-kernel-adapter.js",
 }
 
+SAFE_RESELECTION_RUNTIME_ASSETS = {
+    "page_document": "index.html",
+    "page_styles": "styles.css",
+    "study_safety": "study-safety.js",
+    "evaluation_format": "evaluation-format.js",
+    "play_handoff": "play-handoff.js",
+    "play_timeline": "play-timeline.js",
+    **CHECKED_HORIZON_STATIC_ASSETS,
+    "board_renderer": "board-renderer.js",
+    "page_application": "app.js",
+}
+
 
 class ReleaseGateError(ValueError):
     """Raised when release evidence cannot support a promotion."""
@@ -5059,6 +5071,25 @@ def _directory_records(directory: Path) -> tuple[list[dict[str, object]], str]:
     return records, _canonical_sha256(records)
 
 
+def _browser_runtime_records(source_package: Path) -> tuple[list[dict[str, object]], str]:
+    static_directory = source_package.resolve() / "web" / "static"
+    records = []
+    for label, filename in SAFE_RESELECTION_RUNTIME_ASSETS.items():
+        path = static_directory / filename
+        if not path.is_file():
+            raise FileNotFoundError(f"browser runtime asset is missing: {path}")
+        records.append(
+            {
+                "label": label,
+                "path": filename,
+                "sha256": _sha256_file(path),
+                "bytes": path.stat().st_size,
+            }
+        )
+    records.sort(key=lambda item: str(item["label"]))
+    return records, _canonical_sha256(records)
+
+
 def stage_release_candidate(
     evidence: ValidatedEvidence,
     certificates: Mapping[str, Mapping[str, Any]],
@@ -5116,18 +5147,21 @@ def stage_release_candidate(
         bundle_builder.validate_existing_bundle(bundle_directory, source_package.resolve())
         bundle_records, bundle_set_sha256 = _directory_records(bundle_directory)
         certificate_records, certificate_set_sha256 = _directory_records(certificate_directory)
+        runtime_records, runtime_set_sha256 = _browser_runtime_records(source_package)
+        candidate_policy = {
+            "maximum_seconds": maximum_seconds,
+            "default_seconds": default_seconds,
+        }
         candidate_seed = {
             "artifact": evidence.build.identity,
             "bundle_set_sha256": bundle_set_sha256,
             "certificate_set_sha256": certificate_set_sha256,
+            "browser_runtime_set_sha256": runtime_set_sha256,
             "receipts": [
                 {key: item[key] for key in ("label", "sha256")}
                 for item in receipt_records
             ],
-            "policy": {
-                "maximum_seconds": maximum_seconds,
-                "default_seconds": default_seconds,
-            },
+            "policy": candidate_policy,
         }
         candidate_id = f"spc-browser-wasm-candidate-{_canonical_sha256(candidate_seed)[:16]}"
         candidate_receipt = {
@@ -5152,6 +5186,13 @@ def stage_release_candidate(
                 "files": bundle_records,
                 "artifact_set_sha256": bundle_set_sha256,
             },
+            "browser_runtime": {
+                "schema": "spc-browser-runtime-asset-set-v1",
+                "source_revision": evidence.build.identity["source_revision"],
+                "files": runtime_records,
+                "artifact_set_sha256": runtime_set_sha256,
+            },
+            "policy": candidate_policy,
             "certificate_set_sha256": certificate_set_sha256,
             "next_required_gate": OPERA_CHECKED_HORIZON_SCHEMA,
         }

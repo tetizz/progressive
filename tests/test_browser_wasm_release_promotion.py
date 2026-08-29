@@ -178,7 +178,7 @@ def _valid_fixture(tmp_path: Path) -> dict[str, object]:
         )
     static_directory = package / "web" / "static"
     static_directory.mkdir(parents=True, exist_ok=True)
-    for index, filename in enumerate(promoter.CHECKED_HORIZON_STATIC_ASSETS.values()):
+    for index, filename in enumerate(promoter.SAFE_RESELECTION_RUNTIME_ASSETS.values()):
         (static_directory / filename).write_text(
             f"// checked-horizon browser asset {index}: {filename}\n",
             encoding="utf-8",
@@ -2669,6 +2669,40 @@ def test_promotes_only_the_verified_bytes_and_emits_a_digest_receipt(tmp_path: P
     )
     assert staged["status"] == "staged-for-local-opera-attestation"
     assert staged["product_publishable"] is False
+    assert staged["browser_runtime"]["schema"] == (
+        "spc-browser-runtime-asset-set-v1"
+    )
+    assert staged["browser_runtime"]["source_revision"] == (
+        evidence.build.identity["source_revision"]
+    )
+    assert {
+        item["label"]: item["path"]
+        for item in staged["browser_runtime"]["files"]
+    } == promoter.SAFE_RESELECTION_RUNTIME_ASSETS
+    assert staged["browser_runtime"]["artifact_set_sha256"] == (
+        promoter._canonical_sha256(staged["browser_runtime"]["files"])
+    )
+    for item in staged["browser_runtime"]["files"]:
+        source = fixture["package"] / "web" / "static" / item["path"]
+        assert item["sha256"] == promoter._sha256_file(source)
+        assert item["bytes"] == source.stat().st_size
+    candidate_seed = {
+        "artifact": staged["artifact"],
+        "bundle_set_sha256": staged["browser_bundle"]["artifact_set_sha256"],
+        "certificate_set_sha256": staged["certificate_set_sha256"],
+        "browser_runtime_set_sha256": staged["browser_runtime"][
+            "artifact_set_sha256"
+        ],
+        "receipts": [
+            {key: item[key] for key in ("label", "sha256")}
+            for item in staged["evidence_receipts"]
+        ],
+        "policy": staged["policy"],
+    }
+    assert staged["candidate_id"] == (
+        "spc-browser-wasm-candidate-"
+        f"{promoter._canonical_sha256(candidate_seed)[:16]}"
+    )
     output = tmp_path / "release"
     release = promoter.promote_release(
         evidence,

@@ -1,4 +1,5 @@
 import { writeFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 
 
 function argumentsOf(argv) {
@@ -49,7 +50,75 @@ async function connect(url) {
 }
 
 
-async function browserProbe(candidateReceiptHref) {
+export function validateAuthoritativeAssetBindings(
+  authority,
+  observed,
+  expectedSourceRevision,
+) {
+  const SHA256 = /^[0-9a-f]{64}$/;
+  const fail = (message) => {
+    throw new Error(`authoritative browser-runtime asset binding failed: ${message}`);
+  };
+  if (
+    !authority
+    || typeof authority !== "object"
+    || Array.isArray(authority)
+    || authority.schema !== "spc-browser-runtime-asset-set-v1"
+    || authority.source_revision !== expectedSourceRevision
+    || !SHA256.test(String(authority.artifact_set_sha256 || ""))
+    || !Array.isArray(authority.files)
+    || !Array.isArray(observed)
+  ) fail("authority envelope is invalid");
+  const normalize = (record, label) => {
+    if (
+      !record
+      || typeof record !== "object"
+      || Array.isArray(record)
+      || typeof record.label !== "string"
+      || !record.label
+      || typeof record.path !== "string"
+      || !/^[A-Za-z0-9._/-]+$/.test(record.path)
+      || record.path.startsWith("/")
+      || record.path.includes("..")
+      || !SHA256.test(String(record.sha256 || ""))
+      || !Number.isSafeInteger(record.bytes)
+      || record.bytes < 1
+    ) fail(`${label} contains an invalid record`);
+    return {
+      label: record.label,
+      path: record.path,
+      sha256: record.sha256,
+      bytes: record.bytes,
+    };
+  };
+  const expected = authority.files.map((record) => normalize(record, "authority"));
+  const actual = observed.map((record) => normalize(record, "observation"));
+  const expectedLabels = new Set(expected.map((record) => record.label));
+  const actualLabels = new Set(actual.map((record) => record.label));
+  if (
+    expectedLabels.size !== expected.length
+    || actualLabels.size !== actual.length
+    || expectedLabels.size !== actualLabels.size
+    || [...expectedLabels].some((label) => !actualLabels.has(label))
+  ) fail("authority and observation labels differ");
+  const actualByLabel = new Map(actual.map((record) => [record.label, record]));
+  for (const expectedRecord of expected) {
+    const actualRecord = actualByLabel.get(expectedRecord.label);
+    if (actualRecord.path !== expectedRecord.path) {
+      fail(`${expectedRecord.label} path mismatch`);
+    }
+    if (actualRecord.sha256 !== expectedRecord.sha256) {
+      fail(`${expectedRecord.label} SHA-256 mismatch`);
+    }
+    if (actualRecord.bytes !== expectedRecord.bytes) {
+      fail(`${expectedRecord.label} byte-length mismatch`);
+    }
+  }
+  return true;
+}
+
+
+async function browserProbe(candidateReceiptHref, validateAssetBindings) {
   const SHA256 = /^[0-9a-f]{64}$/;
   const GIT_REVISION = /^[0-9a-f]{40,64}$/;
   const SOURCE_FINGERPRINT = /^[0-9a-f]{16}$/;
@@ -84,6 +153,8 @@ async function browserProbe(candidateReceiptHref) {
     + " | series=6 quiet=0 progressive_ep=- rules=scottish-modern-common-v1"
     + " quiet_draw=manual-proof-required";
   const EXPECTED_POSITION_HASH = "c3504ae0c86022bb9c79b0ed8a89361c";
+  const EXPECTED_CHILD_BOUNDARY_SHA256 =
+    "e3c72990d4e0613e1b7b3d91fe213c2cf823cc452f7f601c4cd4aaf9d552b0f6";
   const EXPECTED_GENERATION_WORK = 9_213;
   const EXPECTED_SELECTED_WORK = 7_276_223;
   const EXPECTED_LANE_WORK = 39_737_928;
@@ -92,6 +163,22 @@ async function browserProbe(candidateReceiptHref) {
   const SAFE_RESELECT_EARLY_COUNT = 32;
   const SAFE_RESELECT_EARLY_CHILD_WORK = 3_000_000;
   const SAFE_RESELECT_WIDENED_CHILD_WORK = 10_000_000;
+  const EXPECTED_RUNTIME_ASSET_PATHS = Object.freeze({
+    page_document: "index.html",
+    page_styles: "styles.css",
+    study_safety: "study-safety.js",
+    evaluation_format: "evaluation-format.js",
+    play_handoff: "play-handoff.js",
+    play_timeline: "play-timeline.js",
+    browser_engine_worker: "browser-engine-worker.js",
+    browser_engine_client: "browser-engine-client.js",
+    browser_prefix_contract: "browser-prefix-contract.js",
+    browser_root_iteration_client: "browser-root-iteration-client.js",
+    root_iteration_coordinator: "root-iteration-coordinator.js",
+    wasm_kernel_adapter: "wasm-kernel-adapter.js",
+    board_renderer: "board-renderer.js",
+    page_application: "app.js",
+  });
   const sameStrings = (left, right) => Array.isArray(left)
     && Array.isArray(right)
     && left.length === right.length
@@ -298,25 +385,145 @@ async function browserProbe(candidateReceiptHref) {
   const compiledWasmUrl = new URL(variant.wasm, engineRootUrl);
   compiledModuleUrl.searchParams.set("sha256", variant.module_js_sha256);
   compiledWasmUrl.searchParams.set("sha256", variant.wasm_sha256);
+  const runtimeAuthority = candidate.browser_runtime;
+  if (
+    !plainObject(runtimeAuthority)
+    || runtimeAuthority.schema !== "spc-browser-runtime-asset-set-v1"
+    || runtimeAuthority.source_revision !== candidate.source_revision
+    || !Array.isArray(runtimeAuthority.files)
+    || !SHA256.test(String(runtimeAuthority.artifact_set_sha256 || ""))
+    || await canonicalSha256(runtimeAuthority.files)
+      !== runtimeAuthority.artifact_set_sha256
+  ) throw new Error("candidate has no authoritative browser-runtime asset set");
+  const seedReceiptRecords = candidate.evidence_receipts?.map((record) => ({
+    label: record?.label,
+    sha256: record?.sha256,
+  }));
+  if (
+    !Array.isArray(seedReceiptRecords)
+    || seedReceiptRecords.length !== 7
+    || new Set(seedReceiptRecords.map((record) => record.label)).size !== 7
+    || seedReceiptRecords.some((record) => (
+      typeof record.label !== "string"
+      || !record.label
+      || !SHA256.test(String(record.sha256 || ""))
+    ))
+    || !plainObject(candidate.policy)
+    || !Number.isFinite(candidate.policy.maximum_seconds)
+    || !Number.isFinite(candidate.policy.default_seconds)
+  ) throw new Error("candidate cannot reproduce its cryptographic seed");
+  const candidateSeed = {
+    artifact,
+    bundle_set_sha256: candidate.browser_bundle.artifact_set_sha256,
+    certificate_set_sha256: candidate.certificate_set_sha256,
+    browser_runtime_set_sha256: runtimeAuthority.artifact_set_sha256,
+    receipts: seedReceiptRecords,
+    policy: candidate.policy,
+  };
+  const derivedCandidateId =
+    `spc-browser-wasm-candidate-${(await canonicalSha256(candidateSeed)).slice(0, 16)}`;
+  if (candidate.candidate_id !== derivedCandidateId) {
+    throw new Error("candidate ID does not commit to its runtime asset set");
+  }
+  validateAssetBindings(
+    runtimeAuthority,
+    runtimeAuthority.files,
+    candidate.source_revision,
+  );
+  const runtimePathByLabel = Object.fromEntries(runtimeAuthority.files.map((record) => (
+    [record?.label, record?.path]
+  )));
+  if (!sameJson(runtimePathByLabel, EXPECTED_RUNTIME_ASSET_PATHS)) {
+    throw new Error("candidate browser-runtime authority omits an executed page asset");
+  }
+  const runtimeRecordByLabel = new Map(runtimeAuthority.files.map((record) => (
+    [record.label, record]
+  )));
+  const workerAuthority = runtimeRecordByLabel.get("browser_engine_worker");
+  const adapterAuthority = runtimeRecordByLabel.get("wasm_kernel_adapter");
   const workerUrl = new URL("./browser-engine-worker.js", location.href);
-  workerUrl.searchParams.set("safe-reselection", manifestAsset.sha256.slice(0, 16));
-  const pageAssetEntries = await Promise.all([
-    ["page_document", new URL(location.href)],
-    ["browser_engine_client", new URL("./browser-engine-client.js", location.href)],
-    ["browser_prefix_contract", new URL("./browser-prefix-contract.js", location.href)],
-    ["browser_root_iteration_client", new URL(
-      "./browser-root-iteration-client.js", location.href,
-    )],
-    ["root_iteration_coordinator", new URL(
-      "./root-iteration-coordinator.js", location.href,
-    )],
-    ["browser_engine_worker", workerUrl],
-    ["wasm_kernel_adapter", new URL("./wasm-kernel-adapter.js", location.href)],
+  workerUrl.searchParams.set("worker_sha256", workerAuthority.sha256);
+  workerUrl.searchParams.set("adapter_sha256", adapterAuthority.sha256);
+  const adapterUrl = new URL("./wasm-kernel-adapter.js", location.href);
+  adapterUrl.search = workerUrl.search;
+  const runtimeAssetEntries = await Promise.all(runtimeAuthority.files.map(
+    async (record) => {
+      const url = record.label === "page_document"
+        ? new URL(location.href)
+        : record.label === "browser_engine_worker"
+          ? workerUrl
+          : record.label === "wasm_kernel_adapter"
+            ? adapterUrl
+            : new URL(`./${record.path}`, location.href);
+      return [record.label, await fetchAsset(url, record.label)];
+    },
+  ));
+  const observedRuntimeRecords = runtimeAssetEntries.map(([label, assetValue]) => ({
+    label,
+    path: runtimeRecordByLabel.get(label).path,
+    sha256: assetValue.sha256,
+    bytes: assetValue.byte_length,
+  }));
+  validateAssetBindings(
+    runtimeAuthority,
+    observedRuntimeRecords,
+    candidate.source_revision,
+  );
+  const runtimeAssets = Object.fromEntries(runtimeAssetEntries);
+  const pageSource = new TextDecoder("utf-8", { fatal: true }).decode(
+    runtimeAssets.page_document.bytes,
+  );
+  const parsedPage = new DOMParser().parseFromString(pageSource, "text/html");
+  if (parsedPage.querySelector("parsererror")) {
+    throw new Error("the bound page document could not be parsed");
+  }
+  const pageRoot = new URL("./", location.href);
+  const relativePagePath = (value) => {
+    const resolved = new URL(value, location.href);
+    if (
+      resolved.origin !== location.origin
+      || !resolved.pathname.startsWith(pageRoot.pathname)
+    ) throw new Error("the page executes an asset outside its bound directory");
+    return resolved.pathname.slice(pageRoot.pathname.length);
+  };
+  const scriptElements = [...parsedPage.querySelectorAll("script")];
+  if (scriptElements.some((element) => (
+    !element.getAttribute("src") || element.textContent.trim() !== ""
+  ))) throw new Error("the bound page contains an unrecorded inline script");
+  const observedScriptPaths = scriptElements.map((element) => (
+    relativePagePath(element.getAttribute("src"))
+  )).sort();
+  const expectedScriptPaths = Object.entries(EXPECTED_RUNTIME_ASSET_PATHS)
+    .filter(([label, path]) => (
+      label !== "page_document"
+      && label !== "page_styles"
+      && label !== "browser_engine_worker"
+      && label !== "wasm_kernel_adapter"
+      && path.endsWith(".js")
+    ))
+    .map(([, path]) => path)
+    .sort();
+  if (!sameStrings(observedScriptPaths, expectedScriptPaths)) {
+    throw new Error("the page script execution surface differs from its candidate set");
+  }
+  const stylesheetPaths = [...parsedPage.querySelectorAll('link[rel="stylesheet"]')]
+    .map((element) => relativePagePath(element.getAttribute("href")))
+    .sort();
+  if (!sameStrings(stylesheetPaths, [EXPECTED_RUNTIME_ASSET_PATHS.page_styles])) {
+    throw new Error("the page stylesheet surface differs from its candidate set");
+  }
+  const compiledAssetEntries = await Promise.all([
     ["compiled_module", compiledModuleUrl],
     ["compiled_wasm", compiledWasmUrl],
   ].map(async ([label, url]) => [label, await fetchAsset(url, label)]));
-  const fetchedPageAssets = Object.fromEntries(pageAssetEntries);
-  const pageAssets = Object.fromEntries(pageAssetEntries.map(([label, assetValue]) => (
+  const fetchedPageAssets = Object.fromEntries([
+    ...runtimeAssetEntries,
+    ...compiledAssetEntries,
+  ]);
+  const pageAssets = Object.fromEntries([
+    ...runtimeAssetEntries,
+    ...compiledAssetEntries,
+  ].map(([label, assetValue]) => (
     [label, publicAsset(assetValue)]
   )));
   const bundleFileByPath = new Map(normalizedCandidateFiles.map((record) => (
@@ -440,12 +647,47 @@ async function browserProbe(candidateReceiptHref) {
     || typeof api.BrowserEngineClient !== "function"
     || Object.isFrozen(api) !== true
   ) throw new Error("the frozen production browser-engine API did not load");
+  const NativeWorker = globalThis.Worker;
+  const nativePostMessage = NativeWorker?.prototype?.postMessage;
+  const nativeAddEventListener = EventTarget.prototype.addEventListener;
   if (
-    typeof globalThis.Worker !== "function"
-    || !/\[native code\]/.test(Function.prototype.toString.call(globalThis.Worker))
-  ) throw new Error("the page Worker constructor is not native");
+    typeof NativeWorker !== "function"
+    || typeof nativePostMessage !== "function"
+    || typeof nativeAddEventListener !== "function"
+    || !/\[native code\]/.test(Function.prototype.toString.call(NativeWorker))
+    || !/\[native code\]/.test(Function.prototype.toString.call(nativePostMessage))
+    || !/\[native code\]/.test(Function.prototype.toString.call(nativeAddEventListener))
+  ) throw new Error("the page Worker constructor and messaging surface are not native");
+  const workerConstructorTrace = [];
+  const tracedWorkerFactory = (url, options) => {
+    const resolvedUrl = new URL(String(url), location.href);
+    if (
+      resolvedUrl.href !== workerUrl.href
+      || !plainObject(options)
+      || !sameStrings(Object.keys(options).sort(), ["name", "type"])
+      || options.type !== "module"
+      || typeof options.name !== "string"
+      || !/^scottish-progressive-(engine|root-(root-[0-7]|safe-reselector))$/
+        .test(options.name)
+    ) throw new Error("production client requested an unbound Worker constructor call");
+    const worker = new NativeWorker(resolvedUrl.href, options);
+    if (!(worker instanceof NativeWorker)) {
+      throw new Error("Worker trace did not create a native Worker instance");
+    }
+    workerConstructorTrace.push(Object.freeze({
+      sequence: workerConstructorTrace.length + 1,
+      url: resolvedUrl.href,
+      type: options.type,
+      name: options.name,
+      native_instance: true,
+    }));
+    return worker;
+  };
 
-  const client = api.createClient({ workerUrl: workerUrl.href });
+  const client = api.createClient({
+    workerUrl: workerUrl.href,
+    workerFactory: tracedWorkerFactory,
+  });
   let preflight;
   let result;
   let searchElapsedSeconds;
@@ -533,10 +775,24 @@ async function browserProbe(candidateReceiptHref) {
         : 0
     ), 0)
     : -1;
+  const observedChildBoundarySha256 = await canonicalSha256(
+    result?.checked_prefix?.next_state,
+  );
+  const assertedChildPositionHash = observedChildBoundarySha256
+    === EXPECTED_CHILD_BOUNDARY_SHA256
+    ? EXPECTED_POSITION_HASH
+    : null;
+  const workerNames = new Set(workerConstructorTrace.map((entry) => entry.name));
+  const expectedOrdinaryRootWorkers = Array.from(
+    { length: 8 },
+    (_, index) => `scottish-progressive-root-root-${index}`,
+  );
   const checks = Object.freeze({
     candidate_receipt_raw_sha256_bound: SHA256.test(candidateAsset.sha256),
     candidate_source_revision_bound:
       candidate.source_revision === artifact.source_revision,
+    candidate_id_commits_runtime_assets:
+      candidate.candidate_id === derivedCandidateId,
     page_release_query_bound: candidate.source_revision.startsWith(releaseTag),
     candidate_bundle_file_set_bound:
       await canonicalSha256(normalizedCandidateFiles)
@@ -545,7 +801,32 @@ async function browserProbe(candidateReceiptHref) {
       await canonicalSha256(certificateDirectoryRecords)
         === candidate.certificate_set_sha256,
     build_receipt_six_field_subject_bound: sameJson(buildIdentity, artifact),
+    authoritative_browser_runtime_asset_set_bound:
+      validateAssetBindings(
+        runtimeAuthority,
+        observedRuntimeRecords,
+        candidate.source_revision,
+      ) === true
+      && await canonicalSha256(runtimeAuthority.files)
+        === runtimeAuthority.artifact_set_sha256,
+    page_execution_surface_bound:
+      sameStrings(observedScriptPaths, expectedScriptPaths)
+      && sameStrings(stylesheetPaths, [EXPECTED_RUNTIME_ASSET_PATHS.page_styles]),
     local_page_asset_set_hash_bound: SHA256.test(localAssetSetSha256),
+    native_worker_constructor_trace_bound:
+      workerConstructorTrace.length >= 10
+      && workerConstructorTrace.every((entry) => (
+        entry.native_instance === true
+        && entry.url === workerUrl.href
+        && entry.type === "module"
+      ))
+      && workerNames.has("scottish-progressive-engine")
+      && workerNames.has("scottish-progressive-root-safe-reselector")
+      && expectedOrdinaryRootWorkers.every((name) => workerNames.has(name))
+      && pageAssets.browser_engine_worker.url === workerUrl.href
+      && pageAssets.browser_engine_worker.sha256 === workerAuthority.sha256
+      && pageAssets.wasm_kernel_adapter.url === adapterUrl.href
+      && pageAssets.wasm_kernel_adapter.sha256 === adapterAuthority.sha256,
     manifest_preflight_identity_bound: Boolean(
       preflight?.ready === true
       && preflight.root_iteration_ready === true
@@ -586,6 +867,9 @@ async function browserProbe(candidateReceiptHref) {
       EXPECTED_CHILD,
     ) && sameJson(selected?.authoritative_child_boundary, EXPECTED_CHILD)
       && sameJson(selected?.root_series?.child_boundary, EXPECTED_CHILD),
+    exact_rank_62_child_position_hash:
+      observedChildBoundarySha256 === EXPECTED_CHILD_BOUNDARY_SHA256
+      && assertedChildPositionHash === EXPECTED_POSITION_HASH,
     authoritative_root_replay_bound:
       result?.checked_prefix?.complete === true
       && result.checked_prefix.outcome === null
@@ -690,6 +974,8 @@ async function browserProbe(candidateReceiptHref) {
       build_receipt: publicAsset(buildAsset),
       browser_bundle_artifact_set_sha256:
         candidate.browser_bundle.artifact_set_sha256,
+      browser_runtime_artifact_set_sha256:
+        runtimeAuthority.artifact_set_sha256,
       certificate_set_sha256: candidate.certificate_set_sha256,
       standalone_certificates: certificateAssets,
       local_page_asset_set_sha256: localAssetSetSha256,
@@ -728,12 +1014,15 @@ async function browserProbe(candidateReceiptHref) {
       one_based_rank: 62,
       machine_notation: EXPECTED_MACHINE_NOTATION,
       child_pfen: EXPECTED_CHILD_PFEN,
-      child_position_hash: EXPECTED_POSITION_HASH,
+      child_boundary_sha256: observedChildBoundarySha256,
+      asserted_child_position_hash: assertedChildPositionHash,
       generation_work: EXPECTED_GENERATION_WORK,
       selected_probe_work: EXPECTED_SELECTED_WORK,
       safe_lane_work: EXPECTED_LANE_WORK,
     },
     search_elapsed_seconds: searchElapsedSeconds,
+    worker_constructor_trace: workerConstructorTrace,
+    worker_constructor_trace_sha256: await canonicalSha256(workerConstructorTrace),
     checks,
     result,
   };
@@ -752,7 +1041,7 @@ async function main() {
     return response.json();
   });
   const targetResponse = await fetch(
-    `${args.endpoint}/json/new?${encodeURIComponent(args.url)}`,
+    `${args.endpoint}/json/new?${encodeURIComponent("about:blank")}`,
     { method: "PUT", cache: "no-store" },
   );
   if (!targetResponse.ok) {
@@ -763,11 +1052,17 @@ async function main() {
   try {
     await call("Runtime.enable");
     await call("Page.enable");
+    await call("Network.enable");
+    await call("Network.setCacheDisabled", { cacheDisabled: true });
     const cdpVersion = await call("Browser.getVersion");
+    const navigation = await call("Page.navigate", { url: args.url });
+    if (navigation.errorText) {
+      throw new Error(`Opera page navigation failed: ${navigation.errorText}`);
+    }
     await new Promise((resolve) => setTimeout(resolve, 1_000));
     const expression = `(${browserProbe.toString()})(${JSON.stringify(
       args.candidateReceiptUrl,
-    )})`;
+    )}, ${validateAuthoritativeAssetBindings.toString()})`;
     const evaluated = await call("Runtime.evaluate", {
       expression,
       awaitPromise: true,
@@ -800,6 +1095,7 @@ async function main() {
         js_version: cdpVersion.jsVersion,
         user_agent: cdpVersion.userAgent,
         web_socket_debugger_url_recorded: true,
+        cache_disabled_before_navigation: true,
       },
       page_url: args.url,
       candidate_receipt_url: args.candidateReceiptUrl,
@@ -815,4 +1111,7 @@ async function main() {
 }
 
 
-await main();
+if (
+  process.argv[1]
+  && import.meta.url === pathToFileURL(process.argv[1]).href
+) await main();
