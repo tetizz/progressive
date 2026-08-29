@@ -4,12 +4,12 @@
   "failures": 0,
   "differential_cases": 6,
   "artifact": {
-    "source_revision": "c04f0f2bfe414a0107fa845c63a4edd7d4de877a",
-    "source_fingerprint": "1fea7e9f1d9b5bc7",
-    "kernel_sha256": "bb2886c7a49e622c25c7772a27bc9c798855225687859f73e0132d4201bd20b6",
-    "wasm_sha256": "8612ef9211e1025297b2fc293140a66b414f2e18a4f7f9c205c1fa0eceaf780c",
-    "module_js_sha256": "33f1298a3fb26e206fb9f0bc52fd060c089ad200a3ba4191b82f085b11f62a7c",
-    "artifact_set_sha256": "5474b17778b9609b9c8240bab97eec9553a30f7eb811d31584f139974789e338",
+    "source_revision": "b5dee3b5a15291e2bdc19009afdc978d6e093477",
+    "source_fingerprint": "ff00a975ada757e5",
+    "kernel_sha256": "ba25bbd299a0e21cad0174aead1b0fd8ead71682c1c8e38cf0aa8d28b16538b0",
+    "wasm_sha256": "5f4ea5cdcaa70120bb98e2918c9b3c425f79ee3159bc800b71476b8f4cbe7a5b",
+    "module_js_sha256": "69bd851d7714650072c8a325a537210994b22143ed7467976009399df8f6ef01",
+    "artifact_set_sha256": "86783038b9694bf619786b0dc0faa0610fb5afc96028e3792fc9a1e3a740010e",
     "exception_strategy": "emscripten",
     "wasm_simd": false,
     "allocator": "dlmalloc",
@@ -383,14 +383,14 @@
     "within_cap": true,
     "unknown_or_limit_count": 0,
     "max_work": 100000000,
-    "accounted_work": 41408144
+    "accounted_work": 41290046
   },
   "deadline": {
     "status": "complete",
     "deadline_reached": false,
     "unknown_or_limit_count": 0,
     "deadline_limit_ms": 300000.0,
-    "remaining_time_ms": 265396.5
+    "remaining_time_ms": 266412.89999997616
   },
   "gates": {
     "initial_root_enumeration_python_parity": true,
@@ -401,5 +401,5 @@
     "deadline_receipts": true,
     "complete_rival_bound_coverage": true
   },
-  "oracle_signature_sha256": "9e6107b13d0c19bba242598cf9584422bb5f1a653de07ed7ab96870510994d5c"
+  "oracle_signature_sha256": "46a5f184954f5c49a5de7dfbfa3f5b1db1e289f1390f488c855c96492e68b22f"
 }

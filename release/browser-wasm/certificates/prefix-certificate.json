@@ -1,5 +1,5 @@
 {
-  "certificate_id": "spc-prefix-07517ff76783aa95",
+  "certificate_id": "spc-prefix-b1605393cf15165a",
   "contract_version": 1,
   "engine": {
     "engine_version": "spc-0.9.0",
@@ -18,7 +18,7 @@
     "initial_bytes": 67108864,
     "maximum_bytes": 134217728
   },
-  "module_js_sha256": "33f1298a3fb26e206fb9f0bc52fd060c089ad200a3ba4191b82f085b11f62a7c",
+  "module_js_sha256": "69bd851d7714650072c8a325a537210994b22143ed7467976009399df8f6ef01",
   "prefix_contract": {
     "abi_version": 1,
     "chess960": false,
@@ -38,9 +38,9 @@
     "schema": "spc-boundary-prefix-contract-v1"
   },
   "runtime_variant": "single",
-  "source_fingerprint": "1fea7e9f1d9b5bc7",
+  "source_fingerprint": "ff00a975ada757e5",
   "status": "certified",
   "support_files": [],
   "thread_count": 1,
-  "wasm_sha256": "8612ef9211e1025297b2fc293140a66b414f2e18a4f7f9c205c1fa0eceaf780c"
+  "wasm_sha256": "5f4ea5cdcaa70120bb98e2918c9b3c425f79ee3159bc800b71476b8f4cbe7a5b"
 }

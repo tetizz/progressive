@@ -1,7 +1,7 @@
 {
   "abi_version": 1,
   "allocator": "dlmalloc",
-  "certificate_id": "spc-mate-526b0e432a797d68",
+  "certificate_id": "spc-mate-f143e794b5ade167",
   "contract_version": 1,
   "engine": {
     "engine_version": "spc-0.9.0",
@@ -41,10 +41,12 @@
     "_spc_root_session_abi_version",
     "_spc_series_mate_search_json",
     "_spc_series_mate_abi_version",
+    "_spc_single_reply_mate_ladder_search_json",
+    "_spc_single_reply_mate_ladder_abi_version",
     "_malloc",
     "_free"
   ],
-  "kernel_sha256": "bb2886c7a49e622c25c7772a27bc9c798855225687859f73e0132d4201bd20b6",
+  "kernel_sha256": "ba25bbd299a0e21cad0174aead1b0fd8ead71682c1c8e38cf0aa8d28b16538b0",
   "mate_capability_certified": true,
   "memory": {
     "estimated_peak_bytes": 134217728,
@@ -52,7 +54,7 @@
     "initial_bytes": 67108864,
     "maximum_bytes": 134217728
   },
-  "module_js_sha256": "33f1298a3fb26e206fb9f0bc52fd060c089ad200a3ba4191b82f085b11f62a7c",
+  "module_js_sha256": "69bd851d7714650072c8a325a537210994b22143ed7467976009399df8f6ef01",
   "product_publishable": false,
   "reply_mate_safety": true,
   "runtime_requirements": {
@@ -64,10 +66,10 @@
   },
   "runtime_variant": "single",
   "schema": "spc-series-mate-certificate-v1",
-  "source_fingerprint": "1fea7e9f1d9b5bc7",
+  "source_fingerprint": "ff00a975ada757e5",
   "status": "certified",
   "support_files": [],
   "thread_count": 1,
-  "wasm_sha256": "8612ef9211e1025297b2fc293140a66b414f2e18a4f7f9c205c1fa0eceaf780c",
+  "wasm_sha256": "5f4ea5cdcaa70120bb98e2918c9b3c425f79ee3159bc800b71476b8f4cbe7a5b",
   "wasm_simd": false
 }

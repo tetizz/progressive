@@ -16,6 +16,8 @@
       "_spc_root_session_abi_version",
       "_spc_series_mate_search_json",
       "_spc_series_mate_abi_version",
+      "_spc_single_reply_mate_ladder_search_json",
+      "_spc_single_reply_mate_ladder_abi_version",
       "_malloc",
       "_free"
     ],
@@ -25,22 +27,22 @@
     "root_session_version": 2,
     "series_mate_version": 1
   },
-  "artifact_set_sha256": "5474b17778b9609b9c8240bab97eec9553a30f7eb811d31584f139974789e338",
+  "artifact_set_sha256": "86783038b9694bf619786b0dc0faa0610fb5afc96028e3792fc9a1e3a740010e",
   "artifacts": [
     {
-      "bytes": 27497,
+      "bytes": 27805,
       "path": "spc-root-session.mjs",
-      "sha256": "33f1298a3fb26e206fb9f0bc52fd060c089ad200a3ba4191b82f085b11f62a7c"
+      "sha256": "69bd851d7714650072c8a325a537210994b22143ed7467976009399df8f6ef01"
     },
     {
-      "bytes": 851475,
+      "bytes": 869614,
       "path": "spc-root-session.wasm",
-      "sha256": "8612ef9211e1025297b2fc293140a66b414f2e18a4f7f9c205c1fa0eceaf780c"
+      "sha256": "5f4ea5cdcaa70120bb98e2918c9b3c425f79ee3159bc800b71476b8f4cbe7a5b"
     }
   ],
   "certificate_id": null,
   "command": [
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\cycle4-production-overlay-scaffold-20260824\\build\\emsdk\\upstream\\emscripten\\em++.exe",
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\wasm-toolchain-probe-20260822\\.emsdk\\upstream\\emscripten\\em++.exe",
     "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\internal-boundary-mate-ladder-20260828\\src\\scottish_progressive\\_native_eval.cpp",
     "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\internal-boundary-mate-ladder-20260828\\src\\scottish_progressive\\native_subtree.cpp",
     "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\internal-boundary-mate-ladder-20260828\\src\\scottish_progressive\\native_subtree_wasm.cpp",
@@ -67,10 +69,10 @@
     "-sEXPORT_ES6=1",
     "-sFILESYSTEM=0",
     "-sDYNAMIC_EXECUTION=0",
-    "-sEXPORTED_FUNCTIONS=_spc_start_kernel_search_json,_spc_boundary_kernel_search_json,_spc_boundary_prefix_json,_spc_boundary_prefix_contract_json,_spc_start_kernel_abi_version,_spc_root_session_contract_json,_spc_root_session_create_json,_spc_root_session_enumerate_json,_spc_root_session_import_json,_spc_root_session_search_json,_spc_root_session_destroy,_spc_root_session_abi_version,_spc_series_mate_search_json,_spc_series_mate_abi_version,_malloc,_free",
+    "-sEXPORTED_FUNCTIONS=_spc_start_kernel_search_json,_spc_boundary_kernel_search_json,_spc_boundary_prefix_json,_spc_boundary_prefix_contract_json,_spc_start_kernel_abi_version,_spc_root_session_contract_json,_spc_root_session_create_json,_spc_root_session_enumerate_json,_spc_root_session_import_json,_spc_root_session_search_json,_spc_root_session_destroy,_spc_root_session_abi_version,_spc_series_mate_search_json,_spc_series_mate_abi_version,_spc_single_reply_mate_ladder_search_json,_spc_single_reply_mate_ladder_abi_version,_malloc,_free",
     "-sEXPORTED_RUNTIME_METHODS=UTF8ToString,stringToNewUTF8,HEAPU8",
     "-o",
-    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\internal-boundary-mate-ladder-20260828\\build\\root-release-c04f0f2\\wasm\\spc-root-session.mjs"
+    "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\internal-boundary-mate-ladder-20260828\\build\\root-release-b5dee3b\\wasm\\spc-root-session.mjs"
   ],
   "engine_version": "spc-0.9.0",
   "gates": {
@@ -82,7 +84,7 @@
     "root_session_smoke": false,
     "under_60_seconds_w32_d5": false
   },
-  "kernel_sha256": "bb2886c7a49e622c25c7772a27bc9c798855225687859f73e0132d4201bd20b6",
+  "kernel_sha256": "ba25bbd299a0e21cad0174aead1b0fd8ead71682c1c8e38cf0aa8d28b16538b0",
   "memory_envelope": {
     "estimated_peak_bytes": 134217728,
     "growth_enabled": true,
@@ -92,7 +94,7 @@
     "runtime_peak_verified": false,
     "stack_bytes": 1048576
   },
-  "module_js_sha256": "33f1298a3fb26e206fb9f0bc52fd060c089ad200a3ba4191b82f085b11f62a7c",
+  "module_js_sha256": "69bd851d7714650072c8a325a537210994b22143ed7467976009399df8f6ef01",
   "optimization": {
     "allocator": "dlmalloc",
     "exception_flag": "-fexceptions",
@@ -120,7 +122,7 @@
     "root_contract_eval_capacity": 262144,
     "root_contract_tt_capacity": 262144
   },
-  "source_fingerprint": "1fea7e9f1d9b5bc7",
+  "source_fingerprint": "ff00a975ada757e5",
   "source_inputs": [
     {
       "bytes": 321868,
@@ -128,9 +130,9 @@
       "sha256": "868575c607835a91335441bbbbf01e5e85346d8e4732f832e108ac7de69e5c18"
     },
     {
-      "bytes": 76583,
+      "bytes": 105598,
       "path": "src/scottish_progressive/_native_mate.cpp",
-      "sha256": "211ad26cda988de716ea2a043c02c3290f60f4dad174d9e140c14a60800c5ad4"
+      "sha256": "51748156a93b41b4994c4166df5157fad267b4493f690eddd6cf18c61746a962"
     },
     {
       "bytes": 11549,
@@ -173,14 +175,14 @@
       "sha256": "bef97b5453d10f1c19e2a61b712dee2a8346bb92c2c64a5582ec4aec9d12fa3c"
     }
   ],
-  "source_revision": "c04f0f2bfe414a0107fa845c63a4edd7d4de877a",
+  "source_revision": "b5dee3b5a15291e2bdc19009afdc978d6e093477",
   "status": "built-not-certified",
   "support_files": [],
   "thread_count": 1,
   "toolchain": {
-    "path": "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\cycle4-production-overlay-scaffold-20260824\\build\\emsdk\\upstream\\emscripten\\em++.exe",
+    "path": "C:\\Users\\adria\\Downloads\\Codex projects\\.codex-labs\\wasm-toolchain-probe-20260822\\.emsdk\\upstream\\emscripten\\em++.exe",
     "sha256": "2acdfaaf9bf1a17a6f15ca3f0c1e5e7efc935e9fd079eb426ec8daf4bef4f290",
     "version": "emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 6.0.8 (aeb67926e7de656da38bc807d83050af93578758)\nCopyright (C) 2026 the Emscripten authors (see AUTHORS.txt)\nThis is free and open source software under the MIT license.\nThere is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE."
   },
-  "wasm_sha256": "8612ef9211e1025297b2fc293140a66b414f2e18a4f7f9c205c1fa0eceaf780c"
+  "wasm_sha256": "5f4ea5cdcaa70120bb98e2918c9b3c425f79ee3159bc800b71476b8f4cbe7a5b"
 }
