@@ -1728,6 +1728,9 @@ void add_mate_stats(
 #endif
 
 constexpr std::uint32_t MATE_WASM_ABI_VERSION = 1;
+constexpr std::uint32_t SINGLE_REPLY_LADDER_WASM_ABI_VERSION = 1;
+constexpr const char* SINGLE_REPLY_LADDER_WASM_SCHEMA =
+    "spc-single-reply-mate-ladder-native-v1";
 
 [[nodiscard]] bool parse_i64_text(
     std::string_view text,
@@ -2168,7 +2171,134 @@ void write_json_string(std::ostringstream& stream, const std::string& value) {
     return stream.str();
 }
 
+[[nodiscard]] std::string single_reply_ladder_error_json(
+    const std::string& message,
+    std::int32_t series_number,
+    std::uint32_t max_work
+) {
+    std::ostringstream stream;
+    stream << "{\"schema\":\"" << SINGLE_REPLY_LADDER_WASM_SCHEMA << "\""
+           << ",\"abi_version\":" << SINGLE_REPLY_LADDER_WASM_ABI_VERSION
+           << ",\"kernel_status\":\"unsupported\""
+           << ",\"status_code\":4"
+           << ",\"proof_status\":\"unknown\""
+           << ",\"complete\":false"
+           << ",\"series_number\":" << series_number
+           << ",\"max_work\":" << max_work
+           << ",\"message\":";
+    write_json_string(stream, message);
+    stream << ",\"attack_moves\":[],\"forced_reply_moves\":[],\"mate_moves\":[]"
+           << ",\"stats\":{"
+           << "\"attack_positions_visited\":0"
+           << ",\"attack_moves_generated\":0"
+           << ",\"reply_positions_visited\":0"
+           << ",\"reply_moves_generated\":0"
+           << ",\"mate_positions_visited\":0"
+           << ",\"mate_moves_generated\":0"
+           << ",\"attack_transpositions_merged\":0"
+           << ",\"mate_transpositions_merged\":0"
+           << ",\"checking_series\":0"
+           << ",\"forced_counterchecks\":0"
+           << ",\"mate_probes\":0"
+           << ",\"peak_attack_frontier\":0"
+           << ",\"attack_max_depth_reached\":0"
+           << ",\"mate_max_depth_reached\":0"
+           << ",\"work_used\":0}}";
+    return stream.str();
+}
+
+void write_json_moves(
+    std::ostringstream& stream,
+    const std::vector<std::string>& moves
+) {
+    stream << '[';
+    for (std::size_t index = 0; index < moves.size(); ++index) {
+        if (index != 0) {
+            stream << ',';
+        }
+        write_json_string(stream, moves[index]);
+    }
+    stream << ']';
+}
+
+[[nodiscard]] std::string run_single_reply_ladder_json(
+    const BoardState& board,
+    std::int32_t series_number,
+    std::vector<int> ep_targets,
+    std::uint32_t max_work,
+    std::uint32_t time_limit_ms
+) {
+    SeriesMateSearchRequest request{
+        board,
+        series_number,
+        std::move(ep_targets),
+        std::nullopt,
+        std::nullopt,
+        max_work == 0
+            ? std::nullopt
+            : std::optional<std::uint64_t>{max_work},
+    };
+    if (time_limit_ms != 0) {
+        request.deadline = std::chrono::steady_clock::now()
+            + std::chrono::milliseconds(time_limit_ms);
+    }
+    const SingleReplyMateLadderResponse response =
+        find_single_reply_mate_ladder(request);
+    const bool complete = response.status == SeriesMateSearchStatus::Found
+        || response.status == SeriesMateSearchStatus::Exhausted;
+    std::ostringstream stream;
+    stream << "{\"schema\":\"" << SINGLE_REPLY_LADDER_WASM_SCHEMA << "\""
+           << ",\"abi_version\":" << SINGLE_REPLY_LADDER_WASM_ABI_VERSION
+           << ",\"kernel_status\":";
+    write_json_string(stream, mate_kernel_status(response.status));
+    stream << ",\"status_code\":" << static_cast<int>(response.status)
+           << ",\"proof_status\":";
+    write_json_string(stream, mate_proof_status(response.status));
+    stream << ",\"complete\":" << (complete ? "true" : "false")
+           << ",\"series_number\":" << series_number
+           << ",\"max_work\":" << max_work
+           << ",\"message\":";
+    write_json_string(stream, response.message);
+    stream << ",\"attack_moves\":";
+    write_json_moves(stream, response.attack_moves);
+    stream << ",\"forced_reply_moves\":";
+    write_json_moves(stream, response.forced_reply_moves);
+    stream << ",\"mate_moves\":";
+    write_json_moves(stream, response.mate_moves);
+    stream << ",\"stats\":{"
+           << "\"attack_positions_visited\":"
+           << response.stats.attack_positions_visited
+           << ",\"attack_moves_generated\":"
+           << response.stats.attack_moves_generated
+           << ",\"reply_positions_visited\":"
+           << response.stats.reply_positions_visited
+           << ",\"reply_moves_generated\":"
+           << response.stats.reply_moves_generated
+           << ",\"mate_positions_visited\":"
+           << response.stats.mate_positions_visited
+           << ",\"mate_moves_generated\":"
+           << response.stats.mate_moves_generated
+           << ",\"attack_transpositions_merged\":"
+           << response.stats.attack_transpositions_merged
+           << ",\"mate_transpositions_merged\":"
+           << response.stats.mate_transpositions_merged
+           << ",\"checking_series\":" << response.stats.checking_series
+           << ",\"forced_counterchecks\":"
+           << response.stats.forced_counterchecks
+           << ",\"mate_probes\":" << response.stats.mate_probes
+           << ",\"peak_attack_frontier\":"
+           << response.stats.peak_attack_frontier
+           << ",\"attack_max_depth_reached\":"
+           << response.stats.attack_max_depth_reached
+           << ",\"mate_max_depth_reached\":"
+           << response.stats.mate_max_depth_reached
+           << ",\"work_used\":" << single_reply_ladder_work(response.stats)
+           << "}}";
+    return stream.str();
+}
+
 thread_local std::string last_mate_wasm_result;
+thread_local std::string last_single_reply_ladder_wasm_result;
 
 }  // namespace
 
@@ -2217,6 +2347,61 @@ extern "C" SPC_MATE_WASM_EXPORT const char* spc_series_mate_search_json(
 
 extern "C" SPC_MATE_WASM_EXPORT std::uint32_t spc_series_mate_abi_version() {
     return MATE_WASM_ABI_VERSION;
+}
+
+extern "C" SPC_MATE_WASM_EXPORT const char*
+spc_single_reply_mate_ladder_search_json(
+    const char* fen,
+    std::int32_t series_number,
+    const char* progressive_ep,
+    const char* promoted_hex,
+    std::uint32_t max_work,
+    std::uint32_t time_limit_ms
+) {
+    try {
+        BoardState board;
+        std::vector<int> ep_targets;
+        std::string error;
+        if (!parse_mate_boundary(
+                fen,
+                series_number,
+                progressive_ep,
+                promoted_hex,
+                board,
+                ep_targets,
+                error
+            )) {
+            last_single_reply_ladder_wasm_result =
+                single_reply_ladder_error_json(error, series_number, max_work);
+            return last_single_reply_ladder_wasm_result.c_str();
+        }
+        last_single_reply_ladder_wasm_result = run_single_reply_ladder_json(
+            board,
+            series_number,
+            std::move(ep_targets),
+            max_work,
+            time_limit_ms
+        );
+    } catch (const std::exception& error) {
+        last_single_reply_ladder_wasm_result =
+            single_reply_ladder_error_json(
+                error.what(),
+                series_number,
+                max_work
+            );
+    } catch (...) {
+        last_single_reply_ladder_wasm_result = single_reply_ladder_error_json(
+            "native single-reply ladder WASM search failed",
+            series_number,
+            max_work
+        );
+    }
+    return last_single_reply_ladder_wasm_result.c_str();
+}
+
+extern "C" SPC_MATE_WASM_EXPORT std::uint32_t
+spc_single_reply_mate_ladder_abi_version() {
+    return SINGLE_REPLY_LADDER_WASM_ABI_VERSION;
 }
 
 #ifndef SPC_NATIVE_MATE_CORE_ONLY

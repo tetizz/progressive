@@ -325,7 +325,12 @@ function candidateMoves(series, index) {
     ["c2c4", "d2d4", "e2e4", "f2f4", "g2g4"],
     ["d2d4", "e2e4", "f2f4", "g2g4", "h2h4"],
   ];
-  return longerSeries[index].slice(0, series);
+  const moves = [...longerSeries[index]];
+  const syntheticTails = ["a1a2", "b1b2", "c1c2", "d1d2"];
+  while (moves.length < series) {
+    moves.push(syntheticTails[(moves.length - longerSeries[index].length) % syntheticTails.length]);
+  }
+  return moves.slice(0, series);
 }
 
 function omittedTerminalMateMoves(series) {
@@ -413,18 +418,23 @@ function safeReselectManifestFor(boundary, generation) {
     })),
     ...extraMoves.map((move, offset) => {
       const index = ordinary.candidates.length + offset;
+      const rootMoves = [move];
+      const syntheticTails = ["a1a2", "b1b2", "c1c2", "d1d2"];
+      while (rootMoves.length < boundary.series) {
+        rootMoves.push(syntheticTails[(rootMoves.length - 1) % syntheticTails.length]);
+      }
       const childFields = (boundary.series % 2 === 1 ? BLACK_FEN : WHITE_FEN).split(" ");
       childFields[4] = String(100 + index);
       childFields[5] = String(100 + index);
       return {
         candidate_identity: `w${index}`,
         order_index: index,
-        order_key: move,
+        order_key: rootMoves.join("/"),
         terminal_score: null,
         terminal_proof_bounds: [-1, 1],
         root_series: {
-          moves: [move],
-          machine_notation: move,
+          moves: rootMoves,
+          machine_notation: rootMoves.join("/"),
           transposition_count: 1,
           child_boundary: exactState(boundaryPayload(
             childFields.join(" "),
@@ -560,6 +570,9 @@ class MockWorld {
     wideCrashAfterSafety = false,
     wideDestroyDelayMs = 0,
     wideDestroyStarted = null,
+    ordinaryLadderStatuses = null,
+    wideLadderStatuses = null,
+    ladderWork = 1,
   } = {}) {
     this.foundFirst = foundFirst;
     this.foundAll = foundAll;
@@ -619,6 +632,13 @@ class MockWorld {
     this.wideDestroyStarted = typeof wideDestroyStarted === "function"
       ? wideDestroyStarted
       : null;
+    this.ordinaryLadderStatuses = Array.isArray(ordinaryLadderStatuses)
+      ? [...ordinaryLadderStatuses]
+      : null;
+    this.wideLadderStatuses = Array.isArray(wideLadderStatuses)
+      ? [...wideLadderStatuses]
+      : null;
+    this.ladderWork = ladderWork;
     this.wideCrashScheduled = false;
     this.workers = [];
     this.live = 0;
@@ -640,6 +660,9 @@ class MockWorld {
     this.safeReselectCreates = [];
     this.safeReselectSafetyReceipts = [];
     this.safeReselectSafetyCalls = 0;
+    this.ordinaryLadderCalls = 0;
+    this.wideLadderCalls = 0;
+    this.ladderReceipts = [];
     this.latestSearchChildDepth = null;
   }
 
@@ -1016,6 +1039,100 @@ class MockWorld {
         child: candidate?.root_series.child_boundary ?? null,
         outcome: candidate?.root_series.outcome ?? null,
       });
+    }
+    if (type === "root-ladder") {
+      this.deadlineEpochs.push(payload.deadline_epoch_ms);
+      const statuses = worker.safeReselect
+        ? this.wideLadderStatuses
+        : this.ordinaryLadderStatuses;
+      const callIndex = worker.safeReselect
+        ? this.wideLadderCalls++
+        : this.ordinaryLadderCalls++;
+      const status = statuses?.[callIndex] ?? "exhausted";
+      const workUsed = Math.min(this.ladderWork, payload.call_work_credit);
+      const stats = {
+        attack_positions_visited: workUsed,
+        attack_moves_generated: 0,
+        reply_positions_visited: 0,
+        reply_moves_generated: 0,
+        mate_positions_visited: 0,
+        mate_moves_generated: 0,
+        attack_transpositions_merged: 0,
+        mate_transpositions_merged: 0,
+        checking_series: status === "found" ? 1 : 0,
+        forced_counterchecks: status === "found" ? 1 : 0,
+        mate_probes: status === "found" ? 1 : 0,
+        peak_attack_frontier: status === "found" ? 1 : 0,
+        attack_max_depth_reached: status === "found"
+          ? payload.authoritative_child_boundary.series
+          : 0,
+        mate_max_depth_reached: status === "found"
+          ? payload.authoritative_child_boundary.series + 2
+          : 0,
+        work_used: workUsed,
+      };
+      const common = {
+        ...payload,
+        status,
+        native_status: status === "unknown" ? "work_limit" : status,
+        proof_status: status,
+        native_message: `synthetic ${status} single-reply ladder`,
+        native_stats: stats,
+        work_used: workUsed,
+        memory_bytes: MEMORY.initial_bytes,
+        memory_peak_bytes: MEMORY.initial_bytes,
+      };
+      if (status !== "found") {
+        this.ladderReceipts.push(common);
+        return common;
+      }
+      const rootChild = payload.authoritative_child_boundary;
+      const attackMoves = [rootChild.side_to_move === "white" ? "a2a3" : "a7a6"];
+      const attackChild = exactState(boundaryPayload(
+        flipFen(rootChild.fen),
+        rootChild.series + 1,
+      ));
+      const replyMoves = [attackChild.side_to_move === "white" ? "b2b3" : "b7b6"];
+      const replyChild = exactState(boundaryPayload(
+        flipFen(attackChild.fen),
+        attackChild.series + 1,
+      ));
+      const mateMoves = [replyChild.side_to_move === "white" ? "c2c3" : "c7c6"];
+      const mateChild = exactState(boundaryPayload(
+        flipFen(replyChild.fen),
+        replyChild.series + 1,
+      ));
+      for (const [start, moves, child, outcome] of [
+        [rootChild, attackMoves, attackChild, null],
+        [attackChild, replyMoves, replyChild, null],
+        [replyChild, mateMoves, mateChild, "checkmate"],
+      ]) {
+        this.pvTransitions.set(
+          JSON.stringify([start.fen, start.series, moves]),
+          { child, endedByCheck: true, outcome },
+        );
+      }
+      const seriesReceipt = (moves, child, outcome = null) => ({
+        moves,
+        machine_notation: moves.join("/"),
+        transposition_count: 1,
+        child_boundary: child,
+        outcome,
+        ended_by_check: true,
+      });
+      const result = {
+        ...common,
+        ladder_proof: {
+          schema: "spc-single-reply-mate-ladder-proof-v1",
+          root_child_boundary: rootChild,
+          forced_reply_unique_legal_move: true,
+          attack: seriesReceipt(attackMoves, attackChild),
+          forced_reply: seriesReceipt(replyMoves, replyChild),
+          mate: seriesReceipt(mateMoves, mateChild, "checkmate"),
+        },
+      };
+      this.ladderReceipts.push(result);
+      return result;
     }
     if (type === "root-safety") {
       this.deadlineEpochs.push(payload.deadline_epoch_ms);
@@ -3026,6 +3143,133 @@ async function testSafeRootReselectSkipsFoundAndUnknownThenPublishesExhausted() 
   client.close();
 }
 
+async function testSingleReplyLadderOrdinaryVetoesThenReselects() {
+  const world = new MockWorld({
+    ordinaryLadderStatuses: ["found", "exhausted"],
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  const request = {
+    ...payload(boundaryPayload(BLACK_FEN, 6), 1),
+    time_limit: 60,
+    max_generation_positions: 60_000_000,
+  };
+  const result = await client.analyzeRoot(request, {
+    deadlineMs: performance.now() + 20_000,
+  });
+  const summary = result.runtime_receipt.selected_root_single_reply_ladder;
+  assert.equal(result.publishable, true);
+  assert.equal(result.completed_depth, 1);
+  assert.deepEqual(result.best_full_series, candidateMoves(6, 1));
+  assert.equal(result.safety_certification_scope,
+    "selected-root-immediate-mate-checked-pv-and-single-reply-ladder");
+  assert.deepEqual(summary.receipts.map((receipt) => receipt.status), [
+    "found", "exhausted",
+  ]);
+  assert.equal(summary.receipts[0].proof.forced_reply.moves.length, 1);
+  assert.equal(summary.selected_receipt.status, "exhausted");
+  assert.equal(summary.selected_receipt.candidate_identity, "c1");
+  assert.equal(result.stats.single_reply_ladder_receipts.length, 2);
+  assert.equal(world.ordinaryLadderCalls, 2);
+  assert.deepEqual(world.ladderReceipts.map((receipt) => receipt.status), [
+    "found", "exhausted",
+  ]);
+  client.close();
+}
+
+async function testSingleReplyLadderUnknownNeverPublishesOrCaches() {
+  const world = new MockWorld({
+    ordinaryLadderStatuses: ["unknown", "unknown"],
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  const request = {
+    ...payload(boundaryPayload(BLACK_FEN, 6), 1),
+    time_limit: 60,
+    max_generation_positions: 60_000_000,
+  };
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await assert.rejects(
+      client.analyzeRoot(request, { deadlineMs: performance.now() + 20_000 }),
+      (error) => error?.code === "root-safety-unknown",
+    );
+    assert.equal(client.rootRunner.lastSafe, null);
+    assert.equal(client.rootRunner.ladderProofCache.size, 0);
+  }
+  assert.equal(world.ordinaryLadderCalls, 2);
+  assert.deepEqual(world.ladderReceipts.map((receipt) => receipt.status), [
+    "unknown", "unknown",
+  ]);
+  client.close();
+}
+
+async function testSingleReplyLadderD0ReselectSkipsFoundCandidate() {
+  const world = new MockWorld({
+    foundAll: true,
+    terminalMateStatus: "exhausted",
+    wideSafetyStatuses: Array.from({ length: 64 }, () => "exhausted"),
+    wideLadderStatuses: ["found", "exhausted"],
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  const request = {
+    ...payload(boundaryPayload(BLACK_FEN, 6), 1),
+    time_limit: 60,
+    max_generation_positions: 60_000_000,
+  };
+  const result = await client.analyzeRoot(request, {
+    deadlineMs: performance.now() + 20_000,
+  });
+  const receipt = result.runtime_receipt.safe_root_reselector;
+  assert.equal(result.publishable, true);
+  assert.equal(result.completed_depth, 0);
+  assert.equal(result.root_search_mode, "safe-root-reselector");
+  assert.equal(result.safety_certification_scope,
+    "selected-child-immediate-reply-mate-plus-single-reply-ladder");
+  assert.deepEqual(receipt.scans.slice(-2).map((scan) => scan.status), [
+    "found", "exhausted",
+  ]);
+  assert.equal(receipt.scans[12].single_reply_mate_ladder.status, "found");
+  assert.equal(receipt.scans[12].single_reply_mate_ladder.proof.mate.outcome, "checkmate");
+  assert.equal(receipt.scans[13].single_reply_mate_ladder.status, "exhausted");
+  assert.equal(receipt.selected.order_index, 13);
+  assert.equal(receipt.selected.candidate_identity, "w13");
+  assert.equal(receipt.selected_safety_basis,
+    "exact-immediate-reply-mate-and-single-reply-ladder-exhaustion");
+  assert.equal(result.runtime_receipt.single_reply_mate_ladder_certified, true);
+  assert.deepEqual(
+    result.runtime_receipt.single_reply_mate_ladder_receipt,
+    receipt.selected.single_reply_mate_ladder,
+  );
+  assert.equal(world.safeReselectSafetyCalls, 2);
+  assert.equal(world.wideLadderCalls, 2);
+  assert.equal(world.live, 0);
+  const undercounted = structuredClone(result);
+  const undercountedScan = undercounted.runtime_receipt.safe_root_reselector.scans[12];
+  undercountedScan.single_reply_mate_ladder.work_used = undercountedScan.work_used + 1;
+  await assert.rejects(
+    async () => browserClientApi.validatePublishedRootAnalysis(
+      undercounted,
+      request,
+      client.identity,
+    ),
+    (error) => error?.code === "browser-root-safe-reselector-result-invalid",
+  );
+  client.close();
+}
+
 async function testSafeRootReselectReachesRank62WithStagedCredits() {
   const wideStatuses = [
     ...Array.from({ length: 49 }, () => "found"),
@@ -3810,11 +4054,17 @@ async function testMateCacheIdentityAndBoundaryBinding() {
   const child = manifestFor(boundaryPayload(WHITE_FEN, 1), 1, []).candidates[0]
     .root_series.child_boundary;
   const key = rootClientApi.mateProofCacheKey(IDENTITY, child);
+  const ladderKey = rootClientApi.ladderProofCacheKey(IDENTITY, child);
+  assert.notEqual(ladderKey, key, "ladder proofs must use a separate cache namespace");
   const changedIdentityKey = rootClientApi.mateProofCacheKey({
     ...IDENTITY,
     mate_certificate_id: "different-mate-certificate",
   }, child);
   assert.notEqual(changedIdentityKey, key);
+  assert.notEqual(rootClientApi.ladderProofCacheKey({
+    ...IDENTITY,
+    mate_certificate_id: "different-mate-certificate",
+  }, child), ladderKey);
   const clockFields = child.fen.split(" ");
   clockFields[4] = String(Number(clockFields[4]) + 1);
   clockFields[5] = String(Number(clockFields[5]) + 1);
@@ -3824,10 +4074,19 @@ async function testMateCacheIdentityAndBoundaryBinding() {
     fen: changedClockFen,
     board_fen: changedClockFen,
   }), key, "EXHAUSTED evidence must stay bound to both FEN clocks");
+  assert.notEqual(rootClientApi.ladderProofCacheKey(IDENTITY, {
+    ...child,
+    fen: changedClockFen,
+    board_fen: changedClockFen,
+  }), ladderKey, "ladder EXHAUSTED evidence must stay bound to both FEN clocks");
   assert.notEqual(rootClientApi.mateProofCacheKey(IDENTITY, {
     ...child,
     promoted_hex: "0000000000000001",
   }), key, "EXHAUSTED evidence must stay bound to exact promotion provenance");
+  assert.notEqual(rootClientApi.ladderProofCacheKey(IDENTITY, {
+    ...child,
+    promoted_hex: "0000000000000001",
+  }), ladderKey, "ladder evidence must stay bound to promotion provenance");
   assert.throws(
     () => rootClientApi.mateProofCacheKey(IDENTITY, {
       ...child,
@@ -3843,6 +4102,7 @@ async function testMateCacheIdentityAndBoundaryBinding() {
     navigatorValue: DESKTOP_NAVIGATOR,
   });
   await preflight(client);
+  assert.notEqual(client.rootRunner.mateProofCache, client.rootRunner.ladderProofCache);
   client.identity = Object.freeze({
     ...client.identity,
     mate_certificate_id: "different-mate-certificate",
@@ -4049,6 +4309,9 @@ await testImmediateMatePublishesWithBoundCoverage();
 await testAllMatingFrontierRescuesTerminalRootMate();
 await testUnprovenTerminalMateRescueFailsClosed();
 await testSafeRootReselectSkipsFoundAndUnknownThenPublishesExhausted();
+await testSingleReplyLadderOrdinaryVetoesThenReselects();
+await testSingleReplyLadderUnknownNeverPublishesOrCaches();
+await testSingleReplyLadderD0ReselectSkipsFoundCandidate();
 await testSafeRootReselectReachesRank62WithStagedCredits();
 await testSafeRootReselectNeverResurrectsRejectedRoots();
 await testSafeRootReselectRemapsPreferredOrderExclusionByExactChild();
@@ -4106,6 +4369,9 @@ process.stdout.write(JSON.stringify({
   immediate_mate_with_alternatives: true,
   all_mating_frontier_terminal_mate_rescue: true,
   unproven_terminal_mate_rescue_fails_closed: true,
+  selected_root_single_reply_ladder_ordinary_veto_reselect: true,
+  selected_root_single_reply_ladder_unknown_not_safe_or_cached: true,
+  selected_root_single_reply_ladder_d0_safe_reselect: true,
   native_promotion_mate_deferral_terminal_mate_rescue: true,
   unproven_promotion_mate_deferral_fails_closed: true,
   incomplete_bound_coverage_fails_closed: true,
@@ -4116,6 +4382,7 @@ process.stdout.write(JSON.stringify({
   unknown_checked_pv_horizon_fails_closed: true,
   unprobed_checked_pv_horizon_fails_closed: true,
   mate_cache_identity_boundary_bound: true,
+  ladder_cache_full_state_separate: true,
   crash_last_safe_and_reprobe: true,
   absolute_deadline_epoch_transport: true,
   canonical_root_policy_drift_fails_closed: true,

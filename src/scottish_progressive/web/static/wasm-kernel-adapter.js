@@ -13,6 +13,11 @@ const RETAINED_ROOT_HORIZON_PROOF_SCHEMA = "spc-retained-root-horizon-proof-v1";
 const MAX_RETAINED_ROOT_HORIZON_PROOFS = 16;
 const MAX_RETAINED_ROOT_HORIZON_PROOF_PATH = 8;
 const MATE_ABI_VERSION = 1;
+const SINGLE_REPLY_LADDER_ABI_VERSION = 1;
+const SINGLE_REPLY_LADDER_NATIVE_SCHEMA =
+  "spc-single-reply-mate-ladder-native-v1";
+const SINGLE_REPLY_LADDER_PROOF_SCHEMA =
+  "spc-single-reply-mate-ladder-proof-v1";
 const ROOT_TACTICAL_POLICY = "canonical-boundary-policy-v1";
 const DEEP_TEACHER_MODEL_SCHEMA = "spc-deep-teacher-linear-value-v1";
 const DEEP_TEACHER_OVERLAY_SCHEMA = "spc-deep-teacher-match-overlay-v1";
@@ -44,6 +49,8 @@ const COMBINED_EXPORTS = Object.freeze([
   "_spc_root_session_abi_version",
   "_spc_series_mate_search_json",
   "_spc_series_mate_abi_version",
+  "_spc_single_reply_mate_ladder_search_json",
+  "_spc_single_reply_mate_ladder_abi_version",
   "_malloc",
   "_free",
 ]);
@@ -1581,6 +1588,101 @@ function validateHorizonResearchReceipt(raw, proofCount) {
   return raw;
 }
 
+function validateSingleReplyLadderNativeReceipt(
+  raw,
+  callWorkCredit,
+  expectedSeriesNumber,
+) {
+  const expectedKeys = [
+    "abi_version", "attack_moves", "complete", "forced_reply_moves",
+    "kernel_status", "mate_moves", "max_work", "message", "proof_status",
+    "schema", "series_number", "stats", "status_code",
+  ];
+  const statusCodes = Object.freeze({
+    found: 0,
+    exhausted: 1,
+    work_limit: 2,
+    deadline: 3,
+    unsupported: 4,
+  });
+  const statKeys = [
+    "attack_positions_visited", "attack_moves_generated",
+    "reply_positions_visited", "reply_moves_generated",
+    "mate_positions_visited", "mate_moves_generated",
+    "attack_transpositions_merged", "mate_transpositions_merged",
+    "checking_series", "forced_counterchecks", "mate_probes",
+    "peak_attack_frontier", "attack_max_depth_reached",
+    "mate_max_depth_reached", "work_used",
+  ];
+  const stats = raw?.stats;
+  const workUsed = stats === null || stats === undefined
+    ? Number.NaN
+    : [
+      stats.attack_positions_visited,
+      stats.attack_moves_generated,
+      stats.reply_positions_visited,
+      stats.reply_moves_generated,
+      stats.mate_positions_visited,
+      stats.mate_moves_generated,
+    ].reduce((sum, value) => sum + Number(value), 0);
+  const paths = [raw?.attack_moves, raw?.forced_reply_moves, raw?.mate_moves];
+  const exhausted = raw?.kernel_status === "exhausted" && raw.complete === true;
+  const found = raw?.kernel_status === "found" && raw.complete === true;
+  if (
+    !Number.isSafeInteger(callWorkCredit)
+    || callWorkCredit < 1
+    || callWorkCredit > 1_000_000
+    || !Number.isSafeInteger(expectedSeriesNumber)
+    || expectedSeriesNumber < 1
+    || expectedSeriesNumber > 254
+    || !raw
+    || typeof raw !== "object"
+    || Array.isArray(raw)
+    || !sameJson(Object.keys(raw).sort(), [...expectedKeys].sort())
+    || raw?.schema !== SINGLE_REPLY_LADDER_NATIVE_SCHEMA
+    || raw.abi_version !== SINGLE_REPLY_LADDER_ABI_VERSION
+    || !["found", "exhausted", "work_limit", "deadline", "unsupported"]
+      .includes(raw.kernel_status)
+    || raw.status_code !== statusCodes[raw.kernel_status]
+    || raw.series_number !== expectedSeriesNumber
+    || raw.max_work !== callWorkCredit
+    || typeof raw.message !== "string"
+    || !["found", "exhausted", "unknown"].includes(raw.proof_status)
+    || typeof raw.complete !== "boolean"
+    || raw.complete !== ["found", "exhausted"].includes(raw.kernel_status)
+    || !stats
+    || typeof stats !== "object"
+    || Array.isArray(stats)
+    || !sameJson(Object.keys(stats).sort(), [...statKeys].sort())
+    || statKeys.some((key) => !Number.isSafeInteger(stats[key]) || stats[key] < 0)
+    || workUsed !== stats.work_used
+    || workUsed > callWorkCredit
+    || paths.some((path) => !Array.isArray(path))
+    || paths.some((path) => path.some((move) => (
+      typeof move !== "string" || !/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(move)
+    )))
+    || (exhausted && (
+      raw.proof_status !== "exhausted" || paths.some((path) => path.length !== 0)
+    ))
+    || (found && raw.proof_status !== "found")
+    || (!found && !exhausted && (
+      raw.proof_status !== "unknown" || paths.some((path) => path.length !== 0)
+    ))
+  ) {
+    throw new KernelAdapterError(
+      "The compiled ladder receipt is malformed, over credit, or non-authoritative.",
+      "browser-root-ladder-invalid",
+    );
+  }
+  return Object.freeze({
+    raw,
+    stats: Object.freeze({ ...stats }),
+    work_used: workUsed,
+    found,
+    exhausted,
+  });
+}
+
 function nativeRootRequest(request, identity, schema, fields) {
   if (!request || typeof request !== "object" || Array.isArray(request)) {
     throw new KernelAdapterError(
@@ -2078,6 +2180,9 @@ export async function loadCertifiedBrowserKernel({
     || (variant.mate_ready && (
       typeof module?._spc_series_mate_abi_version !== "function"
       || module._spc_series_mate_abi_version() !== MATE_ABI_VERSION
+      || typeof module?._spc_single_reply_mate_ladder_abi_version !== "function"
+      || module._spc_single_reply_mate_ladder_abi_version()
+        !== SINGLE_REPLY_LADDER_ABI_VERSION
     ))
     || ((variant.root_session_ready || variant.mate_ready) && (
       COMBINED_EXPORTS.some((name) => typeof module?.[name] !== "function")
@@ -2786,6 +2891,190 @@ export async function loadCertifiedBrowserKernel({
         checked_prefix: checkedMate,
       };
     },
+    probeRootSingleReplyMateLadder(request) {
+      if (!identity.root_iteration_ready) {
+        throw new KernelAdapterError(
+          "The combined artifact has no certified compiled ladder authority.",
+          "browser-root-ladder-unavailable",
+        );
+      }
+      const child = request?.authoritative_child_boundary;
+      const rootReplay = request?.authoritative_root_replay;
+      const rootMoves = request?.candidate?.root_series?.moves;
+      const expectedRootIdentity = rootIdentityEnvelope(identity);
+      if (
+        rootSessionId === null
+        || request?.session_id !== rootSessionId
+        || request?.schema !== "spc-root-single-reply-mate-ladder-task-v1"
+        || ROOT_SESSION_IDENTITY_KEYS.some((key) => (
+          request?.[key] !== expectedRootIdentity[key]
+        ))
+        || !Number.isInteger(request.call_work_credit)
+        || request.call_work_credit < 1
+        || request.call_work_credit > 1_000_000
+        || !Number.isInteger(request.remaining_time_ms)
+        || request.remaining_time_ms < 0
+        || !validExactBoundaryState(child)
+        || child.series < 7
+        || child.series > 254
+        || !Array.isArray(rootMoves)
+        || !rootReplay
+        || rootReplay.complete !== true
+        || rootReplay.outcome !== null
+        || !sameJson(rootReplay.prefix, rootMoves)
+        || !validExactBoundaryState(rootReplay.next_state)
+        || !sameJson(rootReplay.next_state, child)
+      ) {
+        throw new KernelAdapterError(
+          "The ladder probe has no authoritative selected-root child boundary.",
+          "browser-root-ladder-boundary-invalid",
+        );
+      }
+      const remainingMs = clampRootRemainingTime(request).remaining_time_ms;
+      if (remainingMs <= 0) {
+        return {
+          ...request,
+          status: "unknown",
+          native_status: "deadline",
+          proof_status: "unknown",
+          native_message: "shared browser deadline reached before ladder dispatch",
+          native_stats: null,
+          work_used: 0,
+          ...rootMemoryReceipt(),
+        };
+      }
+      const allocated = [];
+      let pointer;
+      try {
+        for (const value of [
+          child.fen,
+          child.ep_targets.join(",") || "-",
+          child.promoted_hex,
+        ]) {
+          const allocatedValue = module.stringToNewUTF8(value);
+          if (!allocatedValue) {
+            throw new KernelAdapterError(
+              "The compiled ladder probe could not allocate its boundary.",
+              "browser-root-ladder-allocation-failed",
+            );
+          }
+          allocated.push(allocatedValue);
+        }
+        pointer = module._spc_single_reply_mate_ladder_search_json(
+          allocated[0],
+          child.series,
+          allocated[1],
+          allocated[2],
+          request.call_work_credit,
+          remainingMs,
+        );
+      } finally {
+        allocated.forEach((value) => module._free(value));
+      }
+      const raw = parseFacadeJson(
+        module,
+        pointer,
+        "The compiled single-reply mate-ladder ABI",
+        "browser-root-ladder-invalid",
+      );
+      const validatedNative = validateSingleReplyLadderNativeReceipt(
+        raw,
+        request.call_work_credit,
+        child.series,
+      );
+      const stats = validatedNative.stats;
+      const computedWork = validatedNative.work_used;
+      const common = {
+        ...request,
+        native_status: raw.kernel_status,
+        proof_status: raw.proof_status,
+        native_message: String(raw.message || ""),
+        native_stats: { ...stats },
+        work_used: computedWork,
+      };
+      if (validatedNative.exhausted) {
+        return { ...common, status: "exhausted", ...rootMemoryReceipt() };
+      }
+      if (!validatedNative.found) {
+        return { ...common, status: "unknown", ...rootMemoryReceipt() };
+      }
+      if (
+        raw.proof_status !== "found"
+        || raw.attack_moves.length < 1
+        || raw.attack_moves.length > child.series
+        || raw.forced_reply_moves.length !== 1
+        || raw.mate_moves.length < 1
+        || raw.mate_moves.length > child.series + 2
+      ) {
+        throw new KernelAdapterError(
+          "A FOUND ladder proof omitted one of its exact series.",
+          "browser-root-ladder-invalid",
+        );
+      }
+      const replaySeries = (boundary, moves, label) => {
+        const replay = this.inspectPrefix({
+          contract_version: 1,
+          operation: "prefix-replay",
+          request_id: `${request.iteration_id}:${request.safety_revision}:ladder-${label}`,
+          boundary,
+          prefix: moves.map(String),
+        });
+        if (
+          replay.complete !== true
+          || replay.ended_by_check !== true
+          || !sameJson(replay.prefix, moves)
+          || !validExactBoundaryState(replay.next_state)
+        ) {
+          throw new KernelAdapterError(
+            `The ladder ${label} failed authoritative compiled replay.`,
+            "browser-root-ladder-replay-invalid",
+          );
+        }
+        return replay;
+      };
+      const attackReplay = replaySeries(child, raw.attack_moves, "attack");
+      const forcedReplyReplay = replaySeries(
+        attackReplay.next_state,
+        raw.forced_reply_moves,
+        "forced-reply",
+      );
+      const mateReplay = replaySeries(
+        forcedReplyReplay.next_state,
+        raw.mate_moves,
+        "mate",
+      );
+      if (
+        attackReplay.outcome !== null
+        || forcedReplyReplay.outcome !== null
+        || mateReplay.outcome !== "checkmate"
+      ) {
+        throw new KernelAdapterError(
+          "The ladder proof did not replay as check, forced countercheck, then mate.",
+          "browser-root-ladder-replay-invalid",
+        );
+      }
+      const seriesReceipt = (moves, replay) => ({
+        moves: [...moves],
+        machine_notation: moves.join("/"),
+        transposition_count: 1,
+        child_boundary: replay.next_state,
+        outcome: replay.outcome,
+        ended_by_check: true,
+      });
+      return {
+        ...common,
+        status: "found",
+        ...rootMemoryReceipt(),
+        ladder_proof: {
+          schema: SINGLE_REPLY_LADDER_PROOF_SCHEMA,
+          root_child_boundary: child,
+          forced_reply_unique_legal_move: true,
+          attack: seriesReceipt(raw.attack_moves, attackReplay),
+          forced_reply: seriesReceipt(raw.forced_reply_moves, forcedReplyReplay),
+          mate: seriesReceipt(raw.mate_moves, mateReplay),
+        },
+      };
+    },
     probeRootSafety(request) {
       if (!identity.root_iteration_ready) {
         throw new KernelAdapterError(
@@ -2967,6 +3256,7 @@ export {
   importVerifiedModuleBytes,
   normalizeKernelResult,
   resolveValueModelActivation,
+  validateSingleReplyLadderNativeReceipt,
   validatePrefixContract,
   validateManifest,
 };

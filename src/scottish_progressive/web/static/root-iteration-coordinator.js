@@ -24,6 +24,11 @@
   const ROOT_HORIZON_RESEARCH_TASK_SCHEMA = "spc-root-horizon-research-task-v1";
   const ROOT_HORIZON_RESEARCH_RESULT_SCHEMA = "spc-root-horizon-research-result-v1";
   const RETAINED_ROOT_HORIZON_PROOF_SCHEMA = "spc-retained-root-horizon-proof-v1";
+  const SELECTED_ROOT_LADDER_SCOPE = "selected-root-single-reply-mate-ladder";
+  const SELECTED_ROOT_LADDER_PROOF_SCHEMA =
+    "spc-single-reply-mate-ladder-proof-v1";
+  const SELECTED_ROOT_LADDER_RECEIPT_SCHEMA =
+    "spc-selected-root-single-reply-mate-ladder-receipt-v1";
   const MAX_RETAINED_ROOT_HORIZON_PROOFS = 16;
   const MAX_SAME_ROOT_HORIZON_REPAIRS = 1;
   const MAX_RETAINED_ROOT_HORIZON_PROOF_PATH = 8;
@@ -508,6 +513,150 @@
       rooted_path: Object.freeze(normalizedPath),
       mate_reply: mateReply,
     });
+  }
+
+  function normalizeSingleReplyLadderReceipt(value, record, request, safety) {
+    const expectedKeys = [
+      "cache_hit", "call_work_credit", "candidate_identity", "certificate_id",
+      "iteration_id", "kernel_sha256", "mate_certificate_id", "module_js_sha256",
+      "native_message", "native_stats", "native_status", "prefix_certificate_id",
+      "proof", "proof_status", "request_id", "root_child_boundary", "safety_revision",
+      "schema", "source_fingerprint", "status", "work_used",
+    ];
+    const statKeys = [
+      "attack_max_depth_reached", "attack_moves_generated",
+      "attack_positions_visited", "attack_transpositions_merged", "checking_series",
+      "forced_counterchecks", "mate_max_depth_reached", "mate_moves_generated",
+      "mate_positions_visited", "mate_probes", "mate_transpositions_merged",
+      "peak_attack_frontier", "reply_moves_generated", "reply_positions_visited",
+      "work_used",
+    ];
+    const expectedChild = record.candidate.root_series.child_boundary;
+    const expectedProofStatus = safety.status === "found"
+      ? "found"
+      : safety.status === "exhausted" ? "exhausted" : "unknown";
+    const immediateWork = safety.work_used - value?.work_used;
+    const stats = value?.native_stats;
+    const statsValid = stats === null || (
+      stats
+      && typeof stats === "object"
+      && !Array.isArray(stats)
+      && sameArray(Object.keys(stats).sort(), statKeys)
+      && statKeys.every((key) => exactInteger(stats[key]))
+      && stats.work_used === value.work_used
+      && stats.work_used === [
+        stats.attack_positions_visited, stats.attack_moves_generated,
+        stats.reply_positions_visited, stats.reply_moves_generated,
+        stats.mate_positions_visited, stats.mate_moves_generated,
+      ].reduce((sum, item) => sum + item, 0)
+    );
+    if (
+      !value
+      || typeof value !== "object"
+      || Array.isArray(value)
+      || !sameArray(Object.keys(value).sort(), expectedKeys)
+      || value.schema !== SELECTED_ROOT_LADDER_RECEIPT_SCHEMA
+      || value.status !== safety.status
+      || value.proof_status !== expectedProofStatus
+      || !["found", "exhausted", "unknown"].includes(value.status)
+      || !["cache", "found", "exhausted", "work_limit", "deadline", "unsupported"]
+        .includes(value.native_status)
+      || typeof value.native_message !== "string"
+      || typeof value.cache_hit !== "boolean"
+      || !exactInteger(value.call_work_credit, 0, 1_000_000)
+      || !exactInteger(value.work_used, 0, value.call_work_credit)
+      || !exactInteger(immediateWork, 0, safety.call_work_credit)
+      || immediateWork + value.call_work_credit > safety.call_work_credit
+      || !statsValid
+      || (value.native_stats === null && (
+        value.work_used !== 0
+        || !["cache", "deadline", "unsupported", "work_limit"]
+          .includes(value.native_status)
+      ))
+      || (value.native_stats !== null && value.native_status === "cache")
+      || value.source_fingerprint !== request.source_fingerprint
+      || value.kernel_sha256 !== request.kernel_sha256
+      || value.module_js_sha256 !== request.module_js_sha256
+      || value.certificate_id !== request.certificate_id
+      || typeof value.mate_certificate_id !== "string"
+      || !value.mate_certificate_id
+      || typeof value.prefix_certificate_id !== "string"
+      || !value.prefix_certificate_id
+      || value.request_id !== request.request_id
+      || value.iteration_id !== request.iteration_id
+      || value.safety_revision !== safety.safety_revision
+      || value.candidate_identity !== record.candidate.candidate_identity
+      || !sameJsonValue(value.root_child_boundary, expectedChild)
+      || (value.cache_hit && value.native_status !== "cache")
+      || (!value.cache_hit && value.native_status === "cache")
+    ) {
+      throw new RootCoordinatorError(
+        "The selected-root single-reply ladder receipt is malformed or stale.",
+        "root-safety-result-invalid",
+      );
+    }
+    let proof = null;
+    if (value.status === "found") {
+      const raw = value.proof;
+      if (
+        !raw
+        || typeof raw !== "object"
+        || Array.isArray(raw)
+        || !sameArray(Object.keys(raw).sort(), [
+          "attack", "forced_reply", "forced_reply_unique_legal_move", "mate",
+          "root_child_boundary", "schema",
+        ])
+        || raw.schema !== SELECTED_ROOT_LADDER_PROOF_SCHEMA
+        || raw.forced_reply_unique_legal_move !== true
+        || !sameJsonValue(raw.root_child_boundary, expectedChild)
+      ) {
+        throw new RootCoordinatorError(
+          "A FOUND selected-root ladder omitted its exact proof.",
+          "root-safety-result-invalid",
+        );
+      }
+      const attack = normalizeHorizonSeries(raw.attack, expectedChild.series);
+      const forcedReply = normalizeHorizonSeries(
+        raw.forced_reply,
+        expectedChild.series + 1,
+      );
+      const mate = normalizeHorizonSeries(raw.mate, expectedChild.series + 2, {
+        mate: true,
+      });
+      if (
+        attack.ended_by_check !== true
+        || forcedReply.moves.length !== 1
+        || forcedReply.ended_by_check !== true
+        || !sameJsonValue(attack.child_boundary, raw.attack.child_boundary)
+        || !sameJsonValue(forcedReply.child_boundary, raw.forced_reply.child_boundary)
+        || !sameJsonValue(mate.child_boundary, raw.mate.child_boundary)
+      ) {
+        throw new RootCoordinatorError(
+          "The selected-root ladder is not check, unique countercheck, then mate.",
+          "root-safety-result-invalid",
+        );
+      }
+      proof = Object.freeze({
+        schema: SELECTED_ROOT_LADDER_PROOF_SCHEMA,
+        root_child_boundary: expectedChild,
+        forced_reply_unique_legal_move: true,
+        attack,
+        forced_reply: forcedReply,
+        mate,
+      });
+      if (!sameJsonValue(safety.ladder_proof, proof)) {
+        throw new RootCoordinatorError(
+          "The selected-root ladder proof disagrees with its safety result.",
+          "root-safety-result-invalid",
+        );
+      }
+    } else if (value.proof !== null || safety.ladder_proof !== undefined) {
+      throw new RootCoordinatorError(
+        "A non-FOUND selected-root ladder carried proof authority.",
+        "root-safety-result-invalid",
+      );
+    }
+    return Object.freeze({ ...value, proof });
   }
 
   function normalizeManifest(value, request) {
@@ -1951,6 +2100,47 @@
           );
         }
         ledger.settle(reservation, safety.work_used);
+        let ladderReceipt = null;
+        if (safety.safety_scope === SELECTED_ROOT_LADDER_SCOPE) {
+          ladderReceipt = normalizeSingleReplyLadderReceipt(
+            safety.single_reply_mate_ladder,
+            incumbent,
+            request,
+            safety,
+          );
+          const childIsWhite = incumbent.candidate.root_series
+            .child_boundary.side_to_move === WHITE;
+          const expectedLadderScore = childIsWhite
+            ? request.mate_score - 4
+            : -request.mate_score + 4;
+          const expectedLadderProof = childIsWhite ? [1, 1] : [-1, -1];
+          if (
+            safety.reply_mate !== undefined
+            || (safety.status === "found" && (
+              safety.override_score !== expectedLadderScore
+              || !sameArray(safety.proof_bounds, expectedLadderProof)
+            ))
+            || (safety.status !== "found" && (
+              safety.override_score !== undefined
+              || safety.proof_bounds !== undefined
+            ))
+          ) {
+            throw new RootCoordinatorError(
+              "The selected-root ladder carried an invalid exact mate override.",
+              "root-safety-result-invalid",
+              { work: ledger.snapshot() },
+            );
+          }
+        } else if (
+          safety.single_reply_mate_ladder !== undefined
+          || safety.ladder_proof !== undefined
+        ) {
+          throw new RootCoordinatorError(
+            "A non-ladder safety result carried selected-root ladder authority.",
+            "root-safety-result-invalid",
+            { work: ledger.snapshot() },
+          );
+        }
         taskLog.push(Object.freeze({
           event: "safety",
           candidate_identity: incumbent.candidate.candidate_identity,
@@ -1958,6 +2148,7 @@
           status: safety.status,
           safety_scope: safety.safety_scope ?? null,
           work_used: safety.work_used,
+          single_reply_mate_ladder: ladderReceipt,
         }));
         if (safety.status === "unknown") {
           throw new RootCoordinatorError(
@@ -2096,7 +2287,13 @@
         makeExact(incumbent, {
           score: safety.override_score,
           proof_bounds: safety.proof_bounds,
-          child_pv: safety.reply_mate === undefined ? [] : [safety.reply_mate],
+          child_pv: ladderReceipt?.proof
+            ? [
+              ladderReceipt.proof.attack,
+              ladderReceipt.proof.forced_reply,
+              ladderReceipt.proof.mate,
+            ]
+            : safety.reply_mate === undefined ? [] : [safety.reply_mate],
         }, incumbent.ownerId, request.mate_score, { override: true });
         incumbent.safetyStatus = "found";
         safetyRevision += 1;

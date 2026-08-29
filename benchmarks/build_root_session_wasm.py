@@ -45,6 +45,8 @@ EXPORTED_FUNCTIONS = (
     "_spc_root_session_abi_version",
     "_spc_series_mate_search_json",
     "_spc_series_mate_abi_version",
+    "_spc_single_reply_mate_ladder_search_json",
+    "_spc_single_reply_mate_ladder_abi_version",
     "_malloc",
     "_free",
 )

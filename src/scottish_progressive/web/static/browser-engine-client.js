@@ -34,6 +34,8 @@
   const SAFE_ROOT_RESELECT_WIDENED_CHILD_WORK = 10_000_000;
   const SAFE_ROOT_RESELECT_REPLY_MATE_SCOPE =
     "selected-child-immediate-reply-mate-only";
+  const SAFE_ROOT_RESELECT_LADDER_SCOPE =
+    "selected-child-immediate-reply-mate-plus-single-reply-ladder";
   const SAFE_ROOT_RESELECT_TERMINAL_SCOPE =
     "selected-root-terminal-non-loss-only";
   const SAFE_ROOT_RESELECT_POLICY =
@@ -774,9 +776,10 @@
     const expectedScanKeys = [
       "authoritative_child_boundary", "authoritative_root_replay", "cache_hit",
       "call_work_credit", "candidate_identity", "enumeration_identity",
-      "exclusion", "frontier_stage", "order_index", "order_key", "per_child_max_work",
-      "root_series", "status", "terminal_proof_bounds", "terminal_score",
-      "work_used",
+      "exclusion", "frontier_stage", "ladder_cache_hit", "ladder_call_work_credit",
+      "order_index", "order_key", "per_child_max_work", "root_series",
+      "single_reply_mate_ladder", "status", "terminal_proof_bounds",
+      "terminal_score", "work_used",
     ];
     const expectedExclusionKeys = [
       "checked_pv_policy_rejected", "mate_claim_quarantine_count",
@@ -864,6 +867,56 @@
           || entry.mate_claim_quarantine_count > 0
         )
       ));
+    const validLadderReceipt = (ladder, scan) => {
+      if (ladder === null) {
+        return scan.ladder_call_work_credit === 0 && scan.ladder_cache_hit === false;
+      }
+      const expectedKeys = [
+        "cache_hit", "call_work_credit", "candidate_identity", "certificate_id",
+        "iteration_id", "kernel_sha256", "mate_certificate_id", "module_js_sha256",
+        "native_message", "native_stats", "native_status", "prefix_certificate_id",
+        "proof", "proof_status", "request_id", "root_child_boundary",
+        "safety_revision", "schema", "source_fingerprint", "status", "work_used",
+      ];
+      return Boolean(
+        ladder
+        && typeof ladder === "object"
+        && !Array.isArray(ladder)
+        && sameJson(Object.keys(ladder).sort(), expectedKeys)
+        && ladder.schema
+          === "spc-selected-root-single-reply-mate-ladder-receipt-v1"
+        && ["found", "exhausted", "unknown"].includes(ladder.status)
+        && ladder.status === scan.status
+        && ladder.proof_status === (
+          ladder.status === "found" ? "found"
+            : ladder.status === "exhausted" ? "exhausted" : "unknown"
+        )
+        && ladder.cache_hit === scan.ladder_cache_hit
+        && ladder.call_work_credit === scan.ladder_call_work_credit
+        && exactInteger(ladder.work_used, 0, ladder.call_work_credit)
+        && ladder.source_fingerprint === identity.source_fingerprint
+        && ladder.kernel_sha256 === identity.kernel_sha256
+        && ladder.module_js_sha256 === identity.module_js_sha256
+        && ladder.certificate_id === identity.root_session_certificate_id
+        && ladder.mate_certificate_id === identity.mate_certificate_id
+        && ladder.prefix_certificate_id === identity.prefix_certificate_id
+        && ladder.candidate_identity === scan.candidate_identity
+        && sameJson(ladder.root_child_boundary, scan.authoritative_child_boundary)
+        && (ladder.status === "found" ? (
+          ladder.proof?.schema === "spc-single-reply-mate-ladder-proof-v1"
+          && ladder.proof.forced_reply_unique_legal_move === true
+          && sameJson(
+            ladder.proof.root_child_boundary,
+            scan.authoritative_child_boundary,
+          )
+          && ladder.proof.forced_reply?.moves?.length === 1
+          && ladder.proof.attack?.ended_by_check === true
+          && ladder.proof.forced_reply?.ended_by_check === true
+          && ladder.proof.mate?.outcome === "checkmate"
+          && ladder.proof.mate?.ended_by_check === true
+        ) : ladder.proof === null)
+      );
+    };
     const excludedRootByOrderIndex = new Map(
       validExcludedRoots
         ? excludedRoots.map((entry) => [entry.widened_order_index, entry])
@@ -918,11 +971,29 @@
             : SAFE_ROOT_RESELECT_WIDENED_CHILD_WORK
         )
         && exactInteger(scan.call_work_credit, 0, scan.per_child_max_work)
-        && exactInteger(scan.work_used, 0, scan.call_work_credit)
+        && exactInteger(scan.ladder_call_work_credit, 0, 1_000_000)
+        && exactInteger(
+          scan.work_used,
+          0,
+          scan.call_work_credit + scan.ladder_call_work_credit,
+        )
+        && scan.work_used <= scan.per_child_max_work
+        && typeof scan.ladder_cache_hit === "boolean"
+        && validLadderReceipt(scan.single_reply_mate_ladder, scan)
+        && (
+          scan.single_reply_mate_ladder === null
+          || (
+            scan.single_reply_mate_ladder.work_used <= scan.work_used
+            && scan.work_used - scan.single_reply_mate_ladder.work_used
+              <= scan.call_work_credit
+            && scan.work_used - scan.single_reply_mate_ladder.work_used
+              + scan.ladder_call_work_credit <= scan.per_child_max_work
+          )
+        )
         && (!scan.cache_hit || (
           ["found", "exhausted"].includes(scan.status)
           && scan.call_work_credit === 0
-          && scan.work_used === 0
+          && scan.work_used === (scan.single_reply_mate_ladder?.work_used || 0)
         ))
         && scan.root_series
         && Array.isArray(scan.root_series.moves)
@@ -984,7 +1055,9 @@
       : -1;
     const expectedSafetyScope = selected?.status === "terminal"
       ? SAFE_ROOT_RESELECT_TERMINAL_SCOPE
-      : SAFE_ROOT_RESELECT_REPLY_MATE_SCOPE;
+      : selected?.single_reply_mate_ladder?.status === "exhausted"
+        ? SAFE_ROOT_RESELECT_LADDER_SCOPE
+        : SAFE_ROOT_RESELECT_REPLY_MATE_SCOPE;
     const selectedMatches = Boolean(
       selected
       && ["exhausted", "terminal"].includes(selected.status)
@@ -1061,6 +1134,13 @@
       || runtime?.mate_safety_certification_scope !== (
         selected?.status === "exhausted" ? SAFE_ROOT_RESELECT_REPLY_MATE_SCOPE : null
       )
+      || runtime?.single_reply_mate_ladder_certified !== (
+        selected?.single_reply_mate_ladder?.status === "exhausted"
+      )
+      || !sameJson(
+        runtime?.single_reply_mate_ladder_receipt,
+        selected?.single_reply_mate_ladder || null,
+      )
       || runtime?.terminal_non_loss_certified !== (selected?.status === "terminal")
       || runtime?.root_bound_coverage_complete !== false
       || runtime?.root_bound_coverage_scope !== expectedSafetyScope
@@ -1077,7 +1157,9 @@
       || receipt.selected_safety_basis !== (
         selected?.status === "terminal"
           ? "exact-root-terminal-non-loss"
-          : "exact-immediate-reply-mate-exhaustion"
+          : selected?.single_reply_mate_ladder?.status === "exhausted"
+            ? "exact-immediate-reply-mate-and-single-reply-ladder-exhaustion"
+            : "exact-immediate-reply-mate-exhaustion"
       )
       || receipt.immediate_reply_mate_horizon_series !== 1
       || receipt.excluded_root_count !== excludedRoots?.length

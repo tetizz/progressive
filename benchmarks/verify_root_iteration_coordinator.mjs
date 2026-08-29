@@ -2280,6 +2280,295 @@ async function testUnsupportedEnvelope() {
 }
 
 
+async function testSelectedRootSingleReplyLadderGate() {
+  const definitions = [
+    { id: "ladder-losing", key: "a2a3", score: 100 },
+    { id: "ladder-safe", key: "b2b3", score: 50 },
+  ];
+  const candidateManifest = manifest(definitions);
+  candidateManifest.candidates = candidateManifest.candidates.map((candidate) => ({
+    ...candidate,
+    root_series: {
+      ...candidate.root_series,
+      child_boundary: syntheticBoundary(8),
+      ended_by_check: true,
+    },
+  }));
+  const makeProof = (child) => ({
+    schema: "spc-single-reply-mate-ladder-proof-v1",
+    root_child_boundary: child,
+    forced_reply_unique_legal_move: true,
+    attack: syntheticSeries(["e7e5"], 9, { endedByCheck: true }),
+    forced_reply: syntheticSeries(["e2e4"], 10, { endedByCheck: true }),
+    mate: syntheticSeries(["d8h4"], 11, {
+      outcome: "checkmate",
+      endedByCheck: true,
+    }),
+  });
+  const makeReceipt = (task, status, proof, nativeStatus = status) => ({
+    schema: "spc-selected-root-single-reply-mate-ladder-receipt-v1",
+    status,
+    proof_status: status,
+    native_status: nativeStatus,
+    native_message: `synthetic ${status}`,
+    native_stats: status === "unknown" ? null : {
+      attack_positions_visited: status === "found" ? 1 : 0,
+      attack_moves_generated: 0,
+      reply_positions_visited: 0,
+      reply_moves_generated: 0,
+      mate_positions_visited: 0,
+      mate_moves_generated: 0,
+      attack_transpositions_merged: 0,
+      mate_transpositions_merged: 0,
+      checking_series: 0,
+      forced_counterchecks: 0,
+      mate_probes: 0,
+      peak_attack_frontier: 0,
+      attack_max_depth_reached: 0,
+      mate_max_depth_reached: 0,
+      work_used: status === "found" ? 1 : 0,
+    },
+    cache_hit: false,
+    call_work_credit: 1,
+    work_used: status === "found" ? 1 : 0,
+    source_fingerprint: task.source_fingerprint,
+    kernel_sha256: task.kernel_sha256,
+    module_js_sha256: task.module_js_sha256,
+    certificate_id: task.certificate_id,
+    mate_certificate_id: "spc-synthetic-mate-v1",
+    prefix_certificate_id: "spc-synthetic-prefix-v1",
+    request_id: task.request_id,
+    iteration_id: task.iteration_id,
+    safety_revision: task.safety_revision,
+    candidate_identity: task.candidate_identity,
+    root_child_boundary: task.candidate.root_series.child_boundary,
+    proof,
+  });
+  const ladderSafety = async (task) => {
+    const found = task.candidate_identity === "ladder-losing";
+    const proof = found ? makeProof(task.candidate.root_series.child_boundary) : null;
+    const receipt = makeReceipt(task, found ? "found" : "exhausted", proof);
+    return safetyReply(task, {
+      status: found ? "found" : "exhausted",
+      work_used: receipt.work_used,
+      safety_scope: "selected-root-single-reply-mate-ladder",
+      single_reply_mate_ladder: receipt,
+      ...(found ? {
+        override_score: -MATE + 4,
+        proof_bounds: [-1, -1],
+        ladder_proof: proof,
+      } : {}),
+    });
+  };
+  const result = await api.runRootIteration({
+    request: request(2, { series: 7 }),
+    manifest: candidateManifest,
+    workers: workers(2, definitions),
+    safetyProbe: ladderSafety,
+  });
+  assert.equal(result.selected.candidate_identity, "ladder-safe");
+  assert.equal(result.tasks.filter((event) => (
+    event.event === "safety" && event.single_reply_mate_ladder !== null
+  )).length, 2);
+  assert.equal(result.tasks.find((event) => (
+    event.event === "safety" && event.status === "found"
+  )).single_reply_mate_ladder.proof.forced_reply.moves.length, 1);
+  await expectCode(api.runRootIteration({
+    request: request(2, { series: 7 }),
+    manifest: candidateManifest,
+    workers: workers(2, definitions),
+    safetyProbe: async (task) => {
+      const proof = makeProof(task.candidate.root_series.child_boundary);
+      const receipt = makeReceipt(task, "found", proof);
+      return safetyReply(task, {
+        status: "found",
+        work_used: 0,
+        safety_scope: "selected-root-single-reply-mate-ladder",
+        single_reply_mate_ladder: receipt,
+        override_score: -MATE + 4,
+        proof_bounds: [-1, -1],
+        ladder_proof: proof,
+      });
+    },
+  }), "root-safety-result-invalid");
+
+  const exactBoundary = (fen, series, promotedHex) => ({
+    fen,
+    board_fen: fen,
+    series,
+    series_number: series,
+    side_to_move: series % 2 === 1 ? "white" : "black",
+    quiet_series: 0,
+    quiet_draw_pending: false,
+    ep_targets: [],
+    progressive_ep: [],
+    promoted_hex: promotedHex,
+    chess960: false,
+  });
+  const recordedRootFen =
+    "Nnb1kbnr/pppp2pp/4p3/5p2/8/3P4/PPPKPPPP/3R1BNR b k - 1 7";
+  const recordedChild = exactBoundary(
+    "Nnb1kbnr/pppp2pp/4p3/8/5q2/3P4/PPPKPP2/3R1BN1 w k - 1 13",
+    7,
+    "0000000020000000",
+  );
+  const recordedAttack = {
+    moves: ["d2c3", "d3d4", "d4d5", "d5e6", "d1d7", "a8c7"],
+    machine_notation: "d2c3/d3d4/d4d5/d5e6/d1d7/a8c7",
+    transposition_count: 1,
+    child_boundary: exactBoundary(
+      "1nb1kbnr/ppNR2pp/4P3/8/5q2/2K5/PPP1PP2/5BN1 b k - 0 13",
+      8,
+      "0000000020000000",
+    ),
+    outcome: null,
+    ended_by_check: true,
+  };
+  const recordedReply = {
+    moves: ["f4c7"],
+    machine_notation: "f4c7",
+    transposition_count: 1,
+    child_boundary: exactBoundary(
+      "1nb1kbnr/ppqR2pp/4P3/8/8/2K5/PPP1PP2/5BN1 w k - 0 14",
+      9,
+      "0004000000000000",
+    ),
+    outcome: null,
+    ended_by_check: true,
+  };
+  const recordedMate = {
+    moves: [
+      "c3b3", "a2a4", "c2c4", "c4c5", "c5c6", "e2e4", "d7f7",
+      "e6e7", "e7f8q",
+    ],
+    machine_notation: "c3b3/a2a4/c2c4/c4c5/c5c6/e2e4/d7f7/e6e7/e7f8q",
+    transposition_count: 1,
+    child_boundary: exactBoundary(
+      "1nb1kQnr/ppq2Rpp/2P5/8/P3P3/1K6/1P3P2/5BN1 b k - 0 14",
+      10,
+      "2004000000000000",
+    ),
+    outcome: "checkmate",
+    ended_by_check: true,
+  };
+  const recordedProof = {
+    schema: "spc-single-reply-mate-ladder-proof-v1",
+    root_child_boundary: recordedChild,
+    forced_reply_unique_legal_move: true,
+    attack: recordedAttack,
+    forced_reply: recordedReply,
+    mate: recordedMate,
+  };
+  const recordedDefinitions = [
+    { id: "recorded-3dfd-loss", key: "f5f4", score: -100 },
+    { id: "recorded-safe-alternative", key: "a7a6", score: -50 },
+  ];
+  const recordedManifest = manifest(recordedDefinitions, { white: false });
+  recordedManifest.candidates[0] = {
+    ...recordedManifest.candidates[0],
+    order_key: "f5f4/f4f3/f3g2/g2h1q/h1h2/h2f4",
+    root_series: {
+      moves: ["f5f4", "f4f3", "f3g2", "g2h1q", "h1h2", "h2f4"],
+      machine_notation: "f5f4/f4f3/f3g2/g2h1q/h1h2/h2f4",
+      transposition_count: 1,
+      child_boundary: recordedChild,
+      outcome: null,
+      ended_by_check: true,
+    },
+  };
+  recordedManifest.candidates[1] = {
+    ...recordedManifest.candidates[1],
+    order_key: "a7a6/a6a5/a5a4/a4a3/a3b2/b2b1q",
+    root_series: syntheticSeries(
+      ["a7a6", "a6a5", "a5a4", "a4a3", "a3b2", "b2b1q"],
+      7,
+    ),
+  };
+  const recordedSafety = async (task) => {
+    if (task.candidate_identity !== "recorded-3dfd-loss") {
+      return safetyReply(task, {
+        status: "exhausted",
+        work_used: 0,
+        safety_scope: "selected-root-single-reply-mate-ladder",
+        single_reply_mate_ladder: makeReceipt(task, "exhausted", null),
+      });
+    }
+    const nativeStats = {
+      attack_positions_visited: 628_052,
+      attack_moves_generated: 0,
+      reply_positions_visited: 0,
+      reply_moves_generated: 0,
+      mate_positions_visited: 0,
+      mate_moves_generated: 0,
+      attack_transpositions_merged: 0,
+      mate_transpositions_merged: 0,
+      checking_series: 1,
+      forced_counterchecks: 1,
+      mate_probes: 1,
+      peak_attack_frontier: 1,
+      attack_max_depth_reached: 7,
+      mate_max_depth_reached: 9,
+      work_used: 628_052,
+    };
+    const receipt = {
+      ...makeReceipt(task, "found", recordedProof),
+      call_work_credit: 1_000_000,
+      work_used: 628_052,
+      native_stats: nativeStats,
+    };
+    return safetyReply(task, {
+      status: "found",
+      work_used: 628_052,
+      safety_scope: "selected-root-single-reply-mate-ladder",
+      single_reply_mate_ladder: receipt,
+      override_score: MATE - 4,
+      proof_bounds: [1, 1],
+      ladder_proof: recordedProof,
+    });
+  };
+  const recordedResult = await api.runRootIteration({
+    request: request(2, {
+      series: 6,
+      boundary: { fen: recordedRootFen },
+      caps: {
+        max_work: 2_000_000,
+        safety_reserve_work: 1_000_000,
+        safety_call_work_credit: 1_000_000,
+      },
+    }),
+    manifest: recordedManifest,
+    workers: workers(2, recordedDefinitions),
+    safetyProbe: recordedSafety,
+  });
+  assert.equal(recordedResult.selected.candidate_identity, "recorded-safe-alternative");
+  assert.equal(recordedResult.tasks.find((event) => (
+    event.event === "safety" && event.status === "found"
+  )).single_reply_mate_ladder.work_used, 628_052);
+
+  const unknownDefinitions = [{ id: "ladder-unknown", key: "a2a3", score: 10 }];
+  const unknownManifest = manifest(unknownDefinitions);
+  unknownManifest.candidates[0] = {
+    ...unknownManifest.candidates[0],
+    root_series: {
+      ...unknownManifest.candidates[0].root_series,
+      child_boundary: syntheticBoundary(8),
+      ended_by_check: true,
+    },
+  };
+  await expectCode(api.runRootIteration({
+    request: request(1, { series: 7 }),
+    manifest: unknownManifest,
+    workers: workers(1, unknownDefinitions),
+    safetyProbe: async (task) => safetyReply(task, {
+      status: "unknown",
+      work_used: 0,
+      safety_scope: "selected-root-single-reply-mate-ladder",
+      single_reply_mate_ladder: makeReceipt(task, "unknown", null, "deadline"),
+    }),
+  }), "root-safety-unknown");
+}
+
+
 const streaming = await testStreamingWhiteAndStaleEpoch();
 await testCertifiedInitialFullWave();
 await testWhiteCanonicalTies();
@@ -2306,11 +2595,12 @@ await testAspirationWideningAndFallback();
 await testProtocolFaults();
 await testCapsCrashAndMemory();
 await testCancellationAndDeadline();
+await testSelectedRootSingleReplyLadderGate();
 await testUnsupportedEnvelope();
 
 process.stdout.write(`${JSON.stringify({
   schema: "spc-root-iteration-coordinator-verifier-v1",
-  scenarios: 30,
+  scenarios: 31,
   response_order_permutations: 8,
   response_order_worker_count: 8,
   streaming_first_wave: true,
@@ -2363,6 +2653,9 @@ process.stdout.write(`${JSON.stringify({
   full_artifact_identity_bound: true,
   prefix_hard_limits_mirrored: true,
   prefix_chess960_rejected: true,
+  constrained_prefix_never_enters_emergency_publication: true,
+  selected_root_single_reply_ladder_veto_reselect_and_unknown_fail_closed: true,
+  recorded_3dfd_628052_ladder_vetoes_selected_root: true,
   reference_winner: streaming.selected.candidate_identity,
   reference_score: streaming.selected.score,
 })}\n`);

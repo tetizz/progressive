@@ -26,6 +26,8 @@
   const SAFE_ROOT_RESELECT_WIDENED_CHILD_WORK = 10_000_000;
   const SAFE_ROOT_RESELECT_REPLY_MATE_SCOPE =
     "selected-child-immediate-reply-mate-only";
+  const SAFE_ROOT_RESELECT_LADDER_SCOPE =
+    "selected-child-immediate-reply-mate-plus-single-reply-ladder";
   const SAFE_ROOT_RESELECT_TERMINAL_SCOPE =
     "selected-root-terminal-non-loss-only";
   const SAFE_ROOT_RESELECT_POLICY =
@@ -34,6 +36,14 @@
     "native-tactical-protected-root-production-order-empty-preference-v1";
   const SAFE_ROOT_RESELECT_EXCLUSION_BINDING_POLICY =
     "unique-exact-authoritative-child-boundary-v1";
+  const SELECTED_ROOT_LADDER_MIN_CHILD_SERIES = 7;
+  const SELECTED_ROOT_LADDER_WORK_LIMIT = 1_000_000;
+  const SELECTED_ROOT_LADDER_SCOPE =
+    "selected-root-single-reply-mate-ladder";
+  const SELECTED_ROOT_LADDER_PROOF_SCHEMA =
+    "spc-single-reply-mate-ladder-proof-v1";
+  const SELECTED_ROOT_LADDER_RECEIPT_SCHEMA =
+    "spc-selected-root-single-reply-mate-ladder-receipt-v1";
   const ROOT_TACTICAL_POLICY = "canonical-boundary-policy-v1";
   const CHECKED_PV_SELECTION_POLICY =
     "repair-once-then-veto-adverse-selected-pv-boundary-mates-v2";
@@ -824,6 +834,15 @@
     }));
   }
 
+  function ladderProofCacheKey(identity, childBoundary) {
+    return JSON.stringify(canonicalJsonValue({
+      schema: "spc-root-single-reply-mate-ladder-cache-key-v1",
+      exact_mate_cache_key: JSON.parse(mateProofCacheKey(identity, childBoundary)),
+      ladder_abi_version: 1,
+      proof_schema: SELECTED_ROOT_LADDER_PROOF_SCHEMA,
+    }));
+  }
+
   function selectCertifiedGeometry(identity, navigatorValue = globalThis.navigator) {
     const geometry = identity?.root_geometry;
     if (!geometry || typeof geometry !== "object" || Array.isArray(geometry)) {
@@ -1080,6 +1099,61 @@
     return Object.freeze({ ...value, moves: Object.freeze(moves), child_boundary: childBoundary });
   }
 
+  function normalizeSingleReplyLadderProof(value, rootChildBoundary) {
+    const rootChild = normalizeExactBoundaryState(rootChildBoundary || {});
+    const expectedKeys = [
+      "attack", "forced_reply", "forced_reply_unique_legal_move", "mate",
+      "root_child_boundary", "schema",
+    ];
+    if (
+      rootChild === null
+      || !value
+      || typeof value !== "object"
+      || Array.isArray(value)
+      || !sameJson(Object.keys(value).sort(), expectedKeys)
+      || value.schema !== SELECTED_ROOT_LADDER_PROOF_SCHEMA
+      || value.forced_reply_unique_legal_move !== true
+      || !sameExactBoundary(value.root_child_boundary, rootChild)
+    ) {
+      throw new RootIterationClientError(
+        "The single-reply ladder proof is not rooted at the selected child.",
+        "browser-root-ladder-proof-invalid",
+      );
+    }
+    const attack = normalizeRootSeries(value.attack);
+    const forcedReply = normalizeRootSeries(value.forced_reply);
+    const mate = normalizeRootSeries(value.mate);
+    if (
+      rootChild.series < SELECTED_ROOT_LADDER_MIN_CHILD_SERIES
+      || rootChild.series > 254
+      || attack.moves.length > rootChild.series
+      || attack.outcome !== null
+      || attack.ended_by_check !== true
+      || attack.child_boundary.series !== rootChild.series + 1
+      || forcedReply.moves.length !== 1
+      || forcedReply.outcome !== null
+      || forcedReply.ended_by_check !== true
+      || forcedReply.child_boundary.series !== rootChild.series + 2
+      || mate.moves.length > rootChild.series + 2
+      || mate.outcome !== "checkmate"
+      || mate.ended_by_check !== true
+      || mate.child_boundary.series !== rootChild.series + 3
+    ) {
+      throw new RootIterationClientError(
+        "The single-reply ladder proof is not check, unique countercheck, then mate.",
+        "browser-root-ladder-proof-invalid",
+      );
+    }
+    return deepFreeze({
+      schema: SELECTED_ROOT_LADDER_PROOF_SCHEMA,
+      root_child_boundary: rootChild,
+      forced_reply_unique_legal_move: true,
+      attack,
+      forced_reply: forcedReply,
+      mate,
+    });
+  }
+
   function selectedPvOpponentBoundaries(candidate) {
     const rawPv = candidate?.child_pv;
     if (!Array.isArray(rawPv)) return Object.freeze([]);
@@ -1174,6 +1248,8 @@
       this.lastSafe = null;
       this.mateProofCache = new Map();
       this.mateProofCacheLimit = 256;
+      this.ladderProofCache = new Map();
+      this.ladderProofCacheLimit = 256;
     }
 
     canAnalyze(payload, identity) {
@@ -1768,6 +1844,210 @@
       return Object.freeze({ reply, rootSeries, checkedPrefix });
     }
 
+    async _replaySingleReplyLadderProof({
+      proof,
+      authoritativeChild,
+      channel,
+      identity,
+      requestId,
+      deadlineMs,
+      signal,
+    }) {
+      const normalized = normalizeSingleReplyLadderProof(proof, authoritativeChild);
+      let boundary = authoritativeChild;
+      for (const [label, series] of [
+        ["attack", normalized.attack],
+        ["forced-reply", normalized.forced_reply],
+        ["mate", normalized.mate],
+      ]) {
+        const replayRequest = PREFIX_API.normalizePrefixRequest({
+          ...boundary,
+          prefix: [...series.moves],
+        }, `${requestId}:${label}`, identity.prefix_contract);
+        const replay = await channel.call("prefix", replayRequest, {
+          signal,
+          deadlineMs,
+        });
+        PREFIX_API.validatePrefixResult(replay, replayRequest, identity);
+        recordChannelMemory(replay, channel);
+        if (
+          replay.complete !== true
+          || replay.ended_by_check !== true
+          || replay.outcome !== series.outcome
+          || !sameArray(replay.prefix, series.moves)
+          || !sameExactBoundary(replay.next_state, series.child_boundary)
+        ) {
+          throw new RootIterationClientError(
+            `The cached ladder ${label} failed authoritative replay.`,
+            "browser-root-ladder-proof-invalid",
+          );
+        }
+        boundary = series.child_boundary;
+      }
+      return normalized;
+    }
+
+    async _probeSelectedRootSingleReplyLadder({
+      task,
+      channel,
+      identity,
+      authoritativeChild,
+      authoritativeRootReplay,
+      callWorkCredit,
+      deadlineEpochMs,
+      deadlineMs,
+      signal,
+      requestLabel,
+    }) {
+      const child = normalizeExactBoundaryState(authoritativeChild || {});
+      if (
+        child === null
+        || child.series < SELECTED_ROOT_LADDER_MIN_CHILD_SERIES
+        || child.series > 254
+        || !exactInteger(callWorkCredit, 0, SELECTED_ROOT_LADDER_WORK_LIMIT)
+      ) {
+        throw new RootIterationClientError(
+          "The selected-root ladder probe has an invalid exact boundary or credit.",
+          "browser-root-ladder-request-invalid",
+        );
+      }
+      const cacheKey = ladderProofCacheKey(identity, child);
+      let cached = this.ladderProofCache.get(cacheKey) || null;
+      const cacheHit = cached !== null;
+      let status = cached?.status || "unknown";
+      let nativeStatus = cacheHit ? "cache" : "work_limit";
+      let nativeMessage = cacheHit
+        ? "reused exact full-state single-reply ladder proof"
+        : "shared ladder work credit is exhausted";
+      let nativeStats = null;
+      let workUsed = 0;
+      let proof = cached?.proof || null;
+      if (cacheHit) {
+        this.ladderProofCache.delete(cacheKey);
+        this.ladderProofCache.set(cacheKey, cached);
+        if (status === "found") {
+          proof = await this._replaySingleReplyLadderProof({
+            proof,
+            authoritativeChild: child,
+            channel,
+            identity,
+            requestId: `${requestLabel}:cached`,
+            deadlineMs,
+            signal,
+          });
+        }
+      } else if (callWorkCredit > 0) {
+        const request = {
+          ...task,
+          schema: "spc-root-single-reply-mate-ladder-task-v1",
+          call_work_credit: callWorkCredit,
+          session_id: channel.sessionId,
+          deadline_epoch_ms: deadlineEpochMs,
+          authoritative_child_boundary: child,
+          authoritative_root_replay: authoritativeRootReplay,
+          remaining_time_ms: Math.max(0, Math.floor(
+            task.deadline_monotonic_ms - monotonicNow(),
+          )),
+        };
+        const reply = await channel.call("root-ladder", request, {
+          signal,
+          deadlineMs,
+        });
+        const echoedKeys = [
+          "schema", "request_id", "iteration_id", "source_fingerprint",
+          "kernel_sha256", "module_js_sha256", "certificate_id",
+          "runtime_variant", "thread_count", "engine_version", "ruleset_version",
+          "profile_id", "generation", "safety_revision", "incumbent_epoch",
+          "candidate_identity", "call_work_credit", "session_id",
+          "deadline_epoch_ms",
+        ];
+        if (
+          !reply
+          || typeof reply !== "object"
+          || Array.isArray(reply)
+          || !["found", "exhausted", "unknown"].includes(reply.status)
+          || echoedKeys.some((key) => reply[key] !== request[key])
+          || !sameJson(reply.candidate, request.candidate)
+          || !sameExactBoundary(reply.authoritative_child_boundary, child)
+          || !sameJson(reply.authoritative_root_replay, authoritativeRootReplay)
+          || !exactInteger(reply.work_used, 0, callWorkCredit)
+          || !["found", "exhausted", "work_limit", "deadline", "unsupported"]
+            .includes(reply.native_status)
+          || !["found", "exhausted", "unknown"].includes(reply.proof_status)
+        ) {
+          throw new RootIterationClientError(
+            "The compiled single-reply ladder authority returned a stale receipt.",
+            "browser-root-ladder-result-invalid",
+          );
+        }
+        recordChannelMemory(reply, channel);
+        status = reply.status;
+        nativeStatus = reply.native_status;
+        nativeMessage = String(reply.native_message || "");
+        nativeStats = reply.native_stats === null
+          ? null
+          : deepFreeze({ ...reply.native_stats });
+        workUsed = reply.work_used;
+        if (status === "found") {
+          if (reply.proof_status !== "found" || reply.ladder_proof === undefined) {
+            throw new RootIterationClientError(
+              "A FOUND single-reply ladder omitted its exact proof.",
+              "browser-root-ladder-result-invalid",
+            );
+          }
+          proof = await this._replaySingleReplyLadderProof({
+            proof: reply.ladder_proof,
+            authoritativeChild: child,
+            channel,
+            identity,
+            requestId: requestLabel,
+            deadlineMs,
+            signal,
+          });
+        } else if (
+          reply.ladder_proof !== undefined
+          || reply.proof_status !== (status === "exhausted" ? "exhausted" : "unknown")
+        ) {
+          throw new RootIterationClientError(
+            "A non-FOUND single-reply ladder result carried proof authority.",
+            "browser-root-ladder-result-invalid",
+          );
+        }
+        if (status === "found" || status === "exhausted") {
+          cached = deepFreeze({ status, proof });
+          this.ladderProofCache.set(cacheKey, cached);
+          while (this.ladderProofCache.size > this.ladderProofCacheLimit) {
+            this.ladderProofCache.delete(this.ladderProofCache.keys().next().value);
+          }
+        }
+      }
+      const receipt = deepFreeze({
+        schema: SELECTED_ROOT_LADDER_RECEIPT_SCHEMA,
+        status,
+        proof_status: status === "found" ? "found"
+          : status === "exhausted" ? "exhausted" : "unknown",
+        native_status: nativeStatus,
+        native_message: nativeMessage,
+        native_stats: nativeStats,
+        cache_hit: cacheHit,
+        call_work_credit: callWorkCredit,
+        work_used: workUsed,
+        source_fingerprint: task.source_fingerprint,
+        kernel_sha256: task.kernel_sha256,
+        module_js_sha256: task.module_js_sha256,
+        certificate_id: task.certificate_id,
+        mate_certificate_id: identity.mate_certificate_id,
+        prefix_certificate_id: identity.prefix_certificate_id,
+        request_id: task.request_id,
+        iteration_id: task.iteration_id,
+        safety_revision: task.safety_revision,
+        candidate_identity: task.candidate_identity,
+        root_child_boundary: child,
+        proof,
+      });
+      return deepFreeze({ status, work_used: workUsed, proof, receipt });
+    }
+
     _safeRootReselectResult({
       payload,
       identity,
@@ -1792,7 +2072,9 @@
       const checkedPrefix = selected.authoritative_root_replay;
       const safetyScope = selected.status === "terminal"
         ? SAFE_ROOT_RESELECT_TERMINAL_SCOPE
-        : SAFE_ROOT_RESELECT_REPLY_MATE_SCOPE;
+        : selected.single_reply_mate_ladder?.status === "exhausted"
+          ? SAFE_ROOT_RESELECT_LADDER_SCOPE
+          : SAFE_ROOT_RESELECT_REPLY_MATE_SCOPE;
       return deepFreeze({
         ok: true,
         status: "complete",
@@ -1867,6 +2149,10 @@
           mate_safety_certification_scope: selected.status === "exhausted"
             ? SAFE_ROOT_RESELECT_REPLY_MATE_SCOPE
             : null,
+          single_reply_mate_ladder_certified:
+            selected.single_reply_mate_ladder?.status === "exhausted",
+          single_reply_mate_ladder_receipt:
+            selected.single_reply_mate_ladder || null,
           terminal_non_loss_certified: selected.status === "terminal",
           root_bound_coverage_complete: false,
           root_bound_coverage_scope: safetyScope,
@@ -1975,7 +2261,9 @@
         ), 0);
         const safetyScope = selected?.status === "terminal"
           ? SAFE_ROOT_RESELECT_TERMINAL_SCOPE
-          : SAFE_ROOT_RESELECT_REPLY_MATE_SCOPE;
+          : selected?.single_reply_mate_ladder?.status === "exhausted"
+            ? SAFE_ROOT_RESELECT_LADDER_SCOPE
+            : SAFE_ROOT_RESELECT_REPLY_MATE_SCOPE;
         return deepFreeze({
           schema: "spc-root-safe-reselector-receipt-v1",
           trigger: "all-retained-children-proven-mating",
@@ -1984,7 +2272,9 @@
           selected_safety_basis: selected?.status === "terminal"
             ? "exact-root-terminal-non-loss"
             : selected?.status === "exhausted"
-              ? "exact-immediate-reply-mate-exhaustion"
+              ? selected.single_reply_mate_ladder?.status === "exhausted"
+                ? "exact-immediate-reply-mate-and-single-reply-ladder-exhaustion"
+                : "exact-immediate-reply-mate-exhaustion"
               : null,
           immediate_reply_mate_horizon_series: 1,
           request_id: requestBase.request_id,
@@ -2349,6 +2639,8 @@
               let cacheHit = false;
               let workUsed = 0;
               let callWorkCredit = 0;
+              let ladderCallWorkCredit = 0;
+              let ladderReceipt = null;
               const frontierStage = candidate.order_index
                 < SAFE_ROOT_RESELECT_EARLY_FRONTIER_COUNT
                 ? "retained-w32"
@@ -2516,6 +2808,53 @@
                   }
                 }
               }
+              if (
+                scanStatus === "exhausted"
+                && authoritativeChild.series >= SELECTED_ROOT_LADDER_MIN_CHILD_SERIES
+              ) {
+                ladderCallWorkCredit = Math.min(
+                  SELECTED_ROOT_LADDER_WORK_LIMIT,
+                  Math.max(0, perChildMaxWork - workUsed),
+                  Math.max(0, laneMaxWork - laneWorkUsed),
+                  Math.max(
+                    0,
+                    payload.max_generation_positions
+                      - ordinaryCommittedWork - laneWorkUsed,
+                  ),
+                );
+                const ladderTask = {
+                  schema: "spc-root-safety-task-v1",
+                  request_id: requestBase.request_id,
+                  iteration_id: wideIterationId,
+                  ...expected,
+                  generation: requestBase.depth,
+                  safety_revision: candidate.order_index + 1,
+                  incumbent_epoch: 0,
+                  candidate_identity: candidate.candidate_identity,
+                  candidate,
+                  call_work_credit: ladderCallWorkCredit,
+                  session_id: sessionId,
+                  deadline_monotonic_ms: absoluteDeadline,
+                  deadline_epoch_ms: deadlineEpochMs,
+                };
+                const ladder = await this._probeSelectedRootSingleReplyLadder({
+                  task: ladderTask,
+                  channel,
+                  identity,
+                  authoritativeChild,
+                  authoritativeRootReplay: rootReplay,
+                  callWorkCredit: ladderCallWorkCredit,
+                  deadlineEpochMs,
+                  deadlineMs: absoluteDeadline,
+                  signal,
+                  requestLabel:
+                    `${wideIterationId}:${candidate.order_index}:single-reply-ladder`,
+                });
+                workUsed += ladder.work_used;
+                laneWorkUsed += ladder.work_used;
+                ladderReceipt = ladder.receipt;
+                scanStatus = ladder.status;
+              }
               const scan = deepFreeze({
                 candidate_identity: candidate.candidate_identity,
                 enumeration_identity: enumerationIdentity,
@@ -2529,10 +2868,13 @@
                 status: scanStatus,
                 exclusion,
                 cache_hit: cacheHit,
+                ladder_cache_hit: ladderReceipt?.cache_hit ?? false,
                 frontier_stage: frontierStage,
                 per_child_max_work: perChildMaxWork,
                 call_work_credit: callWorkCredit,
+                ladder_call_work_credit: ladderCallWorkCredit,
                 work_used: workUsed,
+                single_reply_mate_ladder: ladderReceipt,
               });
               scans.push(scan);
               if (scanStatus === "terminal" || scanStatus === "exhausted") {
@@ -3341,6 +3683,8 @@
                   memory_bytes: channel.memoryBytes,
                   memory_peak_bytes: channel.memoryPeakBytes,
                   safety_scope: scope,
+                  authoritative_child_boundary: authoritativeChild,
+                  authoritative_root_replay: replay,
                   mate_cache: {
                     schema: "spc-root-mate-proof-cache-receipt-v1",
                     hit: cacheHit,
@@ -3392,10 +3736,24 @@
                 const reservedForShallowerBoundaries = remainingProbes - 1;
                 let credit = 0;
                 if (!cachedFoundFirst) {
-                  credit = horizon.pv.length === 0 ? remainingCredit : Math.min(
-                    PV_HORIZON_MATE_WORK_LIMIT,
-                    remainingCredit - reservedForShallowerBoundaries,
-                  );
+                  if (horizon.pv.length === 0) {
+                    const rootChild = normalizeExactBoundaryState(
+                      rootSeries.child_boundary || {},
+                    );
+                    const ladderReserve = rootChild !== null
+                      && rootChild.series >= SELECTED_ROOT_LADDER_MIN_CHILD_SERIES
+                      ? Math.min(
+                        SELECTED_ROOT_LADDER_WORK_LIMIT,
+                        Math.max(0, remainingCredit - 1),
+                      )
+                      : 0;
+                    credit = remainingCredit - ladderReserve;
+                  } else {
+                    credit = Math.min(
+                      PV_HORIZON_MATE_WORK_LIMIT,
+                      remainingCredit - reservedForShallowerBoundaries,
+                    );
+                  }
                 }
                 const scope = horizon.pv.length === 0 ? "root-child" : "pv-horizon";
                 const horizonSafety = await proveBoundaryMate({
@@ -3462,6 +3820,49 @@
                 };
               }
               if (lastSafety?.status === "exhausted") {
+                const rootChild = normalizeExactBoundaryState(
+                  rootSeries.child_boundary || {},
+                );
+                if (
+                  lastSafety.safety_scope === "root-child"
+                  && rootChild !== null
+                  && rootChild.series >= SELECTED_ROOT_LADDER_MIN_CHILD_SERIES
+                ) {
+                  const ladderCredit = Math.min(
+                    SELECTED_ROOT_LADDER_WORK_LIMIT,
+                    task.call_work_credit - workUsed,
+                  );
+                  const ladder = await this._probeSelectedRootSingleReplyLadder({
+                    task,
+                    channel,
+                    identity,
+                    authoritativeChild: lastSafety.authoritative_child_boundary,
+                    authoritativeRootReplay: lastSafety.authoritative_root_replay,
+                    callWorkCredit: ladderCredit,
+                    deadlineEpochMs,
+                    deadlineMs: absoluteReceiptDeadline,
+                    signal: taskSignal,
+                    requestLabel:
+                      `${task.iteration_id}:${task.safety_revision}:single-reply-ladder`,
+                  });
+                  workUsed += ladder.work_used;
+                  const normalized = {
+                    ...lastSafety,
+                    status: ladder.status,
+                    work_used: workUsed,
+                    safety_scope: SELECTED_ROOT_LADDER_SCOPE,
+                    single_reply_mate_ladder: ladder.receipt,
+                  };
+                  if (ladder.status === "found") {
+                    const childIsWhite = rootChild.side_to_move === "white";
+                    normalized.override_score = childIsWhite
+                      ? MATE_SCORE - 4
+                      : -MATE_SCORE + 4;
+                    normalized.proof_bounds = childIsWhite ? [1, 1] : [-1, -1];
+                    normalized.ladder_proof = ladder.proof;
+                  }
+                  return normalized;
+                }
                 return {
                   ...lastSafety,
                   work_used: workUsed,
@@ -3712,6 +4113,19 @@
             preferredSeries = [...rootSeries.moves];
             previousScore = iteration.selected.score;
             previousOwners = exactCandidateOwnerMap(iteration.tasks);
+            const ladderReceipts = Object.freeze(iteration.tasks
+              .filter((event) => (
+                event?.event === "safety"
+                && event.single_reply_mate_ladder !== null
+                && event.single_reply_mate_ladder !== undefined
+              ))
+              .map((event) => event.single_reply_mate_ladder));
+            const selectedLadderReceipt = [...ladderReceipts].reverse().find(
+              (receipt) => (
+                receipt.candidate_identity === iteration.selected.candidate_identity
+                && receipt.status === "exhausted"
+              ),
+            ) || null;
             const aspirationOwnerIds = Object.freeze([
               ...usedAspirationAffinity.ownerIds,
             ]);
@@ -3722,6 +4136,9 @@
               status: "complete",
               publishable: true,
               safety_certified: true,
+              safety_certification_scope: selectedLadderReceipt === null
+                ? "selected-root-immediate-mate-and-checked-pv"
+                : "selected-root-immediate-mate-checked-pv-and-single-reply-ladder",
               legal_series_certified: true,
               authoritative_replay_certified: true,
               legal_validation_runtime: "compiled-wasm",
@@ -3791,6 +4208,8 @@
                 mate_cache_hits: mateCacheHits,
                 mate_cache_misses: mateCacheMisses,
                 mate_cache_entries: this.mateProofCache.size,
+                single_reply_ladder_receipts: ladderReceipts,
+                single_reply_ladder_cache_entries: this.ladderProofCache.size,
                 safety_reserve_positions: safetyReserve,
                 aspiration_attempts: aspiration.attempts,
                 aspiration_fail_highs: aspiration.fail_highs,
@@ -3827,6 +4246,14 @@
                 safety_reserve_positions: safetyReserve,
                 canonical_replay_certified: true,
                 mate_safety_certified: true,
+                single_reply_mate_ladder_certified:
+                  selectedLadderReceipt !== null,
+                selected_root_single_reply_ladder: {
+                  schema: "spc-selected-root-single-reply-mate-ladder-summary-v1",
+                  selected_receipt: selectedLadderReceipt,
+                  receipts: ladderReceipts,
+                  cache_entries: this.ladderProofCache.size,
+                },
                 root_bound_coverage_complete: true,
                 root_bound_coverage_scope: iteration.coverage_scope,
                 unfiltered_score_winner_selected:
@@ -3965,6 +4392,7 @@
       this.active = false;
       this.lastSafe = null;
       this.mateProofCache.clear();
+      this.ladderProofCache.clear();
     }
   }
 
@@ -3978,6 +4406,7 @@
     normalizeRootSeries,
     normalizeAspirationReceipt,
     mateProofCacheKey,
+    ladderProofCacheKey,
     normalizedRootPlayLimits,
     rootIdentity,
     sameBoundary,

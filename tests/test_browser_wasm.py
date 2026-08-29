@@ -1022,6 +1022,104 @@ process.stdout.write(JSON.stringify({ accepted, rejected }));
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js is required for browser contract tests")
+def test_browser_adapter_validates_single_reply_ladder_native_receipts(
+    tmp_path: Path,
+) -> None:
+    adapter = tmp_path / "wasm-kernel-adapter.mjs"
+    adapter.write_bytes((STATIC / "wasm-kernel-adapter.js").read_bytes())
+    script = r"""
+import { pathToFileURL } from "node:url";
+const api = await import(pathToFileURL(process.argv[1]));
+const stats = {
+  attack_positions_visited: 1,
+  attack_moves_generated: 0,
+  reply_positions_visited: 0,
+  reply_moves_generated: 0,
+  mate_positions_visited: 0,
+  mate_moves_generated: 0,
+  attack_transpositions_merged: 0,
+  mate_transpositions_merged: 0,
+  checking_series: 1,
+  forced_counterchecks: 1,
+  mate_probes: 1,
+  peak_attack_frontier: 1,
+  attack_max_depth_reached: 8,
+  mate_max_depth_reached: 10,
+  work_used: 1,
+};
+const found = {
+  schema: "spc-single-reply-mate-ladder-native-v1",
+  abi_version: 1,
+  kernel_status: "found",
+  status_code: 0,
+  proof_status: "found",
+  complete: true,
+  series_number: 7,
+  max_work: 10,
+  message: "synthetic found ladder",
+  attack_moves: ["e7e5"],
+  forced_reply_moves: ["e2e4"],
+  mate_moves: ["d8h4"],
+  stats,
+};
+const exhausted = {
+  ...found,
+  kernel_status: "exhausted",
+  status_code: 1,
+  proof_status: "exhausted",
+  attack_moves: [],
+  forced_reply_moves: [],
+  mate_moves: [],
+};
+const unknown = {
+  ...exhausted,
+  kernel_status: "work_limit",
+  status_code: 2,
+  proof_status: "unknown",
+  complete: false,
+};
+const accepted = [found, exhausted, unknown].map((receipt) => {
+  const result = api.validateSingleReplyLadderNativeReceipt(receipt, 10, 7);
+  return [result.found, result.exhausted, result.work_used];
+});
+const invalid = [
+  { ...exhausted, attack_moves: ["e7e5"] },
+  { ...unknown, proof_status: "found" },
+  { ...found, stats: { ...stats, attack_positions_visited: 11, work_used: 11 } },
+  { ...found, mate_moves: ["not-a-move"] },
+  { ...found, series_number: 8 },
+  { ...found, max_work: 9 },
+  { ...found, status_code: 1 },
+  Object.fromEntries(Object.entries(found).filter(([key]) => key !== "message")),
+].map((receipt) => {
+  try {
+    api.validateSingleReplyLadderNativeReceipt(receipt, 10, 7);
+    return false;
+  } catch (error) {
+    return error.code === "browser-root-ladder-invalid";
+  }
+});
+process.stdout.write(JSON.stringify({ accepted, invalid }));
+"""
+    completed = subprocess.run(
+        [
+            str(NODE),
+            "--input-type=module",
+            "-e",
+            script,
+            str(adapter),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(completed.stdout) == {
+        "accepted": [[True, False, 1], [False, True, 1], [False, False, 1]],
+        "invalid": [True, True, True, True, True, True, True, True],
+    }
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is required for browser contract tests")
 def test_browser_adapter_activates_exact_model_and_falls_back_on_hash_mismatch(
     tmp_path: Path,
 ) -> None:
@@ -1206,6 +1304,67 @@ process.stdout.write(JSON.stringify(await reply));
     assert reply["payload"]["value_model_status"] == "active"
     assert reply["payload"]["value_model_id"] == "spc-dtv-" + "1" * 20
     assert reply["payload"]["value_model_failure_code"] is None
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is required for browser contract tests")
+def test_browser_worker_routes_single_reply_ladder_to_compiled_kernel(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
+    worker = tmp_path / "browser-engine-worker.mjs"
+    worker.write_bytes((STATIC / "browser-engine-worker.js").read_bytes())
+    (tmp_path / "wasm-kernel-adapter.js").write_text(
+        """
+export async function loadCertifiedBrowserKernel() {
+  return {
+    identity: { source_fingerprint: "aaaaaaaaaaaaaaaa" },
+    probeRootSingleReplyMateLadder(payload) {
+      return { ...payload, status: "found", routed_by: "compiled-ladder-kernel" };
+    },
+  };
+}
+""",
+        encoding="utf-8",
+    )
+    script = r"""
+import { pathToFileURL } from "node:url";
+let handler = null;
+const replies = [];
+globalThis.self = {
+  addEventListener(type, callback) { if (type === "message") handler = callback; },
+  postMessage(message) { replies.push(message); },
+};
+await import(pathToFileURL(process.argv[1]));
+await handler({ data: {
+  id: 1,
+  type: "probe",
+  payload: { expected_source_fingerprint: "aaaaaaaaaaaaaaaa" },
+} });
+await handler({ data: {
+  id: 2,
+  type: "root-ladder",
+  payload: { request_id: "ladder-route-1", marker: 17 },
+} });
+process.stdout.write(JSON.stringify(replies));
+"""
+    completed = subprocess.run(
+        [str(NODE), "--input-type=module", "-e", script, str(worker)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    replies = json.loads(completed.stdout)
+    assert replies[0]["ok"] is True
+    assert replies[1] == {
+        "id": 2,
+        "ok": True,
+        "payload": {
+            "request_id": "ladder-route-1",
+            "marker": 17,
+            "status": "found",
+            "routed_by": "compiled-ladder-kernel",
+        },
+    }
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js is required for browser contract tests")
