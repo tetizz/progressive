@@ -54,6 +54,7 @@ if TYPE_CHECKING:
         SelectedPvHorizonProof,
     )
     from .series_mate import SeriesMateProbe, SeriesMateStatus
+    from .single_reply_mate_ladder import SingleReplyMateLadderProbe
 
 
 MATE_SCORE = 1_000_000
@@ -123,6 +124,17 @@ FINAL_FALLBACK_SAFE_RESELECTION_CHILD_WORK_LIMIT = 10_000_000
 FINAL_FALLBACK_SAFE_RESELECTION_EARLY_FRONTIER = 32
 FINAL_FALLBACK_SAFE_RESELECTION_EARLY_CHILD_WORK_LIMIT = 3_000_000
 FINAL_FALLBACK_SAFE_RESELECTION_TOTAL_WORK_LIMIT = 40_000_000
+# A selected root that survives the exact immediate-reply mate gate can still
+# permit the narrow, fully forced A/check, B/only-countercheck, C/mate ladder.
+# This is a proof lane, not another search width: each selected candidate gets
+# at most one million combined native positions-plus-edges, charged to the
+# caller's existing work ceiling and governed by the same absolute deadline.
+SELECTED_ROOT_SINGLE_REPLY_LADDER_WORK_LIMIT = 1_000_000
+# The observed A/B/C failure starts at the Series-7 child boundary. Earlier
+# roots already cover three complete series cheaply enough through ordinary
+# minimax, while dispatching an extra exact native theorem there changes the
+# public opening work contract for no demonstrated gain.
+SELECTED_ROOT_SINGLE_REPLY_LADDER_MIN_CHILD_SERIES = 7
 # Preserve one fifth of the shared safety allowance for the established
 # staged current-series screens whenever the exact native solver is unknown.
 # At the hosted 10M search cap the exact lane still receives 1.28M work,
@@ -357,6 +369,14 @@ class SearchStats:
     selected_pv_horizon_widened_candidates: int = 0
     selected_pv_horizon_prior_depth_discards: int = 0
     selected_pv_horizon_move_only_fallbacks: int = 0
+    selected_root_ladder_probe_calls: int = 0
+    selected_root_ladder_cache_hits: int = 0
+    selected_root_ladder_found: int = 0
+    selected_root_ladder_exhausted: int = 0
+    selected_root_ladder_unknown: int = 0
+    selected_root_ladder_work: int = 0
+    selected_root_ladder_candidate_vetoes: int = 0
+    selected_root_ladder_all_vetoed_fallbacks: int = 0
     native_series_mate_calls: int = 0
     native_series_mate_positions: int = 0
     native_series_mate_edges: int = 0
@@ -647,6 +667,14 @@ class _FinalSafeReselection:
     work_limited: bool = False
 
 
+class _RootLadderAllVetoed(Exception):
+    """Every legal root in an exact frontier has the same proven ladder."""
+
+    def __init__(self, fallback: SeriesResult) -> None:
+        super().__init__(fallback.machine_notation)
+        self.fallback = fallback
+
+
 class SeriesSearcher:
     """Deterministic alpha-beta search where one ply is one complete series."""
 
@@ -792,6 +820,14 @@ class SeriesSearcher:
         ] = OrderedDict()
         self._selected_pv_python_root_manifest_weight = 0
         self._selected_pv_root_vetoes: set[str] = set()
+        # The ladder question is deliberately independent from the immediate
+        # one-series mate question. Exact full-state keys prevent clocks,
+        # promoted provenance, Chess960 mode, or Progressive EP rights from
+        # sharing a proof, and UNKNOWN is never retained here.
+        self._selected_root_ladder_cache: dict[
+            _TTKey, "SingleReplyMateLadderProbe"
+        ] = {}
+        self._selected_root_ladder_emergency_fallback: str | None = None
         self._root_mate_claim_quarantines: set[str] = set()
         self._root_mate_claim_emergency_fallback: SeriesResult | None = None
 
@@ -2805,6 +2841,101 @@ class SeriesSearcher:
             )
         return mate
 
+    def _selected_root_single_reply_ladder_probe(
+        self,
+        state: ProgressiveState,
+    ) -> "SingleReplyMateLadderProbe | None":
+        """Proves one narrow three-series loss after immediate safety passes.
+
+        ``FOUND`` and ``EXHAUSTED`` are exact only for the A/check,
+        B/only-countercheck, C/mate pattern and are cached by the complete
+        Progressive state. Resource stops, unsupported kernels, and replay
+        failures remain UNKNOWN: they neither veto the selected root nor enter
+        the cache. Every native position and edge is charged to the ordinary
+        global work ledger, with a one-million-work per-candidate ceiling.
+        """
+
+        from .single_reply_mate_ladder import (
+            SingleReplyMateLadderStatus,
+            find_native_single_reply_mate_ladder,
+        )
+
+        cache_key = self._tt_key(state)
+        cached = self._selected_root_ladder_cache.get(cache_key)
+        if cached is not None:
+            self.stats.selected_root_ladder_cache_hits += 1
+            if cached.status is SingleReplyMateLadderStatus.FOUND:
+                self.stats.selected_root_ladder_found += 1
+            else:
+                self.stats.selected_root_ladder_exhausted += 1
+            return cached
+
+        configured_work = self.limits.max_generation_positions
+        remaining_work = SELECTED_ROOT_SINGLE_REPLY_LADDER_WORK_LIMIT
+        if configured_work is not None:
+            remaining_work = min(
+                remaining_work,
+                max(0, configured_work - self.stats.generation_positions),
+            )
+        remaining_seconds = (
+            None
+            if self._deadline is None
+            else max(0.0, self._deadline - time.perf_counter())
+        )
+        if remaining_work < 1 or remaining_seconds == 0:
+            self.stats.selected_root_ladder_unknown += 1
+            return None
+
+        self.stats.selected_root_ladder_probe_calls += 1
+        try:
+            probe = find_native_single_reply_mate_ladder(
+                state,
+                max_work=remaining_work,
+                time_limit_seconds=remaining_seconds,
+            )
+        except Exception:
+            # A malformed native result or failed authoritative replay is not
+            # evidence about the chess position. Keep the candidate eligible,
+            # but conservatively charge the whole dispatched allowance because
+            # a failed adapter cannot provide a trustworthy native receipt.
+            self.stats.generation_positions += remaining_work
+            self.stats.selected_root_ladder_work += remaining_work
+            self.stats.selected_root_ladder_unknown += 1
+            return None
+
+        self.stats.generation_positions += probe.work_used
+        self.stats.selected_root_ladder_work += probe.work_used
+        if (
+            probe.status is SingleReplyMateLadderStatus.FOUND
+            and probe.proven_losing
+        ):
+            self._selected_root_ladder_cache[cache_key] = probe
+            self.stats.selected_root_ladder_found += 1
+            return probe
+        if probe.status is SingleReplyMateLadderStatus.EXHAUSTED:
+            self._selected_root_ladder_cache[cache_key] = probe
+            self.stats.selected_root_ladder_exhausted += 1
+            return probe
+        self.stats.selected_root_ladder_unknown += 1
+        return None
+
+    def _selected_root_single_reply_ladder_required(
+        self,
+        state: ProgressiveState,
+    ) -> bool:
+        """Returns whether the exact immediate gate authorizes this proof lane."""
+
+        cache_key = self._tt_key(state)
+        return (
+            state.series_number
+            >= SELECTED_ROOT_SINGLE_REPLY_LADDER_MIN_CHILD_SERIES
+            and cache_key in self._root_child_mate_screen_cache
+            and self._root_child_mate_screen_cache[cache_key] is None
+            and cache_key in self._root_child_native_mate_cache_keys
+            and state.transposition_key
+            in self._root_child_native_mate_exhausted_keys
+        )
+
     def _root_child_mate_screen_stage(
         self,
         state: ProgressiveState,
@@ -4665,6 +4796,10 @@ class SeriesSearcher:
         re-searches that same root under a proof namespace; a second distinct
         proof vetoes only that root series. Any incomplete proof or repair is
         UNKNOWN and aborts this iterative depth before it can be published.
+        Between the immediate reply gate and that PV certification, a separate
+        exact prover may veto the selected root only when it replays the narrow
+        A/check, B/only-countercheck, C/mate ladder. An incomplete ladder probe
+        leaves the root eligible.
         """
 
         from .selected_pv_horizon import (
@@ -4709,6 +4844,8 @@ class SeriesSearcher:
         # browser policy. The searcher-wide set below is only a final-return
         # block until a later depth positively certifies that root again.
         horizon_vetoes: set[str] = set()
+        ladder_vetoes: set[str] = set()
+        ladder_vetoed_candidates: dict[str, ScoredSeries] = {}
         mate_claim_quarantines = self._root_mate_claim_quarantines
         horizon_states: dict[str, CandidateHorizonState] = {}
         widened_frontier: _GeneratedSeriesList | None = None
@@ -4867,6 +5004,26 @@ class SeriesSearcher:
                     if widened_frontier:
                         continue
                 if horizon_vetoes:
+                    if (
+                        horizon_vetoes == ladder_vetoes
+                        and ladder_vetoed_candidates
+                        and widened_frontier is not None
+                        and widened_frontier.width_complete
+                    ):
+                        # Only a genuinely exhaustive widened frontier can say
+                        # every legal root has this replay-proven narrow loss.
+                        # Preserve best resistance as an explicit D0 move-only
+                        # exception; no score, PV continuation, alternatives,
+                        # or proof from these vetoed candidates may publish.
+                        adverse = _proof_safe_root_order(
+                            state.board.turn,
+                            tuple(ladder_vetoed_candidates.values()),
+                        )
+                        best = adverse[0]
+                        self.stats.selected_root_ladder_all_vetoed_fallbacks += 1
+                        self._root_scores_complete = False
+                        self._selective = True
+                        raise _RootLadderAllVetoed(best.series)
                     # The bounded wider selector found no unvetoed root. No
                     # known-vetoed series may cross SearchResult.best_series.
                     self._root_scores_complete = False
@@ -4984,13 +5141,6 @@ class SeriesSearcher:
                         continue
                     if child_key in self._root_child_native_mate_exhausted_keys:
                         last_exact_exhausted = provisional
-                    # At depth one this exact child probe is the selected-PV leaf
-                    # probe. Do not repeat the same exhaustive question.
-                    if len(pv) == 1:
-                        self._selected_pv_root_vetoes.discard(
-                            provisional.machine_notation
-                        )
-                        return score, pv, alternatives, proof
 
                 if (
                     widened_nonterminal
@@ -5002,6 +5152,49 @@ class SeriesSearcher:
                     # Preserve the forced-loss line only until the final exact
                     # publication gate rejects it from user-facing output.
                     return score, pv, alternatives, proof
+
+            # The ladder theorem begins only after the existing exact
+            # immediate-mate gate has exhausted on this same full child. A
+            # selective/UNKNOWN immediate result cannot be upgraded by asking
+            # a different, narrower three-series question.
+            ladder_probe = (
+                self._selected_root_single_reply_ladder_probe(child_state)
+                if self._selected_root_single_reply_ladder_required(child_state)
+                else None
+            )
+            if ladder_probe is not None and ladder_probe.proven_losing:
+                notation = provisional.machine_notation
+                candidate = next(
+                    (item for item in alternatives if item.series == provisional),
+                    ScoredSeries(provisional, score, pv[1:]),
+                )
+                ladder_vetoes.add(notation)
+                horizon_vetoes.add(notation)
+                ladder_vetoed_candidates[notation] = candidate
+                self._selected_pv_root_vetoes.add(notation)
+                if (
+                    last_exact_exhausted is not None
+                    and last_exact_exhausted.machine_notation == notation
+                ):
+                    last_exact_exhausted = None
+                if (
+                    last_unknown is not None
+                    and last_unknown.machine_notation == notation
+                ):
+                    last_unknown = None
+                self.stats.selected_root_ladder_candidate_vetoes += 1
+                self._selective = True
+                continue
+
+            # At depth one the exact immediate child probe is the selected-PV
+            # leaf probe. The distinct ladder question above must still run,
+            # but the ordinary horizon certifier would only repeat that same
+            # one-series immediate-mate question.
+            if self._root_child_safety_screen_required() and len(pv) == 1:
+                self._selected_pv_root_vetoes.discard(
+                    provisional.machine_notation
+                )
+                return score, pv, alternatives, proof
 
             certification = self._certify_selected_pv_horizon(state, pv)
             if certification.status in {
@@ -5121,6 +5314,7 @@ class SeriesSearcher:
         self._preferred_root_series = None
         self._root_widened_terminal_series = None
         self._selected_pv_root_vetoes.clear()
+        self._selected_root_ladder_emergency_fallback = None
         self._root_mate_claim_quarantines.clear()
         self._root_tactical_frontier_protection = (
             _tactical_frontier_protection_eligible(
@@ -5223,6 +5417,23 @@ class SeriesSearcher:
                     depth,
                     required_prefix,
                 )
+            except _RootLadderAllVetoed as all_vetoed:
+                # This is chess-loss liveness, not a completed search depth.
+                # The exact frontier proved every legal root enters the same
+                # narrow forced-mate class, so keep only its least-bad legal
+                # move and label every other public field provisional.
+                notation = all_vetoed.fallback.machine_notation
+                self._selected_pv_root_vetoes.discard(notation)
+                self._selected_root_ladder_emergency_fallback = notation
+                self._selective = True
+                self._root_scores_complete = False
+                best_score = root_evaluation.total
+                best_pv = (all_vetoed.fallback,)
+                alternatives = ()
+                best_proof = None
+                completed_depth = 0
+                completed_root_scores_complete = False
+                break
             except _RootMateClaimPending as pending:
                 timed_out = isinstance(pending.cause, _Timeout)
                 work_limit_reached = isinstance(pending.cause, _WorkLimit)
