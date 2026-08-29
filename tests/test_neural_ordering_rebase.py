@@ -10,6 +10,7 @@ import pytest
 
 import scottish_progressive.evaluation as evaluation
 import scottish_progressive.rules as rules
+import scottish_progressive.search as search_module
 from scottish_progressive.evaluation import fast_evaluate
 from scottish_progressive.model import Outcome, ProgressiveState
 from scottish_progressive.native_subtree import (
@@ -23,7 +24,12 @@ from scottish_progressive.rules import (
     generate_series,
     play_series,
 )
-from scottish_progressive.search import MATE_SCORE, SearchLimits, analyze
+from scottish_progressive.search import (
+    MATE_SCORE,
+    SearchLimits,
+    SeriesSearcher,
+    analyze,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -414,6 +420,19 @@ def test_hook_disabled_and_blend_zero_are_exact_and_scope_fails_closed(
         symbols=("generate_complete_series",),
     )
     assert call is not None and len(call[1][-1]) == 8
+    call = rules._native_complete_series_call(
+        state,
+        GenerationStats(),
+        required_prefix=(),
+        max_frontier_states=None,
+        max_positions=None,
+        frontier_score=None,
+        native_final_score=config,
+        should_stop=None,
+        symbols=("generate_complete_series",),
+        root_contract_s3_neural_ordering=True,
+    )
+    assert call is not None and call[1][-1][-2:] == (MODEL_ID, BLEND_PERCENT)
     monkeypatch.setenv("SPC_NATIVE_NEURAL_S3", "1")
     call = rules._native_complete_series_call(
         state,
@@ -589,6 +608,89 @@ def test_root_contract_s2_uses_the_accepted_neural_ordering() -> None:
     series_three = generate_series(roots["e2e4"])[0].final_state
     assert series_three.series_number == 3
     assert root_contract_order(series_three) == direct_order(series_three, None)
+
+
+def test_safe_reselector_s2_w512_matches_root_contract_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SPC_NATIVE_NEURAL_S3", raising=False)
+    root = play_series(ProgressiveState.initial(), ("e2e4",)).final_state
+    session = NativeSubtreeSession(
+        max_series_per_node=512,
+        max_work=10_000_000,
+        requested_depth=1,
+        mate_score=MATE_SCORE,
+        cache_capacity=16_384,
+        external_cache_weight=0,
+        native_threads=1,
+        root_tactical_protection=False,
+        profile=baseline_profile(),
+    )
+    manifest = session.enumerate_root(
+        root,
+        preferred_series=None,
+        external_work=0,
+        remaining_nanoseconds=None,
+    )
+    assert manifest.status == 0, manifest.message
+    expected = [
+        candidate.series.machine_notation
+        for candidate in manifest.candidates
+    ]
+
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            max_generation_positions=10_000_000,
+            collect_all_root_scores=False,
+            native_threads=1,
+        )
+    )
+    generated, _complete = searcher._generate(  # noqa: SLF001
+        root,
+        ply_from_root=1,
+        required_prefix=(),
+        tactical_protection=True,
+        max_frontier_states=512,
+        max_additional_positions=10_000_000,
+        root_contract_s3_neural_ordering=True,
+    )
+    actual = [
+        candidate.machine_notation
+        for candidate in (
+            generated.references()
+            if hasattr(generated, "references")
+            else generated
+        )
+    ]
+
+    assert actual == expected
+
+
+def test_safe_reselector_s2_ordering_fails_closed_without_native_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = play_series(ProgressiveState.initial(), ("e2e4",)).final_state
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=32,
+            max_generation_positions=10_000_000,
+            collect_all_root_scores=False,
+        )
+    )
+    monkeypatch.setattr(search_module, "_native_complete_series_batch", lambda *_a, **_k: None)
+
+    with pytest.raises(search_module._WorkLimit):  # noqa: SLF001
+        searcher._generate(  # noqa: SLF001
+            root,
+            ply_from_root=1,
+            tactical_protection=True,
+            max_frontier_states=512,
+            max_additional_positions=10_000_000,
+            root_contract_s3_neural_ordering=True,
+        )
 
 
 def test_native_subtree_high_series_path_counts_preserve_frozen_python_oracle(

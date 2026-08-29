@@ -1208,6 +1208,7 @@ def _native_complete_series_call(
     symbols: tuple[str, ...],
     native_time_budget_ns: int | None = None,
     native_threads: int = 1,
+    root_contract_s3_neural_ordering: bool = False,
 ) -> tuple[object, tuple[object, ...]] | None:
     """Builds one strictly gated source-matched native generation call."""
 
@@ -1221,6 +1222,7 @@ def _native_complete_series_call(
         )
         or type(native_threads) is not int
         or not 1 <= native_threads <= 64
+        or type(root_contract_s3_neural_ordering) is not bool
         or (native_threads > 1 and native_time_budget_ns is None)
         or any(type(move) is not str for move in required_prefix)
     ):
@@ -1333,7 +1335,10 @@ def _native_complete_series_call(
             final_weights.boundary_check,
         )
         if (
-            os.environ.get("SPC_NATIVE_NEURAL_S3") == "1"
+            (
+                root_contract_s3_neural_ordering
+                or os.environ.get("SPC_NATIVE_NEURAL_S3") == "1"
+            )
             and state.series_number == 2
             and state.board.turn == chess.BLACK
         ):
@@ -1588,6 +1593,7 @@ def _native_complete_series_batch(
     should_stop: Callable[[], bool] | None,
     native_time_budget_ns: int | None = None,
     native_threads: int = 1,
+    root_contract_s3_neural_ordering: bool = False,
 ) -> _NativeSeriesBatch | None:
     """Prepares a native batch without replaying any retained series."""
 
@@ -1609,6 +1615,7 @@ def _native_complete_series_batch(
         ),
         native_time_budget_ns=native_time_budget_ns,
         native_threads=native_threads,
+        root_contract_s3_neural_ordering=root_contract_s3_neural_ordering,
     )
     if call is None:
         return None

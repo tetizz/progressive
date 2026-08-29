@@ -109,6 +109,20 @@ ROOT_CURRENT_SERIES_MATE_TIME_DENOMINATOR = 10
 # screen: the ordinary screen may be the very work limit that produced the D0
 # fallback.  Only FOUND and EXHAUSTED settle the question.
 FINAL_FALLBACK_REPLY_MATE_WORK_LIMIT = 1_000_000
+# Python-only research lane. The browser/WASM controller does not implement
+# this contract yet, so no release may advertise it until parity is proved.
+# Width 64 does not retain the recorded 3aaef safe witness. Width 512 retains
+# that exact full-state child at rank 62 and matches the browser kernel's
+# existing maximum retained-root width, minimizing the later parity change.
+FINAL_FALLBACK_SAFE_RESELECTION_FRONTIER = 512
+FINAL_FALLBACK_SAFE_RESELECTION_CHILD_WORK_LIMIT = 10_000_000
+# Re-proving the ordinary W32 first at 10M each starves every newly widened
+# escape. A 3M first-stage miss remains UNKNOWN and unpublishable; candidates
+# beyond that old beam receive the full 10M exact-proof allowance. This staged
+# allocation keeps the recorded rank-62 witness inside the 40M lane ceiling.
+FINAL_FALLBACK_SAFE_RESELECTION_EARLY_FRONTIER = 32
+FINAL_FALLBACK_SAFE_RESELECTION_EARLY_CHILD_WORK_LIMIT = 3_000_000
+FINAL_FALLBACK_SAFE_RESELECTION_TOTAL_WORK_LIMIT = 40_000_000
 # Preserve one fifth of the shared safety allowance for the established
 # staged current-series screens whenever the exact native solver is unknown.
 # At the hosted 10M search cap the exact lane still receives 1.28M work,
@@ -321,6 +335,15 @@ class SearchStats:
     final_fallback_reply_mate_unknown: int = 0
     final_fallback_reply_mate_work: int = 0
     final_fallback_reply_mate_rejections: int = 0
+    final_fallback_safe_reselection_attempts: int = 0
+    final_fallback_safe_reselection_candidates: int = 0
+    final_fallback_safe_reselection_found: int = 0
+    final_fallback_safe_reselection_exhausted: int = 0
+    final_fallback_safe_reselection_unknown: int = 0
+    final_fallback_safe_reselection_terminal: int = 0
+    final_fallback_safe_reselection_rescues: int = 0
+    final_fallback_safe_reselection_work: int = 0
+    final_fallback_safe_reselection_budget_interruptions: int = 0
     selected_pv_horizon_probe_calls: int = 0
     selected_pv_horizon_found: int = 0
     selected_pv_horizon_exhausted: int = 0
@@ -612,6 +635,16 @@ class _RootMateClaimPending(Exception):
         super().__init__(type(cause).__name__ if cause is not None else "")
         self.fallback = fallback
         self.cause = cause
+
+
+@dataclass(frozen=True, slots=True)
+class _FinalSafeReselection:
+    """One provisional D0 rescue and any lane-wide hard stop."""
+
+    series: SeriesResult | None = None
+    score: int | None = None
+    timed_out: bool = False
+    work_limited: bool = False
 
 
 class SeriesSearcher:
@@ -986,14 +1019,36 @@ class SeriesSearcher:
         self._quiet_adjudication_cache[key] = status
         return status
 
-    def _evaluate(self, state: ProgressiveState) -> EvaluationBreakdown:
+    def _evaluate(
+        self,
+        state: ProgressiveState,
+        *,
+        max_additional_positions: int | None = None,
+    ) -> EvaluationBreakdown:
+        if (
+            max_additional_positions is not None
+            and (
+                type(max_additional_positions) is not int
+                or max_additional_positions < 0
+            )
+        ):
+            raise ValueError(
+                "additional evaluation position limit must be nonnegative"
+            )
+        evaluation_started_work = self.stats.work_positions
         key = state.search_key
         cached = self._eval_cache.get(key)
         if cached is None:
             if (
-                self.limits.max_generation_positions is not None
-                and self.stats.generation_positions
-                >= self.limits.max_generation_positions
+                (
+                    max_additional_positions is not None
+                    and max_additional_positions < 1
+                )
+                or (
+                    self.limits.max_generation_positions is not None
+                    and self.stats.generation_positions
+                    >= self.limits.max_generation_positions
+                )
             ):
                 if not self._evaluation_work_limit_reached:
                     self.stats.generation_work_limit_hits += 1
@@ -1008,6 +1063,20 @@ class SeriesSearcher:
                     0,
                     self.limits.max_generation_positions
                     - self.stats.generation_positions,
+                )
+            if max_additional_positions is not None:
+                local_remaining = max(
+                    0,
+                    max_additional_positions
+                    - (
+                        self.stats.work_positions
+                        - evaluation_started_work
+                    ),
+                )
+                remaining = (
+                    local_remaining
+                    if remaining is None
+                    else min(remaining, local_remaining)
                 )
             cached = evaluate(
                 state,
@@ -1048,6 +1117,23 @@ class SeriesSearcher:
                             - self.stats.generation_positions,
                         )
                     )
+                    if max_additional_positions is not None:
+                        local_overlay_remaining = max(
+                            0,
+                            max_additional_positions
+                            - (
+                                self.stats.work_positions
+                                - evaluation_started_work
+                            ),
+                        )
+                        overlay_remaining = (
+                            local_overlay_remaining
+                            if overlay_remaining is None
+                            else min(
+                                overlay_remaining,
+                                local_overlay_remaining,
+                            )
+                        )
                     overlay_score = exact_work_method(
                         state,
                         cached.total,
@@ -1220,6 +1306,8 @@ class SeriesSearcher:
         reserve_positions: int = 0,
         tactical_protection: bool | None = None,
         max_frontier_states: int | None = None,
+        max_additional_positions: int | None = None,
+        root_contract_s3_neural_ordering: bool = False,
     ) -> tuple[list[SeriesResult] | _NativeSeriesBatch, bool]:
         frontier_limit = (
             self.limits.max_series_per_node
@@ -1227,13 +1315,29 @@ class SeriesSearcher:
             else max_frontier_states
         )
         generation = GenerationStats()
-        remaining_positions: int | None = None
+        if (
+            max_additional_positions is not None
+            and (
+                type(max_additional_positions) is not int
+                or max_additional_positions < 0
+            )
+        ):
+            raise ValueError(
+                "additional generation position limit must be nonnegative"
+            )
+        remaining_positions = max_additional_positions
         if self.limits.max_generation_positions is not None:
-            remaining_positions = (
+            configured_remaining = (
                 self.limits.max_generation_positions
                 - self.stats.generation_positions
                 - reserve_positions
             )
+            remaining_positions = (
+                configured_remaining
+                if remaining_positions is None
+                else min(remaining_positions, configured_remaining)
+            )
+        if remaining_positions is not None:
             if remaining_positions <= 0:
                 if not (
                     self._quiet_work_limit_reached
@@ -1289,11 +1393,23 @@ class SeriesSearcher:
                     should_stop=should_stop,
                     native_time_budget_ns=native_time_budget_ns,
                     native_threads=self.limits.native_threads,
+                    root_contract_s3_neural_ordering=(
+                        root_contract_s3_neural_ordering
+                    ),
                 )
                 if native_final_score is not None
                 else None
             )
             if series is None:
+                if (
+                    root_contract_s3_neural_ordering
+                    and state.series_number == 2
+                    and state.board.turn == chess.BLACK
+                ):
+                    # The browser root contract uses the frozen S3 student in
+                    # this exact scope. A pure-Python fallback would silently
+                    # change W512 order, so the safety lane must fail closed.
+                    raise _WorkLimit
                 series = generate_series(
                     state,
                     stats=generation,
@@ -1501,6 +1617,9 @@ class SeriesSearcher:
     def _certify_final_fallback_reply_mate(
         self,
         state: ProgressiveState,
+        *,
+        max_work: int | None = None,
+        full_state_only: bool = False,
     ) -> "SeriesMateStatus":
         """Settles whether one selected root permits an immediate reply mate.
 
@@ -1512,16 +1631,35 @@ class SeriesSearcher:
 
         from .series_mate import SeriesMateStatus, find_native_series_mate
 
+        work_ceiling = (
+            FINAL_FALLBACK_REPLY_MATE_WORK_LIMIT
+            if max_work is None
+            else max_work
+        )
+        if type(work_ceiling) is not int or work_ceiling < 1:
+            raise ValueError("final fallback mate work must be a positive integer")
+
         cache_key = self._tt_key(state)
         position_key = state.transposition_key
-        if position_key in self._root_child_proven_mate_keys:
-            self.stats.final_fallback_reply_mate_cache_hits += 1
-            self.stats.final_fallback_reply_mate_found += 1
-            return SeriesMateStatus.FOUND
-        if position_key in self._root_child_native_mate_exhausted_keys:
-            self.stats.final_fallback_reply_mate_cache_hits += 1
-            self.stats.final_fallback_reply_mate_exhausted += 1
-            return SeriesMateStatus.EXHAUSTED
+        if cache_key in self._root_child_mate_screen_cache:
+            cached_mate = self._root_child_mate_screen_cache[cache_key]
+            if cached_mate is not None:
+                self.stats.final_fallback_reply_mate_cache_hits += 1
+                self.stats.final_fallback_reply_mate_found += 1
+                return SeriesMateStatus.FOUND
+            if cache_key in self._root_child_native_mate_cache_keys:
+                self.stats.final_fallback_reply_mate_cache_hits += 1
+                self.stats.final_fallback_reply_mate_exhausted += 1
+                return SeriesMateStatus.EXHAUSTED
+        if not full_state_only:
+            if position_key in self._root_child_proven_mate_keys:
+                self.stats.final_fallback_reply_mate_cache_hits += 1
+                self.stats.final_fallback_reply_mate_found += 1
+                return SeriesMateStatus.FOUND
+            if position_key in self._root_child_native_mate_exhausted_keys:
+                self.stats.final_fallback_reply_mate_cache_hits += 1
+                self.stats.final_fallback_reply_mate_exhausted += 1
+                return SeriesMateStatus.EXHAUSTED
 
         persistent = self._persistent_mate_proof(state)
         if persistent is not None:
@@ -1531,21 +1669,23 @@ class SeriesSearcher:
             self._root_child_native_mate_cache_keys.add(cache_key)
             if status == "found":
                 assert mate is not None
-                self._mark_root_child_proven_mate(position_key)
+                if not full_state_only:
+                    self._mark_root_child_proven_mate(position_key)
                 self.stats.final_fallback_reply_mate_found += 1
                 return SeriesMateStatus.FOUND
-            self._mark_root_child_exact_exhausted(position_key)
+            if not full_state_only:
+                self._mark_root_child_exact_exhausted(position_key)
             self.stats.final_fallback_reply_mate_exhausted += 1
             return SeriesMateStatus.EXHAUSTED
 
         configured_work = self.limits.max_generation_positions
         remaining_work = (
-            FINAL_FALLBACK_REPLY_MATE_WORK_LIMIT
+            work_ceiling
             if configured_work is None
             else max(
                 0,
                 min(
-                    FINAL_FALLBACK_REPLY_MATE_WORK_LIMIT,
+                    work_ceiling,
                     configured_work - self.stats.generation_positions,
                 ),
             )
@@ -1584,7 +1724,8 @@ class SeriesSearcher:
             self.stats.final_fallback_reply_mate_found += 1
             self._root_child_mate_screen_cache[cache_key] = probe.series
             self._root_child_native_mate_cache_keys.add(cache_key)
-            self._mark_root_child_proven_mate(position_key)
+            if not full_state_only:
+                self._mark_root_child_proven_mate(position_key)
             self._store_persistent_mate_proof(
                 state,
                 probe.series,
@@ -1596,7 +1737,8 @@ class SeriesSearcher:
             self.stats.final_fallback_reply_mate_exhausted += 1
             self._root_child_mate_screen_cache[cache_key] = None
             self._root_child_native_mate_cache_keys.add(cache_key)
-            self._mark_root_child_exact_exhausted(position_key)
+            if not full_state_only:
+                self._mark_root_child_exact_exhausted(position_key)
             self._store_persistent_mate_proof(
                 state,
                 None,
@@ -1612,6 +1754,268 @@ class SeriesSearcher:
             self.stats.native_series_mate_unsupported += 1
         self.stats.final_fallback_reply_mate_unknown += 1
         return probe.status
+
+    def _cached_full_state_reply_mate_status(
+        self,
+        state: ProgressiveState,
+    ) -> "SeriesMateStatus | None":
+        """Returns exact evidence only when it binds the complete child state."""
+
+        from .series_mate import SeriesMateStatus
+
+        cache_key = self._tt_key(state)
+        if cache_key in self._root_child_mate_screen_cache:
+            cached_mate = self._root_child_mate_screen_cache[cache_key]
+            if cached_mate is not None:
+                return SeriesMateStatus.FOUND
+            if cache_key in self._root_child_native_mate_cache_keys:
+                return SeriesMateStatus.EXHAUSTED
+
+        persistent = self._persistent_mate_proof(state)
+        if persistent is None:
+            return None
+        status, mate = persistent
+        self._root_child_mate_screen_cache[cache_key] = mate
+        self._root_child_native_mate_cache_keys.add(cache_key)
+        if status == "found":
+            assert mate is not None
+            return SeriesMateStatus.FOUND
+        return SeriesMateStatus.EXHAUSTED
+
+    def _final_safe_reselection(
+        self,
+        root: ProgressiveState,
+        selected: SeriesResult,
+        retained: tuple[ScoredSeries, ...],
+        *,
+        allow_widening: bool,
+    ) -> _FinalSafeReselection:
+        """Research-only D0 rescue after an exact selected-child mate.
+
+        Already-retained siblings may be reused only with exact full-state
+        EXHAUSTED evidence (or an authoritative terminal outcome). Otherwise
+        one root-only width-512 frontier is generated in native engine order.
+        FOUND and every UNKNOWN status are skipped; only EXHAUSTED or a
+        terminal non-loss can cross the boundary. No deeper score, PV, proof,
+        or alternative survives the rejected selection.
+        """
+
+        from .series_mate import SeriesMateStatus
+
+        lane_started_work = self.stats.work_positions
+        seen: set[_TTKey] = {self._tt_key(selected.final_state)}
+        exclusions = self._root_policy_exclusions()
+        retained_safe: list[tuple[SeriesResult, bool]] = []
+        retained_evidence: dict[_TTKey, SeriesMateStatus] = {}
+
+        def remaining_lane_work() -> int:
+            return max(
+                0,
+                FINAL_FALLBACK_SAFE_RESELECTION_TOTAL_WORK_LIMIT
+                - (self.stats.work_positions - lane_started_work),
+            )
+
+        def publish(
+            candidate: SeriesResult,
+            *,
+            terminal: bool,
+        ) -> _FinalSafeReselection:
+            self._check_deadline()
+            timed_out = False
+            work_limited = False
+            if terminal:
+                score = self._terminal_score(candidate, root.board.turn, 1)
+                if score is None:  # pragma: no cover - caller invariant
+                    raise RuntimeError(
+                        "terminal safe reselection carried no terminal score"
+                    )
+                self.stats.final_fallback_safe_reselection_terminal += 1
+            else:
+                score = None
+                remaining = remaining_lane_work()
+                if remaining > 0:
+                    try:
+                        self._check_deadline()
+                        score = self._evaluate(
+                            candidate.final_state,
+                            max_additional_positions=remaining,
+                        ).total
+                    except _Timeout:
+                        timed_out = True
+                    except _WorkLimit:
+                        work_limited = True
+                self.stats.final_fallback_safe_reselection_exhausted += 1
+            self.stats.final_fallback_safe_reselection_rescues += 1
+            return _FinalSafeReselection(
+                series=candidate,
+                score=score,
+                timed_out=timed_out,
+                work_limited=work_limited,
+            )
+
+        try:
+            retained_seen = set(seen)
+            for item in retained:
+                candidate = item.series
+                if candidate.machine_notation in exclusions:
+                    continue
+                key = self._tt_key(candidate.final_state)
+                if key in retained_seen:
+                    continue
+                retained_seen.add(key)
+                if candidate.outcome is not None:
+                    if candidate.outcome is Outcome.CHECKMATE:
+                        self.stats.final_fallback_safe_reselection_candidates += 1
+                        return publish(candidate, terminal=True)
+                    if not allow_widening:
+                        self.stats.final_fallback_safe_reselection_candidates += 1
+                        retained_safe.append((candidate, True))
+                    continue
+                status = self._cached_full_state_reply_mate_status(
+                    candidate.final_state
+                )
+                if status is None:
+                    # Retained does not mean certified. Leave an unknown child
+                    # eligible for the bounded full-state probe when it
+                    # reappears in the authoritative widened ordering.
+                    continue
+                retained_evidence[key] = status
+                if not allow_widening:
+                    self.stats.final_fallback_safe_reselection_candidates += 1
+                    if status is SeriesMateStatus.EXHAUSTED:
+                        retained_safe.append((candidate, False))
+                    elif status is SeriesMateStatus.FOUND:
+                        self.stats.final_fallback_safe_reselection_found += 1
+
+            if retained_safe:
+                candidate, terminal = retained_safe[0]
+                return publish(candidate, terminal=terminal)
+            if not allow_widening:
+                return _FinalSafeReselection()
+            self.stats.final_fallback_safe_reselection_attempts += 1
+            try:
+                generated, _width_complete = self._generate(
+                    root,
+                    ply_from_root=1,
+                    required_prefix=(),
+                    # The safety lane deliberately protects tactical roots at
+                    # the cutoff: the recorded Bucephalus escape is omitted by
+                    # an unprotected W512 frontier but retained by production's
+                    # normal root-generation policy.
+                    tactical_protection=True,
+                    max_frontier_states=(
+                        FINAL_FALLBACK_SAFE_RESELECTION_FRONTIER
+                    ),
+                    max_additional_positions=remaining_lane_work(),
+                    root_contract_s3_neural_ordering=True,
+                )
+            except _Timeout:
+                return _FinalSafeReselection(timed_out=True)
+            except _WorkLimit:
+                self.stats.final_fallback_safe_reselection_budget_interruptions += (
+                    1
+                )
+                return _FinalSafeReselection(work_limited=True)
+
+            candidates = (
+                generated.references()
+                if isinstance(generated, _NativeSeriesBatch)
+                else generated
+            )
+            # A current-series mate is authoritative and cheap once the root
+            # frontier exists, so it gets one global prepass. Every other
+            # terminal or exact-safe child stays in canonical production order;
+            # a late draw must not preempt an earlier nonterminal safe choice.
+            for raw_candidate in candidates:
+                self._check_deadline()
+                if raw_candidate.machine_notation in exclusions:
+                    continue
+                if raw_candidate.outcome is not Outcome.CHECKMATE:
+                    continue
+                candidate = self._materialize_series(raw_candidate)
+                key = self._tt_key(candidate.final_state)
+                if key in seen:
+                    continue
+                seen.add(key)
+                self.stats.final_fallback_safe_reselection_candidates += 1
+                return publish(candidate, terminal=True)
+
+            lane_work_limited = False
+            for candidate_index, raw_candidate in enumerate(candidates, start=1):
+                try:
+                    self._check_deadline()
+                except _Timeout:
+                    return _FinalSafeReselection(timed_out=True)
+                if raw_candidate.machine_notation in exclusions:
+                    continue
+                candidate = self._materialize_series(raw_candidate)
+                key = self._tt_key(candidate.final_state)
+                if key in seen:
+                    continue
+                seen.add(key)
+                self.stats.final_fallback_safe_reselection_candidates += 1
+                if candidate.outcome is not None:
+                    return publish(candidate, terminal=True)
+
+                status = retained_evidence.get(key)
+                if status is None:
+                    status = self._cached_full_state_reply_mate_status(
+                        candidate.final_state
+                    )
+                if status is None:
+                    remaining = remaining_lane_work()
+                    if remaining < 1:
+                        if not lane_work_limited:
+                            self.stats.final_fallback_safe_reselection_budget_interruptions += (
+                                1
+                            )
+                        lane_work_limited = True
+                        self.stats.final_fallback_safe_reselection_unknown += 1
+                        continue
+                    status = self._certify_final_fallback_reply_mate(
+                        candidate.final_state,
+                        max_work=min(
+                            (
+                                FINAL_FALLBACK_SAFE_RESELECTION_EARLY_CHILD_WORK_LIMIT
+                                if candidate_index
+                                <= FINAL_FALLBACK_SAFE_RESELECTION_EARLY_FRONTIER
+                                else FINAL_FALLBACK_SAFE_RESELECTION_CHILD_WORK_LIMIT
+                            ),
+                            remaining,
+                        ),
+                        full_state_only=True,
+                    )
+                if status is SeriesMateStatus.EXHAUSTED:
+                    return publish(candidate, terminal=False)
+                if status is SeriesMateStatus.FOUND:
+                    self.stats.final_fallback_safe_reselection_found += 1
+                    continue
+                self.stats.final_fallback_safe_reselection_unknown += 1
+                if status is SeriesMateStatus.DEADLINE:
+                    return _FinalSafeReselection(timed_out=True)
+                configured_work = self.limits.max_generation_positions
+                if (
+                    remaining_lane_work() < 1
+                    or (
+                        configured_work is not None
+                        and self.stats.work_positions >= configured_work
+                    )
+                ):
+                    if not lane_work_limited:
+                        self.stats.final_fallback_safe_reselection_budget_interruptions += (
+                            1
+                        )
+                    lane_work_limited = True
+            return _FinalSafeReselection(work_limited=lane_work_limited)
+        except _Timeout:
+            return _FinalSafeReselection(timed_out=True)
+        except _WorkLimit:
+            self.stats.final_fallback_safe_reselection_budget_interruptions += 1
+            return _FinalSafeReselection(work_limited=True)
+        finally:
+            self.stats.final_fallback_safe_reselection_work += (
+                self.stats.work_positions - lane_started_work
+            )
 
     def _selected_pv_horizon_cached_probe(
         self,
@@ -3534,7 +3938,11 @@ class SeriesSearcher:
         self,
         horizon_vetoes: set[str] | frozenset[str] = frozenset(),
     ) -> frozenset[str]:
-        return frozenset(horizon_vetoes | self._root_mate_claim_quarantines)
+        return frozenset(
+            horizon_vetoes
+            | self._selected_pv_root_vetoes
+            | self._root_mate_claim_quarantines
+        )
 
     def _root_policy_rejection_flags(self, notation: str) -> tuple[bool, bool]:
         return (
@@ -5174,8 +5582,24 @@ class SeriesSearcher:
                 best_pv[0].final_state
             )
             if fallback_status is not SeriesMateStatus.EXHAUSTED:
+                rescued = _FinalSafeReselection()
                 if fallback_status is SeriesMateStatus.FOUND:
                     self.stats.final_fallback_reply_mate_rejections += 1
+                    cap = self.limits.max_series_per_node
+                    if (
+                        not self.limits.collect_all_root_scores
+                        and not required_prefix
+                    ):
+                        rescued = self._final_safe_reselection(
+                            state,
+                            best_pv[0],
+                            alternatives,
+                            allow_widening=(
+                                cap is not None
+                                and cap
+                                < FINAL_FALLBACK_SAFE_RESELECTION_FRONTIER
+                            ),
+                        )
                 elif fallback_status is SeriesMateStatus.DEADLINE:
                     timed_out = True
                 elif fallback_status is SeriesMateStatus.WORK_LIMIT:
@@ -5183,8 +5607,20 @@ class SeriesSearcher:
                 self._selective = True
                 self._root_scores_complete = False
                 completed_root_scores_complete = False
-                best_score = root_evaluation.total
-                best_pv = ()
+                timed_out = timed_out or rescued.timed_out
+                work_limit_reached = (
+                    work_limit_reached or rescued.work_limited
+                )
+                best_score = (
+                    rescued.score
+                    if rescued.score is not None
+                    else root_evaluation.total
+                )
+                best_pv = (
+                    (rescued.series,)
+                    if rescued.series is not None
+                    else ()
+                )
                 alternatives = ()
                 best_proof = None
                 completed_depth = 0

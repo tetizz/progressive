@@ -645,6 +645,7 @@
             receiptDeadlineMs: analysisDeadlineMs,
           });
         } catch (error) {
+          if (BROWSER_ENGINE_API.isSafeRootReselectFailure(error)) throw error;
           if (
             error?.name === "AbortError"
             || error?.name === "TimeoutError"

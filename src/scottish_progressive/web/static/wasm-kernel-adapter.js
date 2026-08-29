@@ -25,6 +25,10 @@ const DEEP_TEACHER_TERMINAL_POLICY = "replayed terminal checkmate and draw outco
 const MAX_VALUE_MODEL_BYTES = 64 * 1024;
 const MIN_ASPIRATION_INITIAL_DELTA = 2_048;
 const MAX_ASPIRATION_ATTEMPTS = 4;
+const SAFE_ROOT_RESELECT_WIDTH = 512;
+const SAFE_ROOT_RESELECT_CREATE_SCHEMA =
+  "spc-root-safe-reselector-session-create-v1";
+const SAFE_ROOT_RESELECT_PURPOSE = "safe-root-reselector";
 const COMBINED_EXPORTS = Object.freeze([
   "_spc_start_kernel_search_json",
   "_spc_boundary_kernel_search_json",
@@ -643,6 +647,32 @@ function validateRootSessionConfig(value, contract, engineProfileId) {
     ...value,
     weights: Object.freeze({ ...value.weights }),
     ...(model ? { deep_teacher_value_model: model } : {}),
+  });
+}
+
+function deriveSafeRootReselectSessionConfig(identity) {
+  const base = identity?.root_geometry?.session_config;
+  const hard = identity?.root_session_contract?.hard_limits;
+  if (
+    !base
+    || typeof base !== "object"
+    || Array.isArray(base)
+    || base.width !== 32
+    || hard?.minimum_width !== 1
+    || hard?.maximum_width !== SAFE_ROOT_RESELECT_WIDTH
+  ) {
+    throw new KernelAdapterError(
+      "The certified root artifact cannot derive the isolated safety width.",
+      "browser-root-safe-reselector-config-invalid",
+    );
+  }
+  return Object.freeze({
+    ...base,
+    width: SAFE_ROOT_RESELECT_WIDTH,
+    weights: Object.freeze({ ...base.weights }),
+    ...(base.deep_teacher_value_model === undefined ? {} : {
+      deep_teacher_value_model: base.deep_teacher_value_model,
+    }),
   });
 }
 
@@ -2143,106 +2173,135 @@ export async function loadCertifiedBrowserKernel({
     rootMemoryPeakBytes = Math.max(rootMemoryPeakBytes, memoryBytes);
     return { memory_bytes: memoryBytes, memory_peak_bytes: rootMemoryPeakBytes };
   };
+  const createRootSessionWithConfig = (request, expectedConfig) => {
+    if (!identity.root_iteration_ready) {
+      throw new KernelAdapterError(
+        "This artifact has no complete certified root-session/mate/prefix capability.",
+        "browser-root-session-unavailable",
+      );
+    }
+    if (rootSessionId !== null) {
+      throw new KernelAdapterError(
+        "A native root session is already active in this Worker.",
+        "browser-root-session-active",
+      );
+    }
+    const nativeRequest = nativeRootRequest(
+      request,
+      identity,
+      "spc-root-session-create-v1",
+      ["boundary", "config"],
+    );
+    if (
+      !sameJson(nativeRequest.config, expectedConfig)
+      || !request.boundary
+      || request.boundary.chess960 !== false
+    ) {
+      throw new KernelAdapterError(
+        "The root-session create request differs from its certified configuration.",
+        "browser-root-session-create-invalid",
+      );
+    }
+    const pointer = withJsonArgument(
+      module,
+      nativeRequest,
+      (jsonPointer, jsonLength) => module._spc_root_session_create_json(
+        jsonPointer,
+        jsonLength,
+      ),
+      "The native root-session create ABI",
+    );
+    const raw = parseFacadeJson(
+      module,
+      pointer,
+      "The native root-session create ABI",
+      "browser-root-session-create-invalid",
+    );
+    validateRootIdentityEcho(
+      raw,
+      nativeRequest,
+      identity,
+      "spc-root-session-create-result-v1",
+    );
+    const expectedCanonicalProtection = canonicalRootTacticalProtection(
+      nativeRequest.boundary,
+    );
+    if (
+      raw.status !== "ready"
+      || !Number.isInteger(raw.session_id)
+      || raw.session_id < 1
+      || !exactBoundaryMatchesRequest(raw.boundary, nativeRequest.boundary)
+      || !sameJson(raw.config, expectedConfig)
+      || raw.configured_max_depth !== expectedConfig.max_depth
+      || raw.native_work_after !== 0
+      || raw.capabilities?.aspiration_windows !== true
+      || raw.capabilities?.selected_owner_certification !== true
+      || raw.capabilities?.canonical_root_tactical_policy !== true
+      || raw.capabilities?.checked_horizon_proof_research !== true
+      || raw.capabilities?.reply_mate_safety !== false
+      || expectedCanonicalProtection === null
+      || !canonicalRootPolicyMatches(raw, expectedCanonicalProtection)
+    ) {
+      throw new KernelAdapterError(
+        "The native root-session create ABI returned an invalid session envelope.",
+        "browser-root-session-create-invalid",
+      );
+    }
+    rootSessionId = raw.session_id;
+    rootSessionBoundary = Object.freeze({
+      ...nativeRequest.boundary,
+      ep_targets: Object.freeze([...nativeRequest.boundary.ep_targets]),
+    });
+    rootCanonicalTacticalProtection = raw.canonical_root_tactical_protection;
+    return {
+      ...raw,
+      status: raw.status,
+      source_fingerprint: identity.source_fingerprint,
+      kernel_sha256: identity.kernel_sha256,
+      module_js_sha256: identity.module_js_sha256,
+      certificate_id: identity.root_session_certificate_id,
+      runtime_variant: identity.runtime_variant,
+      thread_count: identity.thread_count,
+      engine_version: identity.engine_version,
+      ruleset_version: identity.ruleset_version,
+      profile_id: identity.profile_id,
+      config: expectedConfig,
+      native_work_after: Number.isSafeInteger(raw.native_work_after)
+        ? raw.native_work_after
+        : 0,
+      ...rootMemoryReceipt(),
+    };
+  };
   return Object.freeze({
     identity,
     createRootSession(request) {
-      if (!identity.root_iteration_ready) {
-        throw new KernelAdapterError(
-          "This artifact has no complete certified root-session/mate/prefix capability.",
-          "browser-root-session-unavailable",
-        );
-      }
-      if (rootSessionId !== null) {
-        throw new KernelAdapterError(
-          "A native root session is already active in this Worker.",
-          "browser-root-session-active",
-        );
-      }
-      const nativeRequest = nativeRootRequest(
-        request,
-        identity,
-        "spc-root-session-create-v1",
-        ["boundary", "config"],
-      );
+      return createRootSessionWithConfig(request, identity.root_geometry.session_config);
+    },
+    createRootSafetyReselectSession(envelope) {
       if (
-        !sameJson(nativeRequest.config, identity.root_geometry.session_config)
-        || !request.boundary
-        || request.boundary.chess960 !== false
+        !envelope
+        || typeof envelope !== "object"
+        || Array.isArray(envelope)
+        || !sameJson(Object.keys(envelope).sort(), ["purpose", "request", "schema"])
+        || envelope.schema !== SAFE_ROOT_RESELECT_CREATE_SCHEMA
+        || envelope.purpose !== SAFE_ROOT_RESELECT_PURPOSE
+        || !envelope.request
+        || typeof envelope.request !== "object"
+        || Array.isArray(envelope.request)
+        || Object.prototype.hasOwnProperty.call(envelope.request, "config")
+        || Object.prototype.hasOwnProperty.call(envelope.request, "schema")
       ) {
         throw new KernelAdapterError(
-          "The root-session create request differs from its certified configuration.",
-          "browser-root-session-create-invalid",
+          "The internal root safety session request is malformed.",
+          "browser-root-safe-reselector-config-invalid",
         );
       }
-      const pointer = withJsonArgument(
-        module,
-        nativeRequest,
-        (jsonPointer, jsonLength) => module._spc_root_session_create_json(
-          jsonPointer,
-          jsonLength,
-        ),
-        "The native root-session create ABI",
-      );
-      const raw = parseFacadeJson(
-        module,
-        pointer,
-        "The native root-session create ABI",
-        "browser-root-session-create-invalid",
-      );
-      validateRootIdentityEcho(
-        raw,
-        nativeRequest,
-        identity,
-        "spc-root-session-create-result-v1",
-      );
-      const expectedCanonicalProtection = canonicalRootTacticalProtection(
-        nativeRequest.boundary,
-      );
-      if (
-        raw.status !== "ready"
-        || !Number.isInteger(raw.session_id)
-        || raw.session_id < 1
-        || !exactBoundaryMatchesRequest(raw.boundary, nativeRequest.boundary)
-        || !sameJson(raw.config, identity.root_geometry.session_config)
-        || raw.configured_max_depth !== identity.root_geometry.session_config.max_depth
-        || raw.native_work_after !== 0
-        || raw.capabilities?.aspiration_windows !== true
-        || raw.capabilities?.selected_owner_certification !== true
-        || raw.capabilities?.canonical_root_tactical_policy !== true
-        || raw.capabilities?.checked_horizon_proof_research !== true
-        || raw.capabilities?.reply_mate_safety !== false
-        || expectedCanonicalProtection === null
-        || !canonicalRootPolicyMatches(raw, expectedCanonicalProtection)
-      ) {
-        throw new KernelAdapterError(
-          "The native root-session create ABI returned an invalid session envelope.",
-          "browser-root-session-create-invalid",
-        );
-      }
-      rootSessionId = raw.session_id;
-      rootSessionBoundary = Object.freeze({
-        ...nativeRequest.boundary,
-        ep_targets: Object.freeze([...nativeRequest.boundary.ep_targets]),
-      });
-      rootCanonicalTacticalProtection = raw.canonical_root_tactical_protection;
-      return {
-        ...raw,
-        status: raw.status,
-        source_fingerprint: identity.source_fingerprint,
-        kernel_sha256: identity.kernel_sha256,
-        module_js_sha256: identity.module_js_sha256,
-        certificate_id: identity.root_session_certificate_id,
-        runtime_variant: identity.runtime_variant,
-        thread_count: identity.thread_count,
-        engine_version: identity.engine_version,
-        ruleset_version: identity.ruleset_version,
-        profile_id: identity.profile_id,
-        config: identity.root_geometry.session_config,
-        native_work_after: Number.isSafeInteger(raw.native_work_after)
-          ? raw.native_work_after
-          : 0,
-        ...rootMemoryReceipt(),
-      };
+      const config = deriveSafeRootReselectSessionConfig(identity);
+      return createRootSessionWithConfig({
+        ...envelope.request,
+        schema: "spc-root-session-create-v1",
+        config,
+      }, config);
     },
     enumerateRoot(request) {
       if (rootSessionId === null || request?.session_id !== rootSessionId) {
@@ -2904,6 +2963,7 @@ export async function loadCertifiedBrowserKernel({
 export {
   KernelAdapterError,
   clampRootRemainingTime,
+  deriveSafeRootReselectSessionConfig,
   importVerifiedModuleBytes,
   normalizeKernelResult,
   resolveValueModelActivation,

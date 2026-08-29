@@ -27,6 +27,19 @@
     "repair-once-then-veto-adverse-selected-pv-boundary-mates-v2";
   const MATE_CLAIM_SELECTION_POLICY =
     "require-sign-matching-exact-proof-for-nonterminal-mate-band-v1";
+  const SAFE_ROOT_RESELECT_WIDTH = 512;
+  const SAFE_ROOT_RESELECT_TOTAL_WORK = 40_000_000;
+  const SAFE_ROOT_RESELECT_EARLY_FRONTIER_COUNT = 32;
+  const SAFE_ROOT_RESELECT_EARLY_CHILD_WORK = 3_000_000;
+  const SAFE_ROOT_RESELECT_WIDENED_CHILD_WORK = 10_000_000;
+  const SAFE_ROOT_RESELECT_REPLY_MATE_SCOPE =
+    "selected-child-immediate-reply-mate-only";
+  const SAFE_ROOT_RESELECT_TERMINAL_SCOPE =
+    "selected-root-terminal-non-loss-only";
+  const SAFE_ROOT_RESELECT_POLICY =
+    "first-authoritatively-reply-mate-safe-in-production-order-v1";
+  const SAFE_ROOT_RESELECT_ORDER_POLICY =
+    "native-tactical-protected-root-production-order-empty-preference-v1";
   const MAX_SAME_ROOT_HORIZON_REPAIRS = 1;
   const SAME_ROOT_REPAIR_POLICY_SCHEMA = "spc-same-root-horizon-repair-policy-v1";
   const PV_HORIZON_POLICY_VETO_SCHEMA = "spc-pv-horizon-candidate-veto-v1";
@@ -108,6 +121,24 @@
     return Number.isInteger(value) && value >= minimum && value <= maximum;
   }
 
+  function isSafeRootReselectFailure(error) {
+    const seen = new Set();
+    let current = error;
+    while (
+      current !== null
+      && (typeof current === "object" || typeof current === "function")
+      && !seen.has(current)
+    ) {
+      seen.add(current);
+      if (
+        current.safe_root_reselector_receipt !== undefined
+        || String(current.code || "").startsWith("browser-root-safe-reselector-")
+      ) return true;
+      current = current.cause;
+    }
+    return false;
+  }
+
   function publishableMateClaim(score, proofBounds) {
     if (
       !Number.isSafeInteger(score)
@@ -125,6 +156,21 @@
     return value !== null
       && typeof value === "object"
       && Object.prototype.hasOwnProperty.call(value, key);
+  }
+
+  function canonicalJsonValue(value) {
+    if (Array.isArray(value)) return value.map(canonicalJsonValue);
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.keys(value).sort().map((key) => [key, canonicalJsonValue(value[key])]),
+      );
+    }
+    return value;
+  }
+
+  function sameJson(left, right) {
+    return JSON.stringify(canonicalJsonValue(left))
+      === JSON.stringify(canonicalJsonValue(right));
   }
 
   function normalizedSameRootRepairPolicy(value) {
@@ -698,6 +744,427 @@
     return { requestedDepth, completedDepth };
   }
 
+  function validatePublishedSafeRootReselect(result, request, identity) {
+    const runtime = result?.runtime_receipt;
+    const receipt = runtime?.safe_root_reselector;
+    const scans = receipt?.scans;
+    const selected = receipt?.selected;
+    const expectedReceiptKeys = [
+      "deadline_epoch_ms", "deadline_monotonic_ms",
+      "early_frontier_child_max_work", "early_frontier_count",
+      "early_frontier_work_used", "enumeration_identity", "excluded_root_count",
+      "excluded_roots", "exclusion_binding_policy", "exclusions_bound",
+      "generation_work",
+      "immediate_reply_mate_horizon_series", "isolated_cleanup_status",
+      "isolated_destroy_error_code", "isolated_session_destroyed",
+      "isolated_worker_terminated", "isolated_worker_termination_error_code",
+      "iteration_id", "kernel_sha256", "lane_max_work", "lane_work_used",
+      "mate_certificate_id", "module_js_sha256", "order_policy",
+      "ordinary_committed_work", "ordinary_pool_recreated",
+      "ordinary_pool_restore_policy",
+      "original_request_max_work", "preferred_series", "prefix_certificate_id",
+      "request_id", "requested_width", "restore_error_code", "retained_count",
+      "root_order_tactical_protection", "root_session_certificate_id",
+      "safety_certification_scope", "scans",
+      "schema", "selected", "selected_safety_basis", "session_id",
+      "source_fingerprint", "status", "total_committed_work", "trigger",
+      "trigger_iteration_id", "wasm_sha256", "widened_frontier_child_max_work",
+      "widened_frontier_work_used", "width_complete", "worker_id",
+    ];
+    const expectedScanKeys = [
+      "authoritative_child_boundary", "authoritative_root_replay", "cache_hit",
+      "call_work_credit", "candidate_identity", "enumeration_identity",
+      "exclusion", "frontier_stage", "order_index", "order_key", "per_child_max_work",
+      "root_series", "status", "terminal_proof_bounds", "terminal_score",
+      "work_used",
+    ];
+    const expectedExclusionKeys = [
+      "checked_pv_policy_rejected", "mate_claim_quarantine_count",
+      "source_candidate_identity", "source_child_boundary", "source_order_index",
+      "source_order_key", "source_root_machine_notation",
+      "widened_candidate_identity", "widened_child_boundary", "widened_order_index",
+      "widened_order_key", "widened_root_machine_notation",
+    ];
+    const requestedDepth = Number(result?.requested_depth);
+    const completedDepth = Number(result?.completed_depth);
+    const requestMaxWork = request?.limits?.max_generation_positions;
+    const rootWhiteToMove = request?.boundary?.series % 2 === 1;
+    const excludedRoots = receipt?.excluded_roots;
+    const validExactBoundary = (boundary) => {
+      const expectedBoundaryKeys = [
+        "board_fen", "chess960", "ep_targets", "fen", "progressive_ep",
+        "promoted_hex", "quiet_draw_pending", "quiet_series", "series",
+        "series_number", "side_to_move",
+      ];
+      const fields = fenFields(boundary?.fen);
+      const epTargets = normalizedEpTargets(boundary?.ep_targets);
+      const progressiveEp = normalizedEpTargets(boundary?.progressive_ep);
+      return Boolean(
+        boundary
+        && typeof boundary === "object"
+        && !Array.isArray(boundary)
+        && sameJson(Object.keys(boundary).sort(), expectedBoundaryKeys)
+        && fields !== null
+        && boundary.board_fen === boundary.fen
+        && exactInteger(boundary.series, 1, 256)
+        && boundary.series_number === boundary.series
+        && boundary.side_to_move === (fields[1] === "w" ? "white" : "black")
+        && ((boundary.series % 2 === 1) === (fields[1] === "w"))
+        && exactInteger(boundary.quiet_series, 0, 0x7fffffff)
+        && boundary.quiet_draw_pending === (boundary.quiet_series >= 10)
+        && epTargets !== null
+        && progressiveEp !== null
+        && sameJson(boundary.ep_targets, epTargets)
+        && sameJson(boundary.progressive_ep, epTargets)
+        && sameJson(progressiveEp, epTargets)
+        && PROMOTED_FINGERPRINT.test(String(boundary.promoted_hex || ""))
+        && canonicalPromotedHex(boundary.promoted_hex) === boundary.promoted_hex
+        && boundary.chess960 === false
+      );
+    };
+    const validExcludedRoots = Array.isArray(excludedRoots)
+      && excludedRoots.length <= SAFE_ROOT_RESELECT_EARLY_FRONTIER_COUNT
+      && excludedRoots.every((entry, index) => (
+        entry
+        && typeof entry === "object"
+        && !Array.isArray(entry)
+        && sameJson(Object.keys(entry).sort(), expectedExclusionKeys)
+        && typeof entry.source_candidate_identity === "string"
+        && entry.source_candidate_identity.length > 0
+        && typeof entry.source_root_machine_notation === "string"
+        && entry.source_root_machine_notation.length > 0
+        && entry.source_order_key === entry.source_root_machine_notation
+        && exactInteger(
+          entry.source_order_index,
+          0,
+          SAFE_ROOT_RESELECT_EARLY_FRONTIER_COUNT - 1,
+        )
+        && validExactBoundary(entry.source_child_boundary)
+        && typeof entry.widened_candidate_identity === "string"
+        && entry.widened_candidate_identity.length > 0
+        && typeof entry.widened_root_machine_notation === "string"
+        && entry.widened_root_machine_notation.length > 0
+        && entry.widened_order_key === entry.widened_root_machine_notation
+        && exactInteger(entry.widened_order_index, 0, receipt.retained_count - 1)
+        && validExactBoundary(entry.widened_child_boundary)
+        && sameJson(entry.source_child_boundary, entry.widened_child_boundary)
+        && (index === 0 || (
+          entry.widened_order_index > excludedRoots[index - 1].widened_order_index
+        ))
+        && excludedRoots.slice(0, index).every((prior) => (
+          prior.source_candidate_identity !== entry.source_candidate_identity
+          && prior.widened_candidate_identity !== entry.widened_candidate_identity
+          && prior.source_order_index !== entry.source_order_index
+          && !sameJson(prior.source_child_boundary, entry.source_child_boundary)
+        ))
+        && typeof entry.checked_pv_policy_rejected === "boolean"
+        && exactInteger(entry.mate_claim_quarantine_count, 0, 1_000_000)
+        && (
+          entry.checked_pv_policy_rejected === true
+          || entry.mate_claim_quarantine_count > 0
+        )
+      ));
+    const excludedRootByOrderIndex = new Map(
+      validExcludedRoots
+        ? excludedRoots.map((entry) => [entry.widened_order_index, entry])
+        : [],
+    );
+    const validScans = Array.isArray(scans) && scans.length >= 1 && scans.every(
+      (scan, index) => {
+        const expectedExclusion = excludedRootByOrderIndex.get(scan?.order_index) || null;
+        return (
+        scan
+        && typeof scan === "object"
+        && !Array.isArray(scan)
+        && sameJson(Object.keys(scan).sort(), expectedScanKeys)
+        && typeof scan.candidate_identity === "string"
+        && scan.candidate_identity.length > 0
+        && scan.enumeration_identity === receipt.enumeration_identity
+        && exactInteger(scan.order_index, 0, receipt.retained_count - 1)
+        && scan.order_index === index
+        && typeof scan.order_key === "string"
+        && scan.order_key.length > 0
+        && [
+          "found", "unknown", "work_limit", "unsupported", "exhausted",
+          "terminal", "terminal-loss", "policy-excluded",
+        ].includes(scan.status)
+        && sameJson(scan.exclusion, expectedExclusion)
+        && (
+          expectedExclusion === null
+            ? scan.status !== "policy-excluded"
+            : scan.status === "policy-excluded"
+              && scan.cache_hit === false
+              && scan.call_work_credit === 0
+              && scan.work_used === 0
+              && scan.candidate_identity
+                === expectedExclusion.widened_candidate_identity
+              && scan.order_key === expectedExclusion.widened_order_key
+              && scan.root_series?.machine_notation
+                === expectedExclusion.widened_root_machine_notation
+              && sameJson(
+                scan.authoritative_child_boundary,
+                expectedExclusion.source_child_boundary,
+              )
+        )
+        && typeof scan.cache_hit === "boolean"
+        && scan.frontier_stage === (
+          scan.order_index < SAFE_ROOT_RESELECT_EARLY_FRONTIER_COUNT
+            ? "retained-w32"
+            : "widened-w512"
+        )
+        && scan.per_child_max_work === (
+          scan.order_index < SAFE_ROOT_RESELECT_EARLY_FRONTIER_COUNT
+            ? SAFE_ROOT_RESELECT_EARLY_CHILD_WORK
+            : SAFE_ROOT_RESELECT_WIDENED_CHILD_WORK
+        )
+        && exactInteger(scan.call_work_credit, 0, scan.per_child_max_work)
+        && exactInteger(scan.work_used, 0, scan.call_work_credit)
+        && (!scan.cache_hit || (
+          ["found", "exhausted"].includes(scan.status)
+          && scan.call_work_credit === 0
+          && scan.work_used === 0
+        ))
+        && scan.root_series
+        && Array.isArray(scan.root_series.moves)
+        && scan.root_series.moves.length >= 1
+        && scan.root_series.moves.every((move) => UCI_MOVE.test(String(move)))
+        && scan.root_series.machine_notation === scan.root_series.moves.join("/")
+        && sameJson(
+          scan.root_series.child_boundary,
+          scan.authoritative_child_boundary,
+        )
+        && scan.authoritative_root_replay?.complete === true
+        && sameJson(
+          scan.authoritative_root_replay.next_state,
+          scan.authoritative_child_boundary,
+        )
+        && sameJson(
+          scan.authoritative_root_replay.prefix,
+          scan.root_series.moves,
+        )
+        && scan.authoritative_root_replay.outcome === scan.root_series.outcome
+        && scan.authoritative_root_replay.ended_by_check
+          === scan.root_series.ended_by_check
+        && (
+          expectedExclusion !== null
+            ? scan.status === "policy-excluded"
+            : scan.root_series.outcome === null
+            ? scan.terminal_score === null
+              && sameJson(scan.terminal_proof_bounds, [-1, 1])
+              && !["terminal", "terminal-loss"].includes(scan.status)
+            : Number.isSafeInteger(scan.terminal_score)
+              && Array.isArray(scan.terminal_proof_bounds)
+              && scan.terminal_proof_bounds.length === 2
+              && ["terminal", "terminal-loss"].includes(scan.status)
+              && scan.status === ((
+                rootWhiteToMove
+                  ? scan.terminal_score >= 0 && scan.terminal_proof_bounds[0] >= 0
+                  : scan.terminal_score <= 0 && scan.terminal_proof_bounds[1] <= 0
+              ) ? "terminal" : "terminal-loss")
+        )
+        );
+      },
+    );
+    const summedSafetyWork = Array.isArray(scans)
+      ? scans.reduce((sum, scan) => sum + Number(scan?.work_used || 0), 0)
+      : -1;
+    const earlyFrontierWork = Array.isArray(scans)
+      ? scans.reduce((sum, scan) => sum + (
+        scan?.order_index < SAFE_ROOT_RESELECT_EARLY_FRONTIER_COUNT
+          ? Number(scan?.work_used || 0)
+          : 0
+      ), 0)
+      : -1;
+    const widenedFrontierWork = Array.isArray(scans)
+      ? scans.reduce((sum, scan) => sum + (
+        scan?.order_index >= SAFE_ROOT_RESELECT_EARLY_FRONTIER_COUNT
+          ? Number(scan?.work_used || 0)
+          : 0
+      ), 0)
+      : -1;
+    const expectedSafetyScope = selected?.status === "terminal"
+      ? SAFE_ROOT_RESELECT_TERMINAL_SCOPE
+      : SAFE_ROOT_RESELECT_REPLY_MATE_SCOPE;
+    const selectedMatches = Boolean(
+      selected
+      && ["exhausted", "terminal"].includes(selected.status)
+      && Array.isArray(scans)
+      && sameJson(scans.at(-1), selected)
+      && selected.exclusion === null
+      && !excludedRootByOrderIndex.has(selected.order_index)
+      && sameJson(selected.root_series.moves, result?.best_full_series)
+      && sameJson(selected.authoritative_root_replay, result?.checked_prefix)
+      && sameJson(
+        selected.authoritative_child_boundary,
+        result?.checked_prefix?.next_state,
+      )
+    );
+    if (
+      !result
+      || typeof result !== "object"
+      || Array.isArray(result)
+      || result.ok !== true
+      || result.status !== "complete"
+      || result.publishable !== true
+      || result.safety_certified !== true
+      || result.safety_certification_scope !== expectedSafetyScope
+      || result.legal_series_certified !== true
+      || result.authoritative_replay_certified !== true
+      || result.legal_validation_runtime !== "compiled-wasm"
+      || result.source_fingerprint !== identity.source_fingerprint
+      || result.wasm_sha256 !== identity.wasm_sha256
+      || result.kernel_sha256 !== identity.kernel_sha256
+      || result.module_js_sha256 !== identity.module_js_sha256
+      || result.certificate_id !== identity.root_session_certificate_id
+      || result.mate_certificate_id !== identity.mate_certificate_id
+      || result.prefix_certificate_id !== identity.prefix_certificate_id
+      || result.runtime_variant !== "single"
+      || result.thread_count !== 1
+      || !exactInteger(requestedDepth, 1, 5)
+      || requestedDepth !== request.limits.depth
+      || completedDepth !== 0
+      || !Array.isArray(result.best_full_series)
+      || result.best_full_series.length < 1
+      || result.best_full_series.length > request.boundary.series
+      || result.best_full_series.some((move) => !UCI_MOVE.test(String(move)))
+      || !Array.isArray(result.principal_variation)
+      || result.principal_variation.length !== 0
+      || hasOwn(result, "score")
+      || hasOwn(result, "proof")
+      || hasOwn(result, "proof_bounds")
+      || hasOwn(result, "alternatives")
+      || result.root_search_mode !== "safe-root-reselector"
+      || result.root_scores_complete !== false
+      || result.root_bound_coverage_complete !== false
+      || result.root_bound_coverage_scope !== expectedSafetyScope
+      || result.unfiltered_score_winner_selected !== false
+      || result.selection_policy !== SAFE_ROOT_RESELECT_POLICY
+      || result.exact_width !== false
+      || result.timed_out !== false
+      || result.work_limit_reached !== false
+      || !exactInteger(result.work, 0, requestMaxWork)
+      || runtime?.runtime !== "browser-wasm"
+      || runtime?.search_mode !== "safe-root-reselector"
+      || runtime?.requested_depth !== requestedDepth
+      || runtime?.completed_depth !== 0
+      || runtime?.work !== result.work
+      || runtime?.source_fingerprint !== identity.source_fingerprint
+      || runtime?.artifact_fingerprint !== identity.wasm_sha256
+      || runtime?.kernel_fingerprint !== identity.kernel_sha256
+      || runtime?.module_fingerprint !== identity.module_js_sha256
+      || runtime?.certificate_id !== identity.root_session_certificate_id
+      || runtime?.mate_certificate_id !== identity.mate_certificate_id
+      || runtime?.runtime_variant !== "single"
+      || runtime?.thread_count !== 1
+      || runtime?.canonical_replay_certified !== true
+      || runtime?.mate_safety_certified !== (selected?.status === "exhausted")
+      || runtime?.mate_safety_certification_scope !== (
+        selected?.status === "exhausted" ? SAFE_ROOT_RESELECT_REPLY_MATE_SCOPE : null
+      )
+      || runtime?.terminal_non_loss_certified !== (selected?.status === "terminal")
+      || runtime?.root_bound_coverage_complete !== false
+      || runtime?.root_bound_coverage_scope !== expectedSafetyScope
+      || runtime?.unfiltered_score_winner_selected !== false
+      || runtime?.selection_policy !== SAFE_ROOT_RESELECT_POLICY
+      || !receipt
+      || typeof receipt !== "object"
+      || Array.isArray(receipt)
+      || !sameJson(Object.keys(receipt).sort(), expectedReceiptKeys)
+      || receipt.schema !== "spc-root-safe-reselector-receipt-v1"
+      || receipt.trigger !== "all-retained-children-proven-mating"
+      || receipt.status !== "selected"
+      || receipt.safety_certification_scope !== expectedSafetyScope
+      || receipt.selected_safety_basis !== (
+        selected?.status === "terminal"
+          ? "exact-root-terminal-non-loss"
+          : "exact-immediate-reply-mate-exhaustion"
+      )
+      || receipt.immediate_reply_mate_horizon_series !== 1
+      || receipt.excluded_root_count !== excludedRoots?.length
+      || !validExcludedRoots
+      || receipt.exclusion_binding_policy
+        !== "unique-exact-authoritative-child-boundary-v1"
+      || receipt.exclusions_bound !== true
+      || receipt.source_fingerprint !== identity.source_fingerprint
+      || receipt.wasm_sha256 !== identity.wasm_sha256
+      || receipt.kernel_sha256 !== identity.kernel_sha256
+      || receipt.module_js_sha256 !== identity.module_js_sha256
+      || receipt.root_session_certificate_id !== identity.root_session_certificate_id
+      || receipt.mate_certificate_id !== identity.mate_certificate_id
+      || receipt.prefix_certificate_id !== identity.prefix_certificate_id
+      || receipt.requested_width !== SAFE_ROOT_RESELECT_WIDTH
+      || identity.root_session_contract?.hard_limits?.maximum_width
+        !== SAFE_ROOT_RESELECT_WIDTH
+      || receipt.order_policy !== SAFE_ROOT_RESELECT_ORDER_POLICY
+      || receipt.root_order_tactical_protection !== true
+      || !sameJson(receipt.preferred_series, [])
+      || typeof receipt.enumeration_identity !== "string"
+      || receipt.enumeration_identity.length === 0
+      || !exactInteger(receipt.retained_count, 1, SAFE_ROOT_RESELECT_WIDTH)
+      || typeof receipt.width_complete !== "boolean"
+      || !exactInteger(receipt.session_id, 1, 0xffffffff)
+      || receipt.worker_id !== "safe-reselector"
+      || receipt.original_request_max_work !== requestMaxWork
+      || !exactInteger(receipt.ordinary_committed_work, 0, requestMaxWork)
+      || receipt.lane_max_work !== Math.min(
+        SAFE_ROOT_RESELECT_TOTAL_WORK,
+        requestMaxWork - receipt.ordinary_committed_work,
+      )
+      || receipt.early_frontier_count !== Math.min(
+        SAFE_ROOT_RESELECT_EARLY_FRONTIER_COUNT,
+        receipt.retained_count,
+      )
+      || receipt.early_frontier_child_max_work
+        !== SAFE_ROOT_RESELECT_EARLY_CHILD_WORK
+      || receipt.widened_frontier_child_max_work
+        !== SAFE_ROOT_RESELECT_WIDENED_CHILD_WORK
+      || receipt.early_frontier_work_used !== earlyFrontierWork
+      || receipt.widened_frontier_work_used !== widenedFrontierWork
+      || !exactInteger(receipt.generation_work, 0, receipt.lane_max_work)
+      || !exactInteger(receipt.lane_work_used, receipt.generation_work, receipt.lane_max_work)
+      || receipt.lane_work_used !== receipt.generation_work + summedSafetyWork
+      || summedSafetyWork !== earlyFrontierWork + widenedFrontierWork
+      || receipt.total_committed_work
+        !== receipt.ordinary_committed_work + receipt.lane_work_used
+      || receipt.total_committed_work !== result.work
+      || receipt.total_committed_work > requestMaxWork
+      || !Number.isFinite(receipt.deadline_monotonic_ms)
+      || !Number.isFinite(receipt.deadline_epoch_ms)
+      || receipt.isolated_worker_terminated !== true
+      || receipt.isolated_worker_termination_error_code !== null
+      || !(
+        receipt.isolated_session_destroyed === true
+          ? receipt.isolated_cleanup_status
+              === "session-destroyed-and-worker-terminated"
+            && receipt.isolated_destroy_error_code === null
+          : receipt.isolated_session_destroyed === false
+            && receipt.isolated_cleanup_status
+              === "worker-terminated-after-session-destroy-miss"
+            && typeof receipt.isolated_destroy_error_code === "string"
+            && receipt.isolated_destroy_error_code.length > 0
+      )
+      || receipt.ordinary_pool_recreated !== false
+      || receipt.ordinary_pool_restore_policy !== "lazy-next-request"
+      || receipt.restore_error_code !== null
+      || !validScans
+      || scans.length > receipt.retained_count
+      || !selectedMatches
+      || result.stats?.safety_status !== "safe-root-reselector"
+      || result.stats?.safety_certification_scope !== expectedSafetyScope
+      || result.stats?.safe_root_reselections !== 1
+      || result.stats?.coverage_complete !== false
+    ) {
+      throw new BrowserEngineError(
+        "The browser widened safety result is not an exact D0 publication receipt.",
+        "browser-root-safe-reselector-result-invalid",
+        { fallbackRequired: true },
+      );
+    }
+    validateReportedMemory(result, identity);
+    validateCompiledReplay(result, request);
+    return { requestedDepth, completedDepth };
+  }
+
   function validatePublishedRootAnalysis(result, payload, identity) {
     const request = normalizedKernelRequest(
       payload,
@@ -707,6 +1174,9 @@
     const requestedDepth = Number(result?.requested_depth);
     const completedDepth = Number(result?.completed_depth);
     const receipt = result?.runtime_receipt;
+    if (receipt?.safe_root_reselector?.schema === "spc-root-safe-reselector-receipt-v1") {
+      return validatePublishedSafeRootReselect(result, request, identity);
+    }
     const mateCache = receipt?.mate_cache;
     const maximumHorizonProofs = identity.root_session_contract
       ?.hard_limits?.maximum_horizon_proofs;
@@ -1591,11 +2061,28 @@
         };
       } catch (error) {
         if (error?.name === "AbortError") throw error;
-        throw new BrowserEngineError(
+        const wrapped = new BrowserEngineError(
           String(error?.message || "The iterative browser root engine failed closed."),
           String(error?.code || "browser-root-analysis-failed"),
           { fallbackRequired: error?.fallbackRequired !== false, cause: error },
         );
+        if (error?.safe_root_reselector_receipt !== undefined) {
+          Object.defineProperty(wrapped, "safe_root_reselector_receipt", {
+            configurable: false,
+            enumerable: true,
+            writable: false,
+            value: error.safe_root_reselector_receipt,
+          });
+        }
+        if (error?.ordinary_pool_teardown_receipt !== undefined) {
+          Object.defineProperty(wrapped, "ordinary_pool_teardown_receipt", {
+            configurable: false,
+            enumerable: true,
+            writable: false,
+            value: error.ordinary_pool_teardown_receipt,
+          });
+        }
+        throw wrapped;
       }
     }
 
@@ -1678,6 +2165,7 @@
     BrowserEngineClient,
     BrowserEngineError,
     createClient: (options) => new BrowserEngineClient(options),
+    isSafeRootReselectFailure,
     isLocalBestMoveRequest,
     normalizedKernelRequest,
     validateReportedMemory,

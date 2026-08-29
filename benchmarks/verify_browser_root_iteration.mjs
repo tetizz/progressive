@@ -22,6 +22,17 @@ const browserClientApi = require(path.join(
   root,
   "src/scottish_progressive/web/static/browser-engine-client.js",
 ));
+const adapterSource = await readFile(path.join(
+  root,
+  "src/scottish_progressive/web/static/wasm-kernel-adapter.js",
+), "utf8");
+const adapterApi = await import(
+  `data:text/javascript;base64,${Buffer.from(adapterSource).toString("base64")}`
+);
+const appSource = await readFile(path.join(
+  root,
+  "src/scottish_progressive/web/static/app.js",
+), "utf8");
 
 const WHITE_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const ALT_WHITE_FEN = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1";
@@ -53,6 +64,13 @@ const MODULE = "c".repeat(64);
 const KERNEL = "d".repeat(64);
 const CHECKED_PV_SELECTION_POLICY =
   "repair-once-then-veto-adverse-selected-pv-boundary-mates-v2";
+const SAFE_RESELECT_WIDTH = 512;
+const SAFE_RESELECT_TOTAL_WORK = 40_000_000;
+const SAFE_RESELECT_EARLY_FRONTIER_COUNT = 32;
+const SAFE_RESELECT_EARLY_CHILD_WORK = 3_000_000;
+const SAFE_RESELECT_WIDENED_CHILD_WORK = 10_000_000;
+const SAFE_RESELECT_REPLY_MATE_SCOPE =
+  "selected-child-immediate-reply-mate-only";
 const SAME_ROOT_REPAIR_POLICY = Object.freeze({
   schema: "spc-same-root-horizon-repair-policy-v1",
   maximum_successful_same_root_repairs: 1,
@@ -66,7 +84,7 @@ const MEMORY = Object.freeze({
 const CONFIG = Object.freeze({
   max_depth: 5,
   width: 32,
-  max_work: 10_000_000,
+  max_work: 100_000_000,
   mate_score: 1_000_000,
   series_cache_capacity: 1_024,
   external_cache_weight: 128,
@@ -87,14 +105,15 @@ const CONFIG = Object.freeze({
 const PLAY_LIMITS = Object.freeze({
   maximum_seconds: 60,
   default_seconds: 60,
-  default_generation_positions: CONFIG.max_work,
+  default_generation_positions: 10_000_000,
   safety_reserve_positions: 4_000_000,
 });
 const ROOT_CURRENT_SERIES_MATE_CREDIT = Math.min(
   PLAY_LIMITS.safety_reserve_positions,
   250_000,
-  Math.floor(CONFIG.max_work / 64),
+  Math.floor(PLAY_LIMITS.default_generation_positions / 64),
 );
+const WIDE_CONFIG = Object.freeze({ ...CONFIG, width: SAFE_RESELECT_WIDTH });
 const PREFIX_CONTRACT = Object.freeze({
   schema: prefixApi.CONTRACT_SCHEMA,
   result_schema: prefixApi.RESULT_SCHEMA,
@@ -171,6 +190,7 @@ const IDENTITY = Object.freeze({
       horizon_research: "spc-root-horizon-research-result-v1",
     }),
     hard_limits: Object.freeze({
+      maximum_width: SAFE_RESELECT_WIDTH,
       minimum_aspiration_initial_delta: 2_048,
       maximum_aspiration_attempts: 4,
       maximum_horizon_proofs: 16,
@@ -344,6 +364,15 @@ function manifestFor(boundary, generation, preferredSeries, { terminalFirst = fa
       },
     };
   });
+  if (preferredSeries.length > 0) {
+    const preferredIndex = candidates.findIndex((candidate) => (
+      sameJson(candidate.root_series.moves, preferredSeries)
+    ));
+    if (preferredIndex >= 0) {
+      candidates.unshift(candidates.splice(preferredIndex, 1)[0]);
+      candidates.forEach((candidate, index) => { candidate.order_index = index; });
+    }
+  }
   return {
     enumeration_identity: `manifest-${boundary.series}-${generation}-${preferredSeries.join("-") || "none"}`,
     root_white_to_move: white,
@@ -351,6 +380,69 @@ function manifestFor(boundary, generation, preferredSeries, { terminalFirst = fa
     retained_count: candidates.length,
     width_complete: true,
     preferred_series: [...preferredSeries],
+    candidates,
+  };
+}
+
+function safeReselectManifestFor(boundary, generation) {
+  const ordinary = manifestFor(boundary, generation, []);
+  const usedMoves = new Set(ordinary.candidates.map((candidate) => candidate.order_key));
+  const squares = Array.from("abcdefgh").flatMap((file) => (
+    Array.from({ length: 8 }, (_, offset) => `${file}${offset + 1}`)
+  ));
+  const extraMoves = [];
+  for (const from of squares) {
+    for (const to of squares) {
+      const move = `${from}${to}`;
+      if (
+        from !== to
+        && !usedMoves.has(move)
+        && extraMoves.length < 64 - ordinary.candidates.length
+      ) {
+        usedMoves.add(move);
+        extraMoves.push(move);
+      }
+    }
+    if (extraMoves.length === 64 - ordinary.candidates.length) break;
+  }
+  assert.equal(extraMoves.length, 64 - ordinary.candidates.length);
+  const candidates = [
+    ...ordinary.candidates.map((candidate, index) => ({
+      ...structuredClone(candidate),
+      candidate_identity: candidate.candidate_identity,
+    })),
+    ...extraMoves.map((move, offset) => {
+      const index = ordinary.candidates.length + offset;
+      const childFields = (boundary.series % 2 === 1 ? BLACK_FEN : WHITE_FEN).split(" ");
+      childFields[4] = String(100 + index);
+      childFields[5] = String(100 + index);
+      return {
+        candidate_identity: `w${index}`,
+        order_index: index,
+        order_key: move,
+        terminal_score: null,
+        terminal_proof_bounds: [-1, 1],
+        root_series: {
+          moves: [move],
+          machine_notation: move,
+          transposition_count: 1,
+          child_boundary: exactState(boundaryPayload(
+            childFields.join(" "),
+            boundary.series + 1,
+          )),
+          outcome: null,
+          ended_by_check: false,
+        },
+      };
+    }),
+  ];
+  return {
+    enumeration_identity: `safe-reselect-${boundary.series}-${generation}`,
+    root_white_to_move: boundary.series % 2 === 1,
+    requested_width: SAFE_RESELECT_WIDTH,
+    retained_count: candidates.length,
+    width_complete: true,
+    preferred_series: [],
     candidates,
   };
 }
@@ -429,8 +521,10 @@ class MockWorld {
   constructor({
     foundFirst = false,
     foundAll = false,
+    foundAllChildDepth = null,
     promotionMateDeferral = false,
     terminalMateStatus = "found",
+    terminalMateWork = 11,
     terminalFirst = false,
     safetyUnknown = false,
     crashGeneration = null,
@@ -438,6 +532,7 @@ class MockWorld {
     policyDrift = null,
     horizonMateFirst = false,
     horizonMateTwice = false,
+    horizonMateChildDepth = 4,
     internalBoundaryMateFirst = false,
     internalBoundaryMateSeries = null,
     internalBoundarySafetyUnknown = false,
@@ -448,13 +543,32 @@ class MockWorld {
     singleCandidate = false,
     favorableHorizonFirst = false,
     unprovedMateFirst = false,
+    unprovedMateCandidateIndex = 0,
+    unprovedMateChildDepth = null,
+    preferredWinnerIndex = null,
     proactiveTerminalMateStatus = "exhausted",
     proactiveTerminalMateWork = 0,
+    wideSafetyStatuses = null,
+    wideGenerationWork = 2,
+    wideIdentityTamper = false,
+    wideSafetyDelayMs = 0,
+    wideSafetyClockAdvance = null,
+    wideTerminalMateIndex = null,
+    wideDestroyFails = false,
+    wideTerminateFails = false,
+    ordinaryTerminateFails = false,
+    wideCrashAfterSafety = false,
+    wideDestroyDelayMs = 0,
+    wideDestroyStarted = null,
   } = {}) {
     this.foundFirst = foundFirst;
     this.foundAll = foundAll;
+    this.foundAllChildDepth = Number.isSafeInteger(foundAllChildDepth)
+      ? foundAllChildDepth
+      : null;
     this.promotionMateDeferral = promotionMateDeferral;
     this.terminalMateStatus = terminalMateStatus;
+    this.terminalMateWork = terminalMateWork;
     this.terminalFirst = terminalFirst;
     this.safetyUnknown = safetyUnknown;
     this.crashGeneration = crashGeneration;
@@ -462,6 +576,7 @@ class MockWorld {
     this.policyDrift = policyDrift;
     this.horizonMateFirst = horizonMateFirst;
     this.horizonMateTwice = horizonMateTwice;
+    this.horizonMateChildDepth = horizonMateChildDepth;
     this.internalBoundaryMateSeries = Number.isSafeInteger(internalBoundaryMateSeries)
       ? internalBoundaryMateSeries
       : internalBoundaryMateFirst ? 4 : null;
@@ -473,8 +588,38 @@ class MockWorld {
     this.singleCandidate = singleCandidate;
     this.favorableHorizonFirst = favorableHorizonFirst;
     this.unprovedMateFirst = unprovedMateFirst;
+    this.unprovedMateCandidateIndex = Number.isSafeInteger(unprovedMateCandidateIndex)
+      ? unprovedMateCandidateIndex
+      : 0;
+    this.unprovedMateChildDepth = Number.isSafeInteger(unprovedMateChildDepth)
+      ? unprovedMateChildDepth
+      : null;
+    this.preferredWinnerIndex = Number.isSafeInteger(preferredWinnerIndex)
+      ? preferredWinnerIndex
+      : null;
     this.proactiveTerminalMateStatus = proactiveTerminalMateStatus;
     this.proactiveTerminalMateWork = proactiveTerminalMateWork;
+    this.wideSafetyStatuses = Array.isArray(wideSafetyStatuses)
+      ? [...wideSafetyStatuses]
+      : null;
+    this.wideGenerationWork = wideGenerationWork;
+    this.wideIdentityTamper = wideIdentityTamper;
+    this.wideSafetyDelayMs = wideSafetyDelayMs;
+    this.wideSafetyClockAdvance = typeof wideSafetyClockAdvance === "function"
+      ? wideSafetyClockAdvance
+      : null;
+    this.wideTerminalMateIndex = Number.isSafeInteger(wideTerminalMateIndex)
+      ? wideTerminalMateIndex
+      : null;
+    this.wideDestroyFails = wideDestroyFails;
+    this.wideTerminateFails = wideTerminateFails;
+    this.ordinaryTerminateFails = ordinaryTerminateFails;
+    this.wideCrashAfterSafety = wideCrashAfterSafety;
+    this.wideDestroyDelayMs = wideDestroyDelayMs;
+    this.wideDestroyStarted = typeof wideDestroyStarted === "function"
+      ? wideDestroyStarted
+      : null;
+    this.wideCrashScheduled = false;
     this.workers = [];
     this.live = 0;
     this.peakLive = 0;
@@ -492,6 +637,10 @@ class MockWorld {
     this.deadlineEpochs = [];
     this.pvTransitions = new Map();
     this.deepestBoundaryQuietSeries = 0;
+    this.safeReselectCreates = [];
+    this.safeReselectSafetyReceipts = [];
+    this.safeReselectSafetyCalls = 0;
+    this.latestSearchChildDepth = null;
   }
 
   factory = (_url, options) => new MockWorker(this, options);
@@ -501,35 +650,51 @@ class MockWorld {
       this.probes += 1;
       return { ...IDENTITY };
     }
-    if (type === "root-session-create") {
-      strictKeys(payload, CREATE_KEYS);
-      assert.equal(payload.schema, "spc-root-session-create-v1");
+    if (type === "root-session-create" || type === "root-safe-reselector-session-create") {
+      const safeReselect = type === "root-safe-reselector-session-create";
+      const createPayload = safeReselect ? payload.request : payload;
+      if (safeReselect) {
+        strictKeys(payload, ["purpose", "request", "schema"]);
+        assert.equal(payload.schema, "spc-root-safe-reselector-session-create-v1");
+        assert.equal(payload.purpose, "safe-root-reselector");
+        assert.equal(createPayload.config, undefined);
+      }
+      const effectivePayload = safeReselect
+        ? { ...createPayload, schema: "spc-root-session-create-v1", config: WIDE_CONFIG }
+        : createPayload;
+      strictKeys(effectivePayload, CREATE_KEYS);
+      assert.equal(effectivePayload.schema, "spc-root-session-create-v1");
       assert.deepEqual(Object.fromEntries(Object.keys(ROOT_IDENTITY).map(
-        (key) => [key, payload[key]],
+        (key) => [key, effectivePayload[key]],
       )), ROOT_IDENTITY);
-      assert.deepEqual(payload.config, CONFIG);
+      assert.deepEqual(effectivePayload.config, safeReselect ? WIDE_CONFIG : CONFIG);
       worker.sessionCounter += 1;
       worker.sessionId = worker.sessionCounter;
+      worker.safeReselect = safeReselect;
       worker.nativeWork = 0;
       worker.lastAccountedWork = 0;
-      worker.boundary = { ...payload.boundary, ep_targets: [...payload.boundary.ep_targets] };
+      worker.boundary = {
+        ...effectivePayload.boundary,
+        ep_targets: [...effectivePayload.boundary.ep_targets],
+      };
       const canonicalProtection = canonicalTacticalProtection(worker.boundary);
       worker.manifest = null;
       worker.createCount += 1;
       this.createBoundaries.push({ worker: worker.name, boundary: worker.boundary });
       this.canonicalProtections.push(canonicalProtection);
+      if (safeReselect) this.safeReselectCreates.push({ worker: worker.name, payload });
       return {
         schema: "spc-root-session-create-result-v1",
         abi_version: 2,
         status: "ready",
         session_id: worker.sessionId,
-        request_id: payload.request_id,
-        iteration_id: payload.iteration_id,
-        generation: payload.generation,
+        request_id: effectivePayload.request_id,
+        iteration_id: effectivePayload.iteration_id,
+        generation: effectivePayload.generation,
         ...ROOT_IDENTITY,
-        boundary: exactState(payload.boundary),
-        config: CONFIG,
-        configured_max_depth: CONFIG.max_depth,
+        boundary: exactState(effectivePayload.boundary),
+        config: safeReselect ? WIDE_CONFIG : CONFIG,
+        configured_max_depth: effectivePayload.config.max_depth,
         native_work_after: 0,
         canonical_root_tactical_policy: "canonical-boundary-policy-v1",
         canonical_root_tactical_protection: this.policyDrift === "create"
@@ -551,6 +716,15 @@ class MockWorld {
     }
     if (type === "root-session-destroy") {
       assert.equal(payload.session_id, worker.sessionId);
+      if (worker.safeReselect) this.wideDestroyStarted?.();
+      if (worker.safeReselect && this.wideDestroyDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, this.wideDestroyDelayMs));
+      }
+      if (worker.safeReselect && this.wideDestroyFails) {
+        const error = new Error("synthetic isolated destroy miss");
+        error.code = "synthetic-isolated-destroy-miss";
+        throw error;
+      }
       const sessionId = worker.sessionId;
       worker.sessionId = null;
       worker.destroyCount += 1;
@@ -607,18 +781,37 @@ class MockWorld {
           memory_peak_bytes: MEMORY.initial_bytes,
         };
       }
-      const manifest = manifestFor(
-        worker.boundary,
-        payload.generation,
-        payload.preferred_series,
-        { terminalFirst: this.terminalFirst },
-      );
+      const manifest = worker.safeReselect
+        ? safeReselectManifestFor(worker.boundary, payload.generation)
+        : manifestFor(
+          worker.boundary,
+          payload.generation,
+          payload.preferred_series,
+          { terminalFirst: this.terminalFirst },
+        );
+      if (worker.safeReselect && this.wideTerminalMateIndex !== null) {
+        const terminal = manifest.candidates[this.wideTerminalMateIndex];
+        assert(terminal, "the synthetic widened terminal mate must be retained");
+        const rootWhite = worker.boundary.series % 2 === 1;
+        terminal.terminal_score = rootWhite
+          ? CONFIG.mate_score - 1
+          : -CONFIG.mate_score + 1;
+        terminal.terminal_proof_bounds = rootWhite ? [1, 1] : [-1, -1];
+        terminal.root_series.outcome = "checkmate";
+        terminal.root_series.ended_by_check = true;
+      }
       if (this.singleCandidate) {
         manifest.candidates = manifest.candidates.slice(0, 1);
         manifest.retained_count = 1;
       }
       worker.manifest = manifest;
-      const work = setupWork(worker, payload, this.zeroNativeWork ? 0 : 2);
+      const work = setupWork(
+        worker,
+        payload,
+        worker.safeReselect
+          ? Math.min(this.wideGenerationWork, payload.call_work_credit)
+          : this.zeroNativeWork ? 0 : 2,
+      );
       return {
         schema: "spc-root-session-enumeration-result-v1",
         abi_version: 2,
@@ -684,6 +877,7 @@ class MockWorld {
       );
       this.deadlineEpochs.push(payload.deadline_epoch_ms);
       this.searchDispatches.push({ worker: worker.name, task: { ...payload } });
+      if (!horizonResearch) this.latestSearchChildDepth = payload.child_depth;
       if (
         this.crashGeneration === payload.child_depth + 1
         && !this.crashed
@@ -703,9 +897,20 @@ class MockWorld {
         ? white ? horizonScore : -horizonScore
         : white ? 100 - index * 10 : -100 + index * 10;
       if (
+        !horizonResearch
+        && this.preferredWinnerIndex !== null
+        && index === this.preferredWinnerIndex
+      ) {
+        score = white ? 1_000 : -1_000;
+      }
+      if (
         this.unprovedMateFirst
-        && payload.candidate_identity === "c0"
+        && payload.candidate_identity === `c${this.unprovedMateCandidateIndex}`
         && !horizonResearch
+        && (
+          this.unprovedMateChildDepth === null
+          || payload.child_depth === this.unprovedMateChildDepth
+        )
       ) {
         score = white ? CONFIG.mate_score - 3 : -CONFIG.mate_score + 3;
       }
@@ -716,7 +921,7 @@ class MockWorld {
       let childPv = [];
       const pvLength = payload.candidate_identity === "c0"
         ? (this.horizonMateFirst || this.internalBoundaryMateSeries !== null)
-          && payload.child_depth === 4
+          && payload.child_depth === this.horizonMateChildDepth
           && (!horizonResearch || this.horizonMateTwice)
           ? 4
           : this.favorableHorizonFirst && payload.child_depth === 3 ? 3 : 0
@@ -814,6 +1019,68 @@ class MockWorld {
     }
     if (type === "root-safety") {
       this.deadlineEpochs.push(payload.deadline_epoch_ms);
+      if (worker.safeReselect) {
+        if (this.wideSafetyDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, this.wideSafetyDelayMs));
+        }
+        const status = this.wideSafetyStatuses?.[this.safeReselectSafetyCalls] ?? "found";
+        this.safeReselectSafetyCalls += 1;
+        const workUsed = Math.min(this.rootSafetyWork, payload.call_work_credit);
+        const common = {
+          ...payload,
+          ...(this.wideIdentityTamper ? { source_fingerprint: "e".repeat(16) } : {}),
+          status,
+          work_used: workUsed,
+          memory_bytes: MEMORY.initial_bytes,
+          memory_peak_bytes: MEMORY.initial_bytes,
+        };
+        this.wideSafetyClockAdvance?.();
+        if (status !== "found") {
+          if (this.wideCrashAfterSafety && !this.wideCrashScheduled) {
+            this.wideCrashScheduled = true;
+            setTimeout(() => worker.emit("error", {
+              error: new Error("synthetic isolated post-evidence crash"),
+            }), 0);
+          }
+          this.safeReselectSafetyReceipts.push(common);
+          return common;
+        }
+        const child = payload.authoritative_child_boundary;
+        const mateMoves = child.series % 2 === 0
+          ? ["a7a6", "h7h6"]
+          : ["a2a3", "h2h3", "g2g3"];
+        const mateRequest = prefixApi.normalizePrefixRequest({
+          ...child,
+          prefix: mateMoves,
+        }, `${payload.iteration_id}:${payload.safety_revision}:mate-replay`, PREFIX_CONTRACT);
+        const mateChild = exactState(boundaryPayload(
+          flipFen(child.fen),
+          child.series + 1,
+        ));
+        this.pvTransitions.set(
+          JSON.stringify([child.fen, child.series, mateMoves]),
+          { child: mateChild, endedByCheck: true, outcome: "checkmate" },
+        );
+        const checked = prefixResult(mateRequest, IDENTITY, {
+          child: mateChild,
+          outcome: "checkmate",
+        });
+        const childIsWhite = child.side_to_move === "white";
+        const result = {
+          ...common,
+          override_score: childIsWhite ? CONFIG.mate_score - 2 : -CONFIG.mate_score + 2,
+          proof_bounds: childIsWhite ? [1, 1] : [-1, -1],
+          reply_mate: {
+            moves: mateMoves,
+            machine_notation: mateMoves.join("/"),
+            outcome: "checkmate",
+            ended_by_check: true,
+            checked_prefix: checked,
+          },
+        };
+        this.safeReselectSafetyReceipts.push(result);
+        return result;
+      }
       const safetyWorkUsed = Math.min(this.rootSafetyWork, payload.call_work_credit);
       if (
         this.safetyUnknown
@@ -836,7 +1103,13 @@ class MockWorld {
         this.safetyReceipts.push(result);
         return result;
       }
-      const found = this.foundAll
+      const found = (
+        this.foundAll
+        && (
+          this.foundAllChildDepth === null
+          || this.latestSearchChildDepth === this.foundAllChildDepth
+        )
+      )
         || (this.foundFirst && payload.candidate_identity === "c0")
         || (
           this.horizonMateFirst
@@ -934,7 +1207,7 @@ class MockWorld {
         const result = {
           ...payload,
           status: this.terminalMateStatus,
-          work_used: Math.min(11, payload.call_work_credit),
+          work_used: Math.min(this.terminalMateWork, payload.call_work_credit),
           memory_bytes: MEMORY.initial_bytes,
           memory_peak_bytes: MEMORY.initial_bytes,
         };
@@ -1005,6 +1278,7 @@ class MockWorker {
     this.createCount = 0;
     this.destroyCount = 0;
     this.manifest = null;
+    this.safeReselect = false;
     world.workers.push(this);
     world.live += 1;
     world.peakLive = Math.max(world.peakLive, world.live);
@@ -1042,6 +1316,20 @@ class MockWorker {
 
   terminate() {
     if (this.terminated) return;
+    if (
+      !this.safeReselect
+      && this.world.ordinaryTerminateFails
+      && this.name.startsWith("scottish-progressive-root-root-")
+    ) {
+      const error = new Error("synthetic ordinary Worker termination failure");
+      error.code = "synthetic-ordinary-termination-failure";
+      throw error;
+    }
+    if (this.safeReselect && this.world.wideTerminateFails) {
+      const error = new Error("synthetic isolated Worker termination failure");
+      error.code = "synthetic-isolated-termination-failure";
+      throw error;
+    }
     this.terminated = true;
     this.world.live -= 1;
   }
@@ -2610,7 +2898,10 @@ async function testAllMatingFrontierRescuesTerminalRootMate() {
       navigatorValue: DESKTOP_NAVIGATOR,
     });
     await preflight(client);
-    const result = await client.analyzeRoot(payload(boundary, 1), {
+    const request = payload(boundary, 1);
+    request.max_generation_positions = 60_000_000;
+    request.time_limit = 60;
+    const result = await client.analyzeRoot(request, {
       deadlineMs: performance.now() + 20_000,
     });
     assert.equal(result.publishable, true);
@@ -2638,14 +2929,810 @@ async function testUnprovenTerminalMateRescueFailsClosed() {
       navigatorValue: DESKTOP_NAVIGATOR,
     });
     await preflight(client);
+    const request = payload(boundaryPayload(WHITE_FEN, 1), 1);
+    request.max_generation_positions = 60_000_000;
+    request.time_limit = 60;
     await assert.rejects(
-      client.analyzeRoot(payload(boundaryPayload(WHITE_FEN, 1), 1), {
+      client.analyzeRoot(request, {
         deadlineMs: performance.now() + 20_000,
       }),
       (error) => error?.code === "root-safety-widening-required",
     );
     assert.equal(world.terminalMateReceipts.length, 1);
     assert.equal(client.rootRunner.lastSafe, null);
+    client.close();
+  }
+}
+
+async function testSafeRootReselectSkipsFoundAndUnknownThenPublishesExhausted() {
+  const world = new MockWorld({
+    foundAll: true,
+    terminalMateStatus: "exhausted",
+    wideSafetyStatuses: ["unknown", "exhausted"],
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  const request = {
+    ...payload(boundaryPayload(WHITE_FEN, 1), 1),
+    time_limit: 60,
+    max_generation_positions: 60_000_000,
+  };
+  const result = await client.analyzeRoot(request, {
+    deadlineMs: performance.now() + 20_000,
+  });
+  const receipt = result.runtime_receipt.safe_root_reselector;
+  assert.equal(result.publishable, true);
+  assert.equal(result.completed_depth, 0);
+  assert.equal(result.safety_certification_scope, SAFE_RESELECT_REPLY_MATE_SCOPE);
+  assert.equal(result.root_scores_complete, false);
+  assert.equal(result.root_bound_coverage_complete, false);
+  assert.equal("score" in result, false);
+  assert.equal("proof" in result, false);
+  assert.equal("proof_bounds" in result, false);
+  assert.deepEqual(result.principal_variation, []);
+  assert.equal(receipt.schema, "spc-root-safe-reselector-receipt-v1");
+  assert.equal(receipt.requested_width, SAFE_RESELECT_WIDTH);
+  assert.equal(
+    receipt.order_policy,
+    "native-tactical-protected-root-production-order-empty-preference-v1",
+  );
+  assert.equal(receipt.root_order_tactical_protection, true);
+  assert.deepEqual(receipt.preferred_series, []);
+  assert.equal(receipt.safety_certification_scope, SAFE_RESELECT_REPLY_MATE_SCOPE);
+  assert.equal(receipt.selected_safety_basis, "exact-immediate-reply-mate-exhaustion");
+  assert.equal(receipt.immediate_reply_mate_horizon_series, 1);
+  assert.equal(receipt.early_frontier_count, 32);
+  assert.equal(
+    receipt.early_frontier_child_max_work,
+    SAFE_RESELECT_EARLY_CHILD_WORK,
+  );
+  assert.equal(
+    receipt.widened_frontier_child_max_work,
+    SAFE_RESELECT_WIDENED_CHILD_WORK,
+  );
+  assert.equal(receipt.lane_max_work, SAFE_RESELECT_TOTAL_WORK);
+  assert.deepEqual(receipt.scans.slice(-2).map((scan) => scan.status), [
+    "unknown", "exhausted",
+  ]);
+  assert.equal(receipt.selected.status, "exhausted");
+  assert.equal(receipt.selected.order_index, 13);
+  assert.equal(receipt.selected.frontier_stage, "retained-w32");
+  assert.equal(receipt.selected.per_child_max_work, SAFE_RESELECT_EARLY_CHILD_WORK);
+  assert.deepEqual(
+    receipt.selected.authoritative_child_boundary,
+    result.checked_prefix.next_state,
+  );
+  assert(Object.isFrozen(receipt));
+  assert(Object.isFrozen(receipt.scans));
+  assert(Object.isFrozen(receipt.selected));
+  assert.equal(world.safeReselectCreates.length, 1);
+  assert.equal(world.safeReselectCreates[0].payload.request.config, undefined);
+  assert.equal(receipt.ordinary_pool_recreated, false);
+  assert.equal(receipt.ordinary_pool_restore_policy, "lazy-next-request");
+  assert.equal(receipt.restore_error_code, null);
+  assert.equal(world.live, 0, "the isolated lane must release every Worker before publication");
+  world.foundAll = false;
+  world.pvTransitions.clear();
+  client.rootRunner.mateProofCache.clear();
+  const next = await client.analyzeRoot(payload(boundaryPayload(WHITE_FEN, 1), 1), {
+    deadlineMs: performance.now() + 20_000,
+  });
+  assert.equal(next.completed_depth, 1);
+  assert.equal(world.live, GEOMETRY.desktop_workers, "the next request must rebuild lazily");
+  client.close();
+}
+
+async function testSafeRootReselectReachesRank62WithStagedCredits() {
+  const wideStatuses = [
+    ...Array.from({ length: 49 }, () => "found"),
+    "exhausted",
+  ];
+  const world = new MockWorld({
+    foundAll: true,
+    terminalMateStatus: "exhausted",
+    rootSafetyWork: 250_000,
+    wideSafetyStatuses: wideStatuses,
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  const result = await client.analyzeRoot({
+    ...payload(boundaryPayload(WHITE_FEN, 1), 1),
+    time_limit: 60,
+    max_generation_positions: 60_000_000,
+  }, { deadlineMs: performance.now() + 20_000 });
+  const receipt = result.runtime_receipt.safe_root_reselector;
+  assert.equal(receipt.selected.order_index, 61, "the 1-based rank-62 witness must be reached");
+  assert.equal(receipt.selected.candidate_identity, "w61");
+  assert.equal(receipt.selected.order_key, "a1g3");
+  assert.equal(receipt.selected.root_series.machine_notation, "a1g3");
+  assert.equal(receipt.root_order_tactical_protection, true);
+  assert.equal(WIDE_CONFIG.root_tactical_protection, false);
+  assert.equal(receipt.selected.status, "exhausted");
+  assert.equal(receipt.selected.frontier_stage, "widened-w512");
+  assert.equal(receipt.scans.length, 62);
+  assert.equal(world.safeReselectSafetyReceipts.length, 50);
+  assert(world.safeReselectSafetyReceipts.every((reply) => (
+    reply.call_work_credit === (
+      reply.candidate.order_index < SAFE_RESELECT_EARLY_FRONTIER_COUNT
+        ? SAFE_RESELECT_EARLY_CHILD_WORK
+        : SAFE_RESELECT_WIDENED_CHILD_WORK
+    )
+  )));
+  assert.equal(receipt.early_frontier_work_used, 20 * 250_000);
+  assert.equal(receipt.widened_frontier_work_used, 30 * 250_000);
+  assert.equal(
+    receipt.lane_work_used,
+    receipt.generation_work
+      + receipt.early_frontier_work_used
+      + receipt.widened_frontier_work_used,
+  );
+  assert(receipt.lane_work_used < SAFE_RESELECT_TOTAL_WORK);
+  assert(receipt.total_committed_work <= 60_000_000);
+  client.close();
+}
+
+async function testSafeRootReselectNeverResurrectsRejectedRoots() {
+  for (const scenario of [
+    {
+      label: "checked-PV policy veto",
+        world: {
+          foundAll: true,
+          horizonMateFirst: true,
+          horizonMateTwice: true,
+          horizonMateChildDepth: 0,
+        },
+        depth: 1,
+      expectedPolicyRejected: true,
+      expectedQuarantines: 0,
+    },
+    {
+      label: "mate-claim quarantine",
+      world: {
+        foundAll: true,
+        unprovedMateFirst: true,
+      },
+      depth: 1,
+      expectedPolicyRejected: false,
+      expectedQuarantines: 1,
+    },
+  ]) {
+    const world = new MockWorld({
+      ...scenario.world,
+      terminalMateStatus: "exhausted",
+      wideSafetyStatuses: ["exhausted"],
+    });
+    const client = browserClientApi.createClient({
+      workerUrl: "mock-worker.js",
+      workerFactory: world.factory,
+      navigatorValue: DESKTOP_NAVIGATOR,
+    });
+    await preflight(client);
+    const result = await client.analyzeRoot({
+      ...payload(boundaryPayload(WHITE_FEN, 1), scenario.depth),
+      time_limit: 60,
+      max_generation_positions: 60_000_000,
+    }, { deadlineMs: performance.now() + 20_000 });
+    const receipt = result.runtime_receipt.safe_root_reselector;
+    assert(receipt, `${scenario.label}: ${JSON.stringify({
+      completed_depth: result.completed_depth,
+      search_mode: result.runtime_receipt.search_mode,
+      interruption_code: result.runtime_receipt.interruption_code,
+      policy_vetoes: result.pv_horizon_candidate_vetoes,
+      mate_quarantines: result.root_mate_claim_quarantines,
+    })}`);
+    assert.equal(receipt.excluded_root_count, 1, scenario.label);
+    assert.equal(receipt.exclusion_binding_policy,
+      "unique-exact-authoritative-child-boundary-v1", scenario.label);
+    assert.equal(receipt.exclusions_bound, true, scenario.label);
+    const [exclusion] = receipt.excluded_roots;
+    assert.equal(exclusion.source_candidate_identity, "c0", scenario.label);
+    assert.equal(exclusion.source_order_index, 0, scenario.label);
+    assert.equal(exclusion.source_order_key, "e2e4", scenario.label);
+    assert.equal(exclusion.source_root_machine_notation, "e2e4", scenario.label);
+    assert.equal(exclusion.widened_candidate_identity, "c0", scenario.label);
+    assert.equal(exclusion.widened_order_index, 0, scenario.label);
+    assert.equal(exclusion.widened_order_key, "e2e4", scenario.label);
+    assert.equal(exclusion.widened_root_machine_notation, "e2e4", scenario.label);
+    assert.deepEqual(
+      exclusion.source_child_boundary,
+      exclusion.widened_child_boundary,
+      scenario.label,
+    );
+    assert.equal(
+      exclusion.checked_pv_policy_rejected,
+      scenario.expectedPolicyRejected,
+      scenario.label,
+    );
+    assert.equal(
+      exclusion.mate_claim_quarantine_count,
+      scenario.expectedQuarantines,
+      scenario.label,
+    );
+    assert.equal(receipt.scans[0].status, "policy-excluded", scenario.label);
+    assert.deepEqual(receipt.scans[0].exclusion, receipt.excluded_roots[0]);
+    assert.equal(receipt.scans[0].call_work_credit, 0);
+    assert.equal(receipt.scans[0].work_used, 0);
+    assert.equal(receipt.selected.order_index, 12, scenario.label);
+    assert.notDeepEqual(result.best_full_series, ["e2e4"], scenario.label);
+    assert.equal(world.safeReselectSafetyReceipts[0].candidate.order_index, 12);
+    assert.equal(world.safeReselectSafetyReceipts.some(
+      (reply) => reply.candidate.root_series.machine_notation === "e2e4",
+    ), false, scenario.label);
+    client.close();
+  }
+}
+
+async function testSafeRootReselectRemapsPreferredOrderExclusionByExactChild() {
+  const world = new MockWorld({
+    foundAll: true,
+    foundAllChildDepth: 1,
+    preferredWinnerIndex: 5,
+    unprovedMateFirst: true,
+    unprovedMateCandidateIndex: 5,
+    unprovedMateChildDepth: 1,
+    terminalMateStatus: "exhausted",
+    wideSafetyStatuses: [
+      "found", "found", "found", "found", "found", "exhausted",
+    ],
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  const result = await client.analyzeRoot({
+    ...payload(boundaryPayload(WHITE_FEN, 1), 2),
+    time_limit: 60,
+    max_generation_positions: 60_000_000,
+  }, { deadlineMs: performance.now() + 20_000 });
+  const receipt = result.runtime_receipt.safe_root_reselector;
+  assert(receipt, JSON.stringify({
+    completed_depth: result.completed_depth,
+    best_full_series: result.best_full_series,
+    search_mode: result.runtime_receipt.search_mode,
+    safety_status: result.stats.safety_status,
+    quarantines: result.root_mate_claim_quarantines,
+    c5_dispatches: world.searchDispatches.filter(
+      (entry) => entry.task.candidate_identity === "c5",
+    ).map((entry) => ({
+      generation: entry.task.generation,
+      child_depth: entry.task.child_depth,
+      purpose: entry.task.purpose,
+    })),
+  }));
+  assert.equal(receipt.excluded_root_count, 1);
+  assert.equal(receipt.excluded_roots[0].source_candidate_identity, "c5");
+  assert.equal(receipt.excluded_roots[0].source_order_index, 0);
+  assert.equal(receipt.excluded_roots[0].widened_candidate_identity, "c5");
+  assert.equal(receipt.excluded_roots[0].widened_order_index, 5);
+  assert.deepEqual(
+    receipt.excluded_roots[0].source_child_boundary,
+    receipt.scans[5].authoritative_child_boundary,
+  );
+  assert.equal(receipt.scans[5].status, "policy-excluded");
+  assert.equal(receipt.scans[5].call_work_credit, 0);
+  assert.equal(receipt.scans[5].work_used, 0);
+  assert.equal(receipt.selected.order_index, 17);
+  assert.equal(receipt.selected.status, "exhausted");
+  assert.equal(world.safeReselectSafetyReceipts.some(
+    (reply) => reply.candidate.candidate_identity === "c5",
+  ), false);
+  client.close();
+}
+
+async function testTerminalProbeCannotStarveSafeRootReselectLane() {
+  const world = new MockWorld({
+    foundAll: true,
+    terminalMateStatus: "unknown",
+    terminalMateWork: Number.MAX_SAFE_INTEGER,
+    wideSafetyStatuses: ["exhausted"],
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  const result = await client.analyzeRoot({
+    ...payload(boundaryPayload(WHITE_FEN, 1), 1),
+    time_limit: 60,
+    max_generation_positions: 60_000_000,
+  }, { deadlineMs: performance.now() + 20_000 });
+  const receipt = result.runtime_receipt.safe_root_reselector;
+  assert.equal(world.terminalMateReceipts.length, 1);
+  assert.equal(
+    world.terminalMateReceipts[0].work_used,
+    world.terminalMateReceipts[0].call_work_credit,
+  );
+  assert.equal(receipt.lane_max_work, SAFE_RESELECT_TOTAL_WORK);
+  assert.equal(receipt.selected.status, "exhausted");
+  assert.equal(world.safeReselectCreates.length, 1);
+  assert(receipt.total_committed_work <= 60_000_000);
+  client.close();
+}
+
+async function testSafeRootReselectAllUnsafeOrUnknownRetainsOriginalFailure() {
+  const world = new MockWorld({
+    foundAll: true,
+    terminalMateStatus: "exhausted",
+    wideSafetyStatuses: ["found", "unknown", "work_limit", "unsupported"],
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  let caught = null;
+  try {
+    await client.analyzeRoot({
+      ...payload(boundaryPayload(WHITE_FEN, 1), 1),
+      time_limit: 60,
+      max_generation_positions: 60_000_000,
+    }, { deadlineMs: performance.now() + 20_000 });
+  } catch (error) {
+    caught = error;
+  }
+  assert(caught);
+  assert.equal(caught.code, "root-safety-widening-required");
+  assert.equal(caught.safe_root_reselector_receipt.status, "no-safe-candidate");
+  assert(caught.safe_root_reselector_receipt.scans.some((scan) => scan.status === "unknown"));
+  assert(caught.safe_root_reselector_receipt.scans.some(
+    (scan) => scan.status === "work_limit",
+  ));
+  assert(caught.safe_root_reselector_receipt.scans.some(
+    (scan) => scan.status === "unsupported",
+  ));
+  assert.equal(caught.safe_root_reselector_receipt.ordinary_pool_recreated, false);
+  assert.equal(
+    caught.safe_root_reselector_receipt.ordinary_pool_restore_policy,
+    "lazy-next-request",
+  );
+  assert.equal(world.live, 0);
+  client.close();
+}
+
+async function testSafeRootReselectHonorsWorkAndDeadlineCaps() {
+  {
+    const world = new MockWorld({
+      foundAll: true,
+      terminalMateStatus: "exhausted",
+      wideGenerationWork: SAFE_RESELECT_TOTAL_WORK,
+    });
+    const client = browserClientApi.createClient({
+      workerUrl: "mock-worker.js",
+      workerFactory: world.factory,
+      navigatorValue: DESKTOP_NAVIGATOR,
+    });
+    await preflight(client);
+    let caught = null;
+    try {
+      await client.analyzeRoot({
+        ...payload(boundaryPayload(WHITE_FEN, 1), 1),
+        time_limit: 60,
+        max_generation_positions: 60_000_000,
+      }, { deadlineMs: performance.now() + 20_000 });
+    } catch (error) {
+      caught = error;
+    }
+    assert.equal(caught?.code, "root-safety-widening-required");
+    assert.equal(caught.safe_root_reselector_receipt.status, "lane-work-limit");
+    assert.equal(caught.safe_root_reselector_receipt.lane_work_used, SAFE_RESELECT_TOTAL_WORK);
+    assert(caught.safe_root_reselector_receipt.total_committed_work <= 60_000_000);
+    assert.equal(world.safeReselectSafetyReceipts.length, 0);
+    client.close();
+  }
+  {
+    const world = new MockWorld({
+      foundAll: true,
+      terminalMateStatus: "exhausted",
+      wideSafetyStatuses: ["exhausted"],
+      wideSafetyDelayMs: 500,
+      searchDelayMs: 0,
+    });
+    const client = browserClientApi.createClient({
+      workerUrl: "mock-worker.js",
+      workerFactory: world.factory,
+      navigatorValue: DESKTOP_NAVIGATOR,
+    });
+    await preflight(client);
+    let caught = null;
+    try {
+      await client.analyzeRoot({
+        ...payload(boundaryPayload(WHITE_FEN, 1), 1),
+        max_generation_positions: 60_000_000,
+      }, { deadlineMs: performance.now() + 250 });
+    } catch (error) {
+      caught = error;
+    }
+    assert.equal(caught?.code, "root-safety-widening-required");
+    assert.equal(caught.safe_root_reselector_receipt.status, "deadline");
+    client.close();
+  }
+}
+
+async function testSafeRootReselectRechecksDeadlineBeforePublication() {
+  const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, "performance");
+  let fakeNow = 0;
+  Object.defineProperty(globalThis, "performance", {
+    configurable: true,
+    value: { timeOrigin: 10_000, now: () => fakeNow },
+  });
+  const world = new MockWorld({
+    foundAll: true,
+    terminalMateStatus: "exhausted",
+    wideSafetyStatuses: ["exhausted"],
+    wideSafetyClockAdvance: () => { fakeNow = 101; },
+    searchDelayMs: 0,
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  try {
+    await preflight(client);
+    let caught = null;
+    try {
+      await client.analyzeRoot({
+        ...payload(boundaryPayload(WHITE_FEN, 1), 1),
+        time_limit: 60,
+        max_generation_positions: 60_000_000,
+      }, { deadlineMs: 100 });
+    } catch (error) {
+      caught = error;
+    }
+    assert.equal(caught?.code, "root-safety-widening-required");
+    assert.equal(caught.safe_root_reselector_receipt.status, "deadline");
+    assert.equal(caught.safe_root_reselector_receipt.selected, null);
+    assert.equal(world.safeReselectSafetyReceipts.length, 1);
+  } finally {
+    client.close();
+    if (originalDescriptor) Object.defineProperty(globalThis, "performance", originalDescriptor);
+    else delete globalThis.performance;
+  }
+}
+
+async function testSafeRootReselectAcceptsZeroWorkWitnessAtLaneCap() {
+  {
+    const world = new MockWorld({
+      foundAll: true,
+      terminalMateStatus: "exhausted",
+      wideGenerationWork: SAFE_RESELECT_TOTAL_WORK,
+      wideTerminalMateIndex: 0,
+    });
+    const client = browserClientApi.createClient({
+      workerUrl: "mock-worker.js",
+      workerFactory: world.factory,
+      navigatorValue: DESKTOP_NAVIGATOR,
+    });
+    await preflight(client);
+    const result = await client.analyzeRoot({
+      ...payload(boundaryPayload(WHITE_FEN, 1), 1),
+      time_limit: 60,
+      max_generation_positions: 60_000_000,
+    }, { deadlineMs: performance.now() + 20_000 });
+    const receipt = result.runtime_receipt.safe_root_reselector;
+    assert.equal(receipt.generation_work, SAFE_RESELECT_TOTAL_WORK);
+    assert.equal(receipt.lane_work_used, SAFE_RESELECT_TOTAL_WORK);
+    assert.equal(receipt.selected.status, "terminal");
+    assert.equal(receipt.selected.order_index, 0);
+    assert.equal(receipt.selected.call_work_credit, 0);
+    assert.equal(receipt.selected.work_used, 0);
+    assert.equal(world.safeReselectSafetyReceipts.length, 0);
+    client.close();
+  }
+  {
+    const world = new MockWorld({
+      foundAll: true,
+      terminalMateStatus: "exhausted",
+      wideSafetyStatuses: ["found", "exhausted"],
+    });
+    const client = browserClientApi.createClient({
+      workerUrl: "mock-worker.js",
+      workerFactory: world.factory,
+      navigatorValue: DESKTOP_NAVIGATOR,
+    });
+    await preflight(client);
+    const request = {
+      ...payload(boundaryPayload(WHITE_FEN, 1), 1),
+      time_limit: 60,
+      max_generation_positions: 60_000_000,
+    };
+    const warmed = await client.analyzeRoot(request, {
+      deadlineMs: performance.now() + 20_000,
+    });
+    assert.equal(warmed.runtime_receipt.safe_root_reselector.selected.order_index, 13);
+    const safetyCallsBefore = world.safeReselectSafetyCalls;
+    world.wideGenerationWork = SAFE_RESELECT_TOTAL_WORK;
+    const result = await client.analyzeRoot(request, {
+      deadlineMs: performance.now() + 20_000,
+    });
+    const receipt = result.runtime_receipt.safe_root_reselector;
+    assert.equal(receipt.generation_work, SAFE_RESELECT_TOTAL_WORK);
+    assert.equal(receipt.lane_work_used, SAFE_RESELECT_TOTAL_WORK);
+    assert.equal(receipt.selected.status, "exhausted");
+    assert.equal(receipt.selected.order_index, 13);
+    assert.equal(receipt.selected.cache_hit, true);
+    assert.equal(receipt.selected.call_work_credit, 0);
+    assert.equal(receipt.selected.work_used, 0);
+    assert.equal(world.safeReselectSafetyCalls, safetyCallsBefore);
+    client.close();
+  }
+}
+
+async function testSafeRootReselectWorkerTerminationCompletesCleanupAfterDestroyMiss() {
+  const world = new MockWorld({
+    foundAll: true,
+    terminalMateStatus: "exhausted",
+    wideSafetyStatuses: ["exhausted"],
+    wideDestroyFails: true,
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  const result = await client.analyzeRoot({
+    ...payload(boundaryPayload(WHITE_FEN, 1), 1),
+    time_limit: 60,
+    max_generation_positions: 60_000_000,
+  }, { deadlineMs: performance.now() + 20_000 });
+  const receipt = result.runtime_receipt.safe_root_reselector;
+  assert.equal(result.completed_depth, 0);
+  assert.equal(receipt.isolated_session_destroyed, false);
+  assert.equal(receipt.isolated_worker_terminated, true);
+  assert.equal(
+    receipt.isolated_cleanup_status,
+    "worker-terminated-after-session-destroy-miss",
+  );
+  assert.equal(receipt.isolated_destroy_error_code, "synthetic-isolated-destroy-miss");
+  assert.equal(world.live, 0);
+  client.close();
+}
+
+async function testSafeRootReselectTerminationFailureFailsClosedWithReceipt() {
+  const world = new MockWorld({
+    foundAll: true,
+    terminalMateStatus: "exhausted",
+    wideSafetyStatuses: ["exhausted"],
+    wideDestroyFails: true,
+    wideTerminateFails: true,
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  let caught = null;
+  try {
+    await client.analyzeRoot({
+      ...payload(boundaryPayload(WHITE_FEN, 1), 1),
+      time_limit: 60,
+      max_generation_positions: 60_000_000,
+    }, { deadlineMs: performance.now() + 20_000 });
+  } catch (error) {
+    caught = error;
+  }
+  assert.equal(caught?.code, "browser-root-safe-reselector-termination-failed");
+  const receipt = caught.safe_root_reselector_receipt;
+  assert.equal(receipt.isolated_session_destroyed, false);
+  assert.equal(receipt.isolated_worker_terminated, false);
+  assert.equal(receipt.isolated_cleanup_status, "worker-termination-failed");
+  assert.equal(
+    receipt.isolated_worker_termination_error_code,
+    "synthetic-isolated-termination-failure",
+  );
+  assert.equal(receipt.ordinary_pool_recreated, false);
+  client.close();
+}
+
+async function testSafeRootReselectOrdinaryTerminationFailurePreventsIsolation() {
+  const world = new MockWorld({
+    foundAll: true,
+    terminalMateStatus: "exhausted",
+    wideSafetyStatuses: ["exhausted"],
+    ordinaryTerminateFails: true,
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  let caught = null;
+  try {
+    await client.analyzeRoot({
+      ...payload(boundaryPayload(WHITE_FEN, 1), 1),
+      time_limit: 60,
+      max_generation_positions: 60_000_000,
+    }, { deadlineMs: performance.now() + 20_000 });
+  } catch (error) {
+    caught = error;
+  }
+  assert.equal(caught?.code, "browser-root-safe-reselector-isolation-failed");
+  assert.equal(caught.safe_root_reselector_receipt, undefined);
+  assert.equal(caught.ordinary_pool_teardown_receipt.schema,
+    "spc-root-pool-teardown-receipt-v1");
+  assert.equal(caught.ordinary_pool_teardown_receipt.attempted_workers,
+    GEOMETRY.desktop_workers);
+  assert.equal(caught.ordinary_pool_teardown_receipt.terminated_workers, 0);
+  assert.equal(caught.ordinary_pool_teardown_receipt.failures.length,
+    GEOMETRY.desktop_workers);
+  assert(caught.ordinary_pool_teardown_receipt.failures.every(
+    (failure) => failure.error_code === "synthetic-ordinary-termination-failure",
+  ));
+  assert.equal(world.safeReselectCreates.length, 0);
+  assert.equal(world.workers.some(
+    (worker) => worker.name === "scottish-progressive-root-safe-reselector",
+  ), false);
+  assert.equal(world.live, GEOMETRY.desktop_workers);
+  world.ordinaryTerminateFails = false;
+  client.close();
+  assert.equal(world.live, 0);
+}
+
+async function testSafeRootReselectPostEvidenceCrashFailsClosedWithReceipt() {
+  const world = new MockWorld({
+    foundAll: true,
+    terminalMateStatus: "exhausted",
+    wideSafetyStatuses: ["exhausted"],
+    wideCrashAfterSafety: true,
+    wideDestroyDelayMs: 50,
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  let caught = null;
+  try {
+    await client.analyzeRoot({
+      ...payload(boundaryPayload(WHITE_FEN, 1), 1),
+      time_limit: 60,
+      max_generation_positions: 60_000_000,
+    }, { deadlineMs: performance.now() + 20_000 });
+  } catch (error) {
+    caught = error;
+  }
+  assert.equal(caught?.code, "browser-root-safe-reselector-worker-crashed");
+  const receipt = caught.safe_root_reselector_receipt;
+  assert.equal(receipt.selected.status, "exhausted");
+  assert.equal(receipt.isolated_session_destroyed, false);
+  assert.equal(receipt.isolated_worker_terminated, true);
+  assert.equal(receipt.isolated_destroy_error_code, "browser-root-worker-crashed");
+  assert.equal(receipt.ordinary_pool_recreated, false);
+  client.close();
+}
+
+async function testSafeRootReselectAbortDuringCleanupNeverPublishes() {
+  const controller = new AbortController();
+  const world = new MockWorld({
+    foundAll: true,
+    terminalMateStatus: "exhausted",
+    wideSafetyStatuses: ["exhausted"],
+    wideDestroyDelayMs: 25,
+    wideDestroyStarted: () => controller.abort(),
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  let caught = null;
+  try {
+    await client.analyzeRoot({
+      ...payload(boundaryPayload(WHITE_FEN, 1), 1),
+      time_limit: 60,
+      max_generation_positions: 60_000_000,
+    }, {
+      signal: controller.signal,
+      deadlineMs: performance.now() + 20_000,
+    });
+  } catch (error) {
+    caught = error;
+  }
+  assert.equal(caught?.name, "AbortError");
+  assert.equal(caught.safe_root_reselector_receipt.status, "selected");
+  assert.equal(caught.safe_root_reselector_receipt.selected.status, "exhausted");
+  assert.equal(caught.safe_root_reselector_receipt.isolated_worker_terminated, true);
+  assert.equal(world.live, 0);
+  client.close();
+}
+
+async function testSafeRootReselectRejectsTerminalMateBehindNonterminalCandidate() {
+  const world = new MockWorld({
+    foundAll: true,
+    terminalMateStatus: "exhausted",
+    wideSafetyStatuses: ["exhausted"],
+    wideTerminalMateIndex: 1,
+  });
+  const client = browserClientApi.createClient({
+    workerUrl: "mock-worker.js",
+    workerFactory: world.factory,
+    navigatorValue: DESKTOP_NAVIGATOR,
+  });
+  await preflight(client);
+  let caught = null;
+  try {
+    await client.analyzeRoot({
+      ...payload(boundaryPayload(WHITE_FEN, 1), 1),
+      time_limit: 60,
+      max_generation_positions: 60_000_000,
+    }, { deadlineMs: performance.now() + 20_000 });
+  } catch (error) {
+    caught = error;
+  }
+  assert.equal(caught?.code, "browser-root-safe-reselector-order-invalid");
+  assert.equal(caught.safe_root_reselector_receipt.scans.length, 0);
+  assert.equal(caught.safe_root_reselector_receipt.selected, null);
+  assert.equal(world.safeReselectSafetyReceipts.length, 0);
+  client.close();
+}
+
+async function testSafeRootReselectIdentityTamperFailsClosedAndOrdinarySuccessDoesNotActivate() {
+  {
+    const world = new MockWorld({
+      foundAll: true,
+      terminalMateStatus: "exhausted",
+      wideSafetyStatuses: ["exhausted"],
+      wideIdentityTamper: true,
+    });
+    const client = browserClientApi.createClient({
+      workerUrl: "mock-worker.js",
+      workerFactory: world.factory,
+      navigatorValue: DESKTOP_NAVIGATOR,
+    });
+    await preflight(client);
+    let caught = null;
+    await assert.rejects(
+      client.analyzeRoot({
+        ...payload(boundaryPayload(WHITE_FEN, 1), 1),
+        time_limit: 60,
+        max_generation_positions: 60_000_000,
+      }, { deadlineMs: performance.now() + 20_000 }),
+      (error) => {
+        caught = error;
+        return error?.code === "browser-root-safe-reselector-result-invalid";
+      },
+    );
+    assert.equal(caught.safe_root_reselector_receipt.schema,
+      "spc-root-safe-reselector-receipt-v1");
+    assert.equal(caught.safe_root_reselector_receipt.isolated_worker_terminated, true);
+    assert.equal(caught.safe_root_reselector_receipt.ordinary_pool_recreated, false);
+    assert.equal(
+      caught.safe_root_reselector_receipt.ordinary_pool_restore_policy,
+      "lazy-next-request",
+    );
+    client.close();
+  }
+  {
+    const world = new MockWorld();
+    const client = browserClientApi.createClient({
+      workerUrl: "mock-worker.js",
+      workerFactory: world.factory,
+      navigatorValue: DESKTOP_NAVIGATOR,
+    });
+    await preflight(client);
+    const result = await client.analyzeRoot(payload(boundaryPayload(WHITE_FEN, 1), 1), {
+      deadlineMs: performance.now() + 20_000,
+    });
+    assert.equal(result.completed_depth, 1);
+    assert.equal(world.safeReselectCreates.length, 0);
+    assert.equal(result.runtime_receipt.safe_root_reselector, undefined);
     client.close();
   }
 }
@@ -2683,7 +3770,10 @@ async function testNativePromotionMateDeferralRescuesExactRootMate() {
   assert.equal(world.searchDispatches.length, 0);
   assert.equal(world.safetyReceipts.length, 0);
   assert.equal(world.terminalMateReceipts.length, 1);
-  assert.equal(world.terminalMateReceipts[0].call_work_credit, CONFIG.max_work);
+  assert.equal(
+    world.terminalMateReceipts[0].call_work_credit,
+    PLAY_LIMITS.default_generation_positions,
+  );
   assert.equal(result.work, world.terminalMateReceipts[0].work_used);
   client.close();
 }
@@ -2709,7 +3799,10 @@ async function testUnprovenPromotionMateDeferralFailsClosed() {
   assert.equal(world.searchDispatches.length, 0);
   assert.equal(world.safetyReceipts.length, 0);
   assert.equal(world.terminalMateReceipts.length, 1);
-  assert.equal(world.terminalMateReceipts[0].call_work_credit, CONFIG.max_work);
+  assert.equal(
+    world.terminalMateReceipts[0].call_work_credit,
+    PLAY_LIMITS.default_generation_positions,
+  );
   client.close();
 }
 
@@ -2722,6 +3815,19 @@ async function testMateCacheIdentityAndBoundaryBinding() {
     mate_certificate_id: "different-mate-certificate",
   }, child);
   assert.notEqual(changedIdentityKey, key);
+  const clockFields = child.fen.split(" ");
+  clockFields[4] = String(Number(clockFields[4]) + 1);
+  clockFields[5] = String(Number(clockFields[5]) + 1);
+  const changedClockFen = clockFields.join(" ");
+  assert.notEqual(rootClientApi.mateProofCacheKey(IDENTITY, {
+    ...child,
+    fen: changedClockFen,
+    board_fen: changedClockFen,
+  }), key, "EXHAUSTED evidence must stay bound to both FEN clocks");
+  assert.notEqual(rootClientApi.mateProofCacheKey(IDENTITY, {
+    ...child,
+    promoted_hex: "0000000000000001",
+  }), key, "EXHAUSTED evidence must stay bound to exact promotion provenance");
   assert.throws(
     () => rootClientApi.mateProofCacheKey(IDENTITY, {
       ...child,
@@ -2834,6 +3940,86 @@ function testGeometry() {
   }).workers, 4, "the largest fitting certified lower pool must win");
 }
 
+function testSafeRootReselectAdapterConfigDerivation() {
+  const identity = {
+    root_geometry: { session_config: CONFIG },
+    root_session_contract: {
+      hard_limits: { minimum_width: 1, maximum_width: SAFE_RESELECT_WIDTH },
+    },
+  };
+  const derived = adapterApi.deriveSafeRootReselectSessionConfig(identity);
+  assert.equal(derived.width, SAFE_RESELECT_WIDTH);
+  assert.equal(CONFIG.width, 32, "the certified public configuration must remain unchanged");
+  assert.notEqual(derived, CONFIG);
+  assert.notEqual(derived.weights, CONFIG.weights);
+  assert(Object.isFrozen(derived));
+  assert(Object.isFrozen(derived.weights));
+  assert.throws(
+    () => adapterApi.deriveSafeRootReselectSessionConfig({
+      ...identity,
+      root_session_contract: {
+        hard_limits: { minimum_width: 1, maximum_width: 511 },
+      },
+    }),
+    (error) => error?.code === "browser-root-safe-reselector-config-invalid",
+  );
+  assert.throws(
+    () => adapterApi.deriveSafeRootReselectSessionConfig({
+      ...identity,
+      root_geometry: { session_config: { ...CONFIG, width: 64 } },
+    }),
+    (error) => error?.code === "browser-root-safe-reselector-config-invalid",
+  );
+}
+
+async function testAppRouteFailsClosedAfterSafeRootReselectError() {
+  const safeError = new Error("synthetic safe-root reselector failure");
+  safeError.code = "browser-root-safe-reselector-result-invalid";
+  safeError.fallbackRequired = true;
+  safeError.safe_root_reselector_receipt = Object.freeze({ schema: "synthetic" });
+  assert.equal(browserClientApi.isSafeRootReselectFailure(safeError), true);
+  assert.equal(browserClientApi.isSafeRootReselectFailure({
+    code: "ordinary-local-analysis-failed",
+    fallbackRequired: true,
+  }), false);
+  let monolithicCalls = 0;
+  let remoteCalls = 0;
+  const route = async () => {
+    try {
+      throw safeError;
+    } catch (error) {
+      if (browserClientApi.isSafeRootReselectFailure(error)) throw error;
+      if (error?.fallbackRequired !== true) throw error;
+    }
+    monolithicCalls += 1;
+    remoteCalls += 1;
+  };
+  await assert.rejects(route(), (error) => error === safeError);
+  assert.equal(monolithicCalls, 0);
+  assert.equal(remoteCalls, 0);
+  const rootRouteStart = appSource.indexOf(
+    "return await browserEngineClient.analyzeRoot(analysisBody",
+  );
+  const safetyGuard = appSource.indexOf(
+    "if (BROWSER_ENGINE_API.isSafeRootReselectFailure(error)) throw error;",
+    rootRouteStart,
+  );
+  const ordinaryFallbackGate = appSource.indexOf(
+    "if (error?.fallbackRequired !== true) throw error;",
+    rootRouteStart,
+  );
+  const monolithicRoute = appSource.indexOf(
+    "return await browserEngineClient.analyze(analysisBody",
+    rootRouteStart,
+  );
+  assert(rootRouteStart >= 0);
+  assert(safetyGuard > rootRouteStart);
+  assert(ordinaryFallbackGate > safetyGuard);
+  assert(monolithicRoute > ordinaryFallbackGate);
+}
+
+testSafeRootReselectAdapterConfigDerivation();
+await testAppRouteFailsClosedAfterSafeRootReselectError();
 testAspirationAggregateAndAffinityContract();
 await testPersistentPoolTwoTurns();
 await testWhiteAndBlackMateMapping();
@@ -2862,6 +4048,22 @@ await testCheckedPvHorizonWithoutProbeCreditFailsClosed();
 await testImmediateMatePublishesWithBoundCoverage();
 await testAllMatingFrontierRescuesTerminalRootMate();
 await testUnprovenTerminalMateRescueFailsClosed();
+await testSafeRootReselectSkipsFoundAndUnknownThenPublishesExhausted();
+await testSafeRootReselectReachesRank62WithStagedCredits();
+await testSafeRootReselectNeverResurrectsRejectedRoots();
+await testSafeRootReselectRemapsPreferredOrderExclusionByExactChild();
+await testTerminalProbeCannotStarveSafeRootReselectLane();
+await testSafeRootReselectAllUnsafeOrUnknownRetainsOriginalFailure();
+await testSafeRootReselectHonorsWorkAndDeadlineCaps();
+await testSafeRootReselectRechecksDeadlineBeforePublication();
+await testSafeRootReselectAcceptsZeroWorkWitnessAtLaneCap();
+await testSafeRootReselectWorkerTerminationCompletesCleanupAfterDestroyMiss();
+await testSafeRootReselectTerminationFailureFailsClosedWithReceipt();
+await testSafeRootReselectOrdinaryTerminationFailurePreventsIsolation();
+await testSafeRootReselectPostEvidenceCrashFailsClosedWithReceipt();
+await testSafeRootReselectAbortDuringCleanupNeverPublishes();
+await testSafeRootReselectRejectsTerminalMateBehindNonterminalCandidate();
+await testSafeRootReselectIdentityTamperFailsClosedAndOrdinarySuccessDoesNotActivate();
 await testNativePromotionMateDeferralRescuesExactRootMate();
 await testUnprovenPromotionMateDeferralFailsClosed();
 await testMateCacheIdentityAndBoundaryBinding();

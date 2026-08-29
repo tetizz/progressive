@@ -72,6 +72,13 @@ self.addEventListener("message", async (event) => {
       self.postMessage({ id, ok: true, payload: result });
       return;
     }
+    if (message.type === "root-safe-reselector-session-create") {
+      if (!kernelPromise) throw notReadyError();
+      const kernel = await kernelPromise;
+      const result = kernel.createRootSafetyReselectSession(message.payload);
+      self.postMessage({ id, ok: true, payload: result });
+      return;
+    }
     if (message.type === "root-enumerate") {
       if (!kernelPromise) throw notReadyError();
       const kernel = await kernelPromise;

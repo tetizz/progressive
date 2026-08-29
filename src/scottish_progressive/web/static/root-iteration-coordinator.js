@@ -1107,6 +1107,29 @@
         distinct_proofs_observed: distinctProofsObserved,
       }));
     };
+    const wideningExclusions = () => {
+      const excludedCandidates = [...records.values()]
+        .filter((record) => (
+          record.policyRejected === true || record.mateClaimQuarantineCount > 0
+        ))
+        .sort((left, right) => (
+          left.candidate.order_index - right.candidate.order_index
+        ))
+        .map((record) => Object.freeze({
+          checked_pv_policy_rejected: record.policyRejected === true,
+          mate_claim_quarantine_count: record.mateClaimQuarantineCount,
+          source_candidate_identity: record.candidate.candidate_identity,
+          source_child_boundary: record.candidate.root_series.child_boundary,
+          source_order_index: record.candidate.order_index,
+          source_order_key: record.candidate.order_key,
+          source_root_machine_notation: record.candidate.root_series.machine_notation,
+        }));
+      return Object.freeze({
+        schema: "spc-root-safety-widening-exclusions-v2",
+        excluded_count: excludedCandidates.length,
+        excluded_candidates: Object.freeze(excludedCandidates),
+      });
+    };
     let incumbent = null;
     let incumbentSignature = null;
     let invalidated = false;
@@ -1808,7 +1831,7 @@
           throw new RootCoordinatorError(
             "The retained frontier is exhausted by authoritative reply mates and must widen.",
             "root-safety-widening-required",
-            { work: ledger.snapshot() },
+            { details: wideningExclusions(), work: ledger.snapshot() },
           );
         }
         const ownerCertified = await certifySelectedOnOwner();
