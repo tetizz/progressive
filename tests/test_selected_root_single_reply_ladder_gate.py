@@ -105,6 +105,17 @@ def _mark_exact_immediate_miss(
     searcher._mark_root_child_exact_exhausted(state.transposition_key)  # noqa: SLF001
 
 
+def _mark_full_state_exact_immediate_miss(
+    searcher: SeriesSearcher,
+    state: ProgressiveState,
+) -> None:
+    """Matches final safe reselection's full_state_only evidence contract."""
+
+    cache_key = searcher._tt_key(state)  # noqa: SLF001
+    searcher._root_child_mate_screen_cache[cache_key] = None  # noqa: SLF001
+    searcher._root_child_native_mate_cache_keys.add(cache_key)  # noqa: SLF001
+
+
 def test_recorded_black_s6_candidate_is_vetoed_after_immediate_gate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -228,6 +239,144 @@ def test_unknown_ladder_probe_keeps_selected_root_eligible(
     assert pv == (candidate,)
     assert searcher.stats.selected_root_ladder_candidate_vetoes == 0
     assert searcher._selected_pv_root_vetoes == set()  # noqa: SLF001
+
+
+def test_recorded_black_s6_d0_fallback_is_rejected_at_final_publication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The actual work-limited 3dfd move cannot bypass the root-loop gate."""
+
+    _require_native_ladder()
+    root = state_from_pfen(BUCEPHALUS_3DFD_S6_PFEN)
+    losing = play_series(root, BUCEPHALUS_3DFD_LOSING_ROOT)
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=512,
+            max_generation_positions=2_000_000,
+            collect_all_root_scores=False,
+        )
+    )
+
+    monkeypatch.setattr(
+        searcher,
+        "_root_current_series_mate",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def interrupted(*_args, **_kwargs):
+        raise search_module._RootInterrupted(  # noqa: SLF001
+            (),
+            search_module._WorkLimit(),  # noqa: SLF001
+            losing,
+        )
+
+    def exact_immediate_miss(child: ProgressiveState, **_kwargs):
+        assert child.pfen == losing.final_state.pfen
+        _mark_full_state_exact_immediate_miss(searcher, child)
+        return SeriesMateStatus.EXHAUSTED
+
+    monkeypatch.setattr(searcher, "_search_root", interrupted)
+    monkeypatch.setattr(
+        searcher,
+        "_certify_final_fallback_reply_mate",
+        exact_immediate_miss,
+    )
+
+    result = searcher.run(root)
+
+    assert result.best_series is None
+    assert result.principal_variation == ()
+    assert result.alternatives == ()
+    assert result.proof is None
+    assert result.completed_depth == 0
+    assert result.work_limit_reached
+    assert not result.root_scores_complete
+    assert searcher.stats.selected_root_ladder_found == 1
+    assert searcher.stats.selected_root_ladder_candidate_vetoes == 1
+    assert searcher.stats.selected_root_ladder_final_rejections == 1
+    assert searcher.stats.selected_root_ladder_work == 628_052
+    assert losing.machine_notation in searcher._selected_pv_root_vetoes  # noqa: SLF001
+
+
+def test_final_safe_reselection_skips_recorded_ladder_and_publishes_no_rescue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An immediate-safe D0 rescue is still rejected by A/B/C inside 40M."""
+
+    _require_native_ladder()
+    root = state_from_pfen(BUCEPHALUS_3DFD_S6_PFEN)
+    selected = play_series(root, BUCEPHALUS_3DFD_ELIGIBLE_ROOT)
+    losing_rescue = play_series(root, BUCEPHALUS_3DFD_LOSING_ROOT)
+    searcher = SeriesSearcher(
+        SearchLimits(
+            depth_series=1,
+            max_series_per_node=512,
+            max_generation_positions=2_000_000,
+            collect_all_root_scores=False,
+        )
+    )
+    _mark_full_state_exact_immediate_miss(
+        searcher,
+        losing_rescue.final_state,
+    )
+
+    monkeypatch.setattr(
+        searcher,
+        "_root_current_series_mate",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        searcher,
+        "_search_root",
+        lambda *_args, **_kwargs: (
+            400,
+            (selected,),
+            (
+                ScoredSeries(selected, 400),
+                ScoredSeries(losing_rescue, 300),
+            ),
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        searcher,
+        "_certify_final_fallback_reply_mate",
+        lambda child, **_kwargs: (
+            SeriesMateStatus.FOUND
+            if child.pfen == selected.final_state.pfen
+            else pytest.fail("unexpected immediate-mate probe")
+        ),
+    )
+
+    result = searcher.run(root)
+
+    assert result.best_series is None
+    assert result.principal_variation == ()
+    assert result.alternatives == ()
+    assert result.proof is None
+    assert result.completed_depth == 0
+    assert not result.root_scores_complete
+    assert searcher.stats.final_fallback_reply_mate_rejections == 1
+    assert searcher.stats.final_fallback_safe_reselection_candidates == 1
+    assert searcher.stats.final_fallback_safe_reselection_rescues == 0
+    assert searcher.stats.final_fallback_safe_reselection_work == 628_052
+    assert searcher.stats.selected_root_ladder_found == 1
+    assert searcher.stats.selected_root_ladder_candidate_vetoes == 1
+    assert searcher.stats.selected_root_ladder_final_rejections == 1
+    assert losing_rescue.machine_notation in searcher._selected_pv_root_vetoes  # noqa: SLF001
+
+
+def test_ladder_gate_skips_a_mover_with_only_a_king() -> None:
+    state = ProgressiveState.from_fen(
+        "8/8/8/8/1K6/8/1k6/8 w - - 0 1",
+        25,
+    )
+    searcher = SeriesSearcher(SearchLimits())
+    _mark_full_state_exact_immediate_miss(searcher, state)
+
+    assert not searcher._selected_root_single_reply_ladder_required(state)  # noqa: SLF001
+    assert searcher.stats.selected_root_ladder_probe_calls == 0
 
 
 def test_exact_negative_cache_binds_clocks_and_progressive_ep(
@@ -409,6 +558,7 @@ def test_all_ladder_vetoes_require_exact_frontier_for_least_bad_resistance(
     searcher = SeriesSearcher(
         SearchLimits(depth_series=1, max_series_per_node=2)
     )
+    widening_exclusions: list[frozenset[str]] = []
     for item in legal:
         _mark_exact_immediate_miss(searcher, item.final_state)
 
@@ -445,12 +595,21 @@ def test_all_ladder_vetoes_require_exact_frontier_for_least_bad_resistance(
         "_selected_root_single_reply_ladder_required",
         lambda _state: True,
     )
+
+    def widened_frontier(
+        _state: ProgressiveState,
+        _required_prefix: tuple[str, ...],
+        exclusions: frozenset[str],
+    ):
+        widening_exclusions.append(exclusions)
+        return search_module._GeneratedSeriesList(  # noqa: SLF001
+            [], width_complete=width_complete
+        )
+
     monkeypatch.setattr(
         searcher,
         "_selected_pv_horizon_widened_frontier",
-        lambda *_args: search_module._GeneratedSeriesList(  # noqa: SLF001
-            [], width_complete=width_complete
-        ),
+        widened_frontier,
     )
     monkeypatch.setattr(
         searcher,
@@ -459,6 +618,7 @@ def test_all_ladder_vetoes_require_exact_frontier_for_least_bad_resistance(
     )
 
     result = searcher.run(root)
+    assert widening_exclusions == [frozenset()]
 
     if not width_complete:
         assert result.best_series is None

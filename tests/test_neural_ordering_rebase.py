@@ -729,8 +729,11 @@ def test_native_subtree_high_series_path_counts_preserve_frozen_python_oracle(
     assert result.forced is None
     # Frozen pristine-Python receipt (SPC_DISABLE_NATIVE=1), deterministic 3/3:
     # work=75_658. The optimized native frontier has its own deterministic
-    # work receipt; its chess result above is the Python oracle signature.
+    # work receipt; its chess result above is the Python oracle signature. The
+    # selected-root ladder is soundly inapplicable because the mover owns only
+    # a king, so this pre-existing receipt remains unchanged.
     assert result.stats.generation_positions == 40_647
+    assert result.stats.selected_root_ladder_probe_calls == 0
     assert tuple(item.machine_notation for item in result.principal_variation) == (
         result.best_series.machine_notation,
         (

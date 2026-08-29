@@ -376,6 +376,7 @@ class SearchStats:
     selected_root_ladder_unknown: int = 0
     selected_root_ladder_work: int = 0
     selected_root_ladder_candidate_vetoes: int = 0
+    selected_root_ladder_final_rejections: int = 0
     selected_root_ladder_all_vetoed_fallbacks: int = 0
     native_series_mate_calls: int = 0
     native_series_mate_positions: int = 0
@@ -665,6 +666,7 @@ class _FinalSafeReselection:
     score: int | None = None
     timed_out: bool = False
     work_limited: bool = False
+    ladder_gate_applied: bool = False
 
 
 class _RootLadderAllVetoed(Exception):
@@ -1855,10 +1857,11 @@ class SeriesSearcher:
             candidate: SeriesResult,
             *,
             terminal: bool,
-        ) -> _FinalSafeReselection:
+        ) -> _FinalSafeReselection | None:
             self._check_deadline()
             timed_out = False
             work_limited = False
+            ladder_gate_applied = False
             if terminal:
                 score = self._terminal_score(candidate, root.board.turn, 1)
                 if score is None:  # pragma: no cover - caller invariant
@@ -1867,6 +1870,30 @@ class SeriesSearcher:
                     )
                 self.stats.final_fallback_safe_reselection_terminal += 1
             else:
+                # The full-state immediate-mate miss authorizes one distinct
+                # A/check, B/only-countercheck, C/mate proof. Keep this inside
+                # the same 40M rescue lane: FOUND rejects this sibling and the
+                # selector keeps walking, while UNKNOWN remains eligible and
+                # is not retried outside the lane at final publication.
+                if self._selected_root_single_reply_ladder_required(
+                    candidate.final_state
+                ):
+                    ladder_gate_applied = True
+                    ladder_probe = self._selected_root_single_reply_ladder_probe(
+                        candidate.final_state,
+                        max_work=remaining_lane_work(),
+                    )
+                    if (
+                        ladder_probe is not None
+                        and ladder_probe.proven_losing
+                    ):
+                        self._selected_pv_root_vetoes.add(
+                            candidate.machine_notation
+                        )
+                        self.stats.selected_root_ladder_candidate_vetoes += 1
+                        self.stats.selected_root_ladder_final_rejections += 1
+                        self._selective = True
+                        return None
                 score = None
                 remaining = remaining_lane_work()
                 if remaining > 0:
@@ -1887,6 +1914,7 @@ class SeriesSearcher:
                 score=score,
                 timed_out=timed_out,
                 work_limited=work_limited,
+                ladder_gate_applied=ladder_gate_applied,
             )
 
         try:
@@ -1923,9 +1951,10 @@ class SeriesSearcher:
                     elif status is SeriesMateStatus.FOUND:
                         self.stats.final_fallback_safe_reselection_found += 1
 
-            if retained_safe:
-                candidate, terminal = retained_safe[0]
-                return publish(candidate, terminal=terminal)
+            for candidate, terminal in retained_safe:
+                rescued = publish(candidate, terminal=terminal)
+                if rescued is not None:
+                    return rescued
             if not allow_widening:
                 return _FinalSafeReselection()
             self.stats.final_fallback_safe_reselection_attempts += 1
@@ -2022,7 +2051,10 @@ class SeriesSearcher:
                         full_state_only=True,
                     )
                 if status is SeriesMateStatus.EXHAUSTED:
-                    return publish(candidate, terminal=False)
+                    rescued = publish(candidate, terminal=False)
+                    if rescued is not None:
+                        return rescued
+                    continue
                 if status is SeriesMateStatus.FOUND:
                     self.stats.final_fallback_safe_reselection_found += 1
                     continue
@@ -2844,6 +2876,8 @@ class SeriesSearcher:
     def _selected_root_single_reply_ladder_probe(
         self,
         state: ProgressiveState,
+        *,
+        max_work: int = SELECTED_ROOT_SINGLE_REPLY_LADDER_WORK_LIMIT,
     ) -> "SingleReplyMateLadderProbe | None":
         """Proves one narrow three-series loss after immediate safety passes.
 
@@ -2871,7 +2905,10 @@ class SeriesSearcher:
             return cached
 
         configured_work = self.limits.max_generation_positions
-        remaining_work = SELECTED_ROOT_SINGLE_REPLY_LADDER_WORK_LIMIT
+        remaining_work = min(
+            SELECTED_ROOT_SINGLE_REPLY_LADDER_WORK_LIMIT,
+            max(0, max_work),
+        )
         if configured_work is not None:
             remaining_work = min(
                 remaining_work,
@@ -2926,14 +2963,20 @@ class SeriesSearcher:
         """Returns whether the exact immediate gate authorizes this proof lane."""
 
         cache_key = self._tt_key(state)
+        # A king cannot deliver a legal check by itself. With no non-king piece
+        # the side to move therefore cannot supply the theorem's checking A,
+        # so dispatching the native three-series prover would only perturb an
+        # otherwise frozen exact work receipt.
+        attacker_has_checking_material = bool(
+            state.board.occupied_co[state.board.turn] & ~state.board.kings
+        )
         return (
             state.series_number
             >= SELECTED_ROOT_SINGLE_REPLY_LADDER_MIN_CHILD_SERIES
+            and attacker_has_checking_material
             and cache_key in self._root_child_mate_screen_cache
             and self._root_child_mate_screen_cache[cache_key] is None
             and cache_key in self._root_child_native_mate_cache_keys
-            and state.transposition_key
-            in self._root_child_native_mate_exhausted_keys
         )
 
     def _root_child_mate_screen_stage(
@@ -4994,11 +5037,26 @@ class SeriesSearcher:
             if not pv:
                 if horizon_vetoes and widened_frontier is None:
                     self.stats.selected_pv_horizon_all_vetoed_frontiers += 1
+                    # For a ladder-only rejection set, retain the complete
+                    # widened manifest and let _search_root_pass apply the
+                    # known vetoes. Filtering here would correctly make the
+                    # returned list incomplete, but would also erase the only
+                    # evidence that the underlying legal frontier itself was
+                    # exhaustive. Mixed horizon/mate-claim exclusions keep the
+                    # established filtered, selective behavior.
+                    widening_exclusions = self._root_policy_exclusions(
+                        horizon_vetoes
+                    )
+                    if (
+                        horizon_vetoes == ladder_vetoes
+                        and not mate_claim_quarantines
+                    ):
+                        widening_exclusions = frozenset()
                     widened_frontier = (
                         self._selected_pv_horizon_widened_frontier(
                             state,
                             required_prefix,
-                            self._root_policy_exclusions(horizon_vetoes),
+                            widening_exclusions,
                         )
                     )
                     if widened_frontier:
@@ -5007,6 +5065,7 @@ class SeriesSearcher:
                     if (
                         horizon_vetoes == ladder_vetoes
                         and ladder_vetoed_candidates
+                        and not mate_claim_quarantines
                         and widened_frontier is not None
                         and widened_frontier.width_complete
                     ):
@@ -5779,6 +5838,7 @@ class SeriesSearcher:
             best_proof = None
             completed_depth = 0
 
+        final_ladder_gate_applied = False
         if best_pv and best_pv[0].outcome is None:
             # Every nonterminal move crosses one final exact publication gate,
             # including a winner from a fully completed iterative depth.  The
@@ -5832,6 +5892,43 @@ class SeriesSearcher:
                     if rescued.series is not None
                     else ()
                 )
+                final_ladder_gate_applied = rescued.ladder_gate_applied
+                alternatives = ()
+                best_proof = None
+                completed_depth = 0
+
+        if (
+            best_pv
+            and best_pv[0].outcome is None
+            and not final_ladder_gate_applied
+            and self._selected_root_single_reply_ladder_required(
+                best_pv[0].final_state
+            )
+        ):
+            # Interrupted D0 candidates and older completed-depth candidates
+            # do not necessarily pass through the ordinary selected-root loop.
+            # Apply the same exact theorem at the last publication boundary.
+            # The only known-losing move allowed through is the explicitly
+            # labeled least-resistance exception produced after an exhaustive
+            # all-legal frontier proved that every legal root has this loss.
+            ladder_probe = self._selected_root_single_reply_ladder_probe(
+                best_pv[0].final_state
+            )
+            if (
+                ladder_probe is not None
+                and ladder_probe.proven_losing
+                and best_pv[0].machine_notation
+                != self._selected_root_ladder_emergency_fallback
+            ):
+                notation = best_pv[0].machine_notation
+                self._selected_pv_root_vetoes.add(notation)
+                self.stats.selected_root_ladder_candidate_vetoes += 1
+                self.stats.selected_root_ladder_final_rejections += 1
+                self._selective = True
+                self._root_scores_complete = False
+                completed_root_scores_complete = False
+                best_score = root_evaluation.total
+                best_pv = ()
                 alternatives = ()
                 best_proof = None
                 completed_depth = 0
