@@ -4,7 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
-    <meta name="theme-color" content="#262522">
+    <meta name="theme-color" content="#0b1112">
+    <meta name="description" content="Play and analyze Scottish Progressive Chess with a certified on-device engine, exact series rules, and replayable match evidence.">
     <meta name="spc-api-origin" content="https://progressive-ui9q.onrender.com">
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://progressive-ui9q.onrender.com; object-src 'none'; base-uri 'none'; form-action 'none'">
     <title>Scottish Progressive</title>
@@ -14,7 +15,10 @@
   <body>
     <a class="skip-link" href="#workspace">Skip to board</a>
     <header class="app-header">
-      <a class="brand" href="./" aria-label="Scottish Progressive home"><span class="brand-long">Scottish Progressive</span><span class="brand-short">Progressive</span></a>
+      <a class="brand" href="./" aria-label="Scottish Progressive home">
+        <span class="brand-mark" aria-hidden="true">SP</span>
+        <span class="brand-copy"><span class="brand-long">Scottish Progressive</span><span class="brand-short">Progressive</span><small>Variant laboratory</small></span>
+      </a>
       <nav class="mode-switch" aria-label="Workspace mode">
         <button class="mode-button is-active" id="mode-play" type="button" aria-pressed="true">Play</button>
         <button class="mode-button" id="mode-analyze" type="button" aria-pressed="false">Analyze</button>
@@ -22,7 +26,7 @@
       </nav>
       <div class="header-actions">
         <span class="rules-label" id="rules-version">Scottish rules</span>
-        <span class="engine-status" id="engine-status" role="status" aria-live="polite"><span class="status-dot" aria-hidden="true"></span><span id="engine-status-text">Connecting…</span></span>
+        <span class="engine-status" id="engine-status" role="status" aria-live="polite" aria-atomic="true"><span class="status-dot" aria-hidden="true"></span><span id="engine-status-text">Connecting…</span></span>
       </div>
     </header>
 
@@ -36,7 +40,7 @@
           </div>
           <span class="series-number" aria-label="Current series"><small>SERIES</small><b id="series-number">1</b></span>
         </div>
-        <div class="series-ledger" aria-label="Moves in the current series">
+        <div class="series-ledger" aria-label="Moves in the current series" role="status" aria-live="polite" aria-atomic="true">
           <span class="ledger-label">Current series</span>
           <div class="move-chips" id="move-chips"><span class="empty-chip">No moves yet</span></div>
         </div>
@@ -71,12 +75,12 @@
         </div>
 
         <div class="board-toolbar" aria-label="Board controls">
-          <button class="tool-button" id="undo-move" type="button" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 7 4-4v3h1a7 7 0 1 1-6.7 9h2.2a5 5 0 1 0 4.5-7h-1v3L8 7Z"/></svg><span>Undo</span></button>
-          <button class="tool-button" id="reset-series" type="button" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5a7 7 0 1 1-6.6 9.3l1.9-.7A5 5 0 1 0 8.1 9L11 12H4V5l2.6 2.6A7 7 0 0 1 12 5Z"/></svg><span>Restart series</span></button>
-          <button class="tool-button" id="flip-board" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.1 6.5A7.2 7.2 0 0 1 19 9h-2.3a5.1 5.1 0 0 0-8.1-1.1L11 10H4V3l3.1 3.5ZM16.9 17.5A7.2 7.2 0 0 1 5 15h2.3a5.1 5.1 0 1 0 8.1 1.1L13 14h7v7l-3.1-3.5Z"/></svg><span>Flip</span></button>
+          <button class="tool-button" id="undo-move" type="button" aria-label="Undo move" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 7 4-4v3h1a7 7 0 1 1-6.7 9h2.2a5 5 0 1 0 4.5-7h-1v3L8 7Z"/></svg><span>Undo</span></button>
+          <button class="tool-button" id="reset-series" type="button" aria-label="Restart current series" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5a7 7 0 1 1-6.6 9.3l1.9-.7A5 5 0 1 0 8.1 9L11 12H4V5l2.6 2.6A7 7 0 0 1 12 5Z"/></svg><span>Restart series</span></button>
+          <button class="tool-button" id="flip-board" type="button" aria-label="Flip board"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.1 6.5A7.2 7.2 0 0 1 19 9h-2.3a5.1 5.1 0 0 0-8.1-1.1L11 10H4V3l3.1 3.5ZM16.9 17.5A7.2 7.2 0 0 1 5 15h2.3a5.1 5.1 0 1 0 8.1 1.1L13 14h7v7l-3.1-3.5Z"/></svg><span>Flip</span></button>
           <span class="toolbar-divider" aria-hidden="true"></span>
-          <button class="tool-button" id="save-position" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h12l2 2v16H5V3Zm3 2v5h8V5H8Zm0 9v5h8v-5H8Z"/></svg><span>Save</span></button>
-          <button class="tool-button" id="load-position" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h6l2 2h8v12H4V5Zm8 5v3H9l4 4 4-4h-3v-3h-2Z"/></svg><span>Positions</span></button>
+          <button class="tool-button" id="save-position" type="button" aria-label="Save position"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h12l2 2v16H5V3Zm3 2v5h8V5H8Zm0 9v5h8v-5H8Z"/></svg><span>Save</span></button>
+          <button class="tool-button" id="load-position" type="button" aria-label="Open saved positions"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h6l2 2h8v12H4V5Zm8 5v3H9l4 4 4-4h-3v-3h-2Z"/></svg><span>Positions</span></button>
           <button class="primary continue-button" id="advance-series" type="button" hidden>Continue from here</button>
         </div>
         <div class="boundary-notice is-ready" id="boundary-notice" role="status" aria-live="polite"><span class="notice-mark" aria-hidden="true"></span><span id="boundary-notice-text">The board is ready.</span></div>
@@ -85,10 +89,17 @@
       <aside class="inspector" aria-label="Analysis tools">
         <section class="play-panel" id="play-panel" aria-labelledby="play-panel-title">
           <div class="play-heading">
-            <p class="section-kicker">SCOTTISH PROGRESSIVE</p>
+            <p class="section-kicker">CERTIFIED VARIANT PLAY</p>
             <h1 id="play-panel-title">Play the champion</h1>
             <p>One move in Series 1, two in Series 2, then 3, 4, 5 and onward. A check ends the series immediately.</p>
           </div>
+
+          <ol class="series-runway" id="series-runway" aria-label="Progressive move budget. Series 1 gives White one move, Series 2 gives Black two moves, and the budget continues to grow while sides alternate.">
+            <li class="is-current" data-series-step="1" aria-current="step"><span>1</span><small>White</small></li>
+            <li data-series-step="2"><span>2</span><small>Black</small></li>
+            <li data-series-step="3"><span>3</span><small>White</small></li>
+            <li data-series-step="4"><span>4+</span><small>Alternate</small></li>
+          </ol>
 
           <fieldset class="side-picker">
             <legend>Play as</legend>
@@ -134,15 +145,18 @@
             <button class="secondary play-resign" id="play-resign" type="button">Resign</button>
           </div>
 
-          <dl class="engine-proof" aria-label="Engine provenance">
-            <div><dt>Opponent</dt><dd id="play-engine-name">Connecting…</dd></div>
-            <div><dt>Profile</dt><dd id="play-engine-id">—</dd></div>
-            <div><dt>Engine</dt><dd id="play-engine-version">—</dd></div>
-            <div><dt>Runtime</dt><dd id="play-runtime-status">Preparing on-device WebAssembly…</dd></div>
-            <div><dt>Strength</dt><dd id="play-strength-status">Strong · target depth 5</dd></div>
-            <div><dt>Last search</dt><dd id="play-search-depth" aria-live="polite">No engine move yet</dd></div>
-            <div><dt>Search status</dt><dd id="play-search-status">Waiting for the champion</dd></div>
-          </dl>
+          <details class="engine-proof-details">
+            <summary><span>Engine proof</span><small>Identity, runtime, and last search</small></summary>
+            <dl class="engine-proof" aria-label="Engine provenance">
+              <div><dt>Opponent</dt><dd id="play-engine-name">Connecting…</dd></div>
+              <div><dt>Profile</dt><dd id="play-engine-id">—</dd></div>
+              <div><dt>Engine</dt><dd id="play-engine-version">—</dd></div>
+              <div><dt>Runtime</dt><dd id="play-runtime-status">Preparing on-device WebAssembly…</dd></div>
+              <div><dt>Strength</dt><dd id="play-strength-status">Strong · target depth 5</dd></div>
+              <div><dt>Last search</dt><dd id="play-search-depth" aria-live="polite">No engine move yet</dd></div>
+              <div><dt>Search status</dt><dd id="play-search-status">Waiting for the champion</dd></div>
+            </dl>
+          </details>
         </section>
 
         <div class="tabs" id="workspace-tabs" role="tablist" aria-label="Workspace views" tabindex="-1" hidden>
@@ -152,7 +166,7 @@
         <section class="tab-panel analysis-panel" id="analysis-panel" role="tabpanel" aria-labelledby="tab-analysis" hidden>
           <div class="auto-analysis-bar">
             <div class="auto-analysis-copy"><span class="analysis-live-dot" aria-hidden="true"></span><div><h2>Automatic analysis</h2><p id="analysis-progress-text" role="status" aria-live="polite">Waiting for the position…</p></div></div>
-            <button class="analysis-toggle" id="analyze-button" type="button" aria-pressed="false"><svg class="pause-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h4v14H7V5Zm6 0h4v14h-4V5Z"/></svg><span>Pause</span></button>
+            <button class="analysis-toggle" id="analyze-button" type="button" aria-label="Pause automatic analysis" aria-pressed="false"><svg class="pause-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h4v14H7V5Zm6 0h4v14h-4V5Z"/></svg><span>Pause</span></button>
           </div>
           <div class="analysis-progress" id="analysis-progress" role="progressbar" aria-label="Automatic analysis depth" aria-valuemin="0" aria-valuemax="8" aria-valuenow="0"><span id="analysis-progress-fill"></span></div>
           <div class="analysis-presets" aria-label="Automatic analysis mode">
@@ -172,8 +186,8 @@
             </div>
           </details>
           <div class="analysis-empty" id="analysis-empty"><span class="empty-pulse" aria-hidden="true"></span><h3>Analysis starts automatically</h3><p>Make a move or open a saved line. The engine cancels the old search and deepens the new position.</p></div>
-          <div class="analysis-loading" id="analysis-loading" hidden aria-live="polite"><div class="thinking-lines" aria-hidden="true"><span></span><span></span><span></span></div><h3>Searching this position…</h3><p>The board stays playable while each bounded pass runs.</p></div>
-          <div class="analysis-error" id="analysis-error" hidden role="alert"><strong>Automatic analysis stopped</strong><span id="analysis-error-text"></span></div>
+          <div class="analysis-loading" id="analysis-loading" hidden role="status" aria-live="polite" aria-atomic="true"><div class="thinking-lines" aria-hidden="true"><span></span><span></span><span></span></div><h3>Searching this position…</h3><p>The board stays playable while each bounded pass runs.</p></div>
+          <div class="analysis-error" id="analysis-error" hidden role="alert" aria-atomic="true"><strong>Automatic analysis stopped</strong><span id="analysis-error-text"></span></div>
 
           <div class="analysis-results" id="analysis-results" hidden>
             <div class="result-hero"><div><span class="result-label">Progressive evaluation</span><strong class="result-score" id="result-score">Roughly balanced</strong><span class="result-raw-score" id="result-raw-score">Raw engine score 0</span></div><div class="classification-block"><span class="classification" id="result-classification">Balanced</span><span class="confidence" id="result-confidence">Depth-limited</span></div></div>
@@ -214,9 +228,9 @@
       </aside>
     </main>
 
-    <dialog class="saved-dialog" id="saved-dialog" aria-labelledby="saved-dialog-title">
+    <dialog class="saved-dialog" id="saved-dialog" aria-labelledby="saved-dialog-title" aria-describedby="saved-dialog-description">
       <div class="dialog-heading"><div><p class="section-kicker">THIS DEVICE</p><h2 id="saved-dialog-title">Saved positions</h2></div><button class="dialog-close" id="saved-dialog-close" type="button" aria-label="Close saved positions">×</button></div>
-      <form class="save-position-form" id="save-position-form"><label for="saved-name">Position name</label><div class="save-position-row"><input id="saved-name" type="text" maxlength="60" autocomplete="off" placeholder="e.g. Main line after Series 4"><button class="primary" id="save-current-position" type="submit">Save current</button></div><p>Only the trusted boundary and legal move prefix are stored. The engine rechecks them when loaded.</p></form>
+      <form class="save-position-form" id="save-position-form"><label for="saved-name">Position name</label><div class="save-position-row"><input id="saved-name" type="text" maxlength="60" autocomplete="off" placeholder="e.g. Main line after Series 4"><button class="primary" id="save-current-position" type="submit">Save current</button></div><p id="saved-dialog-description">Only the trusted boundary and legal move prefix are stored. The engine rechecks them when loaded.</p></form>
       <div class="saved-position-status" id="saved-position-status" role="status" aria-live="polite"></div><div class="saved-positions-list" id="saved-positions-list" aria-label="Saved positions"></div>
     </dialog>
     <dialog class="promotion-dialog" id="promotion-dialog" aria-labelledby="promotion-title"><form method="dialog"><div class="dialog-heading"><div><p class="section-kicker">PROMOTION</p><h2 id="promotion-title">Choose a piece</h2></div><button class="dialog-close" value="cancel" aria-label="Cancel promotion">×</button></div><div class="promotion-options" id="promotion-options"></div></form></dialog>

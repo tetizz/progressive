@@ -4,7 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
-    <meta name="theme-color" content="#262522">
+    <meta name="theme-color" content="#0b1112">
+    <meta name="description" content="Replay the recorded Scottish Progressive versus Bucephalus benchmark with immutable provenance and every verified move.">
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
     <title>Scottish Progressive · Match Viewer</title>
     <link rel="icon" href="data:,">
@@ -13,14 +14,17 @@
   <body class="match-viewer-page">
     <a class="skip-link" href="#match-board-pane">Skip to match board</a>
     <header class="app-header">
-      <a class="brand" href="./" aria-label="Scottish Progressive home"><span class="brand-long">Scottish Progressive</span><span class="brand-short">Progressive</span></a>
+      <a class="brand" href="./" aria-label="Scottish Progressive home">
+        <span class="brand-mark" aria-hidden="true">SP</span>
+        <span class="brand-copy"><span class="brand-long">Scottish Progressive</span><span class="brand-short">Progressive</span><small>Variant laboratory</small></span>
+      </a>
       <nav class="mode-switch" aria-label="Site section">
         <a class="mode-button mode-link" href="./">Play</a>
         <a class="mode-button mode-link" href="./?workspace=analyze">Analyze</a>
         <a class="mode-button mode-link is-active" href="./matches.html" aria-current="page">Matches</a>
       </nav>
       <div class="header-actions">
-        <span class="engine-status is-online" role="status"><span class="status-dot" aria-hidden="true"></span><span>Recorded benchmark</span></span>
+        <span class="engine-status is-online" role="status" aria-atomic="true"><span class="status-dot" aria-hidden="true"></span><span>Recorded benchmark</span></span>
       </div>
     </header>
 
@@ -63,8 +67,8 @@
           <button class="tool-button match-play-button" id="replay-play" type="button" aria-label="Play replay" title="Play or pause (Space)" disabled><span aria-hidden="true">▶</span><span>Play</span></button>
           <button class="tool-button" id="replay-next" type="button" aria-label="Next move" title="Next move (Right Arrow)" disabled><span>Next</span><span aria-hidden="true">→</span></button>
           <span class="toolbar-divider" aria-hidden="true"></span>
-          <button class="tool-button" id="replay-start" type="button" title="Jump to the benchmark start" disabled><span aria-hidden="true">◆</span><span>Match start</span></button>
-          <button class="tool-button" id="replay-flip" type="button" title="Flip board (F)" disabled><span aria-hidden="true">↻</span><span>Flip</span></button>
+          <button class="tool-button" id="replay-start" type="button" aria-label="Jump to match start" title="Jump to the benchmark start" disabled><span aria-hidden="true">◆</span><span>Match start</span></button>
+          <button class="tool-button" id="replay-flip" type="button" aria-label="Flip replay board" title="Flip board (F)" disabled><span aria-hidden="true">↻</span><span>Flip</span></button>
         </div>
         <div class="match-progress-wrap">
           <label class="match-progress-label" for="replay-progress"><span id="replay-position">Position 0 of 0</span><span id="replay-move-label">Recorded replay</span></label>

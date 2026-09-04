@@ -101,7 +101,7 @@
     "play-top-player", "play-top-color", "play-top-name", "play-top-meta", "play-top-turn",
     "play-bottom-player", "play-bottom-color", "play-bottom-name", "play-bottom-meta", "play-bottom-turn",
     "play-as-white", "play-as-black", "play-live", "play-status-title", "play-status-detail",
-    "play-series-title", "play-series-count", "play-series-copy", "play-history", "play-history-count",
+    "series-runway", "play-series-title", "play-series-count", "play-series-copy", "play-history", "play-history-count",
     "play-history-previous", "play-history-next", "play-history-position",
     "play-new-game", "play-retry-engine", "play-analyze-position", "play-resign", "play-engine-name", "play-engine-id",
     "play-engine-version", "play-runtime-status", "play-strength-strong", "play-strength-faster", "play-strength-status",
@@ -2652,6 +2652,22 @@
       .sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt)) || left.uci.localeCompare(right.uci));
   }
 
+  function indexedTreeChildren() {
+    const index = new Map();
+    Object.values(state.study?.nodes || {}).forEach((node) => {
+      const siblings = index.get(node.parentId) || [];
+      siblings.push(node);
+      index.set(node.parentId, siblings);
+    });
+    index.forEach((siblings) => {
+      siblings.sort((left, right) => (
+        String(left.createdAt).localeCompare(String(right.createdAt))
+        || left.uci.localeCompare(right.uci)
+      ));
+    });
+    return index;
+  }
+
   function treeNodeFromCursor() {
     return state.currentTreeNodeId ? state.study?.nodes[state.currentTreeNodeId] || null : null;
   }
@@ -2663,6 +2679,11 @@
     dom.board_shell.classList.toggle("is-checking", busy);
     if (busy) dom.board_loading_text.textContent = label;
     if (busy) state.selected = null;
+    // Prefix application renders while the request is still marked busy. Repaint
+    // both interaction surfaces at the state boundary so the board's roving
+    // tabindex and every busy-gated control cannot remain stale afterward.
+    renderBoard();
+    renderPlaySurface();
   }
 
   function analysisPositionKey() {
@@ -2690,10 +2711,13 @@
     dom.analyze_button.classList.toggle("is-paused", state.analysisPaused);
     dom.analyze_button.setAttribute("aria-pressed", String(state.analysisPaused));
     dom.analyze_button.disabled = Boolean(state.outcome);
+    const failed = !dom.analysis_error.hidden;
     const label = dom.analyze_button.querySelector("span");
-    if (label) label.textContent = state.analysisPaused ? "Resume" : "Pause";
+    const action = state.analysisPaused ? "Resume" : failed ? "Retry" : "Pause";
+    if (label) label.textContent = action;
+    dom.analyze_button.setAttribute("aria-label", `${action} automatic analysis`);
     const icon = dom.analyze_button.querySelector("path");
-    if (icon) icon.setAttribute("d", state.analysisPaused ? "M8 5v14l11-7L8 5Z" : "M7 5h4v14H7V5Zm6 0h4v14h-4V5Z");
+    if (icon) icon.setAttribute("d", state.analysisPaused || failed ? "M8 5v14l11-7L8 5Z" : "M7 5h4v14H7V5Zm6 0h4v14h-4V5Z");
     if (message !== null) {
       dom.analysis_progress_text.textContent = message;
     } else if (state.outcome) {
@@ -2877,6 +2901,10 @@
   }
 
   function toggleAutoAnalysis() {
+    if (!dom.analysis_error.hidden && !state.analysisPaused) {
+      restartAutoAnalysis(80);
+      return;
+    }
     state.analysisPaused = !state.analysisPaused;
     if (state.analysisPaused) {
       cancelAutoAnalysis(false);
@@ -3251,8 +3279,8 @@
     return button;
   }
 
-  function appendTreeBranch(parentId, container, level, visited = new Set()) {
-    treeChildren(parentId).forEach((node) => {
+  function appendTreeBranch(parentId, container, level, childIndex, visited = new Set()) {
+    (childIndex.get(parentId) || []).forEach((node) => {
       if (visited.has(node.id)) return;
       const branchVisited = new Set(visited);
       branchVisited.add(node.id);
@@ -3265,12 +3293,12 @@
         branch.append(groupLabel);
       }
       branch.append(treeMoveButton(node, level));
-      const children = treeChildren(node.id);
+      const children = childIndex.get(node.id) || [];
       if (children.length) {
         const group = document.createElement("div");
         group.className = children.length > 1 ? "tree-children has-variations" : "tree-children";
         group.setAttribute("role", "group");
-        appendTreeBranch(node.id, group, level + 1, branchVisited);
+        appendTreeBranch(node.id, group, level + 1, childIndex, branchVisited);
         branch.append(group);
       }
       container.append(branch);
@@ -3293,7 +3321,7 @@
     const group = document.createElement("div");
     group.className = "tree-root-children";
     group.setAttribute("role", "group");
-    appendTreeBranch(null, group, 2);
+    appendTreeBranch(null, group, 2, indexedTreeChildren());
     if (!group.childElementCount) {
       const empty = document.createElement("p");
       empty.className = "tree-empty";
@@ -3758,6 +3786,19 @@
     dom.play_status_detail.textContent = status.detail;
     const visibleSeries = review?.series || state.boundary.series;
     const visibleRemaining = review?.movesRemaining ?? state.movesRemaining;
+    const runwayStep = Math.min(4, Math.max(1, visibleSeries));
+    dom.series_runway?.querySelectorAll("[data-series-step]").forEach((item) => {
+      const step = Number(item.dataset.seriesStep);
+      const current = step === runwayStep;
+      item.classList.toggle("is-current", current);
+      item.classList.toggle("is-past", step < runwayStep);
+      if (current) item.setAttribute("aria-current", "step");
+      else item.removeAttribute("aria-current");
+    });
+    dom.series_runway?.setAttribute(
+      "aria-label",
+      `${reviewing ? "Reviewing" : "Playing"} Series ${visibleSeries}: ${visibleSeries % 2 === 1 ? "White" : "Black"} receives ${visibleSeries} move${visibleSeries === 1 ? "" : "s"}. Check ends the series immediately.`,
+    );
     dom.play_series_title.textContent = `Series ${visibleSeries}`;
     dom.play_series_count.textContent = String(visibleRemaining);
     dom.play_series_copy.textContent = reviewing
@@ -4254,6 +4295,7 @@
         }
       }
       state.mode = "analyze";
+      syncWorkspaceRoute("analyze");
       restoreWorkspace(state.analysisWorkspace);
       clearAnalysisDisplay();
       dom.workspace_tabs.hidden = false;
@@ -4269,6 +4311,7 @@
       cancelAutoAnalysis(true);
     }
     state.mode = "play";
+    syncWorkspaceRoute("play");
     if (!restoreWorkspace(state.playWorkspace)) {
       await startNewPlayGame();
       return;
@@ -4396,6 +4439,8 @@
   function endDrag() {
     dom.drag_piece.className = "drag-piece";
     dom.drag_piece.textContent = "";
+    dom.drag_piece.style.removeProperty("--drag-x");
+    dom.drag_piece.style.removeProperty("--drag-y");
     state.drag = null;
   }
 
@@ -4421,18 +4466,20 @@
     if (!state.drag || state.drag.pointerId !== event.pointerId) return;
     const distance = Math.hypot(event.clientX - state.drag.x, event.clientY - state.drag.y);
     if (!state.drag.moved && distance < 5) return;
-    state.drag.moved = true;
-    state.selected = state.drag.from;
-    renderBoard();
-    const piece = state.drag.piece;
-    const image = document.createElement("img");
-    if (piece) image.src = pieceAsset(piece);
-    image.alt = "";
-    image.draggable = false;
-    dom.drag_piece.replaceChildren(image);
-    dom.drag_piece.className = `drag-piece is-visible ${piece?.color || "white"}`;
-    dom.drag_piece.style.left = `${event.clientX}px`;
-    dom.drag_piece.style.top = `${event.clientY}px`;
+    if (!state.drag.moved) {
+      state.drag.moved = true;
+      state.selected = state.drag.from;
+      renderBoard();
+      const piece = state.drag.piece;
+      const image = document.createElement("img");
+      if (piece) image.src = pieceAsset(piece);
+      image.alt = "";
+      image.draggable = false;
+      dom.drag_piece.replaceChildren(image);
+      dom.drag_piece.className = `drag-piece is-visible ${piece?.color || "white"}`;
+    }
+    dom.drag_piece.style.setProperty("--drag-x", `${event.clientX}px`);
+    dom.drag_piece.style.setProperty("--drag-y", `${event.clientY}px`);
     event.preventDefault();
   }
 
@@ -5352,8 +5399,10 @@
     const ids = [];
     const queue = [nodeId];
     const seen = new Set();
-    while (queue.length && ids.length <= MAX_STORED_NODES) {
-      const current = queue.shift();
+    let cursor = 0;
+    while (cursor < queue.length && ids.length <= MAX_STORED_NODES) {
+      const current = queue[cursor];
+      cursor += 1;
       if (!current || seen.has(current)) continue;
       seen.add(current);
       ids.push(current);
@@ -5400,6 +5449,18 @@
       tab.tabIndex = active ? 0 : -1;
       document.getElementById(tab.getAttribute("aria-controls")).hidden = !active;
     });
+  }
+
+  function syncWorkspaceRoute(mode) {
+    const url = new URL(window.location.href);
+    if (mode === "analyze") url.searchParams.set("workspace", "analyze");
+    else url.searchParams.delete("workspace");
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (next !== current) window.history.replaceState(null, "", next);
+    document.title = mode === "analyze"
+      ? "Analyze · Scottish Progressive"
+      : "Scottish Progressive";
   }
 
   function showToast(message) {

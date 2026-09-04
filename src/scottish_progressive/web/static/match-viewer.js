@@ -488,7 +488,11 @@
     ) {
       throw new Error("Replay manifest failed its content-address contract.");
     }
-    const dataResponse = await fetch(`./matches/${manifest.data_file}`, {
+    const dataUrl = new URL(`./matches/${manifest.data_file}`, globalThis.location.href);
+    // Bind the cache key to the manifest digest as well as the content-addressed
+    // filename. This avoids reusing bytes cached by a broken local checkout.
+    dataUrl.searchParams.set("sha256", manifest.data_sha256);
+    const dataResponse = await fetch(dataUrl, {
       cache: "force-cache",
       credentials: "same-origin",
     });

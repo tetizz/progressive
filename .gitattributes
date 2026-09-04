@@ -10,6 +10,9 @@ src/scottish_progressive/*.h text eol=lf
 # Keep Windows captures byte-identical to Linux deployment checkouts.
 src/scottish_progressive/web/static/*.js text eol=lf
 root-iteration-coordinator.js text eol=lf
+# Match manifests bind the replay payload's exact bytes. Keep those bytes
+# identical when a Windows checkout serves the local viewer.
+src/scottish_progressive/web/static/matches/*.json text eol=lf
 experiments/neural-ordering-s3-network.json -text -diff
 reports/neural-ordering-s3-final-fair-seeded20-seed730194821.json -text -diff
 # Fair-rematch receipts and the flushed-Bucephalus patch are content addressed.
