@@ -18,3 +18,5 @@ benchmarks/*.py text eol=lf
 benchmarks/patches/*.patch text eol=lf whitespace=-trailing-space,-blank-at-eof
 benchmarks/protocols/*.json text eol=lf
 tests/test_bucephalus_*.py text eol=lf
+archive-delivery.json -text -diff
+archives/actual-100games-20261015/** -text -diff

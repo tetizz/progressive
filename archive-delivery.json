@@ -1,0 +1,89 @@
+{
+  "schema": "spc-static-archive-delivery-v1",
+  "anchor_revision": "f10f78bd2ee055b15194f104102ba03639f0d504",
+  "anchor_release_id": "spc-browser-wasm-release-6ee01f71d6a6fc3f",
+  "archive_path": "archives/actual-100games-20261015",
+  "files": {
+    "pieces/cburnett/bP.svg": {
+      "bytes": 300,
+      "sha256": "f123c68b7de676449ef13c6d3543b28d8b43fcc620b47e1b5400ce68c9ef80c0"
+    },
+    "styles.css": {
+      "bytes": 54462,
+      "sha256": "c4d7b8986dd157140377ba7bb548a48acb766de5ef08016063d67b700291cc60"
+    },
+    "matches.html": {
+      "bytes": 8729,
+      "sha256": "d8bcbfc5894634a0a51239a6bd8d528cf4d0d0dbf3f4e41228373d357fb889d4"
+    },
+    "matches/match.906971ecf89916b8e946b5770e876a306b755333e6a30d5ad2050f48db810472.json": {
+      "bytes": 808975,
+      "sha256": "906971ecf89916b8e946b5770e876a306b755333e6a30d5ad2050f48db810472"
+    },
+    "report.json": {
+      "bytes": 6814064,
+      "sha256": "f6c01cd5f9d3952515d59decce1ef3c73e78ce00bce6b409eb3b3af441ad9594"
+    },
+    "protocol.json": {
+      "bytes": 42235,
+      "sha256": "4138918fafc3df6f8a13e13a77d93675c1cfc5ce1e1c12d38788d684c09f9e8b"
+    },
+    "pieces/cburnett/wN.svg": {
+      "bytes": 595,
+      "sha256": "597e255bca98570a158b5a0b1ff2fe2daaefc365382f50effb0c3fce8bb85a26"
+    },
+    "board-renderer.js": {
+      "bytes": 5544,
+      "sha256": "570652a8214ce2d0b3c338b2f30b8c7a48b0d91adfb1a49a5e5026b672036292"
+    },
+    "pieces/cburnett/wK.svg": {
+      "bytes": 612,
+      "sha256": "b795411c04f637a26efe178e108928fbc0c7c3bacb20528523a3ea179471832f"
+    },
+    "pieces/cburnett/wQ.svg": {
+      "bytes": 774,
+      "sha256": "a5baeb252bfbbc4b2e3a388300d19abec5ff8db0a184fe0be0a74e223d5f697d"
+    },
+    "pieces/cburnett/bB.svg": {
+      "bytes": 685,
+      "sha256": "59067a24f65ce432cd562ddd6178dca74d4e2d95c509299ce43a6251aebb2f14"
+    },
+    "pieces/cburnett/bK.svg": {
+      "bytes": 785,
+      "sha256": "8c9b9a81c7288a13a4462b1aa666c49ec928b4c31548520ade5c06f090818f54"
+    },
+    "pieces/cburnett/wP.svg": {
+      "bytes": 402,
+      "sha256": "3b104fd7cb58da2f9576052b46ac1050a9b50c8e6455dc13f2b6ae0c265ee626"
+    },
+    "pieces/cburnett/bN.svg": {
+      "bytes": 784,
+      "sha256": "f30a863e7f16881300c8827e7d5d2cd379f38b25ac098f6dd7cca06ee6fd29a2"
+    },
+    "pieces/cburnett/bQ.svg": {
+      "bytes": 912,
+      "sha256": "25449a8bad6b54940bce4853b1f08f58a0a2ddf4dfdfd44b888604e89bb298ca"
+    },
+    "match-viewer.js": {
+      "bytes": 24815,
+      "sha256": "405f44f239f2705818527afeee14b16733d4a48b086e2f9b54754915abf7f612"
+    },
+    "matches/match-viewer-manifest.json": {
+      "bytes": 297,
+      "sha256": "bb080bcccf232d6dde4441820558e518251d433316163c0d99c598585234a5e8"
+    },
+    "pieces/cburnett/bR.svg": {
+      "bytes": 559,
+      "sha256": "7752c1b295b586929095b5f7b148dd2b84fcc47d83fe46c7b70cee07376a7413"
+    },
+    "pieces/cburnett/wB.svg": {
+      "bytes": 702,
+      "sha256": "79a4f3cf6670c29de2a37e8a0771c39686ab0fe9720ead9a1ded4f88e8d97c9c"
+    },
+    "pieces/cburnett/wR.svg": {
+      "bytes": 478,
+      "sha256": "d68291f3439c94340160e652722f50634b4ac22a1abda5a128b4fa72a4ad0193"
+    }
+  },
+  "scope": "99 wins and 1 local technical incomplete; 49 complete pairs and 1 incomplete; four played histories; repeated initial positions are not independent superiority evidence; replay only"
+}
