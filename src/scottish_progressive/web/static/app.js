@@ -42,14 +42,16 @@
     ?.replace(/\/$/, "") || "";
   const publicPath = globalThis.location.pathname.toLowerCase();
   const expectedPublicPath = PUBLIC_SITE_PATH.toLowerCase();
-  const isPublicPagesSite = globalThis.location.hostname.toLowerCase() === PUBLIC_SITE_HOST
+  const isPublicPagesSite = (globalThis.location.hostname.toLowerCase() === PUBLIC_SITE_HOST
     && (publicPath === expectedPublicPath
-      || publicPath.startsWith(`${expectedPublicPath}/`));
+      || publicPath.startsWith(`${expectedPublicPath}/`)))
+    || globalThis.location.hostname.toLowerCase() === "tetizz-progressive.pages.dev";
   const staticHostCanRunLocalEngine = globalThis.location.protocol === "https:"
     || ["localhost", "127.0.0.1", "::1"].includes(
       globalThis.location.hostname.toLowerCase(),
     );
-  const API_ORIGIN = isPublicPagesSite ? configuredApiOrigin : "";
+  const API_ORIGIN = isPublicPagesSite && globalThis.location.hostname.toLowerCase() === PUBLIC_SITE_HOST
+    ? configuredApiOrigin : "";
   const BROWSER_PREFIX = globalThis.ScottishProgressiveBrowserPrefix;
   const BROWSER_ENGINE_API = globalThis.ScottishProgressiveBrowserEngine;
   const BOARD_RENDERER = globalThis.ScottishProgressiveBoard;
@@ -209,6 +211,20 @@
       timelineIndex: null,
     },
   };
+  // Result motion owns only its Animation; it never delays or cancels engine work.
+  const resultMotionPreference = window.matchMedia("(prefers-reduced-motion: reduce)");
+  let resultAnimation = null;
+
+  function cancelResultAnimation() {
+    const previous = resultAnimation;
+    resultAnimation = null;
+    previous?.cancel();
+  }
+
+  function onResultMotionPreferenceChange() {
+    if (resultMotionPreference.matches) cancelResultAnimation();
+  }
+
   let playSessionReplayBlocked = false;
   let playSessionReplayPromise = null;
   let playSessionLastWriteDurable = false;
@@ -678,10 +694,19 @@
         }
       }
     }
+    // Full hosted analysis may finish its unchanged search budget before its
+    // JSON and identity receipt arrive. Reuse Play's existing delivery grace,
+    // only here: local WASM and explicit caller deadlines remain untouched.
+    const hostedReceiptDeadlineMs = path === "/api/analyze"
+      && analysisBody && analysisBody.best_move_only !== true
+      && !Object.prototype.hasOwnProperty.call(options, "analysisDeadlineMs")
+      && Number.isFinite(analysisDeadlineMs)
+      ? analysisDeadlineMs + PLAY_ANALYSIS_RESPONSE_GRACE_MS
+      : analysisDeadlineMs;
     const remoteOptions = {
       ...options,
-      analysisDeadlineMs: Number.isFinite(analysisDeadlineMs)
-        ? analysisDeadlineMs
+      analysisDeadlineMs: Number.isFinite(hostedReceiptDeadlineMs)
+        ? hostedReceiptDeadlineMs
         : options.analysisDeadlineMs,
     };
     if (
@@ -704,7 +729,7 @@
     return path === "/api/analyze"
       ? await validateHostedAnalysisIdentity(remotePayload, {
         signal: remoteOptions.signal,
-        deadlineMs: analysisDeadlineMs,
+        deadlineMs: hostedReceiptDeadlineMs,
         fallbackReason: localFallbackReason,
       })
       : remotePayload;
@@ -3623,6 +3648,7 @@
   function renderPlaySurface() {
     if (!dom.workspace) return;
     const playMode = state.mode === "play";
+    if (playMode) cancelResultAnimation();
     document.querySelector(".board-pane")?.setAttribute("aria-label", playMode ? "Game board" : "Analysis board");
     document.querySelector(".inspector")?.setAttribute("aria-label", playMode ? "Game controls" : "Analysis tools");
     dom.workspace.classList.toggle("is-play-mode", playMode);
@@ -4886,6 +4912,29 @@
   }
 
   function renderAnalysis(result) {
+    const motionKey = JSON.stringify([
+      analysisPositionKey(), result.completed_depth, result.score,
+      result.best_notation, result.proven_result, result.proof,
+    ]);
+    if (motionKey !== state.analysisMotionKey) {
+      cancelResultAnimation();
+      if (state.mode === "analyze" && !dom.analysis_panel.hidden
+          && !document.hidden && !resultMotionPreference.matches) {
+        const animation = dom.analysis_results.animate?.([
+          { opacity: .65, transform: "translateY(2px)" },
+          { opacity: 1, transform: "translateY(0)" },
+        ], { duration: 160, easing: "ease-out" });
+        resultAnimation = animation || null;
+        if (animation) {
+          const release = () => {
+            if (resultAnimation === animation) resultAnimation = null;
+          };
+          animation.onfinish = release;
+          animation.oncancel = release;
+        }
+      }
+    }
+    state.analysisMotionKey = motionKey;
     state.analysis = result;
     dom.analysis_empty.hidden = true;
     dom.analysis_loading.hidden = true;
@@ -4949,6 +4998,7 @@
   }
 
   function clearAnalysisDisplay() {
+    cancelResultAnimation();
     cancelAutoAnalysis(true);
     state.pvAbort?.abort();
     state.analysis = null;
@@ -5392,6 +5442,7 @@
   }
 
   function switchTab(name) {
+    if (name !== "analysis") cancelResultAnimation();
     const tabs = [...document.querySelectorAll("[role='tab']")];
     tabs.forEach((tab) => {
       const active = tab.id === `tab-${name}`;
@@ -5795,6 +5846,14 @@
   }
 
   function bindEvents() {
+    if (typeof resultMotionPreference.addEventListener === "function") {
+      resultMotionPreference.addEventListener("change", onResultMotionPreferenceChange);
+    } else {
+      resultMotionPreference.addListener?.(onResultMotionPreferenceChange);
+    }
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) cancelResultAnimation();
+    });
     dom.board.addEventListener("click", onBoardClick);
     dom.board.addEventListener("pointerdown", onPointerDown);
     dom.board.addEventListener("keydown", onBoardKeydown);
@@ -5973,6 +6032,8 @@
       await switchWorkspaceMode("analyze");
     }
   }
+
+  window.addEventListener("pagehide", cancelResultAnimation);
 
   void initialize();
 })();
