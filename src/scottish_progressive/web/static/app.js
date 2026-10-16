@@ -211,6 +211,20 @@
       timelineIndex: null,
     },
   };
+  // Result motion owns only its Animation; it never delays or cancels engine work.
+  const resultMotionPreference = window.matchMedia("(prefers-reduced-motion: reduce)");
+  let resultAnimation = null;
+
+  function cancelResultAnimation() {
+    const previous = resultAnimation;
+    resultAnimation = null;
+    previous?.cancel();
+  }
+
+  function onResultMotionPreferenceChange() {
+    if (resultMotionPreference.matches) cancelResultAnimation();
+  }
+
   let playSessionReplayBlocked = false;
   let playSessionReplayPromise = null;
   let playSessionLastWriteDurable = false;
@@ -3634,6 +3648,7 @@
   function renderPlaySurface() {
     if (!dom.workspace) return;
     const playMode = state.mode === "play";
+    if (playMode) cancelResultAnimation();
     document.querySelector(".board-pane")?.setAttribute("aria-label", playMode ? "Game board" : "Analysis board");
     document.querySelector(".inspector")?.setAttribute("aria-label", playMode ? "Game controls" : "Analysis tools");
     dom.workspace.classList.toggle("is-play-mode", playMode);
@@ -4897,6 +4912,29 @@
   }
 
   function renderAnalysis(result) {
+    const motionKey = JSON.stringify([
+      analysisPositionKey(), result.completed_depth, result.score,
+      result.best_notation, result.proven_result, result.proof,
+    ]);
+    if (motionKey !== state.analysisMotionKey) {
+      cancelResultAnimation();
+      if (state.mode === "analyze" && !dom.analysis_panel.hidden
+          && !document.hidden && !resultMotionPreference.matches) {
+        const animation = dom.analysis_results.animate?.([
+          { opacity: .65, transform: "translateY(2px)" },
+          { opacity: 1, transform: "translateY(0)" },
+        ], { duration: 160, easing: "ease-out" });
+        resultAnimation = animation || null;
+        if (animation) {
+          const release = () => {
+            if (resultAnimation === animation) resultAnimation = null;
+          };
+          animation.onfinish = release;
+          animation.oncancel = release;
+        }
+      }
+    }
+    state.analysisMotionKey = motionKey;
     state.analysis = result;
     dom.analysis_empty.hidden = true;
     dom.analysis_loading.hidden = true;
@@ -4960,6 +4998,7 @@
   }
 
   function clearAnalysisDisplay() {
+    cancelResultAnimation();
     cancelAutoAnalysis(true);
     state.pvAbort?.abort();
     state.analysis = null;
@@ -5403,6 +5442,7 @@
   }
 
   function switchTab(name) {
+    if (name !== "analysis") cancelResultAnimation();
     const tabs = [...document.querySelectorAll("[role='tab']")];
     tabs.forEach((tab) => {
       const active = tab.id === `tab-${name}`;
@@ -5806,6 +5846,14 @@
   }
 
   function bindEvents() {
+    if (typeof resultMotionPreference.addEventListener === "function") {
+      resultMotionPreference.addEventListener("change", onResultMotionPreferenceChange);
+    } else {
+      resultMotionPreference.addListener?.(onResultMotionPreferenceChange);
+    }
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) cancelResultAnimation();
+    });
     dom.board.addEventListener("click", onBoardClick);
     dom.board.addEventListener("pointerdown", onPointerDown);
     dom.board.addEventListener("keydown", onBoardKeydown);
@@ -5984,6 +6032,8 @@
       await switchWorkspaceMode("analyze");
     }
   }
+
+  window.addEventListener("pagehide", cancelResultAnimation);
 
   void initialize();
 })();
