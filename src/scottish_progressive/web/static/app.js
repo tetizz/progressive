@@ -42,14 +42,16 @@
     ?.replace(/\/$/, "") || "";
   const publicPath = globalThis.location.pathname.toLowerCase();
   const expectedPublicPath = PUBLIC_SITE_PATH.toLowerCase();
-  const isPublicPagesSite = globalThis.location.hostname.toLowerCase() === PUBLIC_SITE_HOST
+  const isPublicPagesSite = (globalThis.location.hostname.toLowerCase() === PUBLIC_SITE_HOST
     && (publicPath === expectedPublicPath
-      || publicPath.startsWith(`${expectedPublicPath}/`));
+      || publicPath.startsWith(`${expectedPublicPath}/`)))
+    || globalThis.location.hostname.toLowerCase() === "tetizz-progressive.pages.dev";
   const staticHostCanRunLocalEngine = globalThis.location.protocol === "https:"
     || ["localhost", "127.0.0.1", "::1"].includes(
       globalThis.location.hostname.toLowerCase(),
     );
-  const API_ORIGIN = isPublicPagesSite ? configuredApiOrigin : "";
+  const API_ORIGIN = isPublicPagesSite && globalThis.location.hostname.toLowerCase() === PUBLIC_SITE_HOST
+    ? configuredApiOrigin : "";
   const BROWSER_PREFIX = globalThis.ScottishProgressiveBrowserPrefix;
   const BROWSER_ENGINE_API = globalThis.ScottishProgressiveBrowserEngine;
   const BOARD_RENDERER = globalThis.ScottishProgressiveBoard;
@@ -678,10 +680,19 @@
         }
       }
     }
+    // Full hosted analysis may finish its unchanged search budget before its
+    // JSON and identity receipt arrive. Reuse Play's existing delivery grace,
+    // only here: local WASM and explicit caller deadlines remain untouched.
+    const hostedReceiptDeadlineMs = path === "/api/analyze"
+      && analysisBody && analysisBody.best_move_only !== true
+      && !Object.prototype.hasOwnProperty.call(options, "analysisDeadlineMs")
+      && Number.isFinite(analysisDeadlineMs)
+      ? analysisDeadlineMs + PLAY_ANALYSIS_RESPONSE_GRACE_MS
+      : analysisDeadlineMs;
     const remoteOptions = {
       ...options,
-      analysisDeadlineMs: Number.isFinite(analysisDeadlineMs)
-        ? analysisDeadlineMs
+      analysisDeadlineMs: Number.isFinite(hostedReceiptDeadlineMs)
+        ? hostedReceiptDeadlineMs
         : options.analysisDeadlineMs,
     };
     if (
@@ -704,7 +715,7 @@
     return path === "/api/analyze"
       ? await validateHostedAnalysisIdentity(remotePayload, {
         signal: remoteOptions.signal,
-        deadlineMs: analysisDeadlineMs,
+        deadlineMs: hostedReceiptDeadlineMs,
         fallbackReason: localFallbackReason,
       })
       : remotePayload;
